@@ -1,0 +1,10 @@
+flask
+twilio
+anthropic
+openai
+requests
+python-dotenv
+gunicorn
+google-api-python-client
+google-auth
+pytz
