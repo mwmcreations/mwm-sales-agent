@@ -316,6 +316,21 @@ IMPORTANT GUIDELINES
 """
 
 
+def get_system_prompt():
+    """Return SYSTEM_PROMPT with today's date injected dynamically so Maya can resolve relative dates."""
+    tz = pytz.timezone(TIMEZONE)
+    today_str = datetime.now(tz).strftime("%A, %B %d, %Y")
+    date_line = (
+        f"- TODAY'S DATE: Today is {today_str} Eastern Time. "
+        "Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"this Friday\", etc. "
+        "Never ask the lead what today's date is — you already know it.\n"
+    )
+    return SYSTEM_PROMPT.replace(
+        "IMPORTANT GUIDELINES\n\n",
+        f"IMPORTANT GUIDELINES\n\n{date_line}"
+    )
+
+
 # ─────────────────────────────────────────────
 # MAYA — STUDIO PHOTOS (sent when inviting leads to visit)
 # ─────────────────────────────────────────────
@@ -1183,30 +1198,60 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         return None
 
 
+def _parse_datetime_flexible(dt_string):
+    """
+    Parse a datetime string in ISO 8601 or other common formats.
+    Returns a naive or aware datetime object; caller handles timezone.
+    """
+    try:
+        return datetime.fromisoformat(dt_string)
+    except ValueError:
+        pass
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(dt_string, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Unrecognised datetime format: {dt_string!r}")
+
+
 def check_specific_slot(requested_datetime):
     """
     Check if a specific requested time is free on the MWM Creations calendar.
     Returns {"available": True, "slot_id": ..., "display": ...} or {"available": False}.
     All-day events are ignored (same logic as get_available_slots).
     """
+    print(f"[check_specific_slot] raw input: {requested_datetime!r}")
     try:
         service = get_calendar_service()
         tz = pytz.timezone(TIMEZONE)
 
         # Parse the requested time; assume Eastern if no timezone info
-        candidate = datetime.fromisoformat(requested_datetime)
+        candidate = _parse_datetime_flexible(requested_datetime)
         if candidate.tzinfo is None:
             candidate = tz.localize(candidate)
         else:
             candidate = candidate.astimezone(tz)
 
+        print(f"[check_specific_slot] parsed candidate: {candidate.isoformat()}")
+
         # Must be a weekday between 9 AM and 4:30 PM
         if candidate.weekday() >= 5:
+            print(f"[check_specific_slot] rejected: weekend (weekday={candidate.weekday()})")
             return {"available": False, "reason": "weekends are not available"}
         if not (9 <= candidate.hour < 17) or (candidate.hour == 16 and candidate.minute > 30):
+            print(f"[check_specific_slot] rejected: outside business hours (hour={candidate.hour})")
             return {"available": False, "reason": "outside business hours (9 AM – 5 PM EST)"}
         # Must be in the future
-        if candidate <= datetime.now(tz):
+        now_et = datetime.now(tz)
+        if candidate <= now_et:
+            print(f"[check_specific_slot] rejected: in the past (candidate={candidate.isoformat()}, now={now_et.isoformat()})")
             return {"available": False, "reason": "that time has already passed"}
 
         slot_end = candidate + timedelta(minutes=30)
@@ -1221,6 +1266,7 @@ def check_specific_slot(requested_datetime):
             orderBy="startTime"
         ).execute()
 
+        blocking_events = []
         for event in events_result.get("items", []):
             start_info = event.get("start", {})
             end_info = event.get("end", {})
@@ -1230,8 +1276,13 @@ def check_specific_slot(requested_datetime):
             ev_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
             ev_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
             if ev_start < slot_end and ev_end > candidate:
-                return {"available": False, "reason": "that time is already booked"}
+                blocking_events.append(f"{event.get('summary', 'Unnamed')} ({ev_start.strftime('%H:%M')}–{ev_end.strftime('%H:%M')})")
 
+        if blocking_events:
+            print(f"[check_specific_slot] rejected: blocked by events: {blocking_events}")
+            return {"available": False, "reason": "that time is already booked"}
+
+        print(f"[check_specific_slot] AVAILABLE: {candidate.isoformat()}")
         return {
             "available": True,
             "slot_id": candidate.isoformat(),
@@ -1239,7 +1290,7 @@ def check_specific_slot(requested_datetime):
         }
 
     except Exception as e:
-        print(f"Error checking specific slot: {e}")
+        print(f"[check_specific_slot] ERROR: {e}")
         return {"available": False, "reason": "could not verify that time"}
 
 
@@ -1590,7 +1641,7 @@ def get_claude_reply(messages, sender=None):
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=get_system_prompt(),
             tools=TOOLS,
             messages=messages
         )
