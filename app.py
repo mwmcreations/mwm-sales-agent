@@ -305,13 +305,13 @@ IMPORTANT GUIDELINES
 - Always keep the studio visit as the primary destination — every answer should lead there
 - If a visit is not possible, the strategy call is the fallback — never lead with the call if a visit is an option
 - INTRODUCING MICHAEL: New leads don't know who Michael is. The FIRST time you mention his name in any conversation, always include a brief identifier so they understand who he is. For example: "Michael Moraes, our founder" or "Michael Moraes, MWM's founder and creative director." After the first mention, you can just say "Michael." Never assume the lead already knows who Michael is.
-- When you have the lead's name and email and they agree to a visit or call, ALWAYS use get_available_slots instead of sending a static link
+- When you have the lead's name and email and they agree to a visit or call, ALWAYS call get_available_slots immediately — never ask what time works for them first. Present the 3 options you receive, numbered 1–3.
 - After the lead picks a slot number, ALWAYS call book_appointment to confirm the booking
-- Always invite the lead to suggest their own preferred day and time if none of the presented slots work for them
+- If NONE of the 3 options work for the lead, THEN invite them to suggest a preferred day and time and use check_specific_slot to verify it
 - If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable just because it wasn't in the get_available_slots list
 - If the lead's suggested time IS available, book it immediately — don't present more options
-- If the lead's suggested time is NOT available, apologize and suggest the nearest available slot from the preferred times
-- AVAILABILITY FALLBACK: If get_available_slots returns no slots or an error, do NOT tell the lead there is no availability. Instead, ask them to suggest a preferred day and time so you can check: "What day and time works best for you? I'll check Michael's schedule right away." Then use check_specific_slot to verify.
+- If the lead's suggested time is NOT available, apologize and call get_available_slots again to present fresh options
+- AVAILABILITY FALLBACK: If get_available_slots returns no slots or an error, ONLY THEN ask the lead to suggest a preferred day and time: "What day and time works best for you? I'll check Michael's schedule right away." Then use check_specific_slot to verify.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
 
@@ -981,19 +981,22 @@ def get_calendar_service(impersonate=None):
 
 def get_available_slots():
     """
-    Return up to 5 available 30-minute slots spread across the next 14 business days,
-    with a maximum of 1 slot per day, using only Michael's preferred times:
-    10:00 AM, 11:00 AM, 2:00 PM, or 3:00 PM Eastern Time.
-    Slots are varied across different times of day for a natural feel.
+    Return exactly 3 available slots — one per each of the next 3 available business days,
+    alternating morning -> afternoon -> morning.
+      Morning options (tried in order): 10:00 AM, then 11:00 AM
+      Afternoon options (tried in order): 3:00 PM, then 2:00 PM
+    Checks the MWM CREATIONS calendar (CALENDAR_ID).
     All-day events are intentionally ignored so they don't block real availability.
     """
     try:
         service = get_calendar_service()
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
-        end_window = now + timedelta(days=14)
+        end_window = now + timedelta(days=21)
 
-        # Fetch timed events only — skip all-day events
+        print(f"[get_available_slots] checking calendar: {CALENDAR_ID}")
+
+        # Fetch all timed events in the window
         events_result = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=now.isoformat(),
@@ -1012,33 +1015,36 @@ def get_available_slots():
                     "end": end_info["dateTime"]
                 })
 
-        # Preferred time slots (hour, minute) — rotate through these for variety
-        preferred_times = [(10, 0), (14, 0), (11, 0), (15, 0)]
+        # Alternating pattern: morning -> afternoon -> morning
+        # morning = [10am, 11am] in priority order
+        # afternoon = [3pm, 2pm] in priority order
+        day_patterns = [
+            [(10, 0), (11, 0)],   # Slot 1: morning
+            [(15, 0), (14, 0)],   # Slot 2: afternoon
+            [(10, 0), (11, 0)],   # Slot 3: morning
+        ]
 
         slots = []
-        current_day = now.date() - timedelta(days=1)  # start from today (loop increments before checking)
+        current_day = now.date() - timedelta(days=1)  # loop increments before checking
         days_checked = 0
 
-        while len(slots) < 5 and days_checked < 21:
+        while len(slots) < 3 and days_checked < 21:
             current_day += timedelta(days=1)
             days_checked += 1
 
-            # Monday–Friday only
+            # Monday-Friday only
             if current_day.weekday() >= 5:
                 continue
 
-            # Try preferred times in rotation to ensure variety across days
-            # Offset the rotation based on how many slots we already have
-            rotation = preferred_times[len(slots) % len(preferred_times):]
-            rotation += preferred_times[:len(slots) % len(preferred_times)]
+            times_to_try = day_patterns[len(slots)]
 
-            for (hour, minute) in rotation:
+            for (hour, minute) in times_to_try:
                 candidate = tz.localize(datetime(
                     current_day.year, current_day.month, current_day.day,
                     hour, minute, 0
                 ))
 
-                # Skip if this time is already in the past
+                # Skip if already in the past
                 if candidate <= now:
                     continue
 
@@ -1054,12 +1060,16 @@ def get_available_slots():
                         "id": candidate.isoformat(),
                         "display": candidate.strftime("%A, %B %d at %I:%M %p EST")
                     })
-                    break  # one slot per day
+                    break  # one slot per day, move to next day
 
+            # If this day had no available slot in the desired period, the while loop
+            # retries the same pattern index on the next business day automatically.
+
+        print(f"[get_available_slots] returning {len(slots)} slots: {[s['display'] for s in slots]}")
         return slots
 
     except Exception as e:
-        print(f"Error fetching calendar slots: {e}")
+        print(f"[get_available_slots] ERROR: {e}")
         return []
 
 
