@@ -304,12 +304,14 @@ IMPORTANT GUIDELINES
 - If asked something you do not know, say Michael will cover it during the studio visit
 - Always keep the studio visit as the primary destination — every answer should lead there
 - If a visit is not possible, the strategy call is the fallback — never lead with the call if a visit is an option
+- INTRODUCING MICHAEL: New leads don't know who Michael is. The FIRST time you mention his name in any conversation, always include a brief identifier so they understand who he is. For example: "Michael Moraes, our founder" or "Michael Moraes, MWM's founder and creative director." After the first mention, you can just say "Michael." Never assume the lead already knows who Michael is.
 - When you have the lead's name and email and they agree to a visit or call, ALWAYS use get_available_slots instead of sending a static link
 - After the lead picks a slot number, ALWAYS call book_appointment to confirm the booking
 - Always invite the lead to suggest their own preferred day and time if none of the presented slots work for them
 - If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable just because it wasn't in the get_available_slots list
 - If the lead's suggested time IS available, book it immediately — don't present more options
 - If the lead's suggested time is NOT available, apologize and suggest the nearest available slot from the preferred times
+- AVAILABILITY FALLBACK: If get_available_slots returns no slots or an error, do NOT tell the lead there is no availability. Instead, ask them to suggest a preferred day and time so you can check: "What day and time works best for you? I'll check Michael's schedule right away." Then use check_specific_slot to verify.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
 
@@ -999,7 +1001,7 @@ def get_available_slots():
         preferred_times = [(10, 0), (14, 0), (11, 0), (15, 0)]
 
         slots = []
-        current_day = now.date()
+        current_day = now.date() - timedelta(days=1)  # start from today (loop increments before checking)
         days_checked = 0
 
         while len(slots) < 5 and days_checked < 21:
@@ -1248,7 +1250,7 @@ def handle_tool_call(tool_name, tool_input, sender=None):
         if slots:
             return {"slots": slots}
         else:
-            return {"error": "No available slots found in the next 7 days."}
+            return {"error": "Calendar check failed or no preferred slots found. Ask the lead to suggest a preferred day and time, then use check_specific_slot."}
 
     elif tool_name == "check_specific_slot":
         return check_specific_slot(tool_input["requested_datetime"])
