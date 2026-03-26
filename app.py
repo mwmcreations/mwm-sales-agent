@@ -1511,36 +1511,45 @@ def format_transcript(history: list) -> str:
     return "\n".join(lines)
 
 
-def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
-    """Append a new lead row to the current month's tab."""
+
+def log_new_contact_to_sheets(sender: str):
+    """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
+    This ensures every person who messages Maya is captured, even if they never share their info.
+    The row is updated later when lead info is captured or a booking is made."""
     if not SHEETS_LEADS_ID:
         return
     try:
         now = datetime.now(pytz.timezone(TIMEZONE))
-        tab_name = now.strftime("%b %Y")   # e.g. "Mar 2026"
-        fields = _parse_lead_fields(lead_info)
-
+        tab_name = now.strftime("%b %Y")
         clean_phone = sender.replace("whatsapp:", "").replace("+", "")
-
-        transcript = format_transcript(history) if history else ""
-
-        row = [
-            now.strftime("%Y-%m-%d"),          # Date
-            now.strftime("%I:%M %p"),           # Time
-            fields.get("name", ""),             # Name
-            fields.get("business", ""),         # Business
-            clean_phone,                        # Phone
-            fields.get("email", ""),            # Email
-            fields.get("interest", ""),         # Service Interest
-            "Interested — No Booking Yet",      # Status (default)
-            "",                                 # Appt Date & Time (filled on booking)
-            "",                                 # Notes
-            "",                                 # Follow-up ✓
-            transcript,                         # Full conversation transcript
-        ]
 
         svc = get_sheets_service()
         ensure_monthly_tab(svc, SHEETS_LEADS_ID, tab_name)
+
+        # Don't add a duplicate row if this phone is already in the sheet this month
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{tab_name}'!E:E",  # Phone column
+        ).execute()
+        existing_phones = [r[0] if r else "" for r in result.get("values", [])]
+        if clean_phone in existing_phones:
+            print(f"[Sheets] First-contact row already exists for {clean_phone} — skipping")
+            return
+
+        row = [
+            now.strftime("%Y-%m-%d"),   # Date
+            now.strftime("%I:%M %p"),   # Time
+            "",                          # Name (unknown yet)
+            "",                          # Business (unknown yet)
+            clean_phone,                 # Phone
+            "",                          # Email (unknown yet)
+            "",                          # Service Interest
+            "New Lead",                  # Status
+            "",                          # Appt Date & Time
+            "",                          # Notes
+            "",                          # Follow-up ✓
+            "",                          # Transcript (updated later)
+        ]
         svc.spreadsheets().values().append(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab_name}'!A1",
@@ -1548,7 +1557,73 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute()
-        print(f"✅ Lead logged to Sheets tab '{tab_name}'")
+        print(f"✅ First-contact row logged for {clean_phone}")
+    except Exception as e:
+        print(f"⚠️ Could not log first contact to Sheets (non-fatal): {e}")
+
+
+def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
+    """Update the existing lead row with captured info, or append a new row if not found."""
+    if not SHEETS_LEADS_ID:
+        return
+    try:
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        tab_name = now.strftime("%b %Y")
+        fields = _parse_lead_fields(lead_info)
+        clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+        transcript = format_transcript(history) if history else ""
+
+        svc = get_sheets_service()
+        ensure_monthly_tab(svc, SHEETS_LEADS_ID, tab_name)
+
+        # Try to find an existing row by phone number and UPDATE it
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{tab_name}'!A:L",
+        ).execute()
+        rows = result.get("values", [])
+
+        target_row_index = None
+        for i, row in enumerate(rows):
+            if len(row) >= 5 and row[4] == clean_phone:
+                target_row_index = i  # keep last match
+
+        if target_row_index is not None:
+            row_number = target_row_index + 1  # 1-based
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEETS_LEADS_ID,
+                body={"valueInputOption": "RAW", "data": [
+                    {"range": f"'{tab_name}'!C{row_number}", "values": [[fields.get("name", "")]]},
+                    {"range": f"'{tab_name}'!D{row_number}", "values": [[fields.get("business", "")]]},
+                    {"range": f"'{tab_name}'!F{row_number}", "values": [[fields.get("email", "")]]},
+                    {"range": f"'{tab_name}'!G{row_number}", "values": [[fields.get("interest", "")]]},
+                    {"range": f"'{tab_name}'!H{row_number}", "values": [["Interested — No Booking Yet"]]},
+                    {"range": f"'{tab_name}'!L{row_number}", "values": [[transcript]]},
+                ]},
+            ).execute()
+            print(f"✅ Lead row updated in Sheets (row {row_number}): {clean_phone}")
+        else:
+            # No existing row — append a full new row
+            row = [
+                now.strftime("%Y-%m-%d"),
+                now.strftime("%I:%M %p"),
+                fields.get("name", ""),
+                fields.get("business", ""),
+                clean_phone,
+                fields.get("email", ""),
+                fields.get("interest", ""),
+                "Interested — No Booking Yet",
+                "", "", "",
+                transcript,
+            ]
+            svc.spreadsheets().values().append(
+                spreadsheetId=SHEETS_LEADS_ID,
+                range=f"'{tab_name}'!A1",
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [row]},
+            ).execute()
+            print(f"✅ Lead appended to Sheets (no existing row found): {clean_phone}")
     except Exception as e:
         print(f"⚠️ Could not log lead to Sheets (non-fatal): {e}")
 
@@ -2012,10 +2087,18 @@ def webhook():
         # ── Maya path — ASYNC to beat Twilio's 15s timeout ──────────────
         print(f"🤖 Routing to MAYA (async)")
 
-        if sender not in conversation_history:
+        is_new_sender = sender not in conversation_history
+        if is_new_sender:
             conversation_history[sender] = []
 
         conversation_history[sender].append({"role": "user", "content": incoming_msg})
+
+        # ── Log first contact to Sheets immediately (phone + timestamp only) ──
+        if is_new_sender:
+            try:
+                log_new_contact_to_sheets(sender)
+            except Exception as e:
+                print(f"⚠️ First-contact Sheets log error (non-fatal): {e}")
 
         # ── Stamp last_message_time for cold-lead detection ──────────────
         if sender not in lead_data:
