@@ -985,10 +985,13 @@ def get_calendar_service(impersonate=None):
     """
     Authenticate and return a Google Calendar service client.
 
-    If `impersonate` is set (or GOOGLE_DELEGATE_EMAIL env var is set),
-    uses Domain-Wide Delegation to act as that user.  This allows the
-    service account to create events with attendees on behalf of a real
-    Google Workspace user.
+    DWD is used ONLY when `impersonate` is explicitly passed.
+    Read-only operations (get_available_slots, check_specific_slot) call this
+    without impersonate so they never trigger DWD — the service account accesses
+    the MWM CREATIONS calendar directly (service account must be a calendar member).
+
+    Write operations (book_appointment) pass impersonate=MICHAEL_EMAIL to try DWD,
+    but the caller handles the fallback if DWD is not configured.
     """
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
@@ -996,17 +999,18 @@ def get_calendar_service(impersonate=None):
         creds = service_account.Credentials.from_service_account_info(
             creds_dict, scopes=SCOPES
         )
+        sa_email = creds_dict.get("client_email", "unknown")
+        print(f"[calendar] service account: {sa_email}")
     else:
         # Fallback: load from local file (for local dev)
         creds = service_account.Credentials.from_service_account_file(
             "service_account.json", scopes=SCOPES
         )
 
-    # Domain-Wide Delegation: impersonate a real user so we can invite attendees
-    delegate = impersonate or os.getenv("GOOGLE_DELEGATE_EMAIL")
-    if delegate:
-        creds = creds.with_subject(delegate)
-        print(f"🔑 Using Domain-Wide Delegation as: {delegate}")
+    # Domain-Wide Delegation — ONLY when explicitly requested by the caller
+    if impersonate:
+        creds = creds.with_subject(impersonate)
+        print(f"[calendar] DWD as: {impersonate}")
 
     return build("calendar", "v3", credentials=creds)
 
@@ -1122,7 +1126,20 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
     Returns the event ID on success, or None on failure.
     """
     try:
-        service = get_calendar_service()   # uses DWD if GOOGLE_DELEGATE_EMAIL is set
+        # Try with DWD first (sends proper calendar invites as Michael)
+        # Falls back to no-DWD if unauthorized_client (DWD not configured in Google Admin)
+        delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+        try:
+            service = get_calendar_service(impersonate=delegate) if delegate else get_calendar_service()
+            # Quick test — will raise if DWD creds are invalid
+            service.calendarList().list(maxResults=1).execute()
+            print(f"[book_appointment] using DWD as {delegate}")
+        except Exception as dwd_err:
+            if "unauthorized_client" in str(dwd_err) or "invalid_grant" in str(dwd_err):
+                print(f"[book_appointment] DWD failed ({dwd_err}), falling back to service account direct access")
+                service = get_calendar_service()  # no DWD
+            else:
+                raise
         tz = pytz.timezone(TIMEZONE)
         start_dt = datetime.fromisoformat(slot_id).astimezone(tz)
         end_dt = start_dt + timedelta(minutes=30)
