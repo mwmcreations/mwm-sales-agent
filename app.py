@@ -305,19 +305,22 @@ IMPORTANT GUIDELINES
 - Always keep the studio visit as the primary destination — every answer should lead there
 - If a visit is not possible, the strategy call is the fallback — never lead with the call if a visit is an option
 - INTRODUCING MICHAEL: New leads don't know who Michael is. The FIRST time you mention his name in any conversation, always include a brief identifier so they understand who he is. For example: "Michael Moraes, our founder" or "Michael Moraes, MWM's founder and creative director." After the first mention, you can just say "Michael." Never assume the lead already knows who Michael is.
-- SCHEDULING — ABSOLUTE RULE: The moment you are ready to book a visit or call, call get_available_slots IMMEDIATELY. Do NOT ask "what day works?", "what time works?", "morning or afternoon?" or anything like that. NEVER. Just call get_available_slots and present the 3 returned options numbered 1, 2, 3. Let the calendar decide the options, not the lead.
-- After the lead picks a slot number (1, 2, or 3), ALWAYS call book_appointment to confirm the booking
+- SCHEDULING — ABSOLUTE RULE: When ready to book, present MICHAEL'S NEXT 3 AVAILABLE TIMES listed above — numbered 1, 2, 3 — directly to the lead. Do NOT ask "what day works?", "what time works?", "morning or afternoon?" or anything similar. NEVER. The options are already loaded above. Just show them.
+- After the lead picks a number (1, 2, or 3), ALWAYS call book_appointment using the matching slot_id from above to confirm the booking
 - Only if the lead says NONE of the 3 options work, THEN ask them to suggest a preferred day and time and use check_specific_slot to verify it
-- If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable just because it wasn't in the get_available_slots list
+- If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable
 - If the lead's suggested time IS available, book it immediately — don't present more options
-- If the lead's suggested time is NOT available, apologize and call get_available_slots again to present fresh options
-- ONLY IF get_available_slots returns completely empty (no slots at all), THEN and only then ask: "What day and time works best for you? I'll check Michael's schedule right away." Then use check_specific_slot to verify.
+- If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options above again
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
 
 
 def get_system_prompt():
-    """Return SYSTEM_PROMPT with today's date injected dynamically so Maya can resolve relative dates."""
+    """
+    Return SYSTEM_PROMPT with today's date AND pre-fetched available slots injected.
+    Pre-loading slots means Maya never has to decide when to call get_available_slots —
+    she already has the options and can present them directly.
+    """
     tz = pytz.timezone(TIMEZONE)
     today_str = datetime.now(tz).strftime("%A, %B %d, %Y")
     date_line = (
@@ -325,9 +328,38 @@ def get_system_prompt():
         "Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"this Friday\", etc. "
         "Never ask the lead what today's date is — you already know it.\n"
     )
+
+    # Pre-fetch available slots so Maya has them immediately
+    try:
+        slots = get_available_slots()
+        if slots:
+            display_lines = "\n".join(
+                [f"  {i+1}. {s['display']}" for i, s in enumerate(slots)]
+            )
+            id_lines = "\n".join(
+                [f"  slot_{i+1}_id = {s['id']}" for i, s in enumerate(slots)]
+            )
+            slots_line = (
+                "- MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded — use these directly when scheduling):\n"
+                f"{display_lines}\n"
+                f"  Slot IDs for book_appointment: {id_lines}\n"
+                "  When scheduling, present options 1, 2, 3 to the lead exactly as shown above. "
+                "Do NOT ask what day or time they prefer — just show these 3 options.\n"
+            )
+        else:
+            slots_line = (
+                "- MICHAEL'S NEXT 3 AVAILABLE TIMES: No slots currently available in preferred windows. "
+                "Ask the lead to suggest a preferred day and time, then use check_specific_slot to verify.\n"
+            )
+    except Exception as e:
+        print(f"[get_system_prompt] slot pre-fetch failed: {e}")
+        slots_line = (
+            "- MICHAEL'S NEXT 3 AVAILABLE TIMES: Could not load — call get_available_slots() to fetch them.\n"
+        )
+
     return SYSTEM_PROMPT.replace(
         "IMPORTANT GUIDELINES\n\n",
-        f"IMPORTANT GUIDELINES\n\n{date_line}"
+        f"IMPORTANT GUIDELINES\n\n{date_line}{slots_line}"
     )
 
 
