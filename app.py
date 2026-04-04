@@ -849,7 +849,7 @@ def transcribe_audio(media_id: str, language: str = None) -> str:
                 kwargs["language"] = language
             transcript = oai.audio.transcriptions.create(**kwargs)
 
-        print(f"\ud83c\udf99\ufe0f Transcribed ({language or 'auto'}): {transcript.text}")
+        print(f"🎙️ Transcribed ({language or 'auto'}): {transcript.text}")
         return transcript.text
 
     finally:
@@ -1250,19 +1250,19 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 invite_note = (
                     "\u2709\ufe0f Calendar invite sent to lead."
                     if used_attendees else
-                    "\u26a0\ufe0f Calendar invite NOT sent (DWD not yet configured \u2014 see setup guide)."
+                    "\u26a0\ufe0f Calendar invite NOT sent (DWD not yet configured — see setup guide)."
                 )
                 phone_line = ""
                 if lead_phone:
                     clean_phone = lead_phone.replace("whatsapp:", "")
-                    phone_line = f"\ud83d\udcf1 Phone: {clean_phone}\n"
+                    phone_line = f"📱 Phone: {clean_phone}\n"
                 notification = (
-                    f"\ud83d\udcc5 *New Studio Visit Booked via Maya!*\n\n"
-                    f"\ud83d\udc64 Name: {lead_name}\n"
-                    f"\ud83c\udfe2 Business: {lead_business}\n"
-                    f"\ud83d\udce7 Email: {lead_email}\n"
+                    f"📅 *New Studio Visit Booked via Maya!*\n\n"
+                    f"👤 Name: {lead_name}\n"
+                    f"🏢 Business: {lead_business}\n"
+                    f"📧 Email: {lead_email}\n"
                     f"{phone_line}"
-                    f"\ud83d\udd50 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
+                    f"🕐 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
                     f"{invite_note}"
                 )
                 send_whatsapp_meta(michael_phone, body=notification)
@@ -1851,7 +1851,7 @@ def _extract_gabriela_followups(text: str) -> list[str]:
 def _send_whatsapp_api(to: str, body: str = None, media_url: str = None):
     """Send a WhatsApp message via Meta Cloud API (used for async replies)."""
     if not META_ACCESS_TOKEN:
-        print("\u26a0\ufe0f META_ACCESS_TOKEN missing \u2014 cannot send async message")
+        print("\u26a0\ufe0f META_ACCESS_TOKEN missing — cannot send async message")
         return
     send_whatsapp_meta(to, body=body, media_url=media_url)
 
@@ -2041,7 +2041,7 @@ def webhook():
                         incoming_msg = interactive.get("button_reply", {}).get("title", "")
                     elif itype == "list_reply":
                         incoming_msg = interactive.get("list_reply", {}).get("title", "")
-                print(f"\ud83d\udce9 Message from {sender}: {incoming_msg!r} | type={msg_type} | media={num_media}")
+                print(f"📩 Message from {sender}: {incoming_msg!r} | type={msg_type} | media={num_media}")
                 _handle_incoming(sender, incoming_msg, num_media, media_id, content_type)
 
     return "OK", 200
@@ -2054,7 +2054,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
 
     if num_media > 0:
         if "audio" in content_type and media_id:
-            print(f"\ud83c\udfa4\ufe0f Voice note received \u2014 ContentType: {content_type}")
+            print(f"🎤️ Voice note received — ContentType: {content_type}")
             if is_expo_lead(sender):
                 print(f"\u23f1\ufe0f Launching async Gabriela audio processing for {sender}")
                 threading.Thread(target=_process_gabriela_audio_async, args=(sender, media_id), daemon=True).start()
@@ -2064,17 +2064,17 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 was_audio = True
             except Exception as trans_err:
                 print(f"\u274c Transcription failed: {trans_err}")
-                send_whatsapp_meta(sender, body="Sorry, I couldn't process your voice message. Could you send it as text instead? \ud83d\ude4f")
+                send_whatsapp_meta(sender, body="Sorry, I couldn't process your voice message. Could you send it as text instead? 🙏")
                 return
         elif not incoming_msg:
             if is_expo_lead(sender):
-                send_whatsapp_meta(sender, body="Recebi seu arquivo! \ud83d\ude0a Posso te ajudar com os pacotes de v\u00eddeo da Expo Brazil?")
+                send_whatsapp_meta(sender, body="Recebi seu arquivo! 😊 Posso te ajudar com os pacotes de v\u00eddeo da Expo Brazil?")
             else:
-                send_whatsapp_meta(sender, body="Thanks for the file! How can I help you today? \ud83d\ude0a")
+                send_whatsapp_meta(sender, body="Thanks for the file! How can I help you today? 😊")
             return
 
     if is_expo_lead(sender):
-        print(f"\ud83c\udde7\ud83c\uddf7 Routing to GABRIELA (Expo Brazil lead)")
+        print(f"🇧🇷 Routing to GABRIELA (Expo Brazil lead)")
         if sender not in gabriela_history:
             gabriela_history[sender] = []
         gabriela_history[sender].append({"role": "user", "content": incoming_msg})
@@ -2095,16 +2095,16 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     audio_url = generate_audio_reply(clean_reply)
                     if audio_url:
                         send_whatsapp_meta(sender, media_url=audio_url)
-                        print(f"\ud83d\udd0a Sending audio reply to {sender}")
+                        print(f"🔊 Sending audio reply to {sender}")
                         return
                 except Exception as tts_err:
                     print(f"\u26a0\ufe0f TTS failed, falling back to text: {tts_err}")
         except Exception as e:
             print(f"\u274c Gabriela error: {e}")
-            clean_reply = "Desculpe, estou com uma instabilidade t\u00e9cnica. Por favor, tente novamente em instantes. \ud83d\ude4f"
+            clean_reply = "Desculpe, estou com uma instabilidade técnica. Por favor, tente novamente em instantes. 🙏"
         send_whatsapp_meta(sender, body=clean_reply)
     else:
-        print(f"\ud83e\udd16 Routing to MAYA (async)")
+        print(f"🤖 Routing to MAYA (async)")
         is_new_sender = sender not in conversation_history
         if is_new_sender:
             conversation_history[sender] = []
