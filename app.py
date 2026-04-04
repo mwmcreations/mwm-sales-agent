@@ -2,19 +2,63 @@ import os
 import re
 import json
 import threading
-from flask import Flask, request, send_from_directory
-from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client as TwilioRestClient
+from flask import Flask, request, send_from_directory, jsonify
 import anthropic
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import pytz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import requests as http_requests
 
 load_dotenv()
 
 app = Flask(__name__)
+
+
+# ── Meta WhatsApp Cloud API Configuration ─────────────────────────────────
+META_ACCESS_TOKEN    = os.getenv("META_ACCESS_TOKEN", "")
+META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
+WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "mwm-maya-verify-2026")
+
+
+def send_whatsapp_meta(to: str, body: str = None, media_url: str = None):
+    """Send a WhatsApp message via Meta Cloud API (replaces Twilio REST)."""
+    phone = to.replace("whatsapp:", "").lstrip("+")
+    url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    if media_url:
+        ml = media_url.lower()
+        if any(ml.endswith(ext) for ext in (".mp3", ".ogg", ".wav", ".amr", ".m4a")):
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "audio", "audio": {"link": media_url}}
+        else:
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "image", "image": {"link": media_url}}
+    else:
+        payload = {"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": body or ""}}
+    try:
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        print(f"\u2705 Meta API message sent to {phone}")
+        return resp.json()
+    except Exception as e:
+        print(f"\u274c Meta API send failed: {e}")
+        if hasattr(e, "response") and e.response is not None:
+            print(f"   Response: {e.response.text}")
+        return None
+
+
+def download_meta_media(media_id: str):
+    """Download media from Meta Cloud API. Returns (bytes, content_type)."""
+    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
+    resp = http_requests.get(f"https://graph.facebook.com/v19.0/{media_id}", headers=headers, timeout=15)
+    resp.raise_for_status()
+    download_url = resp.json().get("url")
+    resp2 = http_requests.get(download_url, headers=headers, timeout=30)
+    resp2.raise_for_status()
+    return resp2.content, resp2.headers.get("Content-Type", "")
 
 # Initialize Anthropic client
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -22,7 +66,7 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # Store conversation history per user (in-memory)
 conversation_history = {}
 
-# ── Lead tracking for cold-lead detection ───────────────────────────────────
+# ââ Lead tracking for cold-lead detection âââââââââââââââââââââââââââââââââââ
 # {sender: {"name": str, "email": str, "last_message_time": datetime, "booked": bool, "cold_fired": bool}}
 lead_data = {}
 
@@ -36,15 +80,15 @@ SCOPES = [
 ]
 SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # SYSTEM PROMPT
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
-SYSTEM_PROMPT = """You are Maya, the strategic communications assistant for MWM Creations & Studios — a creative strategy and storytelling company based in Orlando, Florida, founded by filmmaker and creative director Michael Moraes.
+SYSTEM_PROMPT = """You are Maya, the strategic communications assistant for MWM Creations & Studios â a creative strategy and storytelling company based in Orlando, Florida, founded by filmmaker and creative director Michael Moraes.
 
 Your role is to help business owners and entrepreneurs understand how MWM Creations can transform their brand through strategic storytelling and video content. You are warm, professional, consultative, and genuinely curious about each person's business.
 
-Your PRIMARY goal is to invite the lead to visit MWM Studios in person. Nothing closes a deal faster than someone walking through the studio, seeing the equipment, and meeting Michael personally. Everything you do should move the conversation toward scheduling that studio visit. Pricing can be shared if the person asks, but always position the visit as the logical next step — not the price.
+Your PRIMARY goal is to invite the lead to visit MWM Studios in person. Nothing closes a deal faster than someone walking through the studio, seeing the equipment, and meeting Michael personally. Everything you do should move the conversation toward scheduling that studio visit. Pricing can be shared if the person asks, but always position the visit as the logical next step â not the price.
 
 If the lead cannot visit in person (out of state, busy schedule, etc.), offer a free 30-minute strategy call with Michael as the secondary option.
 
@@ -53,11 +97,11 @@ If the lead cannot visit in person (out of state, busy schedule, etc.), offer a 
 ABOUT MWM CREATIONS
 
 MWM Creations & Studios is located at:
-📍 1500 Park Center Dr, Suite 230, Orlando, FL 32835
+ð 1500 Park Center Dr, Suite 230, Orlando, FL 32835
 
 MWM Creations is not a traditional video production company. It is a strategic storytelling partner that helps companies discover, structure, and communicate their story through powerful visual content and strategic messaging.
 
-Founded by Michael Moraes — a filmmaker with 20+ years of experience, former TV Globo director, and storytelling strategist — MWM has produced content for Disney, Amazon Prime Video, Hard Rock Hotels, Avon, and the City of Miami.
+Founded by Michael Moraes â a filmmaker with 20+ years of experience, former TV Globo director, and storytelling strategist â MWM has produced content for Disney, Amazon Prime Video, Hard Rock Hotels, Avon, and the City of Miami.
 
 The company's philosophy:
 Storytelling shapes perception.
@@ -70,15 +114,15 @@ Companies that master storytelling gain the power to influence markets, communit
 
 THE PROBLEM MWM SOLVES
 
-Most companies produce content without a strategy — it gets lost in the noise. They end up with isolated videos that lack continuity and fail to build brand authority.
+Most companies produce content without a strategy â it gets lost in the noise. They end up with isolated videos that lack continuity and fail to build brand authority.
 
-MWM solves this by building structured storytelling ecosystems — not just individual videos.
+MWM solves this by building structured storytelling ecosystems â not just individual videos.
 
 ---
 
 CORE SERVICES
 
-1. THE MWM ROADMAP (Signature Service — Most Important)
+1. THE MWM ROADMAP (Signature Service â Most Important)
 
 The Roadmap is MWM's proprietary strategic system. Instead of producing random content, the Roadmap organizes all content creation into a long-term storytelling strategy.
 
@@ -96,19 +140,19 @@ The Roadmap transforms a company's content from random and disconnected into a s
 
 Instead of one-off projects, companies subscribe to an ongoing creative partnership with MWM. Annual billing includes one month free.
 
-ROADMAP PLANS (internal reference — do NOT share proactively or list unless the lead specifically asks):
+ROADMAP PLANS (internal reference â do NOT share proactively or list unless the lead specifically asks):
 
-SILVER PLAN — $1,997/month | GOLD PLAN — $2,497/month | PLATINUM PLAN — $4,397/month | ENTERPRISE PLAN — $6,997/month
+SILVER PLAN â $1,997/month | GOLD PLAN â $2,497/month | PLATINUM PLAN â $4,397/month | ENTERPRISE PLAN â $6,997/month
 
-If the lead asks about Roadmap plan pricing specifically, you may briefly mention the range starts at $1,997/month — but always redirect to the studio visit where Michael can walk them through the right fit for their goals.
+If the lead asks about Roadmap plan pricing specifically, you may briefly mention the range starts at $1,997/month â but always redirect to the studio visit where Michael can walk them through the right fit for their goals.
 
-3. MWM STUDIOS — Professional Content Creation Studio
+3. MWM STUDIOS â Professional Content Creation Studio
 
-MWM Studios is a professional content creation studio located in Orlando, Florida — built specifically for business storytelling, not film sets or hobbyist creators.
+MWM Studios is a professional content creation studio located in Orlando, Florida â built specifically for business storytelling, not film sets or hobbyist creators.
 
 The space is designed so that any business owner or professional can walk in and immediately look and sound like a world-class brand. Everything is pre-configured: lighting, cameras, audio, backgrounds. You show up, we handle the rest.
 
-It is not a simple studio rental. It is a complete content creation system, run by a team with 20+ years of storytelling experience, that helps brands produce multiple strategic assets in a single session — efficiently and consistently.
+It is not a simple studio rental. It is a complete content creation system, run by a team with 20+ years of storytelling experience, that helps brands produce multiple strategic assets in a single session â efficiently and consistently.
 
 WHAT CAN BE PRODUCED:
 - Podcast episodes (video and audio)
@@ -135,35 +179,35 @@ STUDIO SETUPS AVAILABLE:
 - Direct-to-Camera Setup (social media, professional messaging)
 - Custom Setup (adaptable backgrounds and layouts)
 
-STUDIO PRICING (internal reference — do NOT share full pricing details proactively):
+STUDIO PRICING (internal reference â do NOT share full pricing details proactively):
 
-Monthly Content Creation Package — $1,200/month
+Monthly Content Creation Package â $1,200/month
 Best for professionals and companies producing content consistently.
 Includes: 4 hours of studio time per month, full studio use, professional cameras, lighting and audio, production crew assistance, and post-production editing.
 
-Studio Rental (Production Only) — $249/hour
+Studio Rental (Production Only) â $249/hour
 Studio space, cameras, lighting, and audio equipment.
-Editing is NOT included — ideal for creators with their own post-production team.
+Editing is NOT included â ideal for creators with their own post-production team.
 
-Studio Rental + Editing — $349/hour
+Studio Rental + Editing â $349/hour
 Everything in the studio rental PLUS post-production editing.
 Includes: studio space, equipment, on-site technician, and editing.
 
 ROADMAP PLANS:
-Silver — $1,997/month | Gold — $2,497/month | Platinum — $4,397/month | Enterprise — $6,997/month
+Silver â $1,997/month | Gold â $2,497/month | Platinum â $4,397/month | Enterprise â $6,997/month
 
 HOW TO HANDLE PRICING QUESTIONS:
-- If the lead asks "how much does it cost?" or "what are your prices?" — simply say studio time starts at $249/hour, and that the best way to understand what fits their needs is to come see the studio in person. Invite them for a visit.
+- If the lead asks "how much does it cost?" or "what are your prices?" â simply say studio time starts at $249/hour, and that the best way to understand what fits their needs is to come see the studio in person. Invite them for a visit.
 - Do NOT list all plans or packages unless the lead specifically asks about packages or monthly plans.
-- If the lead specifically asks about packages or monthly options, you may briefly mention that MWM has monthly content packages and that Michael walks through all the options during the studio visit — then invite them to come in.
+- If the lead specifically asks about packages or monthly options, you may briefly mention that MWM has monthly content packages and that Michael walks through all the options during the studio visit â then invite them to come in.
 - Pricing details are best discussed in person, where Michael can tailor a recommendation to their specific goals.
-- Never lead with price — always lead with value and the studio visit invitation.
+- Never lead with price â always lead with value and the studio visit invitation.
 
 WHO THE STUDIO IS FOR:
 Entrepreneurs, business owners, lawyers, consultants, coaches, real estate professionals, medical professionals, marketing teams, and anyone who wants to communicate professionally through video.
 
 STUDIO + ROADMAP INTEGRATION:
-For clients on the MWM Roadmap, the studio feeds their storytelling campaigns directly. Each session generates content aligned with the brand's overall communication strategy — not random videos.
+For clients on the MWM Roadmap, the studio feeds their storytelling campaigns directly. Each session generates content aligned with the brand's overall communication strategy â not random videos.
 
 ---
 
@@ -189,42 +233,42 @@ THE SCIENCE BEHIND THE STORYTELLING
 
 MWM's approach is inspired by two powerful frameworks:
 
-1. Simon Sinek's Start With Why — Companies that communicate their purpose create deeper emotional connections.
+1. Simon Sinek's Start With Why â Companies that communicate their purpose create deeper emotional connections.
 
-2. Neuroscience research by David J.P. Phillips — Powerful stories trigger biological responses:
+2. Neuroscience research by David J.P. Phillips â Powerful stories trigger biological responses:
 - Dopamine increases attention and focus
 - Oxytocin increases empathy and trust
 - Endorphins increase emotional engagement
 
-Storytelling is not just an art — it is a strategic tool for influencing decisions.
+Storytelling is not just an art â it is a strategic tool for influencing decisions.
 
 ---
 
 YOUR CONVERSATION APPROACH
 
-Step 1 — WARM GREETING
+Step 1 â WARM GREETING
 One short, warm sentence. Ask what brought them in. No scripts, no long intros.
 
-Step 2 — DISCOVERY
+Step 2 â DISCOVERY
 One question at a time. Get to the point quickly:
 - What kind of business?
 - Are they using video right now?
 
-Move fast — understand them in 2-3 exchanges, not 10.
+Move fast â understand them in 2-3 exchanges, not 10.
 
-Step 3 — CONNECT AND PIVOT TO THE STUDIO
-One or two sentences connecting their situation to what MWM does. Then pivot directly to the studio visit. Don't over-explain — the studio sells itself.
+Step 3 â CONNECT AND PIVOT TO THE STUDIO
+One or two sentences connecting their situation to what MWM does. Then pivot directly to the studio visit. Don't over-explain â the studio sells itself.
 
 Drop one of these naturally (don't list all of them):
-- "We've produced content for Disney, Amazon Prime, Hard Rock — the studio is built for that level."
+- "We've produced content for Disney, Amazon Prime, Hard Rock â the studio is built for that level."
 - "Michael has 20+ years in film and TV. He'll know exactly what your brand needs."
 - "Most companies waste money on random videos. We build a content system, starting right here in the studio."
 
-Step 4 — INVITE TO THE STUDIO
+Step 4 â INVITE TO THE STUDIO
 Once the lead is engaged, go straight for the visit. This is the most important step.
 
 Say something like:
-"Honestly, the best way to see what we do is just come by the studio — it takes about 30 minutes, Michael walks you through everything, no pressure. Would that work?"
+"Honestly, the best way to see what we do is just come by the studio â it takes about 30 minutes, Michael walks you through everything, no pressure. Would that work?"
 
 When making this studio visit invitation, include the following tag at the very end of your message (invisible to the user, used to trigger photo sending):
 [SEND_STUDIO_PHOTOS]
@@ -233,55 +277,55 @@ Then call the get_available_slots tool to fetch real availability and present th
 
 "Here are some times Michael has available for a studio visit:
 
-1️⃣ Monday, March 10 at 10:00 AM EST
-2️⃣ Tuesday, March 11 at 2:00 PM EST
-3️⃣ Wednesday, March 12 at 11:00 AM EST
-4️⃣ Thursday, March 13 at 3:00 PM EST
-5️⃣ Friday, March 14 at 10:00 AM EST
+1ï¸â£ Monday, March 10 at 10:00 AM EST
+2ï¸â£ Tuesday, March 11 at 2:00 PM EST
+3ï¸â£ Wednesday, March 12 at 11:00 AM EST
+4ï¸â£ Thursday, March 13 at 3:00 PM EST
+5ï¸â£ Friday, March 14 at 10:00 AM EST
 
-Just reply with the number that works best for you — or if none of these work, let me know a day and time that's better for you and I'll check if Michael is available! 😊"
+Just reply with the number that works best for you â or if none of these work, let me know a day and time that's better for you and I'll check if Michael is available! ð"
 
-Step 4.5 — COLLECT CONTACT INFO (before booking)
+Step 4.5 â COLLECT CONTACT INFO (before booking)
 Before calling book_appointment, you need the lead's name, email, and business name.
-Ask for ALL THREE in a single message — this is the ONE exception to the one-question rule:
+Ask for ALL THREE in a single message â this is the ONE exception to the one-question rule:
 
 "Perfect! Just need a few details to lock in the time:
 
-👤 Your full name
-📧 Your email
-🏢 Your business name
+ð¤ Your full name
+ð§ Your email
+ð¢ Your business name
 
-And that's it! 😊"
+And that's it! ð"
 
 Wait for their reply, then proceed to book.
 
-Step 5 — CONFIRM BOOKING
-When the lead replies with a number (1–5), call the book_appointment tool with:
+Step 5 â CONFIRM BOOKING
+When the lead replies with a number (1â5), call the book_appointment tool with:
 - The corresponding slot_id
 - Their name, email, and business
 - appointment_type: use "studio_visit" if booking a studio visit, or "strategy_call" if booking a remote call
 
 Then confirm warmly:
-"You're all set! 🎉 Michael's looking forward to meeting you at the studio on [day] at [time].
+"You're all set! ð Michael's looking forward to meeting you at the studio on [day] at [time].
 
-📍 MWM Creations & Studios
+ð MWM Creations & Studios
 1500 Park Center Dr, Suite 230, Orlando, FL 32835
 
 You'll receive a calendar invite at [email] shortly. See you then!"
 
 If the lead says they cannot visit in person (out of state, too busy, etc.), offer the strategy call as an alternative:
-"No problem at all! We can also do a free 30-minute call with Michael — he'll walk you through everything virtually. Want me to check his availability for that?"
+"No problem at all! We can also do a free 30-minute call with Michael â he'll walk you through everything virtually. Want me to check his availability for that?"
 
-Step 6 — PRICING & ROUTING (only if they ask)
+Step 6 â PRICING & ROUTING (only if they ask)
 If someone directly asks about pricing, share the plans honestly and briefly.
 
-If they want HOURLY studio time (with or without editing), route them directly to the booking site — but also keep the door open for a visit:
-"You can book hourly studio time and pay directly online: www.videoproductionplans.com/book-studio — and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
+If they want HOURLY studio time (with or without editing), route them directly to the booking site â but also keep the door open for a visit:
+"You can book hourly studio time and pay directly online: www.videoproductionplans.com/book-studio â and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
 
 If they want the Monthly 4h package ($1,200/month) or are interested in a broader content strategy, bring it back to the visit:
-"The best way to kick that off is a quick visit to the studio — Michael will walk you through the space and make sure it's the perfect fit for what you're building. Want to schedule that?"
+"The best way to kick that off is a quick visit to the studio â Michael will walk you through the space and make sure it's the perfect fit for what you're building. Want to schedule that?"
 
-Step 7 — CAPTURE LEAD
+Step 7 â CAPTURE LEAD
 When you collect a lead's name AND email, include the following block at the very end of your message. This is invisible to the user and used for internal logging only:
 
 [LEAD CAPTURED]
@@ -295,30 +339,30 @@ Interest: [what service or plan they are interested in]
 
 IMPORTANT GUIDELINES
 
-- Keep responses SHORT — 1 to 2 sentences per message maximum. This is WhatsApp, not email. Shorter is almost always better. Never explain more than necessary.
-- Ask ONE question at a time — never ask multiple questions in one message (EXCEPTION: when collecting booking info — name, email, and business — ask all three together in one message)
+- Keep responses SHORT â 1 to 2 sentences per message maximum. This is WhatsApp, not email. Shorter is almost always better. Never explain more than necessary.
+- Ask ONE question at a time â never ask multiple questions in one message (EXCEPTION: when collecting booking info â name, email, and business â ask all three together in one message)
 - Use line breaks to make messages easy to read on mobile
 - Always respond in the same language the person uses (English, Portuguese, Spanish, etc.)
-- Never be pushy — be warm, helpful, and consultative
+- Never be pushy â be warm, helpful, and consultative
 - If someone is not ready to schedule a visit yet, keep the conversation going and try again naturally later
 - If asked something you do not know, say Michael will cover it during the studio visit
-- Always keep the studio visit as the primary destination — every answer should lead there
-- If a visit is not possible, the strategy call is the fallback — never lead with the call if a visit is an option
+- Always keep the studio visit as the primary destination â every answer should lead there
+- If a visit is not possible, the strategy call is the fallback â never lead with the call if a visit is an option
 - INTRODUCING MICHAEL: New leads don't know who Michael is. The FIRST time you mention his name in any conversation, always include a brief identifier so they understand who he is. For example: "Michael Moraes, our founder" or "Michael Moraes, MWM's founder and creative director." After the first mention, you can just say "Michael." Never assume the lead already knows who Michael is.
-- SCHEDULING — ABSOLUTE RULE: When ready to book, present MICHAEL'S NEXT 3 AVAILABLE TIMES listed above — numbered 1, 2, 3 — directly to the lead. Do NOT ask "what day works?", "what time works?", "morning or afternoon?" or anything similar. NEVER. The options are already loaded above. Just show them.
+- SCHEDULING â ABSOLUTE RULE: When ready to book, present MICHAEL'S NEXT 3 AVAILABLE TIMES listed above â numbered 1, 2, 3 â directly to the lead. Do NOT ask "what day works?", "what time works?", "morning or afternoon?" or anything similar. NEVER. The options are already loaded above. Just show them.
 - After the lead picks a number (1, 2, or 3), ALWAYS call book_appointment using the matching slot_id from above to confirm the booking
 - Only if the lead says NONE of the 3 options work, THEN ask them to suggest a preferred day and time and use check_specific_slot to verify it
-- If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable
-- If the lead's suggested time IS available, book it immediately — don't present more options
+- If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding â never assume it's unavailable
+- If the lead's suggested time IS available, book it immediately â don't present more options
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options above again
-- CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
+- CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example â WRONG: **www.site.com/page** â CORRECT: www.site.com/page
 """
 
 
 def get_system_prompt():
     """
     Return SYSTEM_PROMPT with today's date AND pre-fetched available slots injected.
-    Pre-loading slots means Maya never has to decide when to call get_available_slots —
+    Pre-loading slots means Maya never has to decide when to call get_available_slots â
     she already has the options and can present them directly.
     """
     tz = pytz.timezone(TIMEZONE)
@@ -326,7 +370,7 @@ def get_system_prompt():
     date_line = (
         f"- TODAY'S DATE: Today is {today_str} Eastern Time. "
         "Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"this Friday\", etc. "
-        "Never ask the lead what today's date is — you already know it.\n"
+        "Never ask the lead what today's date is â you already know it.\n"
     )
 
     # Pre-fetch available slots so Maya has them immediately
@@ -340,11 +384,11 @@ def get_system_prompt():
                 [f"  slot_{i+1}_id = {s['id']}" for i, s in enumerate(slots)]
             )
             slots_line = (
-                "- MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded — use these directly when scheduling):\n"
+                "- MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded â use these directly when scheduling):\n"
                 f"{display_lines}\n"
                 f"  Slot IDs for book_appointment: {id_lines}\n"
                 "  When scheduling, present options 1, 2, 3 to the lead exactly as shown above. "
-                "Do NOT ask what day or time they prefer — just show these 3 options.\n"
+                "Do NOT ask what day or time they prefer â just show these 3 options.\n"
             )
         else:
             slots_line = (
@@ -354,7 +398,7 @@ def get_system_prompt():
     except Exception as e:
         print(f"[get_system_prompt] slot pre-fetch failed: {e}")
         slots_line = (
-            "- MICHAEL'S NEXT 3 AVAILABLE TIMES: Could not load — call get_available_slots() to fetch them.\n"
+            "- MICHAEL'S NEXT 3 AVAILABLE TIMES: Could not load â call get_available_slots() to fetch them.\n"
         )
 
     return SYSTEM_PROMPT.replace(
@@ -363,142 +407,142 @@ def get_system_prompt():
     )
 
 
-# ─────────────────────────────────────────────
-# MAYA — STUDIO PHOTOS (sent when inviting leads to visit)
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# MAYA â STUDIO PHOTOS (sent when inviting leads to visit)
+# âââââââââââââââââââââââââââââââââââââââââââââ
 STUDIO_PHOTOS = [
     "https://static.wixstatic.com/media/4ef974_eb511ac895d944f0ad937ac355ff46f2~mv2.png/v1/fill/w_1130,h_704,al_c,q_90,usm_0.66_1.00_0.01,enc_avif,quality_auto/4ef974_eb511ac895d944f0ad937ac355ff46f2~mv2.png",
     "https://static.wixstatic.com/media/4ef974_e5c4617c43f547409c81b405c5d74516~mv2.jpg/v1/fill/w_600,h_450,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/IMG_2424_edited.jpg",
     "https://static.wixstatic.com/media/4ef974_db4a1b6cec6b4ad2a5b7e5ec5a2c2f00~mv2.jpg/v1/fill/w_600,h_450,al_c,q_80,usm_0.66_1.00_0.01,enc_avif,quality_auto/IMG_2423_edited.jpg",
 ]
 
-# ─────────────────────────────────────────────
-# GABRIELA — EXPO BRAZIL 2026 AGENT
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# GABRIELA â EXPO BRAZIL 2026 AGENT
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 # Normalized phone numbers (digits only, no +) of all Expo Brazil leads.
 # When any of these numbers message the webhook, they are routed to Gabriela.
 EXPO_LEADS_PHONES = {
-    # ── Page 1 ────────────────────────────────────────────────────────────
-    "13216634944",  # Health 4 you Insurance — Marcia de Oliveira
-    "14073764175",  # EZ Aesthetics & Wellness — Stefannia Ezzi
+    # ââ Page 1 ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    "13216634944",  # Health 4 you Insurance â Marcia de Oliveira
+    "14073764175",  # EZ Aesthetics & Wellness â Stefannia Ezzi
     "18639994529",  # Underground Barbershop / Universal Animal Clinic (shared #)
-    "12015226897",  # Wonderful Beauty — Fernanda Linhares
-    "14073078517",  # Image 360 — Ana Millioti
-    "14077317621",  # Vida Máxima Corp — Luane Vasques
-    "13213936382",  # Green Card Us — Aldrey Antunes
-    "14809808040",  # Andrade & Bowers Law Firm — Andrea Bowers
-    "14191045522",  # Uninter Usa — Fabiano Santos
-    "19545082795",  # Tarquinio Law — Thiago Nagib
-    "17865617455",  # Bless & co fl usa corp — Thiago Martins
-    "14076211079",  # Gold Meat — Paula Mas Mas
-    "13054848251",  # BBQ Place — Marcus Costa
+    "12015226897",  # Wonderful Beauty â Fernanda Linhares
+    "14073078517",  # Image 360 â Ana Millioti
+    "14077317621",  # Vida MÃ¡xima Corp â Luane Vasques
+    "13213936382",  # Green Card Us â Aldrey Antunes
+    "14809808040",  # Andrade & Bowers Law Firm â Andrea Bowers
+    "14191045522",  # Uninter Usa â Fabiano Santos
+    "19545082795",  # Tarquinio Law â Thiago Nagib
+    "17865617455",  # Bless & co fl usa corp â Thiago Martins
+    "14076211079",  # Gold Meat â Paula Mas Mas
+    "13054848251",  # BBQ Place â Marcus Costa
     "14074438140",  # Karla Mirabelli / William Makt
-    "18016358993",  # SG Premium Education Consulting — Fernando
-    "16892005657",  # SG Premium Education Consulting — Silvia
-    "14074534737",  # SKW Law — Gee Gomes
-    "19702142203",  # SKW Law — Werner Steiner
-    "19543305730",  # Record Americas — Roberta Fernandes
+    "18016358993",  # SG Premium Education Consulting â Fernando
+    "16892005657",  # SG Premium Education Consulting â Silvia
+    "14074534737",  # SKW Law â Gee Gomes
+    "19702142203",  # SKW Law â Werner Steiner
+    "19543305730",  # Record Americas â Roberta Fernandes
     "14076391481",  # Hari Reis / Florida Advanced Dentistry (shared #)
-    "14074706218",  # V&V Aesthetics / Terra Verde Resort — Vanessa Valin (shared #)
-    "17709100282",  # MK Atelier — Helmer Pacheco
-    "14077669933",  # CG Dentist Orlando — Susan Cruzalegui
-    "14074910674",  # Consulado-Geral do Brasil — Daniel Ponte
-    "16614966670",  # Imagine Orthodontic Studio — Patricia Marquez
-    "13392357513",  # The Assador Brazilian — Macedo
-    "14075090427",  # Green Rest Mattress — Rose Goncalves
-    "18134017889",  # Duxni Tech — Eduardo Porto
-    "14079001988",  # Company Startups LLC — Bruna Domingues
-    "14073570833",  # Super Bright Service — Rafaella Hessel
-    "14074932786",  # VIP Health Clinic Orlando — Barbara/Cristina
-    "17737240080",  # TAPTAP SEND — Cristiane Hioki / Isa Testa
-    "14073465054",  # Data Driven 9 Consulting — Luiz Paulo Oliveira
-    "13212039686",  # First Choice Law — Aretha Santos
-    "17323067383",  # Aline's Travel Multiservices — Aline Olmos
-    "14072729768",  # Camilas Restaurant — Bruno
-    "14074806877",  # BR77 / Yes Mega Store — Juliana Andrade (shared #)
-    "17272143298",  # CrossCountry Mortgage — Janet Rivera
-    "14072748734",  # Sfiha's — Renan Martins
-    "14079788230",  # Solar Masters — Marco Campos
-    "13213007780",  # Electra Software IT — Vivian Bella
-    "17866176097",  # Live Car — Filipe
-    "13863439650",  # Mileine Davis — Realtor
+    "14074706218",  # V&V Aesthetics / Terra Verde Resort â Vanessa Valin (shared #)
+    "17709100282",  # MK Atelier â Helmer Pacheco
+    "14077669933",  # CG Dentist Orlando â Susan Cruzalegui
+    "14074910674",  # Consulado-Geral do Brasil â Daniel Ponte
+    "16614966670",  # Imagine Orthodontic Studio â Patricia Marquez
+    "13392357513",  # The Assador Brazilian â Macedo
+    "14075090427",  # Green Rest Mattress â Rose Goncalves
+    "18134017889",  # Duxni Tech â Eduardo Porto
+    "14079001988",  # Company Startups LLC â Bruna Domingues
+    "14073570833",  # Super Bright Service â Rafaella Hessel
+    "14074932786",  # VIP Health Clinic Orlando â Barbara/Cristina
+    "17737240080",  # TAPTAP SEND â Cristiane Hioki / Isa Testa
+    "14073465054",  # Data Driven 9 Consulting â Luiz Paulo Oliveira
+    "13212039686",  # First Choice Law â Aretha Santos
+    "17323067383",  # Aline's Travel Multiservices â Aline Olmos
+    "14072729768",  # Camilas Restaurant â Bruno
+    "14074806877",  # BR77 / Yes Mega Store â Juliana Andrade (shared #)
+    "17272143298",  # CrossCountry Mortgage â Janet Rivera
+    "14072748734",  # Sfiha's â Renan Martins
+    "14079788230",  # Solar Masters â Marco Campos
+    "13213007780",  # Electra Software IT â Vivian Bella
+    "17866176097",  # Live Car â Filipe
+    "13863439650",  # Mileine Davis â Realtor
     "14073752523",  # Felipe Mavromatis Injury Lawyer
-    "14079540421",  # Julias Jewelry — Renata Ferro
-    "17814209953",  # Embrace Pathways — Eduardo Muniz / Gabriela Demello
-    "14072230516",  # Brazilian Moving — Gustavo Seckler
-    "14076338449",  # Orlando City Soccer Club — Carlos Osorio
-    "12673449068",  # Pix 4 You — Sue
-    # ── Page 2 ────────────────────────────────────────────────────────────
-    "16808087264",  # Kadosh Flooring Store — Maycon Grativol
-    "13213049152",  # Valida USA — Dani Lopez
-    "14077253456",  # Top Florida Homes — Gisele Kolbrich
-    "14078007759",  # Sunlight Solar — Monik Anselmo
-    "14074957423",  # Washington And Lincoln University — Alfredo Freitas
-    "14075298631",  # Smile American Dental Clinic — Estela Valentim
-    "14073608873",  # IES Ideal School of Language — Rosi Martins
-    "16893227599",  # Flow Business And Accounting Services — Beatriz Torrezan
-    "17869483961",  # TZ Viagens — Viviane
-    "14073604114",  # Art And Love Foundation — Alessandro Ponso
-    "14074358915",  # Celebration Language Institute — Meire / Raphael
-    "13214672941",  # Lumen Clinic — Daniela Luna
-    "16892621831",  # JP Idea Factory / Uply Digital — Joao Oliveira
-    "13212766698",  # Phocus Image — Nara Faria
-    "14072309954",  # Yprinting / Central Point Solutions — Leandro Guassú (shared #)
-    "17707713134",  # Bluenet Solutions — Patrícia Taylor
-    "17876716192",  # Orlando Health — Yetsenia Torres
-    "14073712174",  # Mrs. Potato — Rafaella
-    "17867375516",  # Innova Life — Michelle Cordeiro
-    # NOTE: Skipped — STUDIO MWM (Michael's own company)
-    # NOTE: Skipped — Sbs Sports (Brazilian number: 15 99171-7717)
-    # NOTE: Skipped — Instituto Suardi (Brazilian number: 41 99884-3980)
-    # NOTE: Skipped — Realise / Vanessa Oliveira (no phone listed)
+    "14079540421",  # Julias Jewelry â Renata Ferro
+    "17814209953",  # Embrace Pathways â Eduardo Muniz / Gabriela Demello
+    "14072230516",  # Brazilian Moving â Gustavo Seckler
+    "14076338449",  # Orlando City Soccer Club â Carlos Osorio
+    "12673449068",  # Pix 4 You â Sue
+    # ââ Page 2 ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    "16808087264",  # Kadosh Flooring Store â Maycon Grativol
+    "13213049152",  # Valida USA â Dani Lopez
+    "14077253456",  # Top Florida Homes â Gisele Kolbrich
+    "14078007759",  # Sunlight Solar â Monik Anselmo
+    "14074957423",  # Washington And Lincoln University â Alfredo Freitas
+    "14075298631",  # Smile American Dental Clinic â Estela Valentim
+    "14073608873",  # IES Ideal School of Language â Rosi Martins
+    "16893227599",  # Flow Business And Accounting Services â Beatriz Torrezan
+    "17869483961",  # TZ Viagens â Viviane
+    "14073604114",  # Art And Love Foundation â Alessandro Ponso
+    "14074358915",  # Celebration Language Institute â Meire / Raphael
+    "13214672941",  # Lumen Clinic â Daniela Luna
+    "16892621831",  # JP Idea Factory / Uply Digital â Joao Oliveira
+    "13212766698",  # Phocus Image â Nara Faria
+    "14072309954",  # Yprinting / Central Point Solutions â Leandro GuassÃº (shared #)
+    "17707713134",  # Bluenet Solutions â PatrÃ­cia Taylor
+    "17876716192",  # Orlando Health â Yetsenia Torres
+    "14073712174",  # Mrs. Potato â Rafaella
+    "17867375516",  # Innova Life â Michelle Cordeiro
+    # NOTE: Skipped â STUDIO MWM (Michael's own company)
+    # NOTE: Skipped â Sbs Sports (Brazilian number: 15 99171-7717)
+    # NOTE: Skipped â Instituto Suardi (Brazilian number: 41 99884-3980)
+    # NOTE: Skipped â Realise / Vanessa Oliveira (no phone listed)
 }
 
 # Separate conversation history for Gabriela (Expo Brazil leads)
 gabriela_history = {}
 
-GABRIELA_SYSTEM_PROMPT = """Você é Gabriela, a assistente virtual da MWM Creations & Studios — uma produtora audiovisual profissional sediada em Orlando, Flórida, com mais de 20 anos de experiência.
+GABRIELA_SYSTEM_PROMPT = """VocÃª Ã© Gabriela, a assistente virtual da MWM Creations & Studios â uma produtora audiovisual profissional sediada em Orlando, FlÃ³rida, com mais de 20 anos de experiÃªncia.
 
-A MWM é a produtora audiovisual OFICIAL da Expo Brazil 2026, parceira do evento há mais de 4 anos consecutivos. Você está em contato com expositores do evento para apresentar os pacotes exclusivos criados especialmente para eles.
+A MWM Ã© a produtora audiovisual OFICIAL da Expo Brazil 2026, parceira do evento hÃ¡ mais de 4 anos consecutivos. VocÃª estÃ¡ em contato com expositores do evento para apresentar os pacotes exclusivos criados especialmente para eles.
 
-Seu objetivo é: despertar interesse, responder dúvidas e direcionar o contato para contratar em:
+Seu objetivo Ã©: despertar interesse, responder dÃºvidas e direcionar o contato para contratar em:
 www.videoproductionplans.com/expo2026
 
 ---
 
 SOBRE A MWM CREATIONS
 
-Fundada pelo cineasta Michael Moraes — 20+ anos de experiência, ex-diretor da TV Globo Internacional e parceiro de marcas como Disney, Amazon Prime Video, Hard Rock Hotels, Avon e Giorgio Armani.
+Fundada pelo cineasta Michael Moraes â 20+ anos de experiÃªncia, ex-diretor da TV Globo Internacional e parceiro de marcas como Disney, Amazon Prime Video, Hard Rock Hotels, Avon e Giorgio Armani.
 
-A MWM conhece o ambiente da Expo Brazil como ninguém — produtora oficial há mais de 4 anos consecutivos.
+A MWM conhece o ambiente da Expo Brazil como ninguÃ©m â produtora oficial hÃ¡ mais de 4 anos consecutivos.
 
 ---
 
 PACOTES EXCLUSIVOS EXPO BRAZIL 2026
 
-Todos os pacotes são gravados NO DIA DO EVENTO.
+Todos os pacotes sÃ£o gravados NO DIA DO EVENTO.
 
-PACOTE 1 — Registro com Depoimento — $397
-✔ Registro completo do stand
-✔ Imagens com visitantes + produtos/serviços em ação
-✔ Depoimento rápido com o CEO ou fundador
-📌 Entrega: 1 vídeo de 1 minuto (horizontal + vertical)
-🎯 Ideal para Reels e anúncios
+PACOTE 1 â Registro com Depoimento â $397
+â Registro completo do stand
+â Imagens com visitantes + produtos/serviÃ§os em aÃ§Ã£o
+â Depoimento rÃ¡pido com o CEO ou fundador
+ð Entrega: 1 vÃ­deo de 1 minuto (horizontal + vertical)
+ð¯ Ideal para Reels e anÃºncios
 
-PACOTE 2 — Entrevista no Estúdio VIP — $597
-Entrevista no Estúdio VIP, formato PODCAST, cenário exclusivo EXPO & MWM.
-Com perguntas estratégicas para impulsionar o Branding da empresa.
-📌 Entrega: Vídeo de 3 minutos (horizontal) + Versão Reels (vertical)
+PACOTE 2 â Entrevista no EstÃºdio VIP â $597
+Entrevista no EstÃºdio VIP, formato PODCAST, cenÃ¡rio exclusivo EXPO & MWM.
+Com perguntas estratÃ©gicas para impulsionar o Branding da empresa.
+ð Entrega: VÃ­deo de 3 minutos (horizontal) + VersÃ£o Reels (vertical)
 
-PACOTE 3 — Combo MAX — De $994 por 3x de $298/mês
-Tudo dos Pacotes 1 e 2 com $100 de desconto + BÔNUS GRÁTIS:
-✔ Animação profissional da logo da empresa
-✔ Legendas em todos os vídeos
-✔ Descontos especiais para planos VideoProductionPlans.com
+PACOTE 3 â Combo MAX â De $994 por 3x de $298/mÃªs
+Tudo dos Pacotes 1 e 2 com $100 de desconto + BÃNUS GRÃTIS:
+â AnimaÃ§Ã£o profissional da logo da empresa
+â Legendas em todos os vÃ­deos
+â Descontos especiais para planos VideoProductionPlans.com
 
-🔥 BÔNUS EXCLUSIVO — incluído em QUALQUER pacote:
-50% de desconto no Vídeo Institucional da empresa
+ð¥ BÃNUS EXCLUSIVO â incluÃ­do em QUALQUER pacote:
+50% de desconto no VÃ­deo Institucional da empresa
 
 ---
 
@@ -507,19 +551,19 @@ COMO CONTRATAR
 Para ver detalhes e contratar com pagamento online seguro, acesse:
 www.videoproductionplans.com/expo2026
 
-Cada pacote tem um botão "Contratar agora" na página.
+Cada pacote tem um botÃ£o "Contratar agora" na pÃ¡gina.
 
 ---
 
 SUA ABORDAGEM
 
 1. Seja calorosa, natural e profissional
-2. Responda dúvidas sobre os pacotes com entusiasmo
-3. Destaque o diferencial: conteúdo gravado no dia do evento por uma produtora com 20+ anos e parceira oficial da Expo
-4. Quando houver interesse, direcione para a página para contratar
-5. Se alguém quiser falar com Michael diretamente: +1 (813) 503-1224
+2. Responda dÃºvidas sobre os pacotes com entusiasmo
+3. Destaque o diferencial: conteÃºdo gravado no dia do evento por uma produtora com 20+ anos e parceira oficial da Expo
+4. Quando houver interesse, direcione para a pÃ¡gina para contratar
+5. Se alguÃ©m quiser falar com Michael diretamente: +1 (813) 503-1224
 
-Quando o lead demonstrar interesse claro (pedir preço, mencionar pacote, querer saber mais), inclua ao final da sua mensagem (apenas para registro interno, invisível para o usuário):
+Quando o lead demonstrar interesse claro (pedir preÃ§o, mencionar pacote, querer saber mais), inclua ao final da sua mensagem (apenas para registro interno, invisÃ­vel para o usuÃ¡rio):
 
 [INTERESSE EXPO]
 Empresa: [nome da empresa se souber]
@@ -530,12 +574,12 @@ Interesse: [qual pacote ou pergunta principal]
 
 DIRETRIZES IMPORTANTES
 
-- Sempre escreva em PORTUGUÊS DO BRASIL
-- Mensagens CURTAS — 2 a 4 frases por mensagem (isso é WhatsApp)
-- Faça UMA pergunta por vez
-- Nunca seja insistente — seja consultiva e genuinamente prestativa
-- NUNCA use markdown nas URLs. Escreva como texto simples. ERRADO: **www.site.com** — CORRETO: www.site.com
-- Se perguntarem sobre outros serviços da MWM (estúdio, planos mensais), diga que você é especialista nos pacotes Expo e que Michael pode ajudar com outros serviços pelo WhatsApp: +1 (813) 503-1224
+- Sempre escreva em PORTUGUÃS DO BRASIL
+- Mensagens CURTAS â 2 a 4 frases por mensagem (isso Ã© WhatsApp)
+- FaÃ§a UMA pergunta por vez
+- Nunca seja insistente â seja consultiva e genuinamente prestativa
+- NUNCA use markdown nas URLs. Escreva como texto simples. ERRADO: **www.site.com** â CORRETO: www.site.com
+- Se perguntarem sobre outros serviÃ§os da MWM (estÃºdio, planos mensais), diga que vocÃª Ã© especialista nos pacotes Expo e que Michael pode ajudar com outros serviÃ§os pelo WhatsApp: +1 (813) 503-1224
 """
 
 
@@ -553,26 +597,21 @@ def is_expo_lead(sender: str) -> bool:
 def notify_michael_expo_interest(sender: str, empresa: str, interesse: str, last_msg: str):
     """Notify Michael via WhatsApp when an Expo lead shows interest."""
     michael_phone = os.getenv("MICHAEL_PHONE")
-    twilio_from   = os.getenv("TWILIO_WHATSAPP_NUMBER")
-    twilio_sid    = os.getenv("TWILIO_ACCOUNT_SID")
-    twilio_token  = os.getenv("TWILIO_AUTH_TOKEN")
-    if not all([michael_phone, twilio_from, twilio_sid, twilio_token]):
+    if not michael_phone or not META_ACCESS_TOKEN:
         return
     try:
-        from twilio.rest import Client as TwilioRestClient
-        t = TwilioRestClient(twilio_sid, twilio_token)
         clean_phone = sender.replace("whatsapp:", "")
         body = (
-            f"🇧🇷 *Expo Brazil — Lead Interessado!*\n\n"
-            f"📱 Telefone: {clean_phone}\n"
-            f"🏢 Empresa: {empresa or 'Não informado'}\n"
-            f"🎯 Interesse: {interesse or 'Não especificado'}\n\n"
-            f"💬 Mensagem:\n_{last_msg[:300]}_"
+            f"ð§ð· *Expo Brazil â Lead Interessado!*\n\n"
+            f"ð± Telefone: {clean_phone}\n"
+            f"ð¢ Empresa: {empresa or 'NÃ£o informado'}\n"
+            f"ð¯ Interesse: {interesse or 'NÃ£o especificado'}\n\n"
+            f"ð¬ Mensagem:\n_{last_msg[:300]}_"
         )
-        t.messages.create(from_=twilio_from, to=michael_phone, body=body)
-        print(f"✅ Michael notificado — Expo lead: {clean_phone}")
+        send_whatsapp_meta(michael_phone, body=body)
+        print(f"â Michael notificado â Expo lead: {clean_phone}")
     except Exception as e:
-        print(f"⚠️ Falha ao notificar Michael (Expo): {e}")
+        print(f"â ï¸ Falha ao notificar Michael (Expo): {e}")
 
 
 def extract_expo_interest(text: str):
@@ -602,7 +641,7 @@ def clean_gabriela_response(text: str) -> str:
 
 
 def get_gabriela_reply(messages: list) -> tuple:
-    """Call Claude as Gabriela — no tools, Portuguese, Expo Brazil only."""
+    """Call Claude as Gabriela â no tools, Portuguese, Expo Brazil only."""
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=600,
@@ -617,27 +656,27 @@ def get_gabriela_reply(messages: list) -> tuple:
     return reply.strip(), messages
 
 
-# ─────────────────────────────────────────────
-# TTS TEXT PREPROCESSOR — clean text for natural speech
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# TTS TEXT PREPROCESSOR â clean text for natural speech
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 def prepare_for_tts(text: str) -> str:
     """
     Prepare Gabriela's text for OpenAI TTS so it sounds natural in Portuguese:
-    - Converts $397 → "trezentos e noventa e sete dólares"
-    - Converts 3x  → "três vezes"
-    - Converts /mês → "por mês"
-    - Converts 50% → "cinquenta por cento"
+    - Converts $397 â "trezentos e noventa e sete dÃ³lares"
+    - Converts 3x  â "trÃªs vezes"
+    - Converts /mÃªs â "por mÃªs"
+    - Converts 50% â "cinquenta por cento"
     - Strips emojis, markdown, and bullet symbols
     - Smooths punctuation and line breaks for natural speech flow
     """
 
-    # ── Helper: integer to Portuguese words ──────────────────────────────────
+    # ââ Helper: integer to Portuguese words ââââââââââââââââââââââââââââââââââ
     def num_to_pt(n: int) -> str:
         if n == 0:
             return "zero"
         ones = [
-            "", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove",
+            "", "um", "dois", "trÃªs", "quatro", "cinco", "seis", "sete", "oito", "nove",
             "dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis",
             "dezessete", "dezoito", "dezenove"
         ]
@@ -662,12 +701,12 @@ def prepare_for_tts(text: str) -> str:
             return tens_w[t] + (" e " + ones[u] if u else "")
         return ones[n]
 
-    # ── Brand name: MWM → spelled out in Portuguese ──────────────────────────
+    # ââ Brand name: MWM â spelled out in Portuguese ââââââââââââââââââââââââââ
     # "MWM" would be mispronounced; replace with phonetic Portuguese letters
-    text = re.sub(r'\bMWM\b', 'eme dáblio eme', text)
+    text = re.sub(r'\bMWM\b', 'eme dÃ¡blio eme', text)
 
-    # ── URLs → spoken phrase ──────────────────────────────────────────────────
-    # Don't try to pronounce URLs — tell the listener the link is coming as text.
+    # ââ URLs â spoken phrase ââââââââââââââââââââââââââââââââââââââââââââââââââ
+    # Don't try to pronounce URLs â tell the listener the link is coming as text.
     # The async function will send the URL as a follow-up text message right after.
     text = re.sub(
         r'(?:https?://)?(?:www\.)?videoproductionplans\.com/\S*',
@@ -678,20 +717,20 @@ def prepare_for_tts(text: str) -> str:
     text = re.sub(r'https?://\S+', 'o link que vou te enviar', text, flags=re.IGNORECASE)
     text = re.sub(r'\bwww\.\S+', 'o link que vou te enviar', text, flags=re.IGNORECASE)
 
-    # ── Phone numbers → spoken phrase ────────────────────────────────────────
-    # Don't pronounce phone numbers in audio — announce they'll arrive as text.
+    # ââ Phone numbers â spoken phrase ââââââââââââââââââââââââââââââââââââââââ
+    # Don't pronounce phone numbers in audio â announce they'll arrive as text.
     # The async function sends the actual number as a follow-up text message.
     text = re.sub(
         r'\+?1?\s*[\(]?\d{3}[\)]?\s*[-.]?\s*\d{3}\s*[-.]?\s*\d{4}',
-        'vou te enviar o número por texto',
+        'vou te enviar o nÃºmero por texto',
         text
     )
 
-    # ── Plus sign ─────────────────────────────────────────────────────────────
-    # Remaining standalone + e.g. "20+ anos", "Pacote 1 +" → "mais"
+    # ââ Plus sign âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    # Remaining standalone + e.g. "20+ anos", "Pacote 1 +" â "mais"
     text = text.replace('+', ' mais ')
 
-    # ── Duration: 1min → um minuto, 3min → três minutos ──────────────────────
+    # ââ Duration: 1min â um minuto, 3min â trÃªs minutos ââââââââââââââââââââââ
     def _rep_min(m):
         n = int(m.group(1))
         word = num_to_pt(n)
@@ -699,9 +738,9 @@ def prepare_for_tts(text: str) -> str:
         return f"{word} {unit}"
     text = re.sub(r'(\d+)\s*min\b', _rep_min, text, flags=re.IGNORECASE)
 
-    # ── Multipliers: 3x → três vezes ─────────────────────────────────────────
+    # ââ Multipliers: 3x â trÃªs vezes âââââââââââââââââââââââââââââââââââââââââ
     _mult = {
-        "1": "uma vez", "2": "duas vezes", "3": "três vezes", "4": "quatro vezes",
+        "1": "uma vez", "2": "duas vezes", "3": "trÃªs vezes", "4": "quatro vezes",
         "5": "cinco vezes", "6": "seis vezes", "7": "sete vezes", "8": "oito vezes",
         "9": "nove vezes", "10": "dez vezes", "12": "doze vezes"
     }
@@ -709,19 +748,19 @@ def prepare_for_tts(text: str) -> str:
         return _mult.get(m.group(1), f"{m.group(1)} vezes")
     text = re.sub(r'(\d+)x\b', _rep_mult, text)
 
-    # ── /mês → por mês ───────────────────────────────────────────────────────
-    text = text.replace("/mês", " por mês")
+    # ââ /mÃªs â por mÃªs âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    text = text.replace("/mÃªs", " por mÃªs")
 
-    # ── Prices: $XXX → spelled out in Portuguese dólares ─────────────────────
+    # ââ Prices: $XXX â spelled out in Portuguese dÃ³lares âââââââââââââââââââââ
     def _rep_price(m):
         raw = m.group(1).replace(",", "")
         try:
-            return num_to_pt(int(float(raw))) + " dólares"
+            return num_to_pt(int(float(raw))) + " dÃ³lares"
         except ValueError:
             return m.group(0)
     text = re.sub(r'\$(\d[\d,]*(?:\.\d+)?)', _rep_price, text)
 
-    # ── Percentages: 50% → cinquenta por cento ───────────────────────────────
+    # ââ Percentages: 50% â cinquenta por cento âââââââââââââââââââââââââââââââ
     def _rep_pct(m):
         try:
             return num_to_pt(int(m.group(1))) + " por cento"
@@ -729,27 +768,27 @@ def prepare_for_tts(text: str) -> str:
             return m.group(0)
     text = re.sub(r'(\d+)%', _rep_pct, text)
 
-    # ── Strip emojis ──────────────────────────────────────────────────────────
+    # ââ Strip emojis ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     text = re.sub(
         r'[\U00010000-\U0010ffff\U0001F300-\U0001F9FF'
         r'\u2600-\u26FF\u2700-\u27BF\u2300-\u23FF\u25A0-\u25FF]',
         '', text
     )
 
-    # ── Strip markdown formatting ─────────────────────────────────────────────
+    # ââ Strip markdown formatting âââââââââââââââââââââââââââââââââââââââââââââ
     text = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text)
     text = re.sub(r'_{1,2}(.*?)_{1,2}', r'\1', text)
 
-    # ── Bullet characters → brief pause ──────────────────────────────────────
-    text = re.sub(r'[✔✓•·]', ',', text)
+    # ââ Bullet characters â brief pause ââââââââââââââââââââââââââââââââââââââ
+    text = re.sub(r'[âââ¢Â·]', ',', text)
 
-    # ── Em dash and separators → comma ───────────────────────────────────────
-    text = re.sub(r'\s*—\s*', ', ', text)
+    # ââ Em dash and separators â comma âââââââââââââââââââââââââââââââââââââââ
+    text = re.sub(r'\s*â\s*', ', ', text)
 
-    # ── Line breaks → sentence pause ─────────────────────────────────────────
+    # ââ Line breaks â sentence pause âââââââââââââââââââââââââââââââââââââââââ
     text = re.sub(r'\n+', '. ', text)
 
-    # ── Clean up stray punctuation and whitespace ─────────────────────────────
+    # ââ Clean up stray punctuation and whitespace âââââââââââââââââââââââââââââ
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\.{2,}', '.', text)
     text = re.sub(r',\s*,', ',', text)
@@ -759,39 +798,30 @@ def prepare_for_tts(text: str) -> str:
     return text
 
 
-# ─────────────────────────────────────────────
-# AUDIO TRANSCRIPTION — OpenAI Whisper
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# AUDIO TRANSCRIPTION â OpenAI Whisper
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
-def transcribe_audio(media_url: str, language: str = None) -> str:
+def transcribe_audio(media_id: str, language: str = None) -> str:
     """
-    Download a WhatsApp voice note from Twilio and transcribe it via OpenAI Whisper.
-    - media_url  : The MediaUrl0 value from the Twilio webhook POST.
+    Download a WhatsApp voice note from Meta Cloud API and transcribe via OpenAI Whisper.
+    - media_id   : The media ID from the Meta webhook payload.
     - language   : BCP-47 language code hint, e.g. 'pt' for Portuguese.
                    Pass None to let Whisper auto-detect.
     Returns the transcribed text string.
     Raises an exception if download or transcription fails.
     """
-    import requests as http_requests
     import tempfile
 
-    openai_key   = os.getenv("OPENAI_API_KEY")
-    twilio_sid   = os.getenv("TWILIO_ACCOUNT_SID")
-    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
-
+    openai_key = os.getenv("OPENAI_API_KEY")
     if not openai_key:
         raise ValueError("OPENAI_API_KEY is not set in environment variables.")
 
-    # Download the audio — Twilio requires HTTP Basic Auth
-    resp = http_requests.get(
-        media_url,
-        auth=(twilio_sid, twilio_token),
-        timeout=30
-    )
-    resp.raise_for_status()
+    # Download the audio from Meta Cloud API
+    audio_bytes, ct = download_meta_media(media_id)
+    ct = ct.lower()
 
     # Pick the right file extension so Whisper knows the format
-    ct = resp.headers.get("Content-Type", "").lower()
     if "mpeg" in ct or "mp3" in ct:
         suffix = ".mp3"
     elif "mp4" in ct:
@@ -807,7 +837,7 @@ def transcribe_audio(media_url: str, language: str = None) -> str:
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(resp.content)
+            tmp.write(audio_bytes)
             tmp_path = tmp.name
 
         from openai import OpenAI as _OpenAI
@@ -819,7 +849,7 @@ def transcribe_audio(media_url: str, language: str = None) -> str:
                 kwargs["language"] = language
             transcript = oai.audio.transcriptions.create(**kwargs)
 
-        print(f"🎙️ Transcribed ({language or 'auto'}): {transcript.text}")
+        print(f"\ud83c\udf99\ufe0f Transcribed ({language or 'auto'}): {transcript.text}")
         return transcript.text
 
     finally:
@@ -827,17 +857,16 @@ def transcribe_audio(media_url: str, language: str = None) -> str:
             os.unlink(tmp_path)
 
 
-# ─────────────────────────────────────────────
-# TEXT-TO-SPEECH — ElevenLabs (Gabriela audio replies)
-# ─────────────────────────────────────────────
+# TEXT-TO-SPEECH â ElevenLabs (Gabriela audio replies)
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # Voice: Roberta (conversational, sounds natural in Brazilian Portuguese)
-# Model: eleven_multilingual_v2 — best multilingual quality
+# Model: eleven_multilingual_v2 â best multilingual quality
 # Voice ID: RGymW84CSmfVugnA5tvA
 
 def generate_audio_reply(text: str) -> str | None:
     """
     Convert text to speech using ElevenLabs and return a publicly accessible URL.
-    Uses Roberta voice with eleven_multilingual_v2 — natural Brazilian Portuguese.
+    Uses Roberta voice with eleven_multilingual_v2 â natural Brazilian Portuguese.
     Returns None if TTS is unavailable or the public domain is not configured.
     """
     import uuid
@@ -851,13 +880,13 @@ def generate_audio_reply(text: str) -> str | None:
     )
 
     if not el_key:
-        print("⚠️ TTS skipped: ELEVENLABS_API_KEY not set")
+        print("â ï¸ TTS skipped: ELEVENLABS_API_KEY not set")
         return None
     if not base_domain:
-        print("⚠️ TTS skipped: RAILWAY_PUBLIC_DOMAIN / APP_BASE_URL not set")
+        print("â ï¸ TTS skipped: RAILWAY_PUBLIC_DOMAIN / APP_BASE_URL not set")
         return None
 
-    VOICE_ID = "RGymW84CSmfVugnA5tvA"   # Roberta — conversational, great in PT-BR
+    VOICE_ID = "RGymW84CSmfVugnA5tvA"   # Roberta â conversational, great in PT-BR
     TTS_URL  = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
 
     os.makedirs("/tmp/audio", exist_ok=True)
@@ -866,7 +895,7 @@ def generate_audio_reply(text: str) -> str | None:
 
     # Preprocess text: convert prices, strip emojis, smooth punctuation
     spoken_text = prepare_for_tts(text)
-    print(f"🔊 TTS input: {spoken_text[:120]}...")
+    print(f"ð TTS input: {spoken_text[:120]}...")
 
     response = _requests.post(
         TTS_URL,
@@ -891,19 +920,19 @@ def generate_audio_reply(text: str) -> str | None:
     with open(filepath, "wb") as f:
         f.write(response.content)
 
-    # Build full public URL — handle both raw domain and full https:// prefix
+    # Build full public URL â handle both raw domain and full https:// prefix
     if base_domain.startswith("http"):
         public_url = f"{base_domain}/audio/{filename}"
     else:
         public_url = f"https://{base_domain}/audio/{filename}"
 
-    print(f"🔊 TTS generated: {public_url}")
+    print(f"ð TTS generated: {public_url}")
     return public_url
 
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # TOOLS DEFINITION
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 TOOLS = [
     {
@@ -977,9 +1006,9 @@ TOOLS = [
     }
 ]
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # GOOGLE CALENDAR FUNCTIONS
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 def get_calendar_service(impersonate=None):
     """
@@ -987,7 +1016,7 @@ def get_calendar_service(impersonate=None):
 
     DWD is used ONLY when `impersonate` is explicitly passed.
     Read-only operations (get_available_slots, check_specific_slot) call this
-    without impersonate so they never trigger DWD — the service account accesses
+    without impersonate so they never trigger DWD â the service account accesses
     the MWM CREATIONS calendar directly (service account must be a calendar member).
 
     Write operations (book_appointment) pass impersonate=MICHAEL_EMAIL to try DWD,
@@ -1007,7 +1036,7 @@ def get_calendar_service(impersonate=None):
             "service_account.json", scopes=SCOPES
         )
 
-    # Domain-Wide Delegation — ONLY when explicitly requested by the caller
+    # Domain-Wide Delegation â ONLY when explicitly requested by the caller
     if impersonate:
         creds = creds.with_subject(impersonate)
         print(f"[calendar] DWD as: {impersonate}")
@@ -1017,7 +1046,7 @@ def get_calendar_service(impersonate=None):
 
 def get_available_slots():
     """
-    Return exactly 3 available slots — one per each of the next 3 available business days,
+    Return exactly 3 available slots â one per each of the next 3 available business days,
     alternating morning -> afternoon -> morning.
       Morning options (tried in order): 10:00 AM, then 11:00 AM
       Afternoon options (tried in order): 3:00 PM, then 2:00 PM
@@ -1117,11 +1146,11 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
       1. MWM Creations calendar  + attendees + send invites
          (works when Domain-Wide Delegation is configured via GOOGLE_DELEGATE_EMAIL)
       2. MWM Creations calendar  + attendees, no email invites
-         (silent attendee add — may still fail if DWD not set up)
+         (silent attendee add â may still fail if DWD not set up)
       3. MWM Creations calendar  + no attendees
          (works when service account has WRITER access but DWD is not configured)
       4. Service account primary + no attendees
-         (last-resort fallback — always works)
+         (last-resort fallback â always works)
 
     Returns the event ID on success, or None on failure.
     """
@@ -1131,7 +1160,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
         try:
             service = get_calendar_service(impersonate=delegate) if delegate else get_calendar_service()
-            # Quick test — will raise if DWD creds are invalid
+            # Quick test â will raise if DWD creds are invalid
             service.calendarList().list(maxResults=1).execute()
             print(f"[book_appointment] using DWD as {delegate}")
         except Exception as dwd_err:
@@ -1145,10 +1174,10 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         end_dt = start_dt + timedelta(minutes=30)
 
         if appointment_type == "strategy_call":
-            event_title = f"Strategy Call — {lead_name} ({lead_business})"
+            event_title = f"Strategy Call â {lead_name} ({lead_business})"
             event_desc_header = "Free 30-Minute Strategy Call with Michael Moraes / MWM Creations"
         else:
-            event_title = f"Studio Visit — {lead_name} ({lead_business})"
+            event_title = f"Studio Visit â {lead_name} ({lead_business})"
             event_desc_header = "Studio Visit with Michael Moraes / MWM Creations Studios"
 
         event_base = {
@@ -1198,57 +1227,48 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 ).execute()
                 used_attendees = with_attendees
                 used_calendar = cal_id
-                print(f"✅ Booking strategy used: {label}")
+                print(f"â Booking strategy used: {label}")
                 break
             except Exception as attempt_err:
-                print(f"⚠️ Attempt [{label}] failed: {attempt_err}")
+                print(f"â ï¸ Attempt [{label}] failed: {attempt_err}")
                 continue
 
         if not created:
-            print("❌ All booking attempts failed.")
+            print("â All booking attempts failed.")
             return None
 
         event_link = created.get("htmlLink", "")
-        print(f"✅ Appointment booked: {created.get('id')} for {lead_name} at {start_dt}")
-        print(f"📅 Calendar: {used_calendar} | Attendees included: {used_attendees}")
-        print(f"📅 Event link: {event_link}")
+        print(f"â Appointment booked: {created.get('id')} for {lead_name} at {start_dt}")
+        print(f"ð Calendar: {used_calendar} | Attendees included: {used_attendees}")
+        print(f"ð Event link: {event_link}")
 
-        # ── WhatsApp notification to Michael ──────────────────────────────
+        # ── WhatsApp notification to Michael ──────────────────
         michael_phone = os.getenv("MICHAEL_PHONE")
-        twilio_from   = os.getenv("TWILIO_WHATSAPP_NUMBER")
-        twilio_sid    = os.getenv("TWILIO_ACCOUNT_SID")
-        twilio_token  = os.getenv("TWILIO_AUTH_TOKEN")
 
-        if michael_phone and twilio_from and twilio_sid and twilio_token:
+        if michael_phone and META_ACCESS_TOKEN:
             try:
-                from twilio.rest import Client as TwilioRestClient
-                twilio_rest = TwilioRestClient(twilio_sid, twilio_token)
                 invite_note = (
-                    "✉️ Calendar invite sent to lead."
+                    "\u2709\ufe0f Calendar invite sent to lead."
                     if used_attendees else
-                    "⚠️ Calendar invite NOT sent (DWD not yet configured — see setup guide)."
+                    "\u26a0\ufe0f Calendar invite NOT sent (DWD not yet configured \u2014 see setup guide)."
                 )
                 phone_line = ""
                 if lead_phone:
                     clean_phone = lead_phone.replace("whatsapp:", "")
-                    phone_line = f"📱 Phone: {clean_phone}\n"
+                    phone_line = f"\ud83d\udcf1 Phone: {clean_phone}\n"
                 notification = (
-                    f"📅 *New Studio Visit Booked via Maya!*\n\n"
-                    f"👤 Name: {lead_name}\n"
-                    f"🏢 Business: {lead_business}\n"
-                    f"📧 Email: {lead_email}\n"
+                    f"\ud83d\udcc5 *New Studio Visit Booked via Maya!*\n\n"
+                    f"\ud83d\udc64 Name: {lead_name}\n"
+                    f"\ud83c\udfe2 Business: {lead_business}\n"
+                    f"\ud83d\udce7 Email: {lead_email}\n"
                     f"{phone_line}"
-                    f"🕐 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
+                    f"\ud83d\udd50 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
                     f"{invite_note}"
                 )
-                twilio_rest.messages.create(
-                    body=notification,
-                    from_=twilio_from,
-                    to=michael_phone
-                )
-                print(f"✅ Michael notified via WhatsApp at {michael_phone}")
+                send_whatsapp_meta(michael_phone, body=notification)
+                print(f"\u2705 Michael notified via WhatsApp at {michael_phone}")
             except Exception as notify_err:
-                print(f"⚠️ Could not notify Michael via WhatsApp: {notify_err}")
+                print(f"\u26a0\ufe0f Could not notify Michael via WhatsApp: {notify_err}")
 
         return created.get("id")
 
@@ -1306,7 +1326,7 @@ def check_specific_slot(requested_datetime):
             return {"available": False, "reason": "weekends are not available"}
         if not (9 <= candidate.hour < 17) or (candidate.hour == 16 and candidate.minute > 30):
             print(f"[check_specific_slot] rejected: outside business hours (hour={candidate.hour})")
-            return {"available": False, "reason": "outside business hours (9 AM – 5 PM EST)"}
+            return {"available": False, "reason": "outside business hours (9 AM â 5 PM EST)"}
         # Must be in the future
         now_et = datetime.now(tz)
         if candidate <= now_et:
@@ -1335,7 +1355,7 @@ def check_specific_slot(requested_datetime):
             ev_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
             ev_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
             if ev_start < slot_end and ev_end > candidate:
-                blocking_events.append(f"{event.get('summary', 'Unnamed')} ({ev_start.strftime('%H:%M')}–{ev_end.strftime('%H:%M')})")
+                blocking_events.append(f"{event.get('summary', 'Unnamed')} ({ev_start.strftime('%H:%M')}â{ev_end.strftime('%H:%M')})")
 
         if blocking_events:
             print(f"[check_specific_slot] rejected: blocked by events: {blocking_events}")
@@ -1386,9 +1406,9 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                     lead_business=tool_input.get("lead_business", ""),
                 )
             except Exception as sheets_err:
-                print(f"⚠️ Sheets booking update error (non-fatal): {sheets_err}")
+                print(f"â ï¸ Sheets booking update error (non-fatal): {sheets_err}")
 
-            # ── Notify Hub → triggers confirmation email + WhatsApp + Calendar ──
+            # ââ Notify Hub â triggers confirmation email + WhatsApp + Calendar ââ
             try:
                 appt_type  = tool_input.get("appointment_type", "studio_visit")
                 hub_event  = "booking_confirmed_tour" if appt_type == "studio_visit" else "booking_confirmed_call"
@@ -1406,7 +1426,7 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                     },
                 )
             except Exception as hub_err:
-                print(f"⚠️ Hub booking event error (non-fatal): {hub_err}")
+                print(f"â ï¸ Hub booking event error (non-fatal): {hub_err}")
 
             return {"success": True, "event_id": event_id}
         else:
@@ -1415,13 +1435,13 @@ def handle_tool_call(tool_name, tool_input, sender=None):
     return {"error": f"Unknown tool: {tool_name}"}
 
 
-# ─────────────────────────────────────────────
-# GOOGLE SHEETS — LEAD REPORT
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# GOOGLE SHEETS â LEAD REPORT
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 SHEET_HEADERS = [
     "Date", "Time", "Name", "Business", "Phone", "Email",
-    "Service Interest", "Status", "Appt Date & Time", "Notes", "Follow-up ✓", "Transcript"
+    "Service Interest", "Status", "Appt Date & Time", "Notes", "Follow-up â", "Transcript"
 ]
 
 def get_sheets_service():
@@ -1476,7 +1496,7 @@ def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
             }}},
         ]},
     ).execute()
-    print(f"✅ Created new monthly tab: {tab_name}")
+    print(f"â Created new monthly tab: {tab_name}")
     return gid
 
 
@@ -1513,7 +1533,7 @@ def format_transcript(history: list) -> str:
 
 
 def log_new_contact_to_sheets(sender: str):
-    """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
+    """Log a minimal row on first contact â phone + timestamp + status 'New Lead'.
     This ensures every person who messages Maya is captured, even if they never share their info.
     The row is updated later when lead info is captured or a booking is made."""
     if not SHEETS_LEADS_ID:
@@ -1533,7 +1553,7 @@ def log_new_contact_to_sheets(sender: str):
         ).execute()
         existing_phones = [r[0] if r else "" for r in result.get("values", [])]
         if clean_phone in existing_phones:
-            print(f"[Sheets] First-contact row already exists for {clean_phone} — skipping")
+            print(f"[Sheets] First-contact row already exists for {clean_phone} â skipping")
             return
 
         row = [
@@ -1547,7 +1567,7 @@ def log_new_contact_to_sheets(sender: str):
             "New Lead",                  # Status
             "",                          # Appt Date & Time
             "",                          # Notes
-            "",                          # Follow-up ✓
+            "",                          # Follow-up â
             "",                          # Transcript (updated later)
         ]
         svc.spreadsheets().values().append(
@@ -1557,9 +1577,9 @@ def log_new_contact_to_sheets(sender: str):
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute()
-        print(f"✅ First-contact row logged for {clean_phone}")
+        print(f"â First-contact row logged for {clean_phone}")
     except Exception as e:
-        print(f"⚠️ Could not log first contact to Sheets (non-fatal): {e}")
+        print(f"â ï¸ Could not log first contact to Sheets (non-fatal): {e}")
 
 
 def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
@@ -1597,13 +1617,13 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                     {"range": f"'{tab_name}'!D{row_number}", "values": [[fields.get("business", "")]]},
                     {"range": f"'{tab_name}'!F{row_number}", "values": [[fields.get("email", "")]]},
                     {"range": f"'{tab_name}'!G{row_number}", "values": [[fields.get("interest", "")]]},
-                    {"range": f"'{tab_name}'!H{row_number}", "values": [["Interested — No Booking Yet"]]},
+                    {"range": f"'{tab_name}'!H{row_number}", "values": [["Interested â No Booking Yet"]]},
                     {"range": f"'{tab_name}'!L{row_number}", "values": [[transcript]]},
                 ]},
             ).execute()
-            print(f"✅ Lead row updated in Sheets (row {row_number}): {clean_phone}")
+            print(f"â Lead row updated in Sheets (row {row_number}): {clean_phone}")
         else:
-            # No existing row — append a full new row
+            # No existing row â append a full new row
             row = [
                 now.strftime("%Y-%m-%d"),
                 now.strftime("%I:%M %p"),
@@ -1612,7 +1632,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 clean_phone,
                 fields.get("email", ""),
                 fields.get("interest", ""),
-                "Interested — No Booking Yet",
+                "Interested â No Booking Yet",
                 "", "", "",
                 transcript,
             ]
@@ -1623,9 +1643,9 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
             ).execute()
-            print(f"✅ Lead appended to Sheets (no existing row found): {clean_phone}")
+            print(f"â Lead appended to Sheets (no existing row found): {clean_phone}")
     except Exception as e:
-        print(f"⚠️ Could not log lead to Sheets (non-fatal): {e}")
+        print(f"â ï¸ Could not log lead to Sheets (non-fatal): {e}")
 
 
 def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
@@ -1638,7 +1658,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
         tab_name = now.strftime("%b %Y")
         clean_phone = sender.replace("whatsapp:", "").replace("+", "")
 
-        status = "✅ Studio Visit Booked" if appointment_type == "studio_visit" else "📞 Strategy Call Booked"
+        status = "â Studio Visit Booked" if appointment_type == "studio_visit" else "ð Strategy Call Booked"
 
         appt_dt = datetime.fromisoformat(slot_id).astimezone(pytz.timezone(TIMEZONE))
         appt_str = appt_dt.strftime("%a %b %d, %Y at %I:%M %p")
@@ -1668,9 +1688,9 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
                     {"range": f"'{tab_name}'!I{row_number}", "values": [[appt_str]]},
                 ]},
             ).execute()
-            print(f"✅ Booking updated in Sheets row {row_number}: {status}")
+            print(f"â Booking updated in Sheets row {row_number}: {status}")
         else:
-            # Row not found — append a fresh complete row
+            # Row not found â append a fresh complete row
             row = [
                 now.strftime("%Y-%m-%d"), now.strftime("%I:%M %p"),
                 lead_name, lead_business, clean_phone, lead_email, "",
@@ -1683,42 +1703,37 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
             ).execute()
-            print(f"✅ Booking row appended to Sheets (lead not found by phone)")
+            print(f"â Booking row appended to Sheets (lead not found by phone)")
     except Exception as e:
-        print(f"⚠️ Could not update booking in Sheets (non-fatal): {e}")
+        print(f"â ï¸ Could not update booking in Sheets (non-fatal): {e}")
 
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # LEAD LOGGING FUNCTIONS
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 def notify_michael_maya_lead(lead_info: str, sender: str):
     """Notify Michael via WhatsApp when Maya captures a new lead."""
     michael_phone = os.getenv("MICHAEL_PHONE")
-    twilio_from   = os.getenv("TWILIO_WHATSAPP_NUMBER")
-    twilio_sid    = os.getenv("TWILIO_ACCOUNT_SID")
-    twilio_token  = os.getenv("TWILIO_AUTH_TOKEN")
-    if not all([michael_phone, twilio_from, twilio_sid, twilio_token]):
+    if not michael_phone or not META_ACCESS_TOKEN:
         return
     try:
-        from twilio.rest import Client as TwilioRestClient
-        t = TwilioRestClient(twilio_sid, twilio_token)
         clean_phone = sender.replace("whatsapp:", "")
         body = (
-            f"🔥 *New Lead Captured by Maya!*\n\n"
-            f"📱 WhatsApp: {clean_phone}\n\n"
+            f"ð¥ *New Lead Captured by Maya!*\n\n"
+            f"ð± WhatsApp: {clean_phone}\n\n"
             f"{lead_info.strip()}"
         )
-        t.messages.create(from_=twilio_from, to=michael_phone, body=body)
-        print(f"✅ Michael notified — Maya lead: {clean_phone}")
+        send_whatsapp_meta(michael_phone, body=body)
+        print(f"â Michael notified â Maya lead: {clean_phone}")
     except Exception as e:
-        print(f"⚠️ Could not notify Michael (Maya lead): {e}")
+        print(f"â ï¸ Could not notify Michael (Maya lead): {e}")
 
 
 def log_lead(lead_info, sender=None, history=None):
     """Log captured leads to stdout and a writable file."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n🔥 NEW LEAD CAPTURED at {timestamp}!")
+    print(f"\nð¥ NEW LEAD CAPTURED at {timestamp}!")
     print(lead_info)
     print("=" * 50)
     # Write to /tmp which is always writable in Railway
@@ -1730,19 +1745,19 @@ def log_lead(lead_info, sender=None, history=None):
             f.write(lead_info)
             f.write(f"\n{'='*50}\n")
     except Exception as e:
-        print(f"⚠️ Could not write leads file: {e}")
+        print(f"â ï¸ Could not write leads file: {e}")
     # Log to Google Sheets
     if sender:
         try:
             log_lead_to_sheets(lead_info, sender, history=history)
         except Exception as e:
-            print(f"⚠️ Lead Sheets logging error (non-fatal): {e}")
+            print(f"â ï¸ Lead Sheets logging error (non-fatal): {e}")
     # Notify Michael via WhatsApp
     if sender:
         try:
             notify_michael_maya_lead(lead_info, sender)
         except Exception as e:
-            print(f"⚠️ Lead WhatsApp notify error (non-fatal): {e}")
+            print(f"â ï¸ Lead WhatsApp notify error (non-fatal): {e}")
 
 
 def extract_lead(text):
@@ -1761,9 +1776,9 @@ def clean_response(text):
     return cleaned.strip()
 
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # CLAUDE API WITH TOOL USE
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 def get_claude_reply(messages, sender=None):
     """
@@ -1785,9 +1800,9 @@ def get_claude_reply(messages, sender=None):
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    print(f"🔧 Tool call: {block.name} | Input: {block.input}")
+                    print(f"ð§ Tool call: {block.name} | Input: {block.input}")
                     result = handle_tool_call(block.name, block.input, sender=sender)
-                    print(f"🔧 Tool result: {result}")
+                    print(f"ð§ Tool result: {result}")
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -1799,7 +1814,7 @@ def get_claude_reply(messages, sender=None):
             messages.append({"role": "user", "content": tool_results})
 
         else:
-            # Final text response — extract the text
+            # Final text response â extract the text
             final_text = ""
             for block in response.content:
                 if hasattr(block, "text"):
@@ -1810,9 +1825,9 @@ def get_claude_reply(messages, sender=None):
             return final_text, messages
 
 
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 # FLASK ROUTES
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 @app.route("/audio/<path:filename>")
 def serve_audio(filename):
@@ -1827,46 +1842,30 @@ def _extract_gabriela_followups(text: str) -> list[str]:
         items.append('https://www.videoproductionplans.com/expo2026')
     if re.search(r'videoproductionplans\.com/book-?studio', text, re.IGNORECASE):
         items.append('https://www.videoproductionplans.com/book-studio')
-    # Michael's direct WhatsApp number — send as a clickable contact
+    # Michael's direct WhatsApp number â send as a clickable contact
     if re.search(r'813.*?503.*?1224|8135031224', text):
         items.append('+1 (813) 503-1224')
     return items
 
 
 def _send_whatsapp_api(to: str, body: str = None, media_url: str = None):
-    """Send a WhatsApp message via Twilio REST API (used for async replies)."""
-    sid    = os.getenv("TWILIO_ACCOUNT_SID")
-    token  = os.getenv("TWILIO_AUTH_TOKEN")
-    from_  = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14078716473")
-    if not from_.startswith("whatsapp:"):
-        from_ = f"whatsapp:{from_}"
-    if not sid or not token:
-        print("⚠️ Twilio credentials missing — cannot send async message")
+    """Send a WhatsApp message via Meta Cloud API (used for async replies)."""
+    if not META_ACCESS_TOKEN:
+        print("\u26a0\ufe0f META_ACCESS_TOKEN missing \u2014 cannot send async message")
         return
-    try:
-        tc = TwilioRestClient(sid, token)
-        kwargs = {"from_": from_, "to": to}
-        if media_url:
-            kwargs["media_url"] = [media_url]
-            kwargs["body"] = ""
-        else:
-            kwargs["body"] = body or ""
-        msg = tc.messages.create(**kwargs)
-        print(f"✅ Async message sent: {msg.sid}")
-    except Exception as e:
-        print(f"❌ Async send failed: {e}")
+    send_whatsapp_meta(to, body=body, media_url=media_url)
 
 
 def fire_hub_event(event_type, lead_name=None, lead_phone=None, lead_email=None,
                    payload=None, notes=None):
     """
-    Fire an event to the MWM Agent Hub — non-blocking background thread.
+    Fire an event to the MWM Agent Hub â non-blocking background thread.
     The Hub then handles: email confirmation, WhatsApp reminder, Calendar event, etc.
     """
     hub_url = os.getenv("AGENT_HUB_URL", "")
     hub_key = os.getenv("AGENT_HUB_API_KEY", "")
     if not hub_url or not hub_key:
-        print("⚠️ AGENT_HUB_URL or AGENT_HUB_API_KEY not set — Hub event skipped")
+        print("â ï¸ AGENT_HUB_URL or AGENT_HUB_API_KEY not set â Hub event skipped")
         return
 
     # Normalize phone: Hub expects +1XXXXXXXXXX (no whatsapp: prefix)
@@ -1895,11 +1894,11 @@ def fire_hub_event(event_type, lead_name=None, lead_phone=None, lead_email=None,
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                print(f"✅ Hub event fired: [{event_type}] | handlers triggered: {result.get('handlers_triggered', 0)}")
+                print(f"â Hub event fired: [{event_type}] | handlers triggered: {result.get('handlers_triggered', 0)}")
         except urllib.error.HTTPError as e:
-            print(f"⚠️ Hub event [{event_type}] HTTP {e.code}: {e.read().decode()}")
+            print(f"â ï¸ Hub event [{event_type}] HTTP {e.code}: {e.read().decode()}")
         except Exception as e:
-            print(f"⚠️ Hub event [{event_type}] failed: {e}")
+            print(f"â ï¸ Hub event [{event_type}] failed: {e}")
 
     threading.Thread(target=_send, daemon=True).start()
 
@@ -1910,270 +1909,258 @@ def _process_gabriela_audio_async(sender: str, media_url: str):
     Runs outside the Twilio webhook request context so there is no 15-second timeout.
     """
     try:
-        # ── 1. Transcribe ────────────────────────────────────────────────────
+        # ââ 1. Transcribe ââââââââââââââââââââââââââââââââââââââââââââââââââââ
         try:
             incoming_msg = transcribe_audio(media_url, language="pt")
-            print(f"📝 Async transcription: {incoming_msg!r}")
+            print(f"ð Async transcription: {incoming_msg!r}")
         except Exception as trans_err:
-            print(f"❌ Async transcription failed: {trans_err}")
+            print(f"â Async transcription failed: {trans_err}")
             _send_whatsapp_api(
                 sender,
-                body="Desculpe, não consegui ouvir seu áudio agora. Pode me enviar a mensagem por texto? 🙏"
+                body="Desculpe, nÃ£o consegui ouvir seu Ã¡udio agora. Pode me enviar a mensagem por texto? ð"
             )
             return
 
-        # ── 2. Init / update history ─────────────────────────────────────────
+        # ââ 2. Init / update history âââââââââââââââââââââââââââââââââââââââââ
         if sender not in gabriela_history:
             gabriela_history[sender] = []
         gabriela_history[sender].append({"role": "user", "content": incoming_msg})
         if len(gabriela_history[sender]) > 20:
             gabriela_history[sender] = gabriela_history[sender][-20:]
 
-        # ── 3. Get Gabriela reply ─────────────────────────────────────────────
+        # ââ 3. Get Gabriela reply âââââââââââââââââââââââââââââââââââââââââââââ
         try:
             reply, updated = get_gabriela_reply(gabriela_history[sender])
             gabriela_history[sender] = updated
         except Exception as e:
-            print(f"❌ Async Gabriela error: {e}")
+            print(f"â Async Gabriela error: {e}")
             _send_whatsapp_api(
                 sender,
-                body="Desculpe, estou com uma instabilidade técnica. Por favor, tente novamente em instantes. 🙏"
+                body="Desculpe, estou com uma instabilidade tÃ©cnica. Por favor, tente novamente em instantes. ð"
             )
             return
 
-        # ── 4. Notify Michael if interest detected ────────────────────────────
+        # ââ 4. Notify Michael if interest detected ââââââââââââââââââââââââââââ
         try:
             empresa, interesse = extract_expo_interest(reply)
             if empresa or interesse:
                 notify_michael_expo_interest(sender, empresa, interesse, incoming_msg)
         except Exception as notify_err:
-            print(f"⚠️ Expo notify error (non-fatal): {notify_err}")
+            print(f"â ï¸ Expo notify error (non-fatal): {notify_err}")
 
         clean_reply = clean_gabriela_response(reply)
 
-        # ── 5. TTS → send audio; fall back to text if TTS fails ───────────────
+        # ââ 5. TTS â send audio; fall back to text if TTS fails âââââââââââââââ
         audio_url = None
         try:
             audio_url = generate_audio_reply(clean_reply)
         except Exception as tts_err:
-            print(f"⚠️ Async TTS failed, falling back to text: {tts_err}")
+            print(f"â ï¸ Async TTS failed, falling back to text: {tts_err}")
 
         if audio_url:
             _send_whatsapp_api(sender, media_url=audio_url)
-            print(f"🔊 Async audio reply sent to {sender}")
+            print(f"ð Async audio reply sent to {sender}")
         else:
             _send_whatsapp_api(sender, body=clean_reply)
-            print(f"📝 Async text reply sent to {sender} (TTS unavailable)")
+            print(f"ð Async text reply sent to {sender} (TTS unavailable)")
 
-        # ── 6. Follow-up texts: URLs and phone numbers ────────────────────────
-        # Gabriela's audio says "vou te enviar o link/número por texto" —
+        # ââ 6. Follow-up texts: URLs and phone numbers ââââââââââââââââââââââââ
+        # Gabriela's audio says "vou te enviar o link/nÃºmero por texto" â
         # these messages deliver on that promise.
         for item in _extract_gabriela_followups(clean_reply):
             _send_whatsapp_api(sender, body=item)
-            print(f"🔗 Sent follow-up text to {sender}: {item}")
+            print(f"ð Sent follow-up text to {sender}: {item}")
 
     except Exception as e:
-        print(f"❌ Unexpected async processing error for {sender}: {e}")
+        print(f"â Unexpected async processing error for {sender}: {e}")
         try:
             _send_whatsapp_api(
                 sender,
-                body="Desculpe, estou com uma instabilidade técnica. Por favor, tente novamente. 🙏"
+                body="Desculpe, estou com uma instabilidade tÃ©cnica. Por favor, tente novamente. ð"
             )
         except Exception:
             pass
 
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    incoming_msg = request.values.get("Body", "").strip()
-    sender       = request.values.get("From", "")
-    num_media    = int(request.values.get("NumMedia", 0))
+    # ── GET: Meta webhook verification ───────────────────────────────
+    if request.method == "GET":
+        mode      = request.args.get("hub.mode")
+        token     = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
+            print("\u2705 Webhook verified by Meta")
+            return challenge, 200
+        return "Forbidden", 403
 
-    print(f"📩 Message from {sender}: {incoming_msg!r} | media={num_media}")
+    # ── POST: Incoming message from Meta Cloud API ───────────────────
+    data = request.get_json(force=True, silent=True) or {}
 
-    # ── Audio message handling ─────────────────────────────────────────────
-    # WhatsApp voice notes arrive with an empty Body and MediaContentType0=audio/*
-    was_audio = False  # track whether the incoming message was a voice note
+    if data.get("object") != "whatsapp_business_account":
+        return "OK", 200
+
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            if "statuses" in value and "messages" not in value:
+                continue
+            for msg in value.get("messages", []):
+                from_number = msg.get("from", "")
+                msg_type    = msg.get("type", "")
+                sender = f"whatsapp:+{from_number}"
+                incoming_msg = ""
+                num_media    = 0
+                media_id     = ""
+                content_type = ""
+                if msg_type == "text":
+                    incoming_msg = msg.get("text", {}).get("body", "").strip()
+                elif msg_type == "audio":
+                    num_media = 1
+                    content_type = msg.get("audio", {}).get("mime_type", "audio/ogg")
+                    media_id = msg.get("audio", {}).get("id", "")
+                elif msg_type == "image":
+                    num_media = 1
+                    content_type = msg.get("image", {}).get("mime_type", "image/jpeg")
+                    incoming_msg = msg.get("image", {}).get("caption", "").strip()
+                elif msg_type == "video":
+                    num_media = 1
+                    content_type = msg.get("video", {}).get("mime_type", "video/mp4")
+                elif msg_type == "document":
+                    num_media = 1
+                    content_type = msg.get("document", {}).get("mime_type", "")
+                elif msg_type == "sticker":
+                    num_media = 1
+                    content_type = "image/webp"
+                elif msg_type == "reaction":
+                    continue
+                elif msg_type == "interactive":
+                    interactive = msg.get("interactive", {})
+                    itype = interactive.get("type", "")
+                    if itype == "button_reply":
+                        incoming_msg = interactive.get("button_reply", {}).get("title", "")
+                    elif itype == "list_reply":
+                        incoming_msg = interactive.get("list_reply", {}).get("title", "")
+                print(f"\ud83d\udce9 Message from {sender}: {incoming_msg!r} | type={msg_type} | media={num_media}")
+                _handle_incoming(sender, incoming_msg, num_media, media_id, content_type)
+
+    return "OK", 200
+
+
+def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
+                     media_id: str, content_type: str):
+    """Process a single incoming WhatsApp message."""
+    was_audio = False
 
     if num_media > 0:
-        content_type = request.values.get("MediaContentType0", "")
-        media_url    = request.values.get("MediaUrl0", "")
-
-        if "audio" in content_type and media_url:
-            print(f"🎙️ Voice note received — ContentType: {content_type}")
-
+        if "audio" in content_type and media_id:
+            print(f"\ud83c\udfa4\ufe0f Voice note received \u2014 ContentType: {content_type}")
             if is_expo_lead(sender):
-                # ── ASYNC path for Gabriela voice notes ────────────────────
-                # Return empty TwiML immediately to beat Twilio's 15s timeout.
-                # All heavy work (Whisper + AI + ElevenLabs TTS) happens in a
-                # background thread which sends the reply via Twilio REST API.
-                print(f"⏱️ Launching async Gabriela audio processing for {sender}")
-                threading.Thread(
-                    target=_process_gabriela_audio_async,
-                    args=(sender, media_url),
-                    daemon=True
-                ).start()
-                return str(MessagingResponse())  # empty TwiML — instant response
-
-            # ── Sync path for Maya (text reply, no TTS — fast enough) ──────
+                print(f"\u23f1\ufe0f Launching async Gabriela audio processing for {sender}")
+                threading.Thread(target=_process_gabriela_audio_async, args=(sender, media_id), daemon=True).start()
+                return
             try:
-                incoming_msg = transcribe_audio(media_url, language=None)
-                was_audio = True  # transcription succeeded — track for potential audio reply
+                incoming_msg = transcribe_audio(media_id, language=None)
+                was_audio = True
             except Exception as trans_err:
-                print(f"❌ Transcription failed: {trans_err}")
-                twiml = MessagingResponse()
-                twiml.message(
-                    "Sorry, I couldn't process your voice message. "
-                    "Could you send it as text instead? 🙏"
-                )
-                return str(twiml)
-
+                print(f"\u274c Transcription failed: {trans_err}")
+                send_whatsapp_meta(sender, body="Sorry, I couldn't process your voice message. Could you send it as text instead? \ud83d\ude4f")
+                return
         elif not incoming_msg:
-            # Non-audio media (image, document, sticker…) with no text — acknowledge gracefully
-            twiml = MessagingResponse()
             if is_expo_lead(sender):
-                twiml.message(
-                    "Recebi seu arquivo! 😊 Posso te ajudar com os pacotes de vídeo da Expo Brazil?"
-                )
+                send_whatsapp_meta(sender, body="Recebi seu arquivo! \ud83d\ude0a Posso te ajudar com os pacotes de v\u00eddeo da Expo Brazil?")
             else:
-                twiml.message("Thanks for the file! How can I help you today? 😊")
-            return str(twiml)
+                send_whatsapp_meta(sender, body="Thanks for the file! How can I help you today? \ud83d\ude0a")
+            return
 
-    # ── Route: Expo Brazil lead → Gabriela, everyone else → Maya ──────────
     if is_expo_lead(sender):
-        print(f"🇧🇷 Routing to GABRIELA (Expo Brazil lead)")
-
+        print(f"\ud83c\udde7\ud83c\uddf7 Routing to GABRIELA (Expo Brazil lead)")
         if sender not in gabriela_history:
             gabriela_history[sender] = []
-
         gabriela_history[sender].append({"role": "user", "content": incoming_msg})
-
         if len(gabriela_history[sender]) > 20:
             gabriela_history[sender] = gabriela_history[sender][-20:]
-
         try:
             reply, updated = get_gabriela_reply(gabriela_history[sender])
             gabriela_history[sender] = updated
-
-            # Check for interest signal and notify Michael
             try:
                 empresa, interesse = extract_expo_interest(reply)
                 if empresa or interesse:
                     notify_michael_expo_interest(sender, empresa, interesse, incoming_msg)
             except Exception as notify_err:
-                print(f"⚠️ Expo notify error (non-fatal): {notify_err}")
-
+                print(f"\u26a0\ufe0f Expo notify error (non-fatal): {notify_err}")
             clean_reply = clean_gabriela_response(reply)
-
-            # ── Audio reply: if lead sent a voice note, Gabriela replies with one too ──
             if was_audio:
                 try:
                     audio_url = generate_audio_reply(clean_reply)
                     if audio_url:
-                        twiml = MessagingResponse()
-                        msg = twiml.message("")
-                        msg.media(audio_url)
-                        print(f"🔊 Sending audio reply to {sender}")
-                        return str(twiml)
-                    # audio_url is None (env var missing) — fall through to text
+                        send_whatsapp_meta(sender, media_url=audio_url)
+                        print(f"\ud83d\udd0a Sending audio reply to {sender}")
+                        return
                 except Exception as tts_err:
-                    print(f"⚠️ TTS failed, falling back to text: {tts_err}")
-
+                    print(f"\u26a0\ufe0f TTS failed, falling back to text: {tts_err}")
         except Exception as e:
-            print(f"❌ Gabriela error: {e}")
-            clean_reply = "Desculpe, estou com uma instabilidade técnica. Por favor, tente novamente em instantes. 🙏"
-
+            print(f"\u274c Gabriela error: {e}")
+            clean_reply = "Desculpe, estou com uma instabilidade t\u00e9cnica. Por favor, tente novamente em instantes. \ud83d\ude4f"
+        send_whatsapp_meta(sender, body=clean_reply)
     else:
-        # ── Maya path — ASYNC to beat Twilio's 15s timeout ──────────────
-        print(f"🤖 Routing to MAYA (async)")
-
+        print(f"\ud83e\udd16 Routing to MAYA (async)")
         is_new_sender = sender not in conversation_history
         if is_new_sender:
             conversation_history[sender] = []
-
         conversation_history[sender].append({"role": "user", "content": incoming_msg})
-
-        # ── Log first contact to Sheets immediately (phone + timestamp only) ──
         if is_new_sender:
             try:
                 log_new_contact_to_sheets(sender)
             except Exception as e:
-                print(f"⚠️ First-contact Sheets log error (non-fatal): {e}")
-
-        # ── Stamp last_message_time for cold-lead detection ──────────────
+                print(f"\u26a0\ufe0f First-contact Sheets log error (non-fatal): {e}")
         if sender not in lead_data:
             lead_data[sender] = {}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
-
         if len(conversation_history[sender]) > 20:
             conversation_history[sender] = conversation_history[sender][-20:]
-
-        # Snapshot history for the background thread
         history_snapshot = list(conversation_history[sender])
 
         def process_maya(snap, sndr):
-            sid    = os.getenv("TWILIO_ACCOUNT_SID")
-            token  = os.getenv("TWILIO_AUTH_TOKEN")
-            from_  = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14078716473")
-            if not from_.startswith("whatsapp:"):
-                from_ = f"whatsapp:{from_}"
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
             try:
                 reply, updated_history = get_claude_reply(snap, sndr)
                 conversation_history[sndr] = updated_history
-
                 try:
                     lead_info = extract_lead(reply)
                     if lead_info:
                         log_lead(lead_info, sender=sndr, history=updated_history)
-                        # ── Save name/email for cold-lead detection ───────
                         try:
                             fields = _parse_lead_fields(lead_info)
                             if sndr not in lead_data:
                                 lead_data[sndr] = {}
-                            lead_data[sndr].update({
-                                "name":  fields.get("name", lead_data[sndr].get("name", "")),
-                                "email": fields.get("email", lead_data[sndr].get("email", "")),
-                            })
+                            lead_data[sndr].update({"name": fields.get("name", lead_data[sndr].get("name", "")), "email": fields.get("email", lead_data[sndr].get("email", ""))})
                         except Exception:
                             pass
                 except Exception as lead_err:
-                    print(f"⚠️ Lead logging error (non-fatal): {lead_err}")
-
+                    print(f"\u26a0\ufe0f Lead logging error (non-fatal): {lead_err}")
                 send_photos = "[SEND_STUDIO_PHOTOS]" in reply
                 clean_reply = clean_response(reply)
-
             except Exception as e:
-                print(f"❌ Maya error: {e}")
+                print(f"\u274c Maya error: {e}")
                 clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
                 send_photos = False
-
-            # Send reply via Twilio REST API
-            if sid and token:
+            send_whatsapp_meta(to_wa, body=clean_reply)
+            print(f"\u2705 Maya reply sent to {to_wa}")
+            if send_photos:
                 try:
-                    tc = TwilioRestClient(sid, token)
-                    tc.messages.create(from_=from_, to=to_wa, body=clean_reply)
-                    print(f"✅ Maya reply sent to {to_wa}")
-                except Exception as send_err:
-                    print(f"❌ Maya send error: {send_err}")
-
-                # Send studio photos if triggered
-                if send_photos:
-                    try:
-                        for photo_url in STUDIO_PHOTOS:
-                            tc.messages.create(from_=from_, to=to_wa, media_url=[photo_url])
-                        print(f"✅ Studio photos sent to {to_wa}")
-                    except Exception as photo_err:
-                        print(f"⚠️ Could not send studio photos (non-fatal): {photo_err}")
+                    for photo_url in STUDIO_PHOTOS:
+                        send_whatsapp_meta(to_wa, media_url=photo_url)
+                    print(f"\u2705 Studio photos sent to {to_wa}")
+                except Exception as photo_err:
+                    print(f"\u26a0\ufe0f Could not send studio photos (non-fatal): {photo_err}")
 
         threading.Thread(target=process_maya, args=(history_snapshot, sender), daemon=True).start()
-        return str(MessagingResponse())  # empty TwiML — instant response to Twilio
-
 
 @app.route("/send-intro", methods=["POST"])
 def send_intro():
     """
-    Proactively send the expo_brazil_intro WhatsApp template to a lead.
+    Proactively send the expo_brazil_intro WhatsApp template to a lead via Meta Cloud API.
 
     Expected JSON body:
         {
@@ -2182,12 +2169,8 @@ def send_intro():
         }
 
     The template must be approved by Meta before this works for business-initiated messages.
-    Template SID: HXed308a5431d011c53361498f4cd18973
     Template name: expo_brazil_intro (Portuguese BR)
     """
-    import json as _json
-    from flask import jsonify
-
     data = request.get_json(force=True, silent=True) or {}
     phone = data.get("phone", "").strip()
     name  = data.get("name", "").strip() or "amigo"
@@ -2195,47 +2178,63 @@ def send_intro():
     if not phone:
         return jsonify({"error": "Missing 'phone' field"}), 400
 
-    # Normalize to WhatsApp format
-    to_wa = phone if phone.startswith("whatsapp:") else f"whatsapp:{phone}"
+    # Normalize: strip whatsapp: prefix and + for Meta API
+    clean_phone = phone.replace("whatsapp:", "").lstrip("+")
 
-    sid    = os.getenv("TWILIO_ACCOUNT_SID")
-    token  = os.getenv("TWILIO_AUTH_TOKEN")
-    from_  = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14078716473")
-    if not from_.startswith("whatsapp:"):
-        from_ = f"whatsapp:{from_}"
+    if not META_ACCESS_TOKEN:
+        return jsonify({"error": "META_ACCESS_TOKEN not configured"}), 500
 
-    if not sid or not token:
-        return jsonify({"error": "Twilio credentials not configured"}), 500
+    template_name = data.get("template_name", "expo_brazil_intro")
 
     try:
-        tc = TwilioRestClient(sid, token)
-        msg = tc.messages.create(
-            from_=from_,
-            to=to_wa,
-            content_sid=data.get("content_sid", "HXed308a5431d011c53361498f4cd18973"),
-            content_variables=_json.dumps({"1": name}),
-        )
-        print(f"✅ Intro sent to {to_wa} (name={name}): {msg.sid}")
-        return jsonify({"success": True, "sid": msg.sid, "to": to_wa, "name": name}), 200
+        url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+        headers = {
+            "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": clean_phone,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": "pt_BR"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": name}],
+                    }
+                ],
+            },
+        }
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        msg_id = result.get("messages", [{}])[0].get("id", "")
+        print(f"\u2705 Intro template sent to {clean_phone} (name={name}): {msg_id}")
+        return jsonify({"success": True, "message_id": msg_id, "to": clean_phone, "name": name}), 200
     except Exception as e:
-        print(f"❌ send-intro failed: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"\u274c send-intro failed: {e}")
+        err_detail = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = e.response.text
+        return jsonify({"error": err_detail}), 500
 
 
 @app.route("/", methods=["GET"])
 def index():
-    return "MWM Creations Sales Agent (Maya + Gabriela) is running! ✅"
+    return "MWM Creations Sales Agent (Maya + Gabriela) is running! â"
 
 
-# ─────────────────────────────────────────────
-# COLD-LEAD DETECTION — Background Thread
+# âââââââââââââââââââââââââââââââââââââââââââââ
+# COLD-LEAD DETECTION â Background Thread
 # Checks every hour. Fires lead_cold event to Hub for any lead
 # silent 48+ hours who hasn't booked and hasn't already been flagged.
-# ─────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââ
 
 def _cold_lead_checker():
     import time
-    print("❄️  Cold-lead checker started (polls every hour, fires at 48h silence)")
+    print("âï¸  Cold-lead checker started (polls every hour, fires at 48h silence)")
     time.sleep(3600)  # First check after 1 hour so startup noise settles
     while True:
         try:
@@ -2250,7 +2249,7 @@ def _cold_lead_checker():
                 if hours_silent >= 48:
                     name  = data.get("name") or ""
                     email = data.get("email") or ""
-                    print(f"❄️  Cold lead detected: {phone} ({int(hours_silent)}h silent) — firing Hub event")
+                    print(f"âï¸  Cold lead detected: {phone} ({int(hours_silent)}h silent) â firing Hub event")
                     fire_hub_event(
                         event_type = "lead_cold",
                         lead_name  = name or None,
@@ -2261,13 +2260,13 @@ def _cold_lead_checker():
                     )
                     lead_data[phone]["cold_fired"] = True
         except Exception as e:
-            print(f"⚠️  Cold-lead checker error: {e}")
+            print(f"â ï¸  Cold-lead checker error: {e}")
         time.sleep(3600)  # Check again in 1 hour
 
 threading.Thread(target=_cold_lead_checker, daemon=True).start()
 
 
 if __name__ == "__main__":
-    print("Starting MWM Creations Sales Agent — Maya")
+    print("Starting MWM Creations Sales Agent â Maya")
     print("Server running on http://127.0.0.1:5000")
     app.run(debug=True, host="127.0.0.1", port=5000)
