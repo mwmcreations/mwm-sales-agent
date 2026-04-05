@@ -1725,6 +1725,73 @@ def log_new_contact_to_sheets(sender: str):
         print(f"Ã¢ÂÂ Ã¯Â¸Â Could not log first contact to Sheets (non-fatal): {e}")
 
 
+def lookup_lead_in_sheets(sender: str) -> str:
+    """Look up a sender's phone in the Google Sheet and return context string for Maya's prompt.
+    Searches all monthly tabs (newest first) for the phone number.
+    Returns a context string or empty string if not found."""
+    if not SHEETS_LEADS_ID:
+        return ""
+    try:
+        clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+        phone_variants = {clean_phone}
+        if clean_phone.startswith("1") and len(clean_phone) == 11:
+            phone_variants.add(clean_phone[1:])
+        svc = get_sheets_service()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        tabs = [s["properties"]["title"] for s in meta["sheets"]]
+        month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+        def tab_sort_key(t):
+            parts = t.split()
+            if len(parts) == 2 and parts[0] in month_order:
+                return (int(parts[1]), month_order[parts[0]])
+            return (0, 0)
+        tabs.sort(key=tab_sort_key, reverse=True)
+        for tab in tabs:
+            try:
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"'{tab}'!A1:L",
+                ).execute()
+                rows = result.get("values", [])
+                if not rows:
+                    continue
+                headers = rows[0]
+                phone_col = headers.index("Phone") if "Phone" in headers else 4
+                for row in rows[1:]:
+                    if len(row) > phone_col:
+                        row_phone = re.sub(r"\D", "", row[phone_col])
+                        if row_phone in phone_variants or clean_phone.endswith(row_phone) or row_phone.endswith(clean_phone):
+                            data = {}
+                            for i, h in enumerate(headers):
+                                if i < len(row) and row[i]:
+                                    data[h] = row[i]
+                            parts = []
+                            if data.get("Name"):
+                                parts.append(f"Name: {data['Name']}")
+                            if data.get("Business"):
+                                parts.append(f"Business: {data['Business']}")
+                            if data.get("Service Interest"):
+                                parts.append(f"Interested in: {data['Service Interest']}")
+                            if data.get("Status"):
+                                parts.append(f"Current status: {data['Status']}")
+                            if data.get("Date"):
+                                parts.append(f"First contact: {data['Date']}")
+                            if data.get("Appt Date & Time"):
+                                parts.append(f"Appointment: {data['Appt Date & Time']}")
+                            if data.get("Notes"):
+                                parts.append(f"Notes: {data['Notes']}")
+                            if parts:
+                                ctx = "; ".join(parts)
+                                print(f"[Context] Found lead context for {clean_phone}: {ctx[:100]}...")
+                                return ctx
+            except Exception:
+                continue
+        return ""
+    except Exception as e:
+        print(f"\u26a0\ufe0f Lead context lookup failed (non-fatal): {e}")
+        return ""
+
+
 def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
     """Update the existing lead row with captured info, or append a new row if not found."""
     if not SHEETS_LEADS_ID:
@@ -1923,7 +1990,7 @@ def clean_response(text):
 # CLAUDE API WITH TOOL USE
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 
-def get_claude_reply(messages, sender=None):
+def get_claude_reply(messages, sender=None, lead_context=None):
     """
     Call Claude (Maya) with tool use support.
     Loops until Claude returns a final text response (no more tool calls).
@@ -1933,7 +2000,7 @@ def get_claude_reply(messages, sender=None):
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=get_system_prompt(),
+            system=get_system_prompt() + (f"\n\n--- LEAD CONTEXT ---\nThis person has prior history with MWM Creations. Here is what we know about them:\n{lead_context}\nUse this context to personalize your greeting and conversation. Reference their name, interests, or prior contact naturally. Do NOT treat them as a cold stranger." if lead_context else ""),
             tools=TOOLS,
             messages=messages
         )
@@ -2277,12 +2344,19 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"⚠️ Slack hot signal notification failed (non-fatal): {slack_err}")
         if len(conversation_history[sender]) > 20:
             conversation_history[sender] = conversation_history[sender][-20:]
+        # ── Context injection: look up lead in Google Sheet ──
+        try:
+            _lead_ctx = lookup_lead_in_sheets(sender)
+        except Exception as _ctx_err:
+            print(f"\u26a0\ufe0f Lead context lookup error (non-fatal): {_ctx_err}")
+            _lead_ctx = ""
+
         history_snapshot = list(conversation_history[sender])
 
-        def process_maya(snap, sndr):
+        def process_maya(snap, sndr, ctx=""):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
             try:
-                reply, updated_history = get_claude_reply(snap, sndr)
+                reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx)
                 conversation_history[sndr] = updated_history
                 try:
                     lead_info = extract_lead(reply)
@@ -2313,7 +2387,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 except Exception as photo_err:
                     print(f"\u26a0\ufe0f Could not send studio photos (non-fatal): {photo_err}")
 
-        threading.Thread(target=process_maya, args=(history_snapshot, sender), daemon=True).start()
+        threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx), daemon=True).start()
 
 @app.route("/send-intro", methods=["POST"])
 def send_intro():
