@@ -191,7 +191,14 @@ def _notify_cold_lead(sender, lead_name, last_message_time, hours_silent):
     _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
 
 
-def _notify_hot_signal(sender, lead_name, incoming_msg):
+def # ── Update Google Sheet: mark as hot ──
+                    try:
+                        update_lead_columns(sender, {
+                            "Lead Temperature": "Hot",
+                        })
+                    except Exception:
+                        pass
+                    _notify_hot_signal(sender, lead_name, incoming_msg):
     """Notify Slack when a lead shows high-intent signal."""
     timestamp = _get_current_time_edt()
     blocks = [
@@ -1379,6 +1386,16 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
             _interest = appointment_type.replace("_", " ").title()
             _notify_appointment_booked(lead_name or "Prospect", lead_phone or "N/A", _slot_str, _interest)
+            # ── Update Google Sheet: mark as booked ──
+            try:
+                if lead_phone:
+                    update_lead_columns(lead_phone, {
+                        "WhatsApp Status": "Booked",
+                        "Appointment Booked": "Y",
+                        "Lead Temperature": "Hot",
+                    })
+            except Exception as _sheet_err:
+                print(f"\u26a0\ufe0f Sheet booking update failed (non-fatal): {_sheet_err}")
         except Exception as slack_err:
             print(f"⚠️ Slack booking notification failed (non-fatal): {slack_err}")
         print(f"Ã¢ÂÂ Appointment booked: {created.get('id')} for {lead_name} at {start_dt}")
@@ -1584,7 +1601,10 @@ def handle_tool_call(tool_name, tool_input, sender=None):
 
 SHEET_HEADERS = [
     "Date", "Time", "Name", "Business", "Phone", "Email",
-    "Service Interest", "Status", "Appt Date & Time", "Notes", "Follow-up Ã¢ÂÂ", "Transcript"
+    "Service Interest", "Status", "Appt Date & Time", "Notes", "Follow-up Ã¢ÂÂ", "Transcript",
+    "Source", "Last Contact Date", "Outreach Channel",
+    "Outreach Message Sent", "WhatsApp Status",
+    "Conversation Summary", "Appointment Booked", "Lead Temperature",
 ]
 
 def get_sheets_service():
@@ -1725,6 +1745,48 @@ def log_new_contact_to_sheets(sender: str):
         print(f"Ã¢ÂÂ Ã¯Â¸Â Could not log first contact to Sheets (non-fatal): {e}")
 
 
+def update_lead_columns(sender: str, updates: dict):
+    """Update specific columns for a lead by phone number.
+    updates maps column header names to values, e.g. {"WhatsApp Status": "Booked"}.
+    Non-fatal: exceptions are logged but never break the caller."""
+    if not SHEETS_LEADS_ID:
+        return
+    try:
+        clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        tab_name = now.strftime("%b %Y")
+        svc = get_sheets_service()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{tab_name}'!A1:T",
+        ).execute()
+        rows = result.get("values", [])
+        if not rows:
+            return
+        headers = rows[0]
+        phone_col = headers.index("Phone") if "Phone" in headers else 4
+        target_row = None
+        for i, row in enumerate(rows[1:], start=2):
+            if len(row) > phone_col and re.sub(r"\D", "", row[phone_col]) == clean_phone:
+                target_row = i
+        if target_row is None:
+            return
+        data = []
+        for col_name, value in updates.items():
+            if col_name in headers:
+                col_idx = headers.index(col_name)
+                col_letter = chr(65 + col_idx) if col_idx < 26 else chr(64 + col_idx // 26) + chr(65 + col_idx % 26)
+                data.append({"range": f"'{tab_name}'!{col_letter}{target_row}", "values": [[value]]})
+        if data:
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEETS_LEADS_ID,
+                body={"valueInputOption": "RAW", "data": data},
+            ).execute()
+            print(f"[Sheets] Updated {list(updates.keys())} for {clean_phone}")
+    except Exception as e:
+        print(f"\u26a0\ufe0f update_lead_columns failed (non-fatal): {e}")
+
+
 def lookup_lead_in_sheets(sender: str) -> str:
     """Look up a sender's phone in the Google Sheet and return context string for Maya's prompt.
     Searches all monthly tabs (newest first) for the phone number.
@@ -1750,7 +1812,7 @@ def lookup_lead_in_sheets(sender: str) -> str:
             try:
                 result = svc.spreadsheets().values().get(
                     spreadsheetId=SHEETS_LEADS_ID,
-                    range=f"'{tab}'!A1:L",
+                    range=f"'{tab}'!A1:T",
                 ).execute()
                 rows = result.get("values", [])
                 if not rows:
@@ -1809,9 +1871,22 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
         # Try to find an existing row by phone number and UPDATE it
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
-            range=f"'{tab_name}'!A:L",
+            range=f"'{tab_name}'!A:T",
         ).execute()
         rows = result.get("values", [])
+
+        # ── Migrate headers: add missing columns to existing tabs ──
+        if rows and len(rows[0]) < len(SHEET_HEADERS):
+            missing = SHEET_HEADERS[len(rows[0]):]
+            start_col = chr(65 + len(rows[0]))
+            svc.spreadsheets().values().update(
+                spreadsheetId=SHEETS_LEADS_ID,
+                range=f"'{tab_name}'!{start_col}1",
+                valueInputOption="RAW",
+                body={"values": [missing]},
+            ).execute()
+            print(f"[Sheets] Migrated headers: added {missing}")
+            rows[0].extend(missing)
 
         target_row_index = None
         for i, row in enumerate(rows):
@@ -1829,6 +1904,9 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                     {"range": f"'{tab_name}'!G{row_number}", "values": [[fields.get("interest", "")]]},
                     {"range": f"'{tab_name}'!H{row_number}", "values": [["Interested Ã¢ÂÂ No Booking Yet"]]},
                     {"range": f"'{tab_name}'!L{row_number}", "values": [[transcript]]},
+                    {"range": f"'{tab_name}'!N{row_number}", "values": [[now.strftime("%Y-%m-%d")]]},
+                    {"range": f"'{tab_name}'!Q{row_number}", "values": [["Active"]]},
+                    {"range": f"'{tab_name}'!R{row_number}", "values": [[transcript[:500] if transcript else ""]]},
                 ]},
             ).execute()
             print(f"Ã¢ÂÂ Lead row updated in Sheets (row {row_number}): {clean_phone}")
@@ -1845,6 +1923,13 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 "Interested Ã¢ÂÂ No Booking Yet",
                 "", "", "",
                 transcript,
+                "WhatsApp",              # M: Source
+                now.strftime("%Y-%m-%d"), # N: Last Contact Date
+                "", "",                   # O: Outreach Channel, P: Outreach Message Sent
+                "New Lead",               # Q: WhatsApp Status
+                "",                       # R: Conversation Summary
+                "N",                      # S: Appointment Booked
+                "Warm",                   # T: Lead Temperature
             ]
             svc.spreadsheets().values().append(
                 spreadsheetId=SHEETS_LEADS_ID,
@@ -2491,6 +2576,14 @@ def _cold_lead_checker():
                         notes      = f"Lead has not replied in {int(hours_silent)} hours",
                     )
                     lead_data[phone]["cold_fired"] = True
+                    # ── Update Google Sheet: mark as cold ──
+                    try:
+                        update_lead_columns(f"whatsapp:+{phone}", {
+                            "WhatsApp Status": "Cold - No Reply",
+                            "Lead Temperature": "Cold",
+                        })
+                    except Exception:
+                        pass
                     # Notify Slack of cold lead
                     try:
                         _notify_cold_lead(phone, name, last_msg, int(hours_silent))
