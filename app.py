@@ -80,6 +80,142 @@ SCOPES = [
 ]
 SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 
+# ── Slack Integration ─────────────────────────────────────────────────────────────
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
+
+# Trigger words for detecting "hot" leads (high intent signals)
+HOT_SIGNAL_TRIGGERS = {
+    "yes", "interested", "how much", "i want", "book", "schedule", "price",
+    "cost", "available", "when can", "how soon", "let's do it", "sounds good",
+    "count me in", "sign me up", "tell me more", "definitely"
+}
+
+
+def post_to_slack(channel, text, blocks=None):
+    """Post a message to Slack channel using the Web API."""
+    if not SLACK_BOT_TOKEN:
+        print("⚠️ SLACK_BOT_TOKEN not configured, skipping Slack notification")
+        return None
+    url = "https://slack.com/api/chat.postMessage"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {"channel": channel, "text": text}
+    if blocks:
+        payload["blocks"] = blocks
+    try:
+        response = http_requests.post(url, json=payload, headers=headers, timeout=5)
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("ok"):
+            print(f"⚠️ Slack API error: {result.get('error', 'unknown error')}")
+            return None
+        return result
+    except Exception as e:
+        print(f"⚠️ Slack posting error (non-fatal): {e}")
+        return None
+
+
+def _post_to_slack_async(channel, text, blocks=None):
+    """Post to Slack asynchronously in a background thread."""
+    thread = threading.Thread(
+        target=post_to_slack,
+        args=(channel, text),
+        kwargs={"blocks": blocks},
+        daemon=True
+    )
+    thread.start()
+
+
+def _get_current_time_edt():
+    """Get current time formatted in EDT timezone."""
+    edt = pytz.timezone('US/Eastern')
+    return datetime.datetime.now(edt).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _notify_new_lead(sender, incoming_msg):
+    """Notify Slack when a new lead contacts for the first time."""
+    timestamp = _get_current_time_edt()
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "🔔 New Lead Inbound", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"},
+            {"type": "mrkdwn", "text": f"*Time:*\n{timestamp}"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*First Message:*\n_{incoming_msg}_"}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"🔔 New lead from {sender}: {incoming_msg[:50]}..."
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _notify_appointment_booked(lead_name, sender, slot_info, interest):
+    """Notify Slack when an appointment is successfully booked."""
+    timestamp = _get_current_time_edt()
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "✅ Appointment Booked", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Lead:*\n{lead_name}"},
+            {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"}
+        ]},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Confirmed Slot:*\n{slot_info}"},
+            {"type": "mrkdwn", "text": f"*Interested In:*\n{interest}"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🕐 Booked at {timestamp}"}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"✅ {lead_name} ({sender}) booked for {slot_info}"
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _notify_cold_lead(sender, lead_name, last_message_time, hours_silent):
+    """Notify Slack when a lead goes cold (48+ hours silent)."""
+    timestamp = _get_current_time_edt()
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "❄️ Lead Gone Cold", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Lead:*\n{lead_name or sender}"},
+            {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"}
+        ]},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Last Message:*\n{last_message_time}"},
+            {"type": "mrkdwn", "text": f"*Silent For:*\n{hours_silent}+ hours"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "⚠️ *Action needed:* Consider reaching out via alternate channel"}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"❄️ {lead_name or sender} ({sender}) silent for {hours_silent}+ hours"
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _notify_hot_signal(sender, lead_name, incoming_msg):
+    """Notify Slack when a lead shows high-intent signal."""
+    timestamp = _get_current_time_edt()
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "🔥 Hot Signal - High Intent", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Lead:*\n{lead_name or sender}"},
+            {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Their Message:*\n_{incoming_msg}_"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🕐 Detected at {timestamp}"}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"🔥 Hot signal from {lead_name or sender}: {incoming_msg[:50]}..."
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _detect_hot_signal(incoming_msg):
+    """Detect if a message contains high-intent trigger words."""
+    msg_lower = incoming_msg.lower().strip()
+    for trigger in HOT_SIGNAL_TRIGGERS:
+        if trigger in msg_lower:
+            return True
+    return False
+
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 # SYSTEM PROMPT
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
@@ -1237,6 +1373,14 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             return None
 
         event_link = created.get("htmlLink", "")
+
+        # ── Slack: notify appointment booked ──
+        try:
+            _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
+            _interest = appointment_type.replace("_", " ").title()
+            _notify_appointment_booked(lead_name or "Prospect", lead_phone or "N/A", _slot_str, _interest)
+        except Exception as slack_err:
+            print(f"⚠️ Slack booking notification failed (non-fatal): {slack_err}")
         print(f"Ã¢ÂÂ Appointment booked: {created.get('id')} for {lead_name} at {start_dt}")
         print(f"Ã°ÂÂÂ Calendar: {used_calendar} | Attendees included: {used_attendees}")
         print(f"Ã°ÂÂÂ Event link: {event_link}")
@@ -2116,6 +2260,21 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         if sender not in lead_data:
             lead_data[sender] = {}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
+
+        # ── Slack: notify new lead ──
+        if is_new_sender:
+            try:
+                _notify_new_lead(sender, incoming_msg)
+            except Exception as slack_err:
+                print(f"⚠️ Slack new lead notification failed (non-fatal): {slack_err}")
+
+        # ── Slack: detect hot signal ──
+        if _detect_hot_signal(incoming_msg):
+            try:
+                _ld = lead_data.get(sender, {})
+                _notify_hot_signal(sender, _ld.get("name", "Unknown"), incoming_msg)
+            except Exception as slack_err:
+                print(f"⚠️ Slack hot signal notification failed (non-fatal): {slack_err}")
         if len(conversation_history[sender]) > 20:
             conversation_history[sender] = conversation_history[sender][-20:]
         history_snapshot = list(conversation_history[sender])
@@ -2258,6 +2417,11 @@ def _cold_lead_checker():
                         notes      = f"Lead has not replied in {int(hours_silent)} hours",
                     )
                     lead_data[phone]["cold_fired"] = True
+                    # Notify Slack of cold lead
+                    try:
+                        _notify_cold_lead(phone, name, last_msg, int(hours_silent))
+                    except Exception as slack_err:
+                        print(f"⚠️ Slack cold lead notification failed (non-fatal): {slack_err}")
         except Exception as e:
             print(f"Ã¢ÂÂ Ã¯Â¸Â  Cold-lead checker error: {e}")
         time.sleep(3600)  # Check again in 1 hour
