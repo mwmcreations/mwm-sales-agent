@@ -2671,9 +2671,11 @@ You can execute these actions in real time when someone asks:
 • *Delete events* — 'cancel the "Team Meeting"' / "remove my 3pm appointment"
 • *Update events* — 'reschedule "Team Meeting" to Friday at 10am'
 
-When a calendar action is detected, it executes automatically. You will receive the result and should present it naturally.
+When a calendar action is detected, it executes automatically. You will receive the result as a [CALENDAR ACTION RESULT] and should present it naturally.
 For event creation, encourage users to put event names in "quotes" and specify date + time.
 The calendar timezone is America/New_York (EDT).
+
+CRITICAL: NEVER tell the user you created, deleted, or modified a calendar event unless you received a [CALENDAR ACTION RESULT] confirming the action was executed. If someone asks you to do a calendar action and you don't receive a [CALENDAR ACTION RESULT], tell them you couldn't process the request automatically and ask them to rephrase with a clear command like: schedule a "Meeting Name" tomorrow at 2pm for 1 hour.
 """
 
     return base
