@@ -2712,11 +2712,32 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                         messages=[{"role": "user", "content": text}]
                     )
                     import json as _json
-                    cls_text = cls_response.content[0].text.strip()
-                    cls_data = _json.loads(cls_text)
-                    if cls_data.get("action") != "none" and cls_data.get("command"):
-                        print(f"[ANA] Claude classified as calendar action: {cls_data}")
-                        handled, calendar_result = handle_calendar_action(cls_data["command"])
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    # Strip markdown code fences if present
+                    if cls_text.startswith("```"):
+                        lines = cls_text.split("\n")
+                        cls_text = "\n".join(lines[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    # Try to find JSON object in response
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[ANA] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[ANA] Claude classified as calendar action: {cls_data}")
+                            handled, calendar_result = handle_calendar_action(cls_data["command"])
+                    else:
+                        print("[ANA] Haiku classifier returned empty response")
                 except Exception as e:
                     print(f"[ANA] Calendar classification fallback error: {e}")
             if handled:
