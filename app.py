@@ -2687,6 +2687,38 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
         # ── ANA Calendar Action Check ─────────────────────────────
         if agent["name"] == "ANA":
             handled, calendar_result = handle_calendar_action(text)
+            # Fallback: if regex didn't match, use Claude to classify + translate (handles Portuguese, mixed language, etc.)
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a calendar/scheduling action request. The message may be in ANY language (Portuguese, English, Spanish, etc.).
+
+If it IS a calendar action, respond with ONLY valid JSON:
+{"action": "create_event", "command": "<English calendar command>"}
+
+The "command" must be a clear English instruction using these patterns:
+- For creating: schedule a "Event Title" today/tomorrow at 2pm for 1 hour
+- For listing: what is on my calendar today/this week
+- For availability: am I free tomorrow at 3pm
+- For finding free time: find free time this week
+- For deleting: cancel the "Event Title"
+- For updating: reschedule "Event Title" to Friday at 10am
+
+Put the event name in quotes. Use "today", "tomorrow", or specific dates. Always include the time if mentioned.
+
+If it is NOT a calendar action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = cls_response.content[0].text.strip()
+                    cls_data = _json.loads(cls_text)
+                    if cls_data.get("action") != "none" and cls_data.get("command"):
+                        print(f"[ANA] Claude classified as calendar action: {cls_data}")
+                        handled, calendar_result = handle_calendar_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[ANA] Calendar classification fallback error: {e}")
             if handled:
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
