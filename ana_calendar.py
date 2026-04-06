@@ -61,8 +61,13 @@ ANA_CALENDAR_INTENTS = {
 
 
 # Ã¢ÂÂÃ¢ÂÂ Helper: Calendar Service Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
-def _get_cal_service():
-    """Get Google Calendar service using the shared service account credentials."""
+def _get_cal_service(impersonate=None):
+    """Get Google Calendar service using the shared service account credentials.
+    
+    If impersonate is set, uses Domain-Wide Delegation to act as that user.
+    Write operations should pass impersonate=GOOGLE_DELEGATE_EMAIL to bypass
+    Workspace external sharing restrictions on group calendars.
+    """
     import json
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
@@ -70,8 +75,9 @@ def _get_cal_service():
         creds = service_account.Credentials.from_service_account_info(
             creds_dict, scopes=SCOPES
         )
-
-
+        if impersonate:
+            creds = creds.with_subject(impersonate)
+            print(f"[ANA] Using DWD as: {impersonate}")
         return build("calendar", "v3", credentials=creds, cache_discovery=False)
     raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
 
@@ -302,7 +308,9 @@ def _create_event(text):
     """Create a new event on the MWM CREATIONS calendar."""
     try:
         details = _parse_event_details(text)
-        service = _get_cal_service()
+        # Use DWD (Domain-Wide Delegation) to impersonate Michael for write access
+        delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+        service = _get_cal_service(impersonate=delegate)
         tz = pytz.timezone(TIMEZONE)
         if not details["title"]:
             details["title"] = "New Event (via ANA)"
@@ -417,7 +425,8 @@ def _find_free_time(text):
 def _delete_event(text):
     """Delete/cancel an event by searching for a matching title."""
     try:
-        service = _get_cal_service()
+        delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+        service = _get_cal_service(impersonate=delegate)
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
         search_term = None
@@ -465,7 +474,8 @@ def _delete_event(text):
 def _update_event(text):
     """Update/reschedule an event."""
     try:
-        service = _get_cal_service()
+        delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+        service = _get_cal_service(impersonate=delegate)
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
         search_term = None
