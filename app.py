@@ -2,6 +2,9 @@ import os
 import re
 import json
 import threading
+import hmac
+import hashlib
+import time
 from flask import Flask, request, send_from_directory, jsonify
 import anthropic
 from dotenv import load_dotenv
@@ -2594,6 +2597,158 @@ def _cold_lead_checker():
         time.sleep(3600)  # Check again in 1 hour
 
 threading.Thread(target=_cold_lead_checker, daemon=True).start()
+
+
+
+# ── Slack Events API: Real-Time Agent Responsiveness ─────────────────────────────
+SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
+
+# Channel → Agent routing (all 9 MWM agents)
+AGENT_CHANNELS = {
+    "C0AR7NY6SHF": {"name": "DEV", "role": "Developer Agent — builds custom integrations, skills, and automations", "channel": "#dev"},
+    "C0APE9EJ2CT": {"name": "MATT", "role": "AI Operations Manager — coordinates all agents and assigns tasks", "channel": "#matt"},
+    "C0APE5V3U2F": {"name": "ANA", "role": "Personal Assistant — manages calendar, reminders, and personal tasks", "channel": "#ana"},
+    "C0APQ4TDF7W": {"name": "SUSAN", "role": "Email Marketing Agent — creates and manages email campaigns", "channel": "#susan"},
+    "C0APE5S76HH": {"name": "MAYA (Slack)", "role": "Sales Agent — handles lead outreach and follow-ups via Slack directives", "channel": "#maya"},
+    "C0ART65SU8Y": {"name": "VICTOR", "role": "MWM Screens Support — manages digital signage and screen content", "channel": "#victor"},
+    "C0APLH98ANN": {"name": "ROB", "role": "Financial Advisor — handles invoicing, budgets, and financial planning", "channel": "#rob"},
+    "C0APJF77MB8": {"name": "CRIS", "role": "Website Developer — builds and maintains websites", "channel": "#cris"},
+    "C0APZEBQ4P3": {"name": "ERIC", "role": "Traffic Manager — manages paid ads, SEO, and digital marketing campaigns", "channel": "#eric"},
+}
+
+# Track processed event IDs to prevent duplicate processing
+_processed_slack_events = set()
+
+
+def verify_slack_signature(req):
+    """Verify that the request came from Slack using HMAC-SHA256 signing secret."""
+    if not SLACK_SIGNING_SECRET:
+        print("\u26a0\ufe0f SLACK_SIGNING_SECRET not configured, skipping verification")
+        return True  # Allow in dev mode
+    try:
+        timestamp = req.headers.get("X-Slack-Request-Timestamp", "")
+        if abs(time.time() - float(timestamp)) > 60 * 5:
+            return False
+        sig_basestring = f"v0:{timestamp}:{req.get_data(as_text=True)}"
+        my_signature = "v0=" + hmac.new(
+            SLACK_SIGNING_SECRET.encode(),
+            sig_basestring.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        slack_signature = req.headers.get("X-Slack-Signature", "")
+        return hmac.compare_digest(my_signature, slack_signature)
+    except Exception as e:
+        print(f"\u274c Slack signature verification error: {e}")
+        return False
+
+
+def get_agent_system_prompt(agent_info):
+    """Generate a system prompt for a Slack agent based on their role."""
+    return f"""You are {agent_info['name']}, the {agent_info['role']} for MWM Creations & Studios, a media production company based in Orlando, FL. Owner: Michael Moraes (michael@mwmcreations.com).
+
+You are responding to messages in the {agent_info['channel']} Slack channel.
+
+MATT is the AI Operations Manager who coordinates all agents. When MATT posts a directive, acknowledge it and take action or outline your plan.
+
+Guidelines:
+- Be concise and professional
+- Use Slack markdown: *bold*, _italic_, `code`, ```code blocks```
+- Confirm receipt of tasks and outline next steps
+- Ask for clarification if needed
+- Stay in character as {agent_info['name']}
+"""
+
+
+def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
+    """Process a Slack message in a background thread and post the agent's response."""
+    agent = AGENT_CHANNELS.get(channel_id)
+    if not agent:
+        return
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=get_agent_system_prompt(agent),
+            messages=[{"role": "user", "content": text}]
+        )
+
+        reply = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                reply += block.text
+
+        if not reply:
+            reply = "I received your message but couldn't generate a response."
+
+        # Reply in thread if the original message was in a thread
+        if thread_ts:
+            # Post as thread reply
+            url = "https://slack.com/api/chat.postMessage"
+            headers = {
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+            http_requests.post(url, headers=headers, json=payload, timeout=10)
+        else:
+            post_to_slack(channel_id, reply)
+
+        print(f"\u2705 {agent['name']} responded in {agent['channel']}")
+
+    except Exception as e:
+        print(f"\u274c Error in {agent['name']} agent response: {e}")
+        post_to_slack(channel_id, f"\u26a0\ufe0f Error processing message: {str(e)[:200]}")
+
+
+@app.route("/slack/events", methods=["POST"])
+def slack_events():
+    """Handle Slack Events API callbacks for real-time agent responsiveness."""
+    data = request.get_json(force=True, silent=True) or {}
+
+    # URL verification challenge (one-time setup by Slack)
+    if data.get("type") == "url_verification":
+        return jsonify({"challenge": data.get("challenge", "")})
+
+    # Verify request signature
+    if not verify_slack_signature(request):
+        return "Unauthorized", 401
+
+    # Deduplicate events (Slack may retry)
+    event_id = data.get("event_id", "")
+    if event_id in _processed_slack_events:
+        return "OK", 200
+    _processed_slack_events.add(event_id)
+    # Keep the set from growing forever (cap at 1000)
+    if len(_processed_slack_events) > 1000:
+        _processed_slack_events.clear()
+
+    # Handle event callbacks
+    if data.get("type") == "event_callback":
+        event = data.get("event", {})
+
+        # Only handle regular message events (no subtypes like bot_message, message_changed, etc.)
+        if event.get("type") != "message" or event.get("subtype"):
+            return "OK", 200
+
+        # Ignore bot messages to prevent infinite loops
+        if event.get("bot_id"):
+            return "OK", 200
+
+        channel_id = event.get("channel", "")
+        text = event.get("text", "")
+        user_id = event.get("user", "")
+        thread_ts = event.get("thread_ts")
+
+        # Only respond if it's a registered agent channel
+        if channel_id in AGENT_CHANNELS and text.strip():
+            threading.Thread(
+                target=_handle_slack_agent_message,
+                args=(channel_id, text, user_id, thread_ts),
+                daemon=True
+            ).start()
+
+    return "OK", 200
 
 
 if __name__ == "__main__":
