@@ -308,9 +308,20 @@ def _create_event(text):
     """Create a new event on the MWM CREATIONS calendar."""
     try:
         details = _parse_event_details(text)
-        # Use DWD (Domain-Wide Delegation) to impersonate Michael for write access
+        # Try DWD first; fall back to direct service account if DWD fails
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
-        service = _get_cal_service(impersonate=delegate)
+        try:
+            service = _get_cal_service(impersonate=delegate) if delegate else _get_cal_service()
+            if delegate:
+                # Quick test to verify DWD credentials work
+                service.calendarList().list(maxResults=1).execute()
+                print(f"[ANA] _create_event using DWD as {delegate}")
+        except Exception as dwd_err:
+            if "unauthorized_client" in str(dwd_err) or "invalid_grant" in str(dwd_err) or "access_denied" in str(dwd_err):
+                print(f"[ANA] DWD failed ({dwd_err}), falling back to direct service account")
+                service = _get_cal_service()  # no DWD
+            else:
+                raise
         tz = pytz.timezone(TIMEZONE)
         if not details["title"]:
             details["title"] = "New Event (via ANA)"
@@ -426,7 +437,16 @@ def _delete_event(text):
     """Delete/cancel an event by searching for a matching title."""
     try:
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
-        service = _get_cal_service(impersonate=delegate)
+        try:
+            service = _get_cal_service(impersonate=delegate) if delegate else _get_cal_service()
+            if delegate:
+                service.calendarList().list(maxResults=1).execute()
+        except Exception as dwd_err:
+            if "unauthorized_client" in str(dwd_err) or "invalid_grant" in str(dwd_err) or "access_denied" in str(dwd_err):
+                print(f"[ANA] DWD failed, falling back to direct service account")
+                service = _get_cal_service()
+            else:
+                raise
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
         search_term = None
@@ -475,7 +495,16 @@ def _update_event(text):
     """Update/reschedule an event."""
     try:
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
-        service = _get_cal_service(impersonate=delegate)
+        try:
+            service = _get_cal_service(impersonate=delegate) if delegate else _get_cal_service()
+            if delegate:
+                service.calendarList().list(maxResults=1).execute()
+        except Exception as dwd_err:
+            if "unauthorized_client" in str(dwd_err) or "invalid_grant" in str(dwd_err) or "access_denied" in str(dwd_err):
+                print(f"[ANA] DWD failed, falling back to direct service account")
+                service = _get_cal_service()
+            else:
+                raise
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
         search_term = None
