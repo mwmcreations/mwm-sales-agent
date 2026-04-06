@@ -324,26 +324,27 @@ def _create_event(text):
         }
         if details["description"]:
             event_body["description"] = details["description"]
-        # Try MWM CREATIONS calendar first, fall back to primary (diagnostic)
-        created = None
-        for cal_id, label in [(CALENDAR_ID, "MWM CREATIONS"), ("primary", "service account primary")]:
-            try:
-                created = service.events().insert(
-                    calendarId=cal_id,
-                    body=event_body,
-                    sendUpdates="none"
-                ).execute()
-                print(f"[ANA] Event created on {label} calendar: {created.get('htmlLink', 'N/A')}")
-                break
-            except Exception as insert_err:
-                print(f"[ANA] Insert failed on {label}: {repr(insert_err)}")
-                if hasattr(insert_err, 'resp'):
-                    print(f"[ANA] HTTP {insert_err.resp.status}: {insert_err.content}")
-                if cal_id == "primary":
-                    raise insert_err
-                continue
-        if not created:
-            return "\u26a0\ufe0f Couldn't create the event on any calendar."
+        # Create event on MWM CREATIONS calendar ONLY (no fallback to invisible primary)
+        try:
+            created = service.events().insert(
+                calendarId=CALENDAR_ID,
+                body=event_body,
+                sendUpdates="none"
+            ).execute()
+            print(f"[ANA] Event created on MWM CREATIONS calendar: {created.get('htmlLink', 'N/A')}")
+        except Exception as insert_err:
+            print(f"[ANA] Insert failed on MWM CREATIONS: {repr(insert_err)}")
+            if hasattr(insert_err, 'resp'):
+                print(f"[ANA] HTTP {insert_err.resp.status}: {insert_err.content}")
+            if '403' in str(insert_err) or 'requiredAccessLevel' in str(insert_err):
+                return (
+                    "\u26a0\ufe0f *Calendar write failed \u2014 permission error.*\n"
+                    "The service account does not have write access to the MWM CREATIONS calendar.\n"
+                    "Michael needs to re-grant `Make changes to events` permission to "
+                    "`maya-calendar@astral-volt-489505-i4.iam.gserviceaccount.com` "
+                    "in MWM CREATIONS calendar sharing settings."
+                )
+            raise insert_err
         return (
             f"\u2705 *Event created!*\n"
             f"\u2022 *Title:* {details['title']}\n"
