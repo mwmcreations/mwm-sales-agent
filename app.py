@@ -2679,6 +2679,44 @@ CRITICAL: NEVER tell the user you created, deleted, or modified a calendar event
 """
 
     return base
+def _get_slack_history(channel_id, limit=10):
+    """Fetch recent Slack messages and build Claude conversation history."""
+    try:
+        url = "https://slack.com/api/conversations.history"
+        headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+        resp = http_requests.get(url, headers=headers, params={"channel": channel_id, "limit": limit}, timeout=10)
+        data = resp.json()
+        if not data.get("ok"):
+            print(f"[SLACK] History fetch failed: {data.get('error')}")
+            return []
+        messages = []
+        for msg in reversed(data.get("messages", [])):
+            msg_text = msg.get("text", "").strip()
+            if not msg_text or msg.get("subtype"):
+                continue
+            # Bot messages have bot_id; user messages have user field without bot_id
+            if msg.get("bot_id"):
+                messages.append({"role": "assistant", "content": msg_text})
+            else:
+                messages.append({"role": "user", "content": msg_text})
+        # Claude requires alternating roles — merge consecutive same-role messages
+        merged = []
+        for m in messages:
+            if merged and merged[-1]["role"] == m["role"]:
+                merged[-1]["content"] += "\n" + m["content"]
+            else:
+                merged.append(dict(m))
+        # Must start with user and end with user
+        if merged and merged[0]["role"] == "assistant":
+            merged = merged[1:]
+        if merged and merged[-1]["role"] == "assistant":
+            merged = merged[:-1]
+        return merged
+    except Exception as e:
+        print(f"[SLACK] Error fetching history: {e}")
+        return []
+
+
 def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
     """Process a Slack message in a background thread and post the agent's response."""
     agent = AGENT_CHANNELS.get(channel_id)
@@ -2689,6 +2727,8 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
         # ── ANA Calendar Action Check ─────────────────────────────
         if agent["name"] == "ANA":
             handled, calendar_result = handle_calendar_action(text)
+            # Fetch conversation history for context (helps classify follow-up messages like "do it", "yes", etc.)
+            conversation_history = _get_slack_history(channel_id, limit=10)
             # Fallback: if regex didn't match, use Claude to classify + translate (handles Portuguese, mixed language, etc.)
             if not handled:
                 try:
@@ -2696,6 +2736,7 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
                         model="claude-haiku-4-5-20251001",
                         max_tokens=300,
                         system="""You classify whether a message is a calendar/scheduling action request. The message may be in ANY language (Portuguese, English, Spanish, etc.).
+You will also receive recent conversation history for context. Follow-up messages like "yes", "do it", "perfect", "go ahead" ARE calendar actions if the conversation context shows a pending calendar operation.
 
 If it IS a calendar action, respond with ONLY valid JSON:
 {"action": "create_event", "command": "<English calendar command>"}
@@ -2711,7 +2752,7 @@ The "command" must be a clear English instruction using these patterns:
 Put the event name in quotes. Use "today", "tomorrow", or specific dates. Always include the time if mentioned.
 
 If it is NOT a calendar action, respond with: {"action": "none"}""",
-                        messages=[{"role": "user", "content": text}]
+                        messages=[{"role": "user", "content": f"RECENT CONVERSATION:\n" + "\n".join([f'{m["role"].upper()}: {m["content"][:200]}' for m in conversation_history[-6:]]) + f"\n\nCURRENT MESSAGE TO CLASSIFY:\n{text}"}]
                     )
                     import json as _json
                     cls_text = ""
@@ -2772,11 +2813,16 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                 return
 
         # ── Standard Agent Response ──────────────────────────────
+        # Build conversation history from recent Slack messages for context
+        conversation = _get_slack_history(channel_id, limit=10)
+        if not conversation or conversation[-1].get("content") != text:
+            # Ensure current message is included at the end
+            conversation.append({"role": "user", "content": text})
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=get_agent_system_prompt(agent),
-            messages=[{"role": "user", "content": text}]
+            messages=conversation if conversation else [{"role": "user", "content": text}]
         )
 
         reply = ""
