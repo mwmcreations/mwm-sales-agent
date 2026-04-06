@@ -2729,6 +2729,63 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
             handled, calendar_result = handle_calendar_action(text)
             # Fetch conversation history for context (helps classify follow-up messages like "do it", "yes", etc.)
             conversation_history = _get_slack_history(channel_id, limit=10)
+            # ── Follow-up confirmation fast path ──────────────────────
+            # Detects short confirmations ("do it", "yes", "perfect") when ANA just
+            # suggested a calendar action. Uses Haiku to extract full event details
+            # from conversation context instead of relying on regex parsing.
+            _CONFIRM_RE = re.compile(
+                r"^(?:do it|yes|yep|yeah|yea|sure|ok|okay|go ahead|perfect|"
+                r"confirm(?:ed)?|correct|right|absolutely|let.?s do it|book it|"
+                r"that.?s (?:correct|right|it|good|great|fine)|looks? (?:good|great|correct|right)|"
+                r"sim|faz isso|pode fazer|manda|bora|perfeito|isso|pode ser|"
+                r"faz|manda ver|pode|bora l[aá])[\s.!]*$",
+                re.IGNORECASE,
+            )
+            if not handled and _CONFIRM_RE.match(text.strip()):
+                # Check if last bot message suggested a calendar action
+                last_bot_msg = None
+                for m in reversed(conversation_history):
+                    if m["role"] == "assistant":
+                        last_bot_msg = m["content"]
+                        break
+                cal_keywords = ["event", "calendar", "schedule", "book", "create",
+                                "reminder", "shoot", "meeting", "grava", "reuni"]
+                if last_bot_msg and any(kw in last_bot_msg.lower() for kw in cal_keywords):
+                    try:
+                        print(f"[ANA] Confirmation fast-path triggered for: {text}")
+                        confirm_resp = client.messages.create(
+                            model="claude-haiku-4-5-20251001",
+                            max_tokens=400,
+                            system="""You are extracting calendar event details from a conversation where the user just CONFIRMED they want to proceed with a suggested calendar action.
+
+Extract ALL event details from the conversation and output a single clear English calendar command. Include:
+- Event title (in quotes)
+- Date (use "today", "tomorrow", or specific date)
+- Time (e.g., "at 9am")
+- Duration (e.g., "for 1 hour") — if not specified, omit
+- Location/address (e.g., "at 123 Main St") — if mentioned
+- Reminder (e.g., "with 1 hour reminder") — if mentioned
+
+IMPORTANT: You MUST include ALL details discussed in the conversation, especially location and reminder.
+
+Example outputs:
+- schedule a "Team Meeting" tomorrow at 3pm for 1 hour at 123 Main St Orlando FL with 30 minute reminder
+- schedule a "GRAVAÇÃO — Green Rest Mattress" tomorrow at 9am at 4868 E Colonial Dr Orlando FL 32803 with 1 hour reminder
+
+Output ONLY the command string, nothing else.""",
+                            messages=conversation_history + [{"role": "user", "content": text}],
+                        )
+                        confirm_cmd = ""
+                        for block in confirm_resp.content:
+                            if hasattr(block, "text"):
+                                confirm_cmd += block.text
+                        confirm_cmd = confirm_cmd.strip()
+                        if confirm_cmd and "schedule" in confirm_cmd.lower():
+                            print(f"[ANA] Confirmation fast-path command: {confirm_cmd}")
+                            handled, calendar_result = handle_calendar_action(confirm_cmd)
+                    except Exception as e:
+                        print(f"[ANA] Confirmation fast-path error: {e}")
+
             # Fallback: if regex didn't match, use Claude to classify + translate (handles Portuguese, mixed language, etc.)
             if not handled:
                 try:
