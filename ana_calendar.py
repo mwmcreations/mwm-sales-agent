@@ -71,11 +71,6 @@ def _get_cal_service():
             creds_dict, scopes=SCOPES
         )
 
-        # Domain-Wide Delegation: impersonate user if GOOGLE_DELEGATE_EMAIL is set
-        delegate_email = os.getenv("GOOGLE_DELEGATE_EMAIL")
-        if delegate_email:
-            creds = creds.with_subject(delegate_email)
-            print(f"[ANA] DWD enabled: impersonating {delegate_email}")
 
         return build("calendar", "v3", credentials=creds, cache_discovery=False)
     raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
