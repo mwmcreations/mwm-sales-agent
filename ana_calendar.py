@@ -324,17 +324,38 @@ def _create_event(text):
         }
         if details["description"]:
             event_body["description"] = details["description"]
-        created = service.events().insert(calendarId=CALENDAR_ID, body=event_body).execute()
+        # Try MWM CREATIONS calendar first, fall back to primary (diagnostic)
+        created = None
+        for cal_id, label in [(CALENDAR_ID, "MWM CREATIONS"), ("primary", "service account primary")]:
+            try:
+                created = service.events().insert(
+                    calendarId=cal_id,
+                    body=event_body,
+                    sendUpdates="none"
+                ).execute()
+                print(f"[ANA] Event created on {label} calendar: {created.get('htmlLink', 'N/A')}")
+                break
+            except Exception as insert_err:
+                print(f"[ANA] Insert failed on {label}: {repr(insert_err)}")
+                if hasattr(insert_err, 'resp'):
+                    print(f"[ANA] HTTP {insert_err.resp.status}: {insert_err.content}")
+                if cal_id == "primary":
+                    raise insert_err
+                continue
+        if not created:
+            return "\u26a0\ufe0f Couldn't create the event on any calendar."
         return (
             f"\u2705 *Event created!*\n"
             f"\u2022 *Title:* {details['title']}\n"
             f"\u2022 *Date:* {start_dt.strftime('%A, %b %-d %Y')}\n"
             f"\u2022 *Time:* {start_dt.strftime('%-I:%M %p')} \u2013 {end_dt.strftime('%-I:%M %p')}\n"
-            f"\u2022 *Calendar:* MWM CREATIONS\n"
+            f"\u2022 *Calendar:* {created.get('organizer', {}).get('displayName', 'MWM CREATIONS')}\n"
             f"\u2022 *Link:* {created.get('htmlLink', 'N/A')}"
         )
     except Exception as e:
-        print(f"[ANA] Error creating event: {e}")
+        import traceback
+        print(f"[ANA] Error creating event: {repr(e)}")
+        print(f"[ANA] Traceback: {traceback.format_exc()}")
         return f"\u26a0\ufe0f Couldn't create the event: {str(e)[:200]}"
 
 
@@ -423,7 +444,7 @@ def _delete_event(text):
         if not events:
             return f'\U0001f50d No upcoming events found matching *"{search_term}"*.'
         ev = events[0]
-        service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"]).execute()
+        service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"], sendUpdates="none").execute()
         start = ev["start"].get("dateTime", ev["start"].get("date", ""))
         if "T" in start:
             dt = datetime.fromisoformat(start)
@@ -488,7 +509,7 @@ def _update_event(text):
             new_end = new_start + duration
         ev["start"] = {"dateTime": new_start.isoformat(), "timeZone": TIMEZONE}
         ev["end"] = {"dateTime": new_end.isoformat(), "timeZone": TIMEZONE}
-        updated = service.events().update(calendarId=CALENDAR_ID, eventId=ev["id"], body=ev).execute()
+        updated = service.events().update(calendarId=CALENDAR_ID, eventId=ev["id"], body=ev, sendUpdates="none").execute()
         return (
             f"\u270f\ufe0f *Event updated:*\n"
             f"\u2022 *{ev.get('summary', '(no title)')}*\n"
