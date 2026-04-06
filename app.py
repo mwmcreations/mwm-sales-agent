@@ -1289,8 +1289,6 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
          (silent attendee add Ã¢ÂÂ may still fail if DWD not set up)
       3. MWM Creations calendar  + no attendees
          (works when service account has WRITER access but DWD is not configured)
-      4. Service account primary + no attendees
-         (last-resort fallback Ã¢ÂÂ always works)
 
     Returns the event ID on success, or None on failure.
     """
@@ -1345,12 +1343,11 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             (CALENDAR_ID, False, "none", "MWM Creations cal, no attendees"),
             (CALENDAR_ID, True,  "all",  "MWM Creations cal + attendees + invites"),
             (CALENDAR_ID, True,  "none", "MWM Creations cal + attendees, no invites"),
-            ("primary",   False, "none", "Service account primary, no attendees"),
         ]
 
         created = None
         used_attendees = False
-        used_calendar = "primary"
+        used_calendar = CALENDAR_ID
 
         for cal_id, with_attendees, send_upd, label in attempts:
             event = dict(event_base)
