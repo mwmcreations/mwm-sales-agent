@@ -1162,18 +1162,21 @@ def get_calendar_service(impersonate=None):
     Write operations (book_appointment) pass impersonate=MICHAEL_EMAIL to try DWD,
     but the caller handles the fallback if DWD is not configured.
     """
+    # When impersonating via DWD, only request calendar scope (DWD config doesn't include spreadsheets)
+    cal_only_scopes = ["https://www.googleapis.com/auth/calendar"]
+    scopes = cal_only_scopes if impersonate else SCOPES
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
         creds_dict = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=SCOPES
+            creds_dict, scopes=scopes
         )
         sa_email = creds_dict.get("client_email", "unknown")
         print(f"[calendar] service account: {sa_email}")
     else:
         # Fallback: load from local file (for local dev)
         creds = service_account.Credentials.from_service_account_file(
-            "service_account.json", scopes=SCOPES
+            "service_account.json", scopes=scopes
         )
 
     # Domain-Wide Delegation Ã¢ÂÂ ONLY when explicitly requested by the caller
