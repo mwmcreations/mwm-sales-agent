@@ -72,12 +72,17 @@ def _get_cal_service(impersonate=None):
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
         creds_dict = json.loads(creds_json)
+        # When impersonating via DWD, only request scopes authorized in Workspace Admin.
+        # DWD config only has calendar scope — requesting spreadsheets scope too would
+        # cause unauthorized_client / access_denied.
+        cal_only_scopes = ["https://www.googleapis.com/auth/calendar"]
+        scopes = cal_only_scopes if impersonate else SCOPES
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=SCOPES
+            creds_dict, scopes=scopes
         )
         if impersonate:
             creds = creds.with_subject(impersonate)
-            print(f"[ANA] Using DWD as: {impersonate}")
+            print(f"[ANA] Using DWD as: {impersonate} (calendar-only scope)")
         return build("calendar", "v3", credentials=creds, cache_discovery=False)
     raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
 
