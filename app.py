@@ -13,6 +13,7 @@ import pytz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests as http_requests
+from ana_calendar import handle_calendar_action
 
 load_dotenv()
 
@@ -2644,7 +2645,7 @@ def verify_slack_signature(req):
 
 def get_agent_system_prompt(agent_info):
     """Generate a system prompt for a Slack agent based on their role."""
-    return f"""You are {agent_info['name']}, the {agent_info['role']} for MWM Creations & Studios, a media production company based in Orlando, FL. Owner: Michael Moraes (michael@mwmcreations.com).
+    base = f"""You are {agent_info['name']}, the {agent_info['role']} for MWM Creations & Studios, a media production company based in Orlando, FL. Owner: Michael Moraes (michael@mwmcreations.com).
 
 You are responding to messages in the {agent_info['channel']} Slack channel.
 
@@ -2658,7 +2659,24 @@ Guidelines:
 - Stay in character as {agent_info['name']}
 """
 
+    if agent_info["name"] == "ANA":
+        base += """
 
+CALENDAR CAPABILITIES — you have LIVE access to the MWM CREATIONS Google Calendar.
+You can execute these actions in real time when someone asks:
+• *List events* — "what's on my calendar today?" / "show this week's schedule"
+• *Check availability* — "am I free tomorrow at 2pm?" / "check availability Thursday"
+• *Create events* — 'schedule a "Team Meeting" tomorrow at 3pm for 2 hours'
+• *Find free time* — "when is my next free slot?" / "find me some open time"
+• *Delete events* — 'cancel the "Team Meeting"' / "remove my 3pm appointment"
+• *Update events* — 'reschedule "Team Meeting" to Friday at 10am'
+
+When a calendar action is detected, it executes automatically. You will receive the result and should present it naturally.
+For event creation, encourage users to put event names in "quotes" and specify date + time.
+The calendar timezone is America/New_York (EDT).
+"""
+
+    return base
 def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
     """Process a Slack message in a background thread and post the agent's response."""
     agent = AGENT_CHANNELS.get(channel_id)
@@ -2666,6 +2684,39 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
         return
 
     try:
+        # ── ANA Calendar Action Check ─────────────────────────────
+        if agent["name"] == "ANA":
+            handled, calendar_result = handle_calendar_action(text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[CALENDAR ACTION RESULT]\n{calendar_result}"},
+                        {"role": "user", "content": "Present the above calendar result naturally as ANA. Keep it concise — the data is already formatted. Add a brief friendly note if appropriate, but don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = calendar_result
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── Standard Agent Response ──────────────────────────────
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
