@@ -2785,11 +2785,57 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 return
 
         # ── Standard Agent Response ──
-        conversation = [{"role": "user", "content": clean_text}]
+        # Use thread history for context if this is a thread reply
+        conversation = []
+        if thread_ts:
+            try:
+                thread_resp = http_requests.get(
+                    "https://slack.com/api/conversations.replies",
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                    params={"channel": channel_id, "ts": thread_ts, "limit": 20},
+                    timeout=10,
+                )
+                thread_data = thread_resp.json()
+                if thread_data.get("ok"):
+                    for msg in thread_data.get("messages", []):
+                        msg_text = msg.get("text", "").strip()
+                        if not msg_text:
+                            continue
+                        # Strip agent name prefix from bot messages (e.g. "*MAYA (Slack):*\n...")
+                        if msg.get("bot_id"):
+                            msg_text = re.sub(r"^\*[A-Z ()]+:\*\n?", "", msg_text).strip()
+                            conversation.append({"role": "assistant", "content": msg_text})
+                        else:
+                            # Strip agent mentions from user messages
+                            clean_msg = re.sub(r"<@[A-Z0-9]+>", "", msg_text)
+                            for n in AGENT_MENTION_MAP:
+                                clean_msg = re.sub(r"(?i)(?:^|(?<=[\s,;:]))@?" + re.escape(n) + r"(?=[,;:\s!?.]|$)", "", clean_msg)
+                            clean_msg = re.sub(r"^[\s,;:—\-]+", "", clean_msg).strip()
+                            if clean_msg:
+                                conversation.append({"role": "user", "content": clean_msg})
+                    # Merge consecutive same-role messages
+                    merged = []
+                    for m in conversation:
+                        if merged and merged[-1]["role"] == m["role"]:
+                            merged[-1]["content"] += "\n" + m["content"]
+                        else:
+                            merged.append(dict(m))
+                    conversation = merged
+                    # Must start and end with user
+                    if conversation and conversation[0]["role"] == "assistant":
+                        conversation = conversation[1:]
+                    if conversation and conversation[-1]["role"] == "assistant":
+                        conversation = conversation[:-1]
+            except Exception as e:
+                print(f"[#general] Thread history fetch error: {e}")
+
+        if not conversation:
+            conversation = [{"role": "user", "content": clean_text}]
+
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant. Only address what's in your domain.",
+            system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were mentioned. Keep your response focused and relevant. Only address what's in your domain.",
             messages=conversation,
         )
 
@@ -3286,12 +3332,33 @@ def slack_events():
         # ── #general: mention-based multi-agent routing ──
         if channel_id == GENERAL_CHANNEL_ID and text.strip():
             mentions = _parse_agent_mentions(text)
+            msg_ts = event.get("ts", "")
+
+            # Thread continuation: if replying in a thread with no new mentions,
+            # look up which agents were mentioned in the parent message
+            if not mentions and thread_ts:
+                try:
+                    parent_resp = http_requests.get(
+                        "https://slack.com/api/conversations.history",
+                        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                        params={"channel": channel_id, "latest": thread_ts, "inclusive": "true", "limit": 1},
+                        timeout=5,
+                    )
+                    parent_data = parent_resp.json()
+                    if parent_data.get("ok"):
+                        parent_msgs = parent_data.get("messages", [])
+                        if parent_msgs:
+                            parent_text = parent_msgs[0].get("text", "")
+                            mentions = _parse_agent_mentions(parent_text)
+                            if mentions:
+                                print(f"[#general] Thread continuation — inheriting mentions from parent: {[m[0] for m in mentions]}")
+                except Exception as e:
+                    print(f"[#general] Thread parent lookup error: {e}")
+
             if mentions:
-                # Use the message's own ts as thread parent (so all agent replies group under it)
-                msg_ts = event.get("ts", "")
                 parent_ts = thread_ts or msg_ts
                 for agent_name, agent_channel_id in mentions:
-                    print(f"[#general] Routing to {agent_name.upper()} (mentioned)")
+                    print(f"[#general] Routing to {agent_name.upper()} ({'thread continuation' if thread_ts and not _parse_agent_mentions(text) else 'mentioned'})")
                     threading.Thread(
                         target=_handle_general_agent_message,
                         args=(channel_id, text, user_id, agent_channel_id, parent_ts),
