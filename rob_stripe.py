@@ -218,7 +218,7 @@ def list_active_subscriptions(text):
             ("status", "active"),
             ("limit", 50),
             ("expand[]", "data.customer"),
-            ("expand[]", "data.default_price"),
+            ("expand[]", "data.items.data.price"),
         ])
 
         sub_list = subscriptions.get("data", [])
