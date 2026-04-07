@@ -232,8 +232,14 @@ def get_campaign_stats(text):
             return "🤔 Which campaign? Give me a name or part of the subject line."
 
         # Search campaigns to find a match
+        print(f"[Susan] get_campaign_stats searching for: '{text_clean}'")
         data = _mc_get("/campaigns", params={"count": 50, "sort_field": "send_time", "sort_dir": "DESC"})
         campaigns = data.get("campaigns", [])
+        # Debug: log first few campaign titles
+        for i, c in enumerate(campaigns[:5]):
+            t = c.get("settings", {}).get("title", "?")
+            s = c.get("settings", {}).get("subject_line", "?")
+            print(f"[Susan] Campaign {i}: title='{t}', subject='{s}'")
         target = _find_campaign_by_name(campaigns, text_clean)
 
         if not target:
