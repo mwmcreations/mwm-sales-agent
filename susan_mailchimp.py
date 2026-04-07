@@ -195,16 +195,30 @@ def get_campaign_stats(text):
         campaigns = data.get("campaigns", [])
 
         search_lower = text_clean.lower()
+        search_words = [w for w in search_lower.split() if len(w) > 1]
         target = None
+        best_score = 0
+
         for c in campaigns:
             title = c.get("settings", {}).get("title", "").lower()
             subject = c.get("settings", {}).get("subject_line", "").lower()
+            combined = f"{title} {subject}"
+
+            # Exact substring match — highest priority
             if search_lower in title or search_lower in subject:
                 target = c
                 break
 
+            # Word overlap scoring — flexible fuzzy match
+            if search_words:
+                matches = sum(1 for w in search_words if w in combined)
+                score = matches / len(search_words)
+                if score > best_score and score >= 0.5:  # At least half the words match
+                    best_score = score
+                    target = c
+
         if not target:
-            return f'🔍 No campaign found matching *"{text_clean}"*.'
+            return f'🔍 No campaign found matching *"{text_clean}"*. Try listing all campaigns first to see exact names.'
 
         campaign_id = target["id"]
         title = target.get("settings", {}).get("title", "(untitled)")
