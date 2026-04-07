@@ -72,7 +72,7 @@ ERIC_ACTION_INTENTS = {
         r"(?:what|list|show|get|check|pull)\s+(?:active|running|current|live)\s+(?:campaigns?|ads?)",
         r"(?:what|which|list|show)\s+(?:campaigns?|ads?)\s+(?:are|is)\s+(?:active|running|live|on)",
         r"(?:active|running|live|current)\s+(?:campaigns?|ads?)",
-        r"(?:list|show|get|what)\s+(?:campaigns?|ads?)(?:\s+(?:status|overview|summary))?",
+        r"(?:list|show|get|what)\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(?:campaigns?|ads?)(?:\s+(?:status|overview|summary|including|paused|inactive|archived))?",
         r"(?:are|is)\s+(?:there\s+)?(?:any\s+)?(?:campaigns?|ads?)\s+(?:running|active|live)",
         r"(?:what|which)\s+(?:ads?|campaigns?)\s+(?:do\s+we|are\s+we)\s+(?:have|running)",
     ],
