@@ -2635,17 +2635,29 @@ AGENT_MENTION_MAP = {
 }
 
 def _parse_agent_mentions(text):
-    """Extract @agent mentions from message text.
+    """Extract agent mentions from message text.
     Returns list of (agent_name, agent_channel_id) tuples.
-    Matches: @dev, @DEV, @Dev, @maya, @MAYA, etc.
+
+    Matches these formats (case-insensitive):
+    - Plain name as word: "maya pipeline status", "hey dev and maya"
+    - With @: "@dev what's up" (if Slack doesn't autocomplete)
+    - With comma/colon: "maya, pipeline status", "dev: check this"
+    - Slack user mention: "<@U0AQWRD7KLN>" is stripped before matching
+
+    To avoid false positives with common words (e.g. "rob"), agent names
+    must appear as whole words bounded by word boundaries.
     """
     mentions = []
     seen = set()
-    for match in re.finditer(r"@(\w+)", text):
-        name = match.group(1).lower()
-        if name in AGENT_MENTION_MAP and name not in seen:
-            seen.add(name)
-            mentions.append((name, AGENT_MENTION_MAP[name]))
+    # Strip Slack-formatted user mentions like <@U0AQWRD7KLN> so they don't interfere
+    cleaned = re.sub(r"<@[A-Z0-9]+>", "", text)
+    text_lower = cleaned.lower()
+    for name, channel_id in AGENT_MENTION_MAP.items():
+        # Match agent name as a whole word (with optional @ prefix)
+        if re.search(r"(?:^|[\s,;:])@?" + re.escape(name) + r"(?=[,;:\s!?.]|$)", text_lower):
+            if name not in seen:
+                seen.add(name)
+                mentions.append((name, channel_id))
     return mentions
 
 
@@ -2659,8 +2671,11 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
         return
 
     try:
-        # Strip @mentions from the text so the agent sees a clean message
-        clean_text = re.sub(r"@(\w+)", "", text).strip()
+        # Strip agent name mentions and Slack user mentions so the agent sees a clean message
+        clean_text = re.sub(r"<@[A-Z0-9]+>", "", text)  # strip Slack mentions like <@U0AQWRD7KLN>
+        for name in AGENT_MENTION_MAP:
+            clean_text = re.sub(r"(?i)(?:^|(?<=[\s,;:]))@?" + re.escape(name) + r"(?=[,;:\s!?.]|$)", "", clean_text)
+        clean_text = re.sub(r"^[\s,;:—\-]+", "", clean_text).strip()  # clean up leading punctuation
         if not clean_text:
             clean_text = text  # fallback if stripping removed everything
 
