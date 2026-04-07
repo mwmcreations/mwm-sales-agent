@@ -2675,6 +2675,9 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
     if not agent:
         return
 
+    # ── Channel History Injection (from agent's own channel) ──
+    history_context = _get_channel_history_context(agent_channel_id, agent["name"], limit=10)
+
     try:
         # Strip Slack "Sent using Claude/Cowork" suffix that pollutes action parsing
         text = re.sub(r"\s*\*?Sent using\*?\s+\w+\s*$", "", text, flags=re.IGNORECASE).strip()
@@ -2693,7 +2696,7 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[CALENDAR ACTION RESULT]\n{calendar_result}"},
@@ -2775,7 +2778,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
@@ -2853,7 +2856,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[SUSAN ACTION RESULT]\n{action_result}"},
@@ -2929,7 +2932,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[VICTOR ACTION RESULT]\n{action_result}"},
@@ -3004,7 +3007,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[ERIC ACTION RESULT]\n{action_result}"},
@@ -3081,7 +3084,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[ROB ACTION RESULT]\n{action_result}"},
@@ -3158,7 +3161,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
@@ -3211,7 +3214,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=get_agent_system_prompt(agent) + general_suffix,
+            system=get_agent_system_prompt(agent) + history_context + general_suffix,
             messages=conversation,
         )
 
@@ -3426,6 +3429,53 @@ CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate site names
 """
 
     return base
+
+
+def _get_channel_history_context(channel_id, agent_name, limit=10):
+    """Fetch recent Slack channel messages and format as system prompt context.
+
+    Gives agents short-term working memory by injecting the last N messages
+    from their channel into the system prompt.
+    """
+    try:
+        url = "https://slack.com/api/conversations.history"
+        headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+        resp = http_requests.get(
+            url, headers=headers,
+            params={"channel": channel_id, "limit": limit},
+            timeout=10
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            print(f"[HISTORY] Channel history fetch failed: {data.get('error')}")
+            return ""
+        lines = []
+        for msg in reversed(data.get("messages", [])):
+            msg_text = msg.get("text", "").strip()
+            if not msg_text or msg.get("subtype"):
+                continue
+            # Truncate very long messages to keep context manageable
+            if len(msg_text) > 500:
+                msg_text = msg_text[:500] + "..."
+            ts = float(msg.get("ts", 0))
+            from datetime import datetime
+            time_str = datetime.fromtimestamp(ts).strftime("%I:%M %p")
+            if msg.get("bot_id"):
+                lines.append(f"[{time_str}] {agent_name}: {msg_text}")
+            else:
+                lines.append(f"[{time_str}] Michael: {msg_text}")
+        if not lines:
+            return ""
+        return (
+            "\n\n--- Recent channel activity (use for context, do NOT repeat verbatim) ---\n"
+            + "\n".join(lines)
+            + "\n--- End of recent activity ---"
+        )
+    except Exception as e:
+        print(f"[HISTORY] Error fetching channel history: {e}")
+        return ""
+
+
 def _get_slack_history(channel_id, limit=10):
     """Fetch recent Slack messages and build Claude conversation history."""
     try:
@@ -3472,6 +3522,10 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
 
     # Strip Slack "Sent using Claude/Cowork" suffix that pollutes action parsing
     text = re.sub(r"\s*\*?Sent using\*?\s+\w+\s*$", "", text, flags=re.IGNORECASE).strip()
+
+    # ── Channel History Injection ─────────────────────────────
+    # Fetch recent channel messages to give the agent short-term memory
+    history_context = _get_channel_history_context(channel_id, agent["name"], limit=10)
 
     try:
         # ── ANA Calendar Action Check ─────────────────────────────
@@ -3601,7 +3655,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[CALENDAR ACTION RESULT]\n{calendar_result}"},
@@ -3701,7 +3755,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
@@ -3793,7 +3847,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[SUSAN ACTION RESULT]\n{action_result}"},
@@ -3882,7 +3936,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[VICTOR ACTION RESULT]\n{action_result}"},
@@ -3971,7 +4025,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[ERIC ACTION RESULT]\n{action_result}"},
@@ -4060,7 +4114,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[ROB ACTION RESULT]\n{action_result}"},
@@ -4149,7 +4203,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                 response = client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=1024,
-                    system=get_agent_system_prompt(agent),
+                    system=get_agent_system_prompt(agent) + history_context,
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
@@ -4183,7 +4237,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=get_agent_system_prompt(agent),
+            system=get_agent_system_prompt(agent) + history_context,
             messages=conversation if conversation else [{"role": "user", "content": text}]
         )
 
