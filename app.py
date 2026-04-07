@@ -17,6 +17,7 @@ from ana_calendar import handle_calendar_action
 from maya_actions import handle_maya_action
 from susan_mailchimp import handle_susan_action
 from victor_yodeck import handle_victor_action
+from eric_meta import handle_eric_action
 
 load_dotenv()
 
@@ -2942,6 +2943,81 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── ERIC Meta Ads Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "ERIC":
+            handled, action_result = handle_eric_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is an Eric Meta Ads action request. Eric handles:
+1. Get active campaigns (list running/active campaigns)
+2. Get campaign stats (performance metrics for a campaign)
+3. Pause campaign (pause an active campaign)
+4. Get ad account balance (spending and balance info)
+5. List ad sets (list ad sets, optionally for a campaign)
+
+If it IS an Eric action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: get_active_campaigns, get_campaign_stats, pause_campaign, get_ad_account_balance, list_ad_sets
+
+Examples:
+- "What campaigns are running?" → {"action": "get_active_campaigns", "command": "list active campaigns"}
+- "How's the Victory Schools ad doing?" → {"action": "get_campaign_stats", "command": "get stats for Victory Schools"}
+- "How much have we spent?" → {"action": "get_ad_account_balance", "command": "get ad account balance"}
+
+If it is NOT an Eric action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[ERIC #general] Haiku classified as: {cls_data}")
+                            handled, action_result = handle_eric_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[ERIC #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[ERIC ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Eric. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -3134,6 +3210,25 @@ You manage digital signage across 37 Victory Martial Arts schools. Each school h
 When an action is detected, it executes automatically against the Yodeck API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate screen names, school names, device statuses, or any other Yodeck data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list screens first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Victor.
+"""
+
+    if agent_info["name"] == "ERIC":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+📊 *Meta Ads Management*
+• Active campaigns — "What campaigns are running?" / "List active ads"
+• Campaign stats — "How's the Victory Schools ad doing?" / "Get stats for [campaign name]"
+• Pause campaign — "Pause the test campaign" / "Stop the Victory Schools ad"
+• Ad account balance — "How much have we spent?" / "Check ad account balance"
+• List ad sets — "Show ad sets" / "List ad sets for [campaign name]"
+
+You manage paid advertising for MWM Creations through Meta (Facebook/Instagram) ads. The ad account is MWM Creations.
+
+When an action is detected, it executes automatically against the Meta Marketing API. You will receive real data from the API and should present it naturally.
+
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, spend amounts, impressions, click rates, or any other Meta Ads data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Eric.
 """
 
     return base
@@ -3598,6 +3693,95 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[VICTOR ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Victor. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── ERIC Meta Ads Action Check ────────────────────────────
+        if agent["name"] == "ERIC":
+            handled, action_result = handle_eric_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is an Eric Meta Ads action request. Eric handles:
+1. Get active campaigns (list running/active campaigns)
+2. Get campaign stats (performance metrics for a campaign)
+3. Pause campaign (pause an active campaign)
+4. Get ad account balance (spending and balance info)
+5. List ad sets (list ad sets, optionally for a campaign)
+
+If it IS an Eric action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: get_active_campaigns, get_campaign_stats, pause_campaign, get_ad_account_balance, list_ad_sets
+
+The "command" should rephrase the user's message as a clear English instruction Eric can parse.
+Examples:
+- "What campaigns are running?" → {"action": "get_active_campaigns", "command": "list active campaigns"}
+- "How's the Victory Schools ad doing?" → {"action": "get_campaign_stats", "command": "get stats for Victory Schools"}
+- "How much have we spent?" → {"action": "get_ad_account_balance", "command": "get ad account balance"}
+- "Show ad sets for the new campaign" → {"action": "list_ad_sets", "command": "list ad sets for new campaign"}
+- "Pause the test campaign" → {"action": "pause_campaign", "command": "pause campaign test"}
+
+If it is NOT an Eric action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[ERIC] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[ERIC] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_eric_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[ERIC] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Eric
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[ERIC ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Eric. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
