@@ -20,6 +20,7 @@ from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
 from cris_wix import handle_cris_action
+from lara_actions import handle_lara_action
 
 load_dotenv()
 
@@ -2133,6 +2134,14 @@ def serve_audio(filename):
     return send_from_directory("/tmp/audio", filename)
 
 
+@app.route("/media/<path:filename>")
+def serve_media(filename):
+    """Serve media files (images, videos, documents) for WhatsApp delivery."""
+    media_dir = os.path.join(os.path.dirname(__file__), "media")
+    os.makedirs(media_dir, exist_ok=True)
+    return send_from_directory(media_dir, filename)
+
+
 def _extract_gabriela_followups(text: str) -> list[str]:
     """Return URLs and phone numbers found in Gabriela's reply to send as follow-up texts."""
     items = []
@@ -2621,6 +2630,7 @@ AGENT_CHANNELS = {
     "C0APLH98ANN": {"name": "ROB", "role": "Financial Advisor — handles invoicing, budgets, and financial planning", "channel": "#rob"},
     "C0APJF77MB8": {"name": "CRIS", "role": "Website Developer — builds and maintains websites", "channel": "#cris"},
     "C0APZEBQ4P3": {"name": "ERIC", "role": "Traffic Manager — manages paid ads, SEO, and digital marketing campaigns", "channel": "#eric"},
+    "LARA_PLACEHOLDER": {"name": "LARA", "role": "Client & Production Manager — manages client relationships, production schedules, and project delivery", "channel": "#lara"},
 }
 
 # #general channel — mention-based multi-agent routing
@@ -2637,6 +2647,7 @@ AGENT_MENTION_MAP = {
     "rob": "C0APLH98ANN",
     "cris": "C0APJF77MB8",
     "eric": "C0APZEBQ4P3",
+    "lara": "LARA_PLACEHOLDER",
 }
 
 def _parse_agent_mentions(text):
@@ -3177,6 +3188,79 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── LARA Production Action Check (#general) ──
+        if agent["name"] == "LARA":
+            handled, action_result = handle_lara_action(clean_text)
+
+            # Haiku classifier fallback
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Lara production/client management action request. Lara handles:
+1. Production overview (all client statuses)
+2. Client status (look up a specific client)
+3. Update client field (script status, shoot date, content status, etc.)
+4. Upcoming shoots (scheduled shoots list)
+5. Send client email (email a client about something)
+6. Check calendar (view schedule/availability)
+7. Read emails (check inbox, emails from a client)
+
+If it IS a Lara action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails
+
+If it is NOT a Lara action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[LARA #general] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[LARA #general] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_lara_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[LARA #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[LARA ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Lara. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -3426,6 +3510,32 @@ You are the Website Developer for MWM Creations. You manage Wix websites — sit
 When an action is detected, it executes automatically against the Wix API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate site names, contact details, blog posts, product listings, or any other Wix data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list sites first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Cris.
+"""
+
+    if agent_info["name"] == "LARA":
+        base += """
+
+You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+📋 *Production Tracker (Google Sheets)*
+• Production overview — "What's the production status?" / "How are our projects?"
+• Client status — "Status on Victory Martial Arts" / "Check Green Rest"
+• Update client — "Update Victory script to Approved" / "Mark Green Rest shoot confirmed as Yes"
+• Upcoming shoots — "What shoots are coming up?" / "Next scheduled sessions"
+
+📧 *Email (Gmail)*
+• Read emails — "Check inbox" / "Any emails from Victory?" / "Show recent emails"
+• Send email — "Email Victory about the shoot schedule" / "Message Green Rest regarding the script"
+
+📅 *Calendar*
+• Check calendar — "What's on the calendar today?" / "Any meetings this week?"
+• Availability — "Is Michael free Thursday at 2pm?"
+
+When an action is detected, it executes automatically against Google Sheets, Gmail, or Calendar. You will receive the result as a [LARA ACTION RESULT] and should present it naturally.
+
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate client names, production statuses, shoot dates, email content, or any other data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to check the tracker first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Lara.
 """
 
     return base
@@ -4208,6 +4318,99 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Cris. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── LARA Production Action Check ────────────────────────
+        if agent["name"] == "LARA":
+            handled, action_result = handle_lara_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Lara production/client management action request. Lara handles:
+1. Production overview (all client statuses)
+2. Client status (look up a specific client)
+3. Update client field (script status, shoot date, content status, etc.)
+4. Upcoming shoots (scheduled shoots list)
+5. Send client email (email a client about something)
+6. Check calendar (view schedule/availability)
+7. Read emails (check inbox, emails from a client)
+
+If it IS a Lara action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails
+
+The "command" should rephrase the user's message as a clear English instruction Lara can parse.
+Examples:
+- "How are our projects?" → {"action": "production_overview", "command": "production overview"}
+- "Status on Victory" → {"action": "client_status", "command": "status on Victory"}
+- "Update Victory script to Approved" → {"action": "update_client", "command": "update Victory script to Approved"}
+- "What shoots are coming up?" → {"action": "upcoming_shoots", "command": "upcoming shoots"}
+- "Email Green Rest about the shoot" → {"action": "send_client_email", "command": "send email to Green Rest about the shoot"}
+- "What's on the calendar?" → {"action": "check_calendar", "command": "what is on the calendar today"}
+- "Any emails from Victory?" → {"action": "read_emails", "command": "check emails from Victory"}
+
+If it is NOT a Lara action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[LARA] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[LARA] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_lara_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[LARA] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Lara
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context,
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[LARA ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Lara. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
