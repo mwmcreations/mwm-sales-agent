@@ -2618,6 +2618,139 @@ AGENT_CHANNELS = {
     "C0APZEBQ4P3": {"name": "ERIC", "role": "Traffic Manager — manages paid ads, SEO, and digital marketing campaigns", "channel": "#eric"},
 }
 
+# #general channel — mention-based multi-agent routing
+GENERAL_CHANNEL_ID = "C01N06A94SH"
+
+# Map @mention keywords → agent channel IDs (for routing in #general)
+AGENT_MENTION_MAP = {
+    "dev": "C0AR7NY6SHF",
+    "matt": "C0APE9EJ2CT",
+    "ana": "C0APE5V3U2F",
+    "susan": "C0APQ4TDF7W",
+    "maya": "C0APE5S76HH",
+    "victor": "C0ART65SU8Y",
+    "rob": "C0APLH98ANN",
+    "cris": "C0APJF77MB8",
+    "eric": "C0APZEBQ4P3",
+}
+
+def _parse_agent_mentions(text):
+    """Extract @agent mentions from message text.
+    Returns list of (agent_name, agent_channel_id) tuples.
+    Matches: @dev, @DEV, @Dev, @maya, @MAYA, etc.
+    """
+    mentions = []
+    seen = set()
+    for match in re.finditer(r"@(\w+)", text):
+        name = match.group(1).lower()
+        if name in AGENT_MENTION_MAP and name not in seen:
+            seen.add(name)
+            mentions.append((name, AGENT_MENTION_MAP[name]))
+    return mentions
+
+
+def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, thread_ts):
+    """Handle a mention-routed message in #general.
+    Runs the agent as if it received the message in its own channel,
+    but posts the reply as a thread in #general.
+    """
+    agent = AGENT_CHANNELS.get(agent_channel_id)
+    if not agent:
+        return
+
+    try:
+        # Strip @mentions from the text so the agent sees a clean message
+        clean_text = re.sub(r"@(\w+)", "", text).strip()
+        if not clean_text:
+            clean_text = text  # fallback if stripping removed everything
+
+        # ── ANA Calendar Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "ANA":
+            handled, calendar_result = handle_calendar_action(clean_text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[CALENDAR ACTION RESULT]\n{calendar_result}"},
+                        {"role": "user", "content": "Present the above calendar result naturally as ANA. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = calendar_result or "I processed your calendar request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
+        # ── MAYA Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "MAYA (Slack)":
+            handled, action_result, handoff_msg = handle_maya_action(clean_text)
+            if handled:
+                if handoff_msg:
+                    try:
+                        post_to_slack("C0APE5V3U2F", handoff_msg)
+                    except Exception as e:
+                        print(f"[MAYA] Handoff posting error from #general: {e}")
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Maya. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
+        # ── Standard Agent Response ──
+        conversation = [{"role": "user", "content": clean_text}]
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant. Only address what's in your domain.",
+            messages=conversation,
+        )
+
+        reply = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                reply += block.text
+
+        if not reply:
+            reply = "I received your message but couldn't generate a response."
+
+        _post_general_reply(channel_id, reply, agent, thread_ts)
+
+    except Exception as e:
+        print(f"❌ Error in {agent['name']} #general response: {e}")
+        _post_general_reply(channel_id, f"⚠️ Error processing message: {str(e)[:200]}", agent, thread_ts)
+
+
+def _post_general_reply(channel_id, text, agent, thread_ts):
+    """Post an agent's reply in #general as a thread reply, prefixed with the agent name."""
+    prefixed = f"*{agent['name']}:*\n{text}"
+    url = "https://slack.com/api/chat.postMessage"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {"channel": channel_id, "text": prefixed, "thread_ts": thread_ts}
+    http_requests.post(url, headers=headers, json=payload, timeout=10)
+
+
 # Track processed event IDs to prevent duplicate processing
 _processed_slack_events = set()
 
@@ -3081,8 +3214,23 @@ def slack_events():
         user_id = event.get("user", "")
         thread_ts = event.get("thread_ts")
 
-        # Only respond if it's a registered agent channel
-        if channel_id in AGENT_CHANNELS and text.strip():
+        # ── #general: mention-based multi-agent routing ──
+        if channel_id == GENERAL_CHANNEL_ID and text.strip():
+            mentions = _parse_agent_mentions(text)
+            if mentions:
+                # Use the message's own ts as thread parent (so all agent replies group under it)
+                msg_ts = event.get("ts", "")
+                parent_ts = thread_ts or msg_ts
+                for agent_name, agent_channel_id in mentions:
+                    print(f"[#general] Routing to {agent_name.upper()} (mentioned)")
+                    threading.Thread(
+                        target=_handle_general_agent_message,
+                        args=(channel_id, text, user_id, agent_channel_id, parent_ts),
+                        daemon=True
+                    ).start()
+
+        # ── Dedicated agent channels: direct routing ──
+        elif channel_id in AGENT_CHANNELS and text.strip():
             threading.Thread(
                 target=_handle_slack_agent_message,
                 args=(channel_id, text, user_id, thread_ts),
