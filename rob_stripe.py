@@ -166,10 +166,10 @@ def list_recent_charges(text):
     try:
         print("[ROB] Fetching recent charges...")
 
-        charges = _stripe_get("/charges", params={
-            "limit": 20,
-            "expand": ["data.customer"],
-        })
+        charges = _stripe_get("/charges", params=[
+            ("limit", 20),
+            ("expand[]", "data.customer"),
+        ])
 
         charge_list = charges.get("data", [])
 
@@ -214,11 +214,12 @@ def list_active_subscriptions(text):
     try:
         print("[ROB] Fetching active subscriptions...")
 
-        subscriptions = _stripe_get("/subscriptions", params={
-            "status": "active",
-            "limit": 50,
-            "expand": ["data.customer", "data.default_price"],
-        })
+        subscriptions = _stripe_get("/subscriptions", params=[
+            ("status", "active"),
+            ("limit", 50),
+            ("expand[]", "data.customer"),
+            ("expand[]", "data.default_price"),
+        ])
 
         sub_list = subscriptions.get("data", [])
 
@@ -284,11 +285,11 @@ def get_customer_by_email(text):
         print(f"[ROB] Looking up customer by email: {customer_email}")
 
         # Search for customer by email
-        customers = _stripe_get("/customers", params={
-            "email": customer_email,
-            "limit": 1,
-            "expand": ["data.subscriptions"],
-        })
+        customers = _stripe_get("/customers", params=[
+            ("email", customer_email),
+            ("limit", 1),
+            ("expand[]", "data.subscriptions"),
+        ])
 
         customer_list = customers.get("data", [])
 
@@ -341,10 +342,10 @@ def list_invoices(text):
     try:
         print("[ROB] Fetching recent invoices...")
 
-        invoices = _stripe_get("/invoices", params={
-            "limit": 30,
-            "expand": ["data.customer"],
-        })
+        invoices = _stripe_get("/invoices", params=[
+            ("limit", 30),
+            ("expand[]", "data.customer"),
+        ])
 
         invoice_list = invoices.get("data", [])
 
