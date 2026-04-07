@@ -125,35 +125,61 @@ def _parse_date_range(text):
             hour=0, minute=0, second=0, microsecond=0
         )
     else:
-        date_patterns = [
-            (r"(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?", "month_day"),
-            (r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", "slash_date"),
-        ]
+        # Check for day-of-week names first
+        _DAY_NAMES_R = {
+            "monday": 0, "mon": 0, "segunda": 0,
+            "tuesday": 1, "tue": 1, "tues": 1, "terça": 1, "terca": 1,
+            "wednesday": 2, "wed": 2, "quarta": 2,
+            "thursday": 3, "thu": 3, "thurs": 3, "quinta": 3,
+            "friday": 4, "fri": 4, "sexta": 4,
+            "saturday": 5, "sat": 5, "sábado": 5, "sabado": 5,
+            "sunday": 6, "sun": 6, "domingo": 6,
+        }
+        day_match = re.search(
+            r"\b(monday|mon|tuesday|tue(?:s)?|wednesday|wed|thursday|thu(?:rs)?|friday|fri|saturday|sat|sunday|sun|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo)\b",
+            text_lower,
+        )
         parsed = False
-        for pat, fmt in date_patterns:
-            m = re.search(pat, text)
-            if m:
-                try:
-                    if fmt == "month_day":
-                        month_str, day_str = m.group(1), m.group(2)
-                        year = int(m.group(3)) if m.group(3) else now.year
-                        date_str = f"{month_str} {day_str} {year}"
-                        parsed_date = datetime.strptime(date_str, "%B %d %Y")
-                        start = tz.localize(parsed_date)
-                        end = start + timedelta(days=1)
-                        parsed = True
-                    elif fmt == "slash_date":
-                        month, day = int(m.group(1)), int(m.group(2))
-                        year = int(m.group(3)) if m.group(3) else now.year
-                        if year < 100:
-                            year += 2000
-                        start = tz.localize(datetime(year, month, day))
-                        end = start + timedelta(days=1)
-                        parsed = True
-                except (ValueError, AttributeError):
-                    continue
-                if parsed:
-                    break
+        if day_match:
+            target_weekday = _DAY_NAMES_R[day_match.group(1)]
+            current_weekday = now.weekday()
+            days_ahead = (target_weekday - current_weekday) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            start = (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            parsed = True
+
+        # Then check explicit date formats
+        if not parsed:
+            date_patterns = [
+                (r"(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?", "month_day"),
+                (r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", "slash_date"),
+            ]
+            for pat, fmt in date_patterns:
+                m = re.search(pat, text)
+                if m:
+                    try:
+                        if fmt == "month_day":
+                            month_str, day_str = m.group(1), m.group(2)
+                            year = int(m.group(3)) if m.group(3) else now.year
+                            date_str = f"{month_str} {day_str} {year}"
+                            parsed_date = datetime.strptime(date_str, "%B %d %Y")
+                            start = tz.localize(parsed_date)
+                            end = start + timedelta(days=1)
+                            parsed = True
+                        elif fmt == "slash_date":
+                            month, day = int(m.group(1)), int(m.group(2))
+                            year = int(m.group(3)) if m.group(3) else now.year
+                            if year < 100:
+                                year += 2000
+                            start = tz.localize(datetime(year, month, day))
+                            end = start + timedelta(days=1)
+                            parsed = True
+                    except (ValueError, AttributeError):
+                        continue
+                    if parsed:
+                        break
         if not parsed:
             start = now
             end = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -194,19 +220,44 @@ def _parse_event_details(text):
     elif "today" in text_lower:
         details["date"] = now.date()
     else:
-        date_match = re.search(
-            r"(?:on\s+)?(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?",
-            text, re.IGNORECASE,
+        # Check for day-of-week names (Monday, Tuesday, ..., Sunday)
+        _DAY_NAMES = {
+            "monday": 0, "mon": 0, "segunda": 0,
+            "tuesday": 1, "tue": 1, "tues": 1, "terça": 1, "terca": 1,
+            "wednesday": 2, "wed": 2, "quarta": 2,
+            "thursday": 3, "thu": 3, "thurs": 3, "quinta": 3,
+            "friday": 4, "fri": 4, "sexta": 4,
+            "saturday": 5, "sat": 5, "sábado": 5, "sabado": 5,
+            "sunday": 6, "sun": 6, "domingo": 6,
+        }
+        day_match = re.search(
+            r"\b(monday|mon|tuesday|tue(?:s)?|wednesday|wed|thursday|thu(?:rs)?|friday|fri|saturday|sat|sunday|sun|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo)\b",
+            text_lower,
         )
-        if date_match:
-            try:
-                month_str = date_match.group(1)
-                day = int(date_match.group(2))
-                year = int(date_match.group(3)) if date_match.group(3) else now.year
-                parsed = datetime.strptime(f"{month_str} {day} {year}", "%B %d %Y")
-                details["date"] = parsed.date()
-            except ValueError:
-                pass
+        if day_match:
+            target_weekday = _DAY_NAMES[day_match.group(1)]
+            current_weekday = now.weekday()
+            days_ahead = (target_weekday - current_weekday) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # If same day, assume next week
+            details["date"] = (now + timedelta(days=days_ahead)).date()
+
+        # Check for explicit month + day (e.g., "April 10th", "January 3")
+        if not details["date"]:
+            date_match = re.search(
+                r"(?:on\s+)?(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?",
+                text, re.IGNORECASE,
+            )
+            if date_match:
+                try:
+                    month_str = date_match.group(1)
+                    day = int(date_match.group(2))
+                    year = int(date_match.group(3)) if date_match.group(3) else now.year
+                    parsed = datetime.strptime(f"{month_str} {day} {year}", "%B %d %Y")
+                    details["date"] = parsed.date()
+                except ValueError:
+                    pass
+        # Check for slash format (e.g., "4/10" or "4/10/2026")
         if not details["date"]:
             slash_match = re.search(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", text)
             if slash_match:
