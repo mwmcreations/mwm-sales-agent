@@ -228,8 +228,16 @@ def _parse_event_details(text):
                 # Try to extract subject after scheduling verbs:
                 # "schedule a Team Meeting for..." / "book a meeting with the editor for..."
                 # "marca uma Reunião para..." / "agendar Treino para..."
+                # Stop words for title boundary: English temporal prepositions + day names.
+                # Portuguese prepositions (para/na/no) only stop when followed by a
+                # day-of-week or temporal noun so they don't break compound titles
+                # like "gravação no estúdio para sexta".
                 title_match = re.search(
-                    r"(?:schedule|book|create|add|set up|marca[r]?|agenda[r]?|cria[r]?)\s+(?:a |an |uma |um )?(.+?)(?:\s+(?:for|on|at|tomorrow|today|next|para|na|no|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)",
+                    r"(?:schedule|book|create|add|set up|marca[r]?|agenda[r]?|cria[r]?)\s+(?:a |an |uma |um )?(.+?)"
+                    r"(?:\s+(?:for|on|at|tomorrow|today|next"
+                    r"|(?:para|na|no)\s+(?:segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo|amanhã|amanha|hoje|próxima|proxima)"
+                    r"|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo"
+                    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)",
                     text, re.IGNORECASE,
                 )
                 if title_match:
@@ -297,11 +305,22 @@ def _parse_event_details(text):
     if not details["date"]:
         details["date"] = (now + timedelta(days=1)).date()
 
-    # Extract time — "at 5pm", "for 5pm", "às 14h", standalone "5pm"
-    time_match = re.search(r"(?:at|from|for|às|as)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)?", text_lower)
-    if not time_match:
-        # Try standalone time like "5pm" or "14h" without preposition
-        time_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)\b", text_lower)
+    # Extract time — "at 5pm", "for 5pm", "às 14h", standalone "5pm", "noon", "midnight"
+    # Handle "noon" and "midnight" as special keywords first
+    if re.search(r"\b(?:at\s+)?noon\b", text_lower):
+        details["start_time"] = "12:00"
+    elif re.search(r"\b(?:at\s+)?midnight\b", text_lower):
+        details["start_time"] = "00:00"
+    time_match = None
+    if not details["start_time"]:
+        # "at 5pm", "at 5", "from 3pm" — at/from allow optional am/pm
+        time_match = re.search(r"(?:at|from|às|as)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)?", text_lower)
+        if not time_match:
+            # "for 5pm" — "for" REQUIRES am/pm/h to avoid matching "for 2 hours"
+            time_match = re.search(r"for\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)", text_lower)
+        if not time_match:
+            # Try standalone time like "5pm" or "14h" without preposition
+            time_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|h)\b", text_lower)
     if time_match:
         hour = int(time_match.group(1))
         minute = int(time_match.group(2) or 0)
@@ -353,13 +372,13 @@ def _parse_event_details(text):
         else:
             # Try "at [Location Name]" but avoid matching time expressions like "at 3pm"
             at_match = re.search(
-                r"\bat\s+(?!(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM|h)|\d{1,2}(?::\d{2})?(?:\s|$)))([\w][\w\s&'.-]+?)(?:\s+(?:on|at|from|for|tomorrow|today|next|with|find|and)\b|\.\s|,\s|$)",
+                r"\bat\s+(?!(?:noon|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM|h)|\d{1,2}(?::\d{2})?(?:\s|$)))([\w][\w\s&'.-]+?)(?:\s+(?:on|at|from|for|tomorrow|today|next|with|find|and)\b|\.\s|,\s|$)",
                 text, re.IGNORECASE,
             )
             if at_match:
                 loc_candidate = at_match.group(1).strip()
-                # Only use if it looks like a place name (not a common word)
-                skip_words = {"a", "an", "the", "my", "our", "this", "that", "it", "its"}
+                # Only use if it looks like a place name (not a common word / time word)
+                skip_words = {"a", "an", "the", "my", "our", "this", "that", "it", "its", "noon", "midnight", "night", "once"}
                 if loc_candidate.split()[0].lower() not in skip_words and len(loc_candidate) > 2:
                     details["location"] = loc_candidate
 

@@ -2793,7 +2793,14 @@ Output ONLY the command string, nothing else.""",
                         model="claude-haiku-4-5-20251001",
                         max_tokens=300,
                         system="""You classify whether a message is a calendar/scheduling action request. The message may be in ANY language (Portuguese, English, Spanish, etc.).
-You will also receive recent conversation history for context. Follow-up messages like "yes", "do it", "perfect", "go ahead" ARE calendar actions if the conversation context shows a pending calendar operation.
+You will also receive recent conversation history for context.
+
+IMPORTANT: These are ALL calendar actions when the conversation context shows a pending calendar operation:
+- Confirmations: "yes", "do it", "perfect", "go ahead", "sim", "faz isso"
+- Corrections: "I said 5pm", "no, at 3pm", "I meant Thursday", "não, às 17h"
+- Modifications: "change it to 5pm", "make it Friday", "move to 3pm"
+
+For corrections/modifications, combine the ORIGINAL event details from conversation context with the corrected detail. Output the full create command with ALL details including the corrected field.
 
 If it IS a calendar action, respond with ONLY valid JSON:
 {"action": "create_event", "command": "<English calendar command>"}
