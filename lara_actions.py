@@ -27,9 +27,12 @@ PRODUCTION_SHEET_ID = os.getenv("GOOGLE_SHEETS_PRODUCTION_ID", "")
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
 DELEGATE_EMAIL = os.getenv("GOOGLE_DELEGATE_EMAIL", "michael@mwmcreations.com")
 
-SCOPES = [
+SCOPES_SHEETS_CAL = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/calendar",
+]
+
+SCOPES_GMAIL = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
@@ -117,13 +120,13 @@ def detect_lara_intent(text):
 
 
 # ── Google Services ─────────────────────────────────────────────────
-def _get_google_creds():
-    """Get authenticated Google credentials with DWD."""
+def _get_google_creds(scopes):
+    """Get authenticated Google credentials with DWD for specific scopes."""
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     creds_dict = json.loads(creds_json)
-    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
     if DELEGATE_EMAIL:
         creds = creds.with_subject(DELEGATE_EMAIL)
     return creds
@@ -131,17 +134,17 @@ def _get_google_creds():
 
 def _get_sheets_service():
     """Get authenticated Google Sheets service."""
-    return build("sheets", "v4", credentials=_get_google_creds(), cache_discovery=False)
+    return build("sheets", "v4", credentials=_get_google_creds(SCOPES_SHEETS_CAL), cache_discovery=False)
 
 
 def _get_calendar_service():
     """Get authenticated Google Calendar service."""
-    return build("calendar", "v3", credentials=_get_google_creds(), cache_discovery=False)
+    return build("calendar", "v3", credentials=_get_google_creds(SCOPES_SHEETS_CAL), cache_discovery=False)
 
 
 def _get_gmail_service():
-    """Get authenticated Gmail service."""
-    return build("gmail", "v1", credentials=_get_google_creds(), cache_discovery=False)
+    """Get authenticated Gmail service (requires Gmail DWD scopes)."""
+    return build("gmail", "v1", credentials=_get_google_creds(SCOPES_GMAIL), cache_discovery=False)
 
 
 # ── Production Tracker Helpers ──────────────────────────────────────
