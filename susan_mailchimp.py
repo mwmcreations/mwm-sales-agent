@@ -95,9 +95,9 @@ SUSAN_ACTION_INTENTS = {
         r"(?:change|update)\s+(.+?)(?:'s|s)?\s+(?:subject|subject\s+line|preview)\s+to\s+(.+)",
     ],
     "send_test_email": [
-        r"(?:send|fire)\s+(?:a\s+)?(?:test|preview)\s+(?:email\s+)?(?:for|of)\s+(.+)",
+        r"(?:send|fire)\s+(?:me\s+)?(?:a\s+)?(?:test|preview)\s+(?:email\s+)?(?:for|of)\s+(.+)",
         r"(?:test|preview)\s+(?:the\s+)?(?:campaign|email)\s+(.+)",
-        r"(?:send|fire)\s+(?:a\s+)?(?:test|preview)\s+(?:to\s+.+?\s+)?(?:for|of)\s+(.+)",
+        r"(?:send|fire)\s+(?:me\s+)?(?:a\s+)?(?:test|preview)\s+(?:to\s+.+?\s+)?(?:for|of)\s+(.+)",
     ],
     "list_audiences": [
         r"(?:list|show|get|what)\s*(?:are\s+)?(?:the\s+|my\s+|our\s+)?(?:audiences?|lists?|segments?|subscribers?)",
@@ -443,7 +443,7 @@ def send_test_email(text):
     """Send a test email for a campaign to michael@mwmcreations.com."""
     try:
         text_clean = re.sub(
-            r"^(?:susan[,:\s]*)?(?:send|fire)\s+(?:a\s+)?(?:test|preview)\s+(?:email\s+)?(?:to\s+\S+\s+)?(?:for|of)?\s*",
+            r"^(?:susan[,:\s]*)?(?:send|fire)\s+(?:me\s+)?(?:a\s+)?(?:test|preview)\s+(?:email\s+)?(?:to\s+\S+\s+)?(?:for|of)?\s*",
             "", text.strip(), flags=re.IGNORECASE
         ).strip().strip('"\'')
 
@@ -452,6 +452,13 @@ def send_test_email(text):
                 r"^(?:susan[,:\s]*)?(?:test|preview)\s+(?:the\s+)?(?:campaign|email)\s*",
                 "", text.strip(), flags=re.IGNORECASE
             ).strip().strip('"\'')
+
+        # Fallback: if text_clean still has action words, try extracting after "for/of"
+        if text_clean and re.match(r"(?:send|fire|test|preview|me|a|the|email)\b", text_clean, re.IGNORECASE):
+            for_match = re.search(r"\b(?:for|of)\s+(.+)", text.strip(), re.IGNORECASE)
+            if for_match:
+                text_clean = for_match.group(1).strip().strip('"\'')
+
 
         if not text_clean or len(text_clean) < 2:
             return "🤔 Which campaign should I send a test for? Give me a name."
