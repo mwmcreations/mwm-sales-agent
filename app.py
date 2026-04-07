@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 import requests as http_requests
 from ana_calendar import handle_calendar_action
 from maya_actions import handle_maya_action
+from susan_mailchimp import handle_susan_action
 
 load_dotenv()
 
@@ -2784,6 +2785,84 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── SUSAN Mailchimp Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "SUSAN":
+            handled, action_result = handle_susan_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Susan email marketing action request. Susan handles:
+1. List campaigns (drafts, scheduled, sent, or all)
+2. Get campaign stats (open rate, click rate)
+3. Pause/cancel a scheduled campaign
+4. Schedule a draft campaign to send at a specific time
+5. Update a campaign's subject line or preview text
+6. Send a test email for a campaign
+7. List audiences/subscriber lists
+
+If it IS a Susan action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: list_campaigns, campaign_stats, pause_campaign, schedule_campaign, update_campaign, send_test_email, list_audiences
+
+The "command" should rephrase the user's message as a clear English command.
+Examples:
+- "What campaigns do we have?" → {"action": "list_campaigns", "command": "list campaigns"}
+- "How did the Victory Schools email do?" → {"action": "campaign_stats", "command": "stats for Victory Schools"}
+- "Send me a test of Email 1" → {"action": "send_test_email", "command": "send test email for Email 1"}
+
+If it is NOT a Susan action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[SUSAN #general] Haiku classified as: {cls_data}")
+                            handled, action_result = handle_susan_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[SUSAN #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[SUSAN ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Susan. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -2935,6 +3014,27 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 When an action is detected, it executes automatically against the Google Sheets lead tracker or calendar. You will receive the result as a [MAYA ACTION RESULT] and should present it naturally.
 
 CRITICAL: NEVER tell the user you executed a sheets update, handoff, or calendar check unless you received a [MAYA ACTION RESULT] confirming the action was executed. If no result was received, tell them you couldn't process the request automatically and ask them to rephrase.
+"""
+
+    if agent_info["name"] == "SUSAN":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+📧 *Campaigns (Mailchimp)*
+• List campaigns — "What campaigns do we have?" / "Show me all drafts" / "List sent campaigns"
+• Campaign stats — "What's the open rate on the Victory Schools email?" / "How did our last campaign perform?"
+• Pause campaign — "Pause the scheduled email" / "Cancel the next send"
+• Schedule campaign — "Schedule Email 1 for tomorrow at 10am" / "Send the draft on Friday at 2pm"
+• Update campaign — "Change the subject line on Email 1 to 'New Subject'" / "Update preview text on the welcome email"
+• Send test email — "Send me a test email for Email 1" / "Test the Victory Schools campaign"
+
+📋 *Audiences*
+• List audiences — "What audiences do we have?" / "Show subscriber lists"
+
+When an action is detected, it executes automatically against the Mailchimp API. You will receive the result as a [SUSAN ACTION RESULT] and should present it naturally.
+
+CRITICAL: NEVER tell the user you executed a Mailchimp action (listed campaigns, pulled stats, paused, scheduled, updated, or sent a test email) unless you received a [SUSAN ACTION RESULT] confirming the action was executed. If no result was received, tell them you couldn't process the request automatically and ask them to rephrase.
 """
 
     return base
@@ -3215,6 +3315,98 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Maya. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── SUSAN Mailchimp Action Check ─────────────────────────
+        if agent["name"] == "SUSAN":
+            handled, action_result = handle_susan_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Susan email marketing action request. Susan handles:
+1. List campaigns (drafts, scheduled, sent, or all)
+2. Get campaign stats (open rate, click rate)
+3. Pause/cancel a scheduled campaign
+4. Schedule a draft campaign to send at a specific time
+5. Update a campaign's subject line or preview text
+6. Send a test email for a campaign
+7. List audiences/subscriber lists
+
+If it IS a Susan action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: list_campaigns, campaign_stats, pause_campaign, schedule_campaign, update_campaign, send_test_email, list_audiences
+
+The "command" should rephrase the user's message as a clear English instruction Susan can parse.
+Examples:
+- "What campaigns do we have?" → {"action": "list_campaigns", "command": "list campaigns"}
+- "What drafts do we have?" → {"action": "list_campaigns", "command": "list draft campaigns"}
+- "How did the Victory Schools email perform?" → {"action": "campaign_stats", "command": "stats for Victory Schools"}
+- "Send me a test of Email 1" → {"action": "send_test_email", "command": "send test email for Email 1"}
+- "Hold off on the next scheduled email" → {"action": "pause_campaign", "command": "pause scheduled campaign"}
+- "What audiences do we have?" → {"action": "list_audiences", "command": "list audiences"}
+
+If it is NOT a Susan action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[SUSAN] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[SUSAN] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_susan_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[SUSAN] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Susan
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[SUSAN ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Susan. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
