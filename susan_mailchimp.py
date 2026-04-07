@@ -71,10 +71,11 @@ def _mc_patch(endpoint, data=None):
 # ── Intent Detection ────────────────────────────────────────────────
 SUSAN_ACTION_INTENTS = {
     "list_campaigns": [
-        r"(?:list|show|get|pull|what)\s*(?:are\s+)?(?:the\s+|my\s+|our\s+)?(?:campaigns?|emails?|drafts?|sends?)",
+        r"(?:list|show|get|pull|what)\s*(?:me\s+)?(?:are\s+)?(?:the\s+|my\s+|our\s+|all\s+)?(?:campaigns?|emails?|drafts?|sends?)",
         r"(?:what|which)\s+(?:campaigns?|emails?)\s+(?:do\s+)?(?:we|i)\s+have",
         r"(?:campaign|email)\s*(?:list|status|overview|summary)",
         r"(?:any|all)\s+(?:draft|scheduled|sent)\s+(?:campaigns?|emails?)",
+        r"(?:show|list|get)\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?(?:campaigns?|emails?|drafts?)",
     ],
     "campaign_stats": [
         r"(?:stats?|statistics?|metrics?|performance|results?|numbers?)\s+(?:for|on|of)\s+(.+)",
