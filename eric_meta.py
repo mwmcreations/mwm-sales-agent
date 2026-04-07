@@ -34,19 +34,24 @@ def _meta_get(endpoint, params=None):
     params["access_token"] = META_ADS_TOKEN
     url = f"{META_GRAPH_URL}/{endpoint.lstrip('/')}"
     resp = http_requests.get(url, params=params, timeout=20)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        error_body = resp.text[:500]
+        print(f"[Eric] Meta API error {resp.status_code}: {error_body}")
+        resp.raise_for_status()
     return resp.json()
 
 
-def _meta_post(endpoint, data=None):
+def _meta_post(endpoint, data=None, params=None):
     """Make a POST request to Meta Graph API."""
     if not META_ADS_TOKEN:
         raise RuntimeError("META_ADS_TOKEN not configured")
     if data is None:
         data = {}
-    data["access_token"] = META_ADS_TOKEN
+    if params is None:
+        params = {}
+    params["access_token"] = META_ADS_TOKEN
     url = f"{META_GRAPH_URL}/{endpoint.lstrip('/')}"
-    resp = http_requests.post(url, data=data, timeout=20)
+    resp = http_requests.post(url, params=params, data=data, timeout=20)
     resp.raise_for_status()
     return resp.json()
 
@@ -123,29 +128,28 @@ def get_active_campaigns(text):
         print("[Eric] Fetching active campaigns from Meta Marketing API...")
         acct = _account_id()
 
-        # Fetch campaigns with status filter
+        # Fetch all campaigns (no filtering to avoid 400 errors with token scope)
         data = _meta_get(f"{acct}/campaigns", params={
             "fields": "name,status,objective,daily_budget,lifetime_budget,start_time,stop_time,created_time",
             "limit": 50,
-            "filtering": json.dumps([{"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED", "CAMPAIGN_PAUSED"]}])
         })
 
-        campaigns = data.get("data", [])
+        all_campaigns = data.get("data", [])
+        if not all_campaigns:
+            return "📊 *No campaigns found* in this ad account."
+
+        # Split by status
+        active = [c for c in all_campaigns if c.get("status") == "ACTIVE"]
+        paused = [c for c in all_campaigns if c.get("status") in ("PAUSED", "CAMPAIGN_PAUSED")]
+        other = [c for c in all_campaigns if c.get("status") not in ("ACTIVE", "PAUSED", "CAMPAIGN_PAUSED")]
+        campaigns = active + paused  # Show active and paused first
+
         if not campaigns:
-            # Try without filter to see if there are ANY campaigns
-            all_data = _meta_get(f"{acct}/campaigns", params={
-                "fields": "name,status,objective",
-                "limit": 20,
-            })
-            all_campaigns = all_data.get("data", [])
-            if not all_campaigns:
-                return "📊 *No campaigns found* in this ad account."
-            else:
-                lines = [f"📊 *No active campaigns right now.* Found {len(all_campaigns)} total:\n"]
-                for c in all_campaigns[:15]:
-                    status_emoji = {"ACTIVE": "🟢", "PAUSED": "⏸️", "ARCHIVED": "📦"}.get(c.get("status", ""), "⚪")
-                    lines.append(f"  {status_emoji} *{c.get('name', '(unnamed)')}* — {c.get('status', 'unknown')}")
-                return "\n".join(lines)
+            lines = [f"📊 *No active/paused campaigns right now.* Found {len(all_campaigns)} total:\n"]
+            for c in all_campaigns[:15]:
+                status_emoji = {"ACTIVE": "🟢", "PAUSED": "⏸️", "ARCHIVED": "📦"}.get(c.get("status", ""), "⚪")
+                lines.append(f"  {status_emoji} *{c.get('name', '(unnamed)')}* — {c.get('status', 'unknown')}")
+            return "\n".join(lines)
 
         active = [c for c in campaigns if c.get("status") == "ACTIVE"]
         paused = [c for c in campaigns if c.get("status") in ("PAUSED", "CAMPAIGN_PAUSED")]
@@ -457,11 +461,10 @@ def list_ad_sets(text):
             ad_sets = data.get("data", [])
             header = f"📋 *Ad Sets for {campaign_filter.get('name', '?')}* — {len(ad_sets)} found\n"
         else:
-            # Get all ad sets for account
+            # Get all ad sets for account (no filtering to avoid token scope issues)
             data = _meta_get(f"{acct}/adsets", params={
                 "fields": "name,status,campaign_id,daily_budget,lifetime_budget,optimization_goal,bid_strategy",
                 "limit": 50,
-                "filtering": json.dumps([{"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}])
             })
             ad_sets = data.get("data", [])
             header = f"📋 *Ad Sets* — {len(ad_sets)} found\n"
