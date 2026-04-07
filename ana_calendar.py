@@ -348,9 +348,22 @@ def _parse_event_details(text):
             hour = 0
         details["end_time"] = f"{hour:02d}:{minute:02d}"
 
-    duration_match = re.search(r"(\d+)\s*(?:hour|hr|h)", text_lower)
+    # Duration: "for 2 hours", "lasting 3 hours" — but NOT "2 hour reminder"
+    duration_match = re.search(r"(?:for|during|lasting)\s+(\d+(?:\.\d+)?)\s*(?:hour|hr|h)", text_lower)
     if duration_match:
-        details["duration_hours"] = int(duration_match.group(1))
+        # Verify this isn't a reminder (e.g. "with a 2 hour reminder")
+        after_text = text_lower[duration_match.end():]
+        if not re.match(r"\w*\s*(?:remind|before|prior|early)", after_text):
+            details["duration_hours"] = float(duration_match.group(1))
+    if not duration_match or details["duration_hours"] == 1:
+        # Try standalone "N hours" without preposition, but still not a reminder
+        dur2 = re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hr)s?\b(?!\s*(?:remind|before|prior|early))", text_lower)
+        if dur2:
+            val = float(dur2.group(1))
+            # Only override default if it looks like a duration (not "1 hour reminder")
+            after = text_lower[dur2.end():]
+            if not re.match(r"\w*\s*(?:remind|before|prior|early)", after):
+                details["duration_hours"] = val
 
     if not details["start_time"]:
         details["start_time"] = "10:00"
@@ -365,9 +378,10 @@ def _parse_event_details(text):
         details["location"] = loc_match.group(1).strip()
     else:
         # Try to match a US street address pattern (e.g. "4868 E Colonial Dr" or "123 Main St, City, ST 12345")
+        # Require 2+ digit street number to avoid matching "3 hours at..." as an address
         # Stop at "with", "and", "reminder" etc. to avoid leaking other parts of the message
         addr_match = re.search(
-            r"(\d+\s+[\w\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Cir|Circle|Hwy|Highway)(?:[,\s]+[\w]+)*?(?:\s+\d{5}(?:-\d{4})?)?)"
+            r"(?<!\w)(\d{2,}\s+[\w\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Cir|Circle|Hwy|Highway)(?:[,\s]+[\w]+)*?(?:\s+\d{5}(?:-\d{4})?)?)"
             r"(?:\s+(?:with|and|remind|for|from|at\s+\d|$))",
             text, re.IGNORECASE,
         )
