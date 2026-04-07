@@ -463,25 +463,39 @@ def send_test_email(text):
         if not text_clean or len(text_clean) < 2:
             return "🤔 Which campaign should I send a test for? Give me a name."
 
-        # Find the campaign
-        data = _mc_get("/campaigns", params={"count": 50})
+        # Find the campaign — try drafts first, then all statuses
+        data = _mc_get("/campaigns", params={"count": 50, "status": "save"})
         campaigns = data.get("campaigns", [])
         target = _find_campaign_by_name(campaigns, text_clean)
+
+        if not target:
+            # Broaden to all statuses
+            data = _mc_get("/campaigns", params={"count": 50})
+            campaigns = data.get("campaigns", [])
+            target = _find_campaign_by_name(campaigns, text_clean)
 
         if not target:
             return f'🔍 No campaign found matching *"{text_clean}"*.'
 
         campaign_id = target["id"]
         title = target.get("settings", {}).get("title", "(untitled)")
+        status = target.get("status", "unknown")
+
+        # Mailchimp only allows test sends for draft (save) or paused campaigns
+        if status == "sent":
+            return f"📧 *{title}* has already been sent — test emails are only available for draft campaigns."
 
         # Send test email
         test_emails = ["michael@mwmcreations.com"]
-        http_requests.post(
+        resp = http_requests.post(
             f"{MAILCHIMP_BASE_URL}/campaigns/{campaign_id}/actions/test",
             headers=_mc_headers(),
             json={"test_emails": test_emails, "send_type": "html"},
             timeout=15,
-        ).raise_for_status()
+        )
+        if not resp.ok:
+            error_detail = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+            return f"⚠️ Mailchimp error sending test for *{title}* (status: {status}): {error_detail}"
 
         return (
             f"✅ *Test email sent!*\n"
