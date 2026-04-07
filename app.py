@@ -2672,6 +2672,8 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
         return
 
     try:
+        # Strip Slack "Sent using Claude/Cowork" suffix that pollutes action parsing
+        text = re.sub(r"\s*\*?Sent using\*?\s+\w+\s*$", "", text, flags=re.IGNORECASE).strip()
         # Strip agent name mentions and Slack user mentions so the agent sees a clean message
         clean_text = re.sub(r"<@[A-Z0-9]+>", "", text)  # strip Slack mentions like <@U0AQWRD7KLN>
         for name in AGENT_MENTION_MAP:
@@ -3081,6 +3083,9 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
     agent = AGENT_CHANNELS.get(channel_id)
     if not agent:
         return
+
+    # Strip Slack "Sent using Claude/Cowork" suffix that pollutes action parsing
+    text = re.sub(r"\s*\*?Sent using\*?\s+\w+\s*$", "", text, flags=re.IGNORECASE).strip()
 
     try:
         # ── ANA Calendar Action Check ─────────────────────────────
