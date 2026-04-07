@@ -202,17 +202,31 @@ def _parse_event_details(text):
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
 
-    # Extract title from quotes
+    # Extract title from quotes (preferred)
     title_match = re.search(r'"([^"]+)"', text)
     if title_match:
         details["title"] = title_match.group(1)
     else:
+        # Try "called/named/titled X"
         title_match = re.search(
             r"(?:called|named|titled)\s+(.+?)(?:\s+(?:on|at|for|from|tomorrow|today|next))",
             text, re.IGNORECASE,
         )
         if title_match:
             details["title"] = title_match.group(1).strip()
+        else:
+            # Try to extract subject after scheduling verbs:
+            # "schedule a Team Meeting for..." / "book a meeting with the editor for..."
+            # "marca uma Reunião para..." / "agendar Treino para..."
+            title_match = re.search(
+                r"(?:schedule|book|create|add|set up|marca[r]?|agenda[r]?|cria[r]?)\s+(?:a |an |uma |um )?(.+?)(?:\s+(?:for|on|at|tomorrow|today|next|para|na|no|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)",
+                text, re.IGNORECASE,
+            )
+            if title_match:
+                candidate = title_match.group(1).strip().rstrip(",. ")
+                # Only use if it's not too short or too generic
+                if len(candidate) > 2 and candidate.lower() not in {"it", "this", "that", "one", "event", "something"}:
+                    details["title"] = candidate
 
     # Extract date
     if "tomorrow" in text_lower:
