@@ -211,11 +211,22 @@ def list_campaigns(text):
 def get_campaign_stats(text):
     """Get stats for a specific campaign."""
     try:
+        # Strip conversational prefix (hey susan, hi susan, etc.)
+        stripped = re.sub(r"^(?:hey\s+|hi\s+)?(?:susan[,:\s]*)\s*", "", text.strip(), flags=re.IGNORECASE).strip()
+        if stripped == text.strip():  # no susan prefix found
+            stripped = text.strip()
+
         # Extract campaign name from text
         text_clean = re.sub(
-            r"^(?:susan[,:\s]*)?(?:stats?|statistics?|metrics?|performance|results?|numbers?|open\s*rate|click\s*rate|how\s+(?:did|is|was))\s+(?:for|on|of|the)?\s*",
-            "", text.strip(), flags=re.IGNORECASE
+            r"^(?:what(?:'s| is| are)\s+(?:the\s+)?)?(?:stats?|statistics?|metrics?|performance|results?|numbers?|open\s*rate|click\s*rate|how\s+(?:did|is|was))\s+(?:for|on|of|the)?\s*",
+            "", stripped, flags=re.IGNORECASE
         ).strip().rstrip("?").strip().strip('"\'')
+
+        # Fallback: if text_clean is still long/noisy, extract after "for/on/of"
+        if not text_clean or len(text_clean) < 2 or len(text_clean.split()) > 8:
+            for_match = re.search(r"\b(?:for|on|of)\s+(?:the\s+)?(.+?)[\?\.\!]?\s*$", text.strip(), re.IGNORECASE)
+            if for_match:
+                text_clean = for_match.group(1).strip().strip('"\'')
 
         if not text_clean or len(text_clean) < 2:
             return "🤔 Which campaign? Give me a name or part of the subject line."
