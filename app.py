@@ -2690,6 +2690,60 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
         # ── MAYA Action Check (reuse from dedicated channel) ──
         if agent["name"] == "MAYA (Slack)":
             handled, action_result, handoff_msg = handle_maya_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Maya sales action request. Maya handles:
+1. Pipeline/lead status summary
+2. Looking up a lead by name or phone
+3. Updating a lead's status (Hot/Warm/Cold/etc.)
+4. Logging outreach activity
+5. Adding a new lead
+6. Handing off a lead to ANA for booking
+7. Checking calendar availability
+
+If it IS a Maya action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: pipeline_summary, lookup_lead, update_lead_status, log_outreach, add_lead, handoff_to_ana, check_availability
+
+The "command" should rephrase the user's message as a clear English instruction Maya can parse.
+Examples:
+- "How many leads do we have?" → {"action": "pipeline_summary", "command": "pipeline status"}
+- "Move RJ to Hot" → {"action": "update_lead_status", "command": "update RJ to Hot"}
+
+If it is NOT a Maya action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[MAYA #general] Haiku classified as: {cls_data}")
+                            handled, action_result, handoff_msg = handle_maya_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[MAYA #general] Haiku fallback error: {e}")
+
             if handled:
                 if handoff_msg:
                     try:
