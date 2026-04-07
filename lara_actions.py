@@ -27,8 +27,11 @@ PRODUCTION_SHEET_ID = os.getenv("GOOGLE_SHEETS_PRODUCTION_ID", "")
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
 DELEGATE_EMAIL = os.getenv("GOOGLE_DELEGATE_EMAIL", "michael@mwmcreations.com")
 
-SCOPES_SHEETS_CAL = [
+SCOPES_SHEETS = [
     "https://www.googleapis.com/auth/spreadsheets",
+]
+
+SCOPES_CALENDAR = [
     "https://www.googleapis.com/auth/calendar",
 ]
 
@@ -120,31 +123,44 @@ def detect_lara_intent(text):
 
 
 # ── Google Services ─────────────────────────────────────────────────
-def _get_google_creds(scopes):
-    """Get authenticated Google credentials with DWD for specific scopes."""
+def _get_google_creds(scopes, use_dwd=True):
+    """Get authenticated Google credentials.
+
+    use_dwd=True  → impersonate DELEGATE_EMAIL (needs scope authorized in Workspace Admin)
+    use_dwd=False → service account direct access (sheet must be shared with SA email)
+    """
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     creds_dict = json.loads(creds_json)
+    sa_email = creds_dict.get("client_email", "unknown")
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    if DELEGATE_EMAIL:
+    if use_dwd and DELEGATE_EMAIL:
         creds = creds.with_subject(DELEGATE_EMAIL)
+        print(f"[LARA] Google auth: DWD as {DELEGATE_EMAIL}, scopes={scopes}")
+    else:
+        print(f"[LARA] Google auth: direct SA ({sa_email}), scopes={scopes}")
     return creds
 
 
 def _get_sheets_service():
-    """Get authenticated Google Sheets service."""
-    return build("sheets", "v4", credentials=_get_google_creds(SCOPES_SHEETS_CAL), cache_discovery=False)
+    """Get authenticated Google Sheets service.
+    Uses service account directly (NO DWD) — sheet must be shared with the SA email.
+    Spreadsheets scope is NOT authorized for DWD in Google Workspace Admin.
+    """
+    return build("sheets", "v4", credentials=_get_google_creds(SCOPES_SHEETS, use_dwd=False), cache_discovery=False)
 
 
 def _get_calendar_service():
-    """Get authenticated Google Calendar service."""
-    return build("calendar", "v3", credentials=_get_google_creds(SCOPES_SHEETS_CAL), cache_discovery=False)
+    """Get authenticated Google Calendar service.
+    Uses DWD with calendar-only scope (authorized in Workspace Admin).
+    """
+    return build("calendar", "v3", credentials=_get_google_creds(SCOPES_CALENDAR, use_dwd=True), cache_discovery=False)
 
 
 def _get_gmail_service():
-    """Get authenticated Gmail service (requires Gmail DWD scopes)."""
-    return build("gmail", "v1", credentials=_get_google_creds(SCOPES_GMAIL), cache_discovery=False)
+    """Get authenticated Gmail service (requires Gmail DWD scopes — NOT YET authorized)."""
+    return build("gmail", "v1", credentials=_get_google_creds(SCOPES_GMAIL, use_dwd=True), cache_discovery=False)
 
 
 # ── Production Tracker Helpers ──────────────────────────────────────
