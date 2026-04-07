@@ -50,13 +50,17 @@ ANA_CALENDAR_INTENTS = {
     ],
     "delete_event": [
         r"(?:delete|remove|cancel|drop) (?:the |my |that )?(?:event|meeting|appointment|session|call)",
+        r'(?:delete|remove|cancel|drop) (?:the |my |that )?"[^"]+"',
         r"take .+ off (?:the )?calendar",
         r"cancel .+ (?:on|at|for) ",
+        r"(?:cancela[r]?|apaga[r]?|remove[r]?) ",
     ],
     "update_event": [
         r"(?:update|change|modify|reschedule|move|push|shift) (?:the |my |that )?(?:event|meeting|appointment|session|call)",
+        r'(?:update|change|modify|reschedule|move) (?:the |my |that )?"[^"]+"',
         r"(?:push|move|shift) .+ to ",
         r"reschedule ",
+        r"(?:muda[r]?|altera[r]?|reagenda[r]?) ",
     ],
 }
 

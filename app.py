@@ -2863,7 +2863,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                     if hasattr(block, "text"):
                         reply += block.text
                 if not reply:
-                    reply = calendar_result
+                    reply = calendar_result if calendar_result else "I processed your calendar request but couldn't generate a response. Could you try again?"
                 if thread_ts:
                     url = "https://slack.com/api/chat.postMessage"
                     headers = {
