@@ -14,6 +14,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests as http_requests
 from ana_calendar import handle_calendar_action
+from maya_actions import handle_maya_action
 
 load_dotenv()
 
@@ -2678,6 +2679,30 @@ The calendar timezone is America/New_York (EDT).
 CRITICAL: NEVER tell the user you created, deleted, or modified a calendar event unless you received a [CALENDAR ACTION RESULT] confirming the action was executed. If someone asks you to do a calendar action and you don't receive a [CALENDAR ACTION RESULT], tell them you couldn't process the request automatically and ask them to rephrase with a clear command like: schedule a "Meeting Name" tomorrow at 2pm for 1 hour.
 """
 
+    if agent_info["name"] == "MAYA (Slack)":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+📊 *Pipeline & Leads (Google Sheets)*
+• Pipeline summary — "What's the pipeline status?" / "How are our leads?"
+• Look up a lead — "Look up RJ" / "What do we have on One Stop Financial?"
+• Update lead status — "Update RJ to Hot" / "Mark One Stop Financial as Warm"
+• Log outreach — "Log LinkedIn DM to Jeremy Tucker" / "Log email to One Stop Financial"
+• Add new lead — "Add lead: John Smith, 555-1234, interested in studio"
+
+🔥 *ANA Handoff*
+• Hand off hot leads — "Hand off RJ to Ana — he's ready to book"
+  This posts a structured handoff to #ana with lead details.
+
+📅 *Calendar Check*
+• Check availability — "Is Michael free Thursday at 2pm?"
+
+When an action is detected, it executes automatically against the Google Sheets lead tracker or calendar. You will receive the result as a [MAYA ACTION RESULT] and should present it naturally.
+
+CRITICAL: NEVER tell the user you executed a sheets update, handoff, or calendar check unless you received a [MAYA ACTION RESULT] confirming the action was executed. If no result was received, tell them you couldn't process the request automatically and ask them to rephrase.
+"""
+
     return base
 def _get_slack_history(channel_id, limit=10):
     """Fetch recent Slack messages and build Claude conversation history."""
@@ -2864,6 +2889,106 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                         reply += block.text
                 if not reply:
                     reply = calendar_result if calendar_result else "I processed your calendar request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── MAYA Action Check ─────────────────────────────────────
+        if agent["name"] == "MAYA (Slack)":
+            handled, action_result, handoff_msg = handle_maya_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    conversation_history = _get_slack_history(channel_id, limit=10)
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Maya sales action request. Maya handles:
+1. Pipeline/lead status summary
+2. Looking up a lead by name or phone
+3. Updating a lead's status (Hot/Warm/Cold/etc.)
+4. Logging outreach activity
+5. Adding a new lead
+6. Handing off a lead to ANA for booking
+7. Checking calendar availability
+
+If it IS a Maya action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: pipeline_summary, lookup_lead, update_lead_status, log_outreach, add_lead, handoff_to_ana, check_availability
+
+The "command" should rephrase the user's message as a clear English instruction Maya can parse.
+Examples:
+- "How's the pipeline?" → {"action": "pipeline_summary", "command": "pipeline status"}
+- "Move RJ to Hot" → {"action": "update_lead_status", "command": "update RJ to Hot"}
+- "Pass RJ to Ana" → {"action": "handoff_to_ana", "command": "hand off RJ to Ana"}
+- "Is Michael free at 2pm Thursday?" → {"action": "check_availability", "command": "is Michael free Thursday at 2pm"}
+
+If it is NOT a Maya action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[MAYA] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[MAYA] Claude classified as action: {cls_data}")
+                            handled, action_result, handoff_msg = handle_maya_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[MAYA] Action classification fallback error: {e}")
+
+            if handled:
+                # If there's a handoff message, post it to #ana
+                if handoff_msg:
+                    try:
+                        post_to_slack("C0APE5V3U2F", handoff_msg)  # #ana channel
+                        print(f"[MAYA] Handoff posted to #ana")
+                    except Exception as e:
+                        print(f"[MAYA] Handoff posting error: {e}")
+                        action_result += f"\n⚠️ _Note: Could not post handoff to #ana: {str(e)[:100]}_"
+
+                # Present the result naturally through Maya
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Maya. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
                 if thread_ts:
                     url = "https://slack.com/api/chat.postMessage"
                     headers = {
