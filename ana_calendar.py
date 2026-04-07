@@ -313,8 +313,10 @@ def _parse_event_details(text):
         details["location"] = loc_match.group(1).strip()
     else:
         # Try to match a US street address pattern (e.g. "4868 E Colonial Dr" or "123 Main St, City, ST 12345")
+        # Stop at "with", "and", "reminder" etc. to avoid leaking other parts of the message
         addr_match = re.search(
-            r"(\d+\s+[\w\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Cir|Circle|Hwy|Highway)[\w\s,]*(?:\d{5})?)",
+            r"(\d+\s+[\w\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Cir|Circle|Hwy|Highway)(?:[,\s]+[\w]+)*?(?:\s+\d{5}(?:-\d{4})?)?)"
+            r"(?:\s+(?:with|and|remind|for|from|at\s+\d|$))",
             text, re.IGNORECASE,
         )
         if addr_match:
@@ -332,9 +334,9 @@ def _parse_event_details(text):
                 if loc_candidate.split()[0].lower() not in skip_words and len(loc_candidate) > 2:
                     details["location"] = loc_candidate
 
-    # Extract reminder override (e.g. "remind me 15 minutes before")
+    # Extract reminder override (e.g. "remind me 15 minutes before" or "with a 1 hour reminder")
     reminder_match = re.search(
-        r"remind(?:er|me)?\s+(\d+)\s*(?:min|minute|hour|hr|h)\w*\s*(?:before|prior|early)",
+        r"(?:remind(?:er|me)?|with\s+(?:a\s+)?)\s*(\d+)\s*(?:min|minute|hour|hr|h)\w*\s*(?:before|prior|early|reminder)?",
         text_lower,
     )
     if reminder_match:
