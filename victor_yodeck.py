@@ -388,13 +388,31 @@ def schedule_broadcast(text):
 def get_screen_by_school(text):
     """Look up screen(s) by school/workspace name."""
     try:
-        # Extract school name — try multiple patterns
-        text_clean = re.sub(
-            r"^(?:victor[,:\s]*)?(?:what|which|get|find|show|look\s+(?:up|for)|check)\s*(?:the\s+)?(?:screen|device|player|status)?\s*(?:is\s+)?(?:of|at|in|for)?\s*",
-            "", text.strip(), flags=re.IGNORECASE
-        ).strip().rstrip("?").strip()
+        # Extract school name using targeted patterns (handles contractions like "what's")
+        text_lower = text.strip().rstrip("?").strip()
+        text_clean = None
 
-        # Also strip trailing "school", "location", "screen"
+        # Try specific extraction patterns first
+        extraction_patterns = [
+            r"(?:status|screen|device|player)\s+(?:of|at|in|for)\s+(.+?)(?:\s+(?:school|location))?$",
+            r"(?:what(?:'s|s| is| are)|how(?:'s|s| is))\s+(?:the\s+)?(?:status|screen)\s+(?:of|at|in|for)\s+(.+?)$",
+            r"(?:at|in|for)\s+(.+?)(?:\s+(?:school|location|screen))?$",
+            r"(?:check|show|get|find)\s+(.+?)(?:\s+(?:screen|status|school))?$",
+        ]
+        for pat in extraction_patterns:
+            m = re.search(pat, text_lower, re.IGNORECASE)
+            if m:
+                text_clean = m.group(1).strip()
+                break
+
+        # Fallback: strip common prefixes
+        if not text_clean:
+            text_clean = re.sub(
+                r"^(?:victor[,:\s]*)?(?:what(?:'s|s| is)?|which|get|find|show|look\s+(?:up|for)|check)\s*(?:the\s+)?(?:screen|device|player|status)?\s*(?:is\s+)?(?:of|at|in|for)?\s*",
+                "", text_lower, flags=re.IGNORECASE
+            ).strip()
+
+        # Strip trailing "school", "location", "screen", "status"
         text_clean = re.sub(r"\s+(?:school|location|screen|status)$", "", text_clean, flags=re.IGNORECASE).strip()
 
         if not text_clean or len(text_clean) < 2:
