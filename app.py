@@ -18,6 +18,7 @@ from maya_actions import handle_maya_action
 from susan_mailchimp import handle_susan_action
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
+from rob_stripe import handle_rob_action
 
 load_dotenv()
 
@@ -3018,6 +3019,83 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── ROB Stripe Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "ROB":
+            handled, action_result = handle_rob_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Rob Stripe action request. Rob handles:
+1. Get Stripe balance (available and pending balance)
+2. List recent charges (recent payments/transactions)
+3. List active subscriptions (all active subscriber info)
+4. Get customer by email (look up a customer)
+5. List invoices (recent invoices with status)
+
+If it IS a Rob action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: get_stripe_balance, list_recent_charges, list_active_subscriptions, get_customer_by_email, list_invoices
+
+Examples:
+- "What's our balance?" → {"action": "get_stripe_balance", "command": "get stripe balance"}
+- "Show recent payments" → {"action": "list_recent_charges", "command": "list recent charges"}
+- "Who's subscribed?" → {"action": "list_active_subscriptions", "command": "list active subscriptions"}
+- "Look up john@example.com" → {"action": "get_customer_by_email", "command": "get customer john@example.com"}
+- "Any unpaid invoices?" → {"action": "list_invoices", "command": "list invoices"}
+
+If it is NOT a Rob action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[ROB #general] Haiku classified as: {cls_data}")
+                            handled, action_result = handle_rob_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[ROB #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[ROB ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Rob. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -3229,6 +3307,25 @@ You manage paid advertising for MWM Creations through Meta (Facebook/Instagram) 
 When an action is detected, it executes automatically against the Meta Marketing API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, spend amounts, impressions, click rates, or any other Meta Ads data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Eric.
+"""
+
+    if agent_info["name"] == "ROB":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+💰 *Financial Data (Stripe)*
+• Stripe balance — "What's our balance?" / "Check Stripe balance" / "How much money do we have?"
+• Recent charges — "Show recent charges" / "List last payments" / "What payments came in?"
+• Active subscriptions — "List active subscriptions" / "Who's subscribed?" / "Show all subs"
+• Customer lookup — "Look up customer john@example.com" / "Find customer by email"
+• Invoices — "Show invoices" / "List unpaid invoices" / "Any outstanding invoices?"
+
+You are the Financial Advisor for MWM Creations. You handle all Stripe data: balances, payments, subscriptions, invoices, and customer information.
+
+When an action is detected, it executes automatically against the Stripe API. You will receive real data from the API and should present it naturally.
+
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate payment amounts, customer names, subscription details, invoice data, or any other Stripe data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list charges first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Rob.
 """
 
     return base
@@ -3782,6 +3879,95 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[ERIC ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Eric. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── ROB Stripe Action Check ────────────────────────────
+        if agent["name"] == "ROB":
+            handled, action_result = handle_rob_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Rob Stripe action request. Rob handles:
+1. Get Stripe balance (available and pending balance)
+2. List recent charges (recent payments/transactions)
+3. List active subscriptions (all active subscriber info)
+4. Get customer by email (look up a customer)
+5. List invoices (recent invoices with status)
+
+If it IS a Rob action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: get_stripe_balance, list_recent_charges, list_active_subscriptions, get_customer_by_email, list_invoices
+
+The "command" should rephrase the user's message as a clear English instruction Rob can parse.
+Examples:
+- "What's our balance?" → {"action": "get_stripe_balance", "command": "get stripe balance"}
+- "Show recent payments" → {"action": "list_recent_charges", "command": "list recent charges"}
+- "Who's subscribed?" → {"action": "list_active_subscriptions", "command": "list active subscriptions"}
+- "Look up john@example.com" → {"action": "get_customer_by_email", "command": "get customer john@example.com"}
+- "Any unpaid invoices?" → {"action": "list_invoices", "command": "list invoices"}
+
+If it is NOT a Rob action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[ROB] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[ROB] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_rob_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[ROB] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Rob
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[ROB ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Rob. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
