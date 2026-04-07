@@ -112,7 +112,7 @@ def _find_campaign_by_name(campaigns, search_text):
     Returns the best matching campaign dict or None.
     """
     search_lower = search_text.lower().strip()
-    search_words = [w for w in search_lower.split() if len(w) > 1]
+    search_words = [w for w in search_lower.split() if len(w) > 1 or w.isdigit()]
     target = None
     best_score = 0
 
