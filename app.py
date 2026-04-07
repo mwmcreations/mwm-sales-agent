@@ -2786,7 +2786,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
 
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
-        conversation = []
+        thread_context = ""
         if thread_ts:
             try:
                 thread_resp = http_requests.get(
@@ -2797,45 +2797,31 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 )
                 thread_data = thread_resp.json()
                 if thread_data.get("ok"):
+                    thread_lines = []
                     for msg in thread_data.get("messages", []):
                         msg_text = msg.get("text", "").strip()
                         if not msg_text:
                             continue
-                        # Strip agent name prefix from bot messages (e.g. "*MAYA (Slack):*\n...")
                         if msg.get("bot_id"):
-                            msg_text = re.sub(r"^\*[A-Z ()]+:\*\n?", "", msg_text).strip()
-                            conversation.append({"role": "assistant", "content": msg_text})
+                            # Keep agent name prefix so the agent knows WHO said what
+                            thread_lines.append(msg_text)
                         else:
-                            # Strip agent mentions from user messages
-                            clean_msg = re.sub(r"<@[A-Z0-9]+>", "", msg_text)
-                            for n in AGENT_MENTION_MAP:
-                                clean_msg = re.sub(r"(?i)(?:^|(?<=[\s,;:]))@?" + re.escape(n) + r"(?=[,;:\s!?.]|$)", "", clean_msg)
-                            clean_msg = re.sub(r"^[\s,;:—\-]+", "", clean_msg).strip()
-                            if clean_msg:
-                                conversation.append({"role": "user", "content": clean_msg})
-                    # Merge consecutive same-role messages
-                    merged = []
-                    for m in conversation:
-                        if merged and merged[-1]["role"] == m["role"]:
-                            merged[-1]["content"] += "\n" + m["content"]
-                        else:
-                            merged.append(dict(m))
-                    conversation = merged
-                    # Must start and end with user
-                    if conversation and conversation[0]["role"] == "assistant":
-                        conversation = conversation[1:]
-                    if conversation and conversation[-1]["role"] == "assistant":
-                        conversation = conversation[:-1]
+                            thread_lines.append(f"*Michael:*\n{msg_text}")
+                    if thread_lines:
+                        thread_context = "\n\n---\n\n".join(thread_lines)
             except Exception as e:
                 print(f"[#general] Thread history fetch error: {e}")
 
-        if not conversation:
-            conversation = [{"role": "user", "content": clean_text}]
+        # Build the prompt with thread context
+        general_suffix = "\nYou are responding in #general because you were mentioned. Keep your response focused and relevant. Only address what's in your domain."
+        if thread_context:
+            general_suffix += f"\n\nYou are joining an ongoing thread. Read the full conversation below carefully and respond to the topic being discussed. Other agents may have already responded — build on their answers, don't repeat them.\n\nTHREAD CONTEXT:\n{thread_context}"
 
+        conversation = [{"role": "user", "content": clean_text}]
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were mentioned. Keep your response focused and relevant. Only address what's in your domain.",
+            system=get_agent_system_prompt(agent) + general_suffix,
             messages=conversation,
         )
 
