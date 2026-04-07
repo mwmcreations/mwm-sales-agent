@@ -19,6 +19,7 @@ from susan_mailchimp import handle_susan_action
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
+from cris_wix import handle_cris_action
 
 load_dotenv()
 
@@ -3096,6 +3097,83 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── CRIS Wix Action Check ──
+        if agent["name"] == "CRIS":
+            handled, action_result = handle_cris_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Cris Wix action request. Cris handles:
+1. List Wix sites (all sites in account)
+2. Query site contacts/leads (recent contacts)
+3. List blog posts (recent posts)
+4. Query store products (products in shop)
+5. Query CMS collection items (items from a named collection)
+
+If it IS a Cris action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: list_sites, query_contacts, list_blog_posts, query_products, query_cms_items
+
+Examples:
+- "What sites do we have?" → {"action": "list_sites", "command": "list wix sites"}
+- "Show our contacts" → {"action": "query_contacts", "command": "list contacts"}
+- "Any new blog posts?" → {"action": "list_blog_posts", "command": "list blog posts"}
+- "What's in the store?" → {"action": "query_products", "command": "list products"}
+- "Show items from Portfolio" → {"action": "query_cms_items", "command": "query cms items from Portfolio"}
+
+If it is NOT a Cris action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[CRIS #general] Haiku classified as: {cls_data}")
+                            handled, action_result = handle_cris_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[CRIS #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Cris. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -3326,6 +3404,25 @@ You are the Financial Advisor for MWM Creations. You handle all Stripe data: bal
 When an action is detected, it executes automatically against the Stripe API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate payment amounts, customer names, subscription details, invoice data, or any other Stripe data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list charges first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Rob.
+"""
+
+    if agent_info["name"] == "CRIS":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+🌐 *Website Management (Wix)*
+• List sites — "What sites do we have?" / "Show all Wix sites" / "Our websites"
+• Site contacts — "Show contacts" / "List leads" / "New form submissions"
+• Blog posts — "Show blog posts" / "Any new posts?" / "Blog status"
+• Store products — "List products" / "What's in the store?" / "Product catalog"
+• CMS data — "Show items from [collection]" / "Query CMS collection [name]"
+
+You are the Website Developer for MWM Creations. You manage Wix websites — site status, content, contacts, store products, blog posts, and CMS collections.
+
+When an action is detected, it executes automatically against the Wix API. You will receive real data from the API and should present it naturally.
+
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate site names, contact details, blog posts, product listings, or any other Wix data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list sites first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Cris.
 """
 
     return base
@@ -3968,6 +4065,95 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[ROB ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Rob. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── CRIS Wix Action Check ────────────────────────────
+        if agent["name"] == "CRIS":
+            handled, action_result = handle_cris_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Cris Wix action request. Cris handles:
+1. List Wix sites (all sites in account)
+2. Query site contacts/leads (recent contacts)
+3. List blog posts (recent posts)
+4. Query store products (products in shop)
+5. Query CMS collection items (items from a named collection)
+
+If it IS a Cris action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: list_sites, query_contacts, list_blog_posts, query_products, query_cms_items
+
+The "command" should rephrase the user's message as a clear English instruction Cris can parse.
+Examples:
+- "What sites do we have?" → {"action": "list_sites", "command": "list wix sites"}
+- "Show our contacts" → {"action": "query_contacts", "command": "list contacts"}
+- "Any new blog posts?" → {"action": "list_blog_posts", "command": "list blog posts"}
+- "What's in the store?" → {"action": "query_products", "command": "list products"}
+- "Show items from Portfolio" → {"action": "query_cms_items", "command": "query cms items from Portfolio"}
+
+If it is NOT a Cris action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[CRIS] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[CRIS] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_cris_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[CRIS] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Cris
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Cris. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
