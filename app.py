@@ -2630,7 +2630,7 @@ AGENT_CHANNELS = {
     "C0APLH98ANN": {"name": "ROB", "role": "Financial Advisor — handles invoicing, budgets, and financial planning", "channel": "#rob"},
     "C0APJF77MB8": {"name": "CRIS", "role": "Website Developer — builds and maintains websites", "channel": "#cris"},
     "C0APZEBQ4P3": {"name": "ERIC", "role": "Traffic Manager — manages paid ads, SEO, and digital marketing campaigns", "channel": "#eric"},
-    "LARA_PLACEHOLDER": {"name": "LARA", "role": "Client & Production Manager — manages client relationships, production schedules, and project delivery", "channel": "#lara"},
+    "C0ARC24S9PF": {"name": "LARA", "role": "Client & Production Manager — manages client relationships, production schedules, and project delivery", "channel": "#lara"},
 }
 
 # #general channel — mention-based multi-agent routing
@@ -2647,7 +2647,7 @@ AGENT_MENTION_MAP = {
     "rob": "C0APLH98ANN",
     "cris": "C0APJF77MB8",
     "eric": "C0APZEBQ4P3",
-    "lara": "LARA_PLACEHOLDER",
+    "lara": "C0ARC24S9PF",
 }
 
 def _parse_agent_mentions(text):
