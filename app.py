@@ -16,6 +16,7 @@ import requests as http_requests
 from ana_calendar import handle_calendar_action
 from maya_actions import handle_maya_action
 from susan_mailchimp import handle_susan_action
+from victor_yodeck import handle_victor_action
 
 load_dotenv()
 
@@ -2865,6 +2866,82 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── VICTOR Yodeck Action Check (reuse from dedicated channel) ──
+        if agent["name"] == "VICTOR":
+            handled, action_result = handle_victor_action(clean_text)
+
+            # Haiku classifier fallback for natural language
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Victor screen management action request. Victor handles:
+1. Screen status (list all screens with online/offline status)
+2. School list (list all schools/workspaces)
+3. Get screen by school (look up screen by school name)
+4. Push content (trigger content refresh)
+5. Schedule broadcast (set event mode)
+6. Reboot screen (remote reboot a player)
+
+If it IS a Victor action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: screen_status, school_list, get_screen_by_school, push_content, schedule_broadcast, reboot_screen
+
+Examples:
+- "What screens are online?" → {"action": "screen_status", "command": "list screen status"}
+- "Show me Centreville" → {"action": "get_screen_by_school", "command": "get screen at Centreville"}
+- "Which schools don't have screens?" → {"action": "school_list", "command": "list schools"}
+
+If it is NOT a Victor action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": clean_text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[VICTOR #general] Haiku classified as: {cls_data}")
+                            handled, action_result = handle_victor_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[VICTOR #general] Haiku fallback error: {e}")
+
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[VICTOR ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Victor. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── Standard Agent Response ──
         # Use thread history for context if this is a thread reply
         thread_context = ""
@@ -3037,6 +3114,26 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 When an action is detected, it executes automatically against the Mailchimp API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, stats, open rates, subscriber counts, or any other Mailchimp data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Susan.
+"""
+
+    if agent_info["name"] == "VICTOR":
+        base += """
+
+REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+🖥️ *Screen Management (Yodeck)*
+• Screen status — "What screens are currently online?" / "Show me screen status"
+• School list — "List all schools" / "What locations do we have?"
+• Get screen by school — "What's the status of Centreville?" / "Show me the Woodbridge screen"
+• Push content — "Push content to all screens" / "Refresh screens at Centreville"
+• Schedule broadcast — "Schedule broadcast for tomorrow at 3pm"
+• Reboot screen — "Reboot the Centreville screen" / "Restart player at Woodbridge"
+
+You manage digital signage across 37 Victory Martial Arts schools. Each school has one or more Yodeck-powered screens.
+
+When an action is detected, it executes automatically against the Yodeck API. You will receive real data from the API and should present it naturally.
+
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate screen names, school names, device statuses, or any other Yodeck data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list screens first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Victor.
 """
 
     return base
@@ -3412,6 +3509,95 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[SUSAN ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Susan. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── VICTOR Yodeck Action Check ────────────────────────────
+        if agent["name"] == "VICTOR":
+            handled, action_result = handle_victor_action(text)
+
+            # Fallback: use Haiku to classify if regex didn't match
+            if not handled:
+                try:
+                    cls_response = client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=300,
+                        system="""You classify whether a message is a Victor screen management action request. Victor handles:
+1. Screen status (list all screens with online/offline status)
+2. School list (list all schools/workspaces)
+3. Get screen by school (look up screen by school name)
+4. Push content (trigger content refresh)
+5. Schedule broadcast (set event mode)
+6. Reboot screen (remote reboot a player)
+
+If it IS a Victor action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: screen_status, school_list, get_screen_by_school, push_content, schedule_broadcast, reboot_screen
+
+The "command" should rephrase the user's message as a clear English instruction Victor can parse.
+Examples:
+- "What screens are online?" → {"action": "screen_status", "command": "list screen status"}
+- "Show me Centreville" → {"action": "get_screen_by_school", "command": "get screen at Centreville"}
+- "Which schools don't have screens?" → {"action": "school_list", "command": "list schools"}
+- "Reboot Woodbridge" → {"action": "reboot_screen", "command": "reboot screen at Woodbridge"}
+
+If it is NOT a Victor action, respond with: {"action": "none"}""",
+                        messages=[{"role": "user", "content": text}]
+                    )
+                    import json as _json
+                    cls_text = ""
+                    for block in cls_response.content:
+                        if hasattr(block, "text"):
+                            cls_text += block.text
+                    cls_text = cls_text.strip()
+                    if cls_text.startswith("```"):
+                        lines_raw = cls_text.split("\n")
+                        cls_text = "\n".join(lines_raw[1:])
+                        if cls_text.endswith("```"):
+                            cls_text = cls_text[:-3].strip()
+                    if not cls_text.startswith("{"):
+                        json_start = cls_text.find("{")
+                        if json_start != -1:
+                            json_end = cls_text.rfind("}") + 1
+                            if json_end > json_start:
+                                cls_text = cls_text[json_start:json_end]
+                    print(f"[VICTOR] Haiku classifier raw response: {cls_text[:200]}")
+                    if cls_text:
+                        cls_data = _json.loads(cls_text)
+                        if cls_data.get("action") != "none" and cls_data.get("command"):
+                            print(f"[VICTOR] Claude classified as action: {cls_data}")
+                            handled, action_result = handle_victor_action(cls_data["command"])
+                except Exception as e:
+                    print(f"[VICTOR] Action classification fallback error: {e}")
+
+            if handled:
+                # Present the result naturally through Victor
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent),
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[VICTOR ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above action result naturally as Victor. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
                     ]
                 )
                 reply = ""
