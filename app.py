@@ -2725,6 +2725,71 @@ def index():
     return "MWM Creations Sales Agent (Maya + Gabriela) is running! Ã¢ÂÂ"
 
 
+
+# ----------------------------------------------------------------------------
+# LARA admin: send a template message FROM LARA to a target number.
+#
+# Why this exists: when a brand-new Cloud API number is registered (e.g.
+# +1 407-537-7207 in Session 29), WhatsApp's contact discovery on personal
+# clients takes a while to propagate. The number IS live on Meta's side,
+# but personal WhatsApp clients can show "this number isn't on WhatsApp"
+# from a stale directory cache. The standard fix is to push a template
+# message FROM the new Cloud API number to the test recipient. Once the
+# message lands, the recipient's client knows the number is real and a
+# normal reply can flow back through the webhook.
+#
+# Gated by ?token=<WEBHOOK_VERIFY_TOKEN>. Intended as a one-shot test
+# helper; can be removed once LARA is fully bootstrapped with real traffic.
+# ----------------------------------------------------------------------------
+@app.route("/lara/admin/send_template", methods=["GET", "POST"])
+def lara_admin_send_template():
+    token = request.args.get("token", "")
+    if not WEBHOOK_VERIFY_TOKEN or token != WEBHOOK_VERIFY_TOKEN:
+        return jsonify({"error": "forbidden"}), 403
+
+    to = request.args.get("to", "").lstrip("+").strip()
+    template_name = request.args.get("template", "hello_world")
+    lang_code = request.args.get("lang", "en_US")
+
+    if not to:
+        return jsonify({"error": "missing to (E.164 phone, no leading +)"}), 400
+    if not LARA_PHONE_NUMBER_ID:
+        return jsonify({"error": "LARA_PHONE_NUMBER_ID not set in env"}), 500
+    if not META_ACCESS_TOKEN:
+        return jsonify({"error": "META_ACCESS_TOKEN not set in env"}), 500
+
+    url = f"https://graph.facebook.com/v19.0/{LARA_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": lang_code},
+        },
+    }
+    try:
+        resp = http_requests.post(url, headers=headers, json=payload, timeout=20)
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": resp.text}
+        return jsonify({
+            "status_code": resp.status_code,
+            "phone_number_id": LARA_PHONE_NUMBER_ID,
+            "to": to,
+            "template": template_name,
+            "language": lang_code,
+            "meta_response": body,
+        }), (200 if resp.status_code == 200 else resp.status_code)
+    except Exception as e:
+        return jsonify({"error": f"exception: {e}"}), 500
+
+
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 # COLD-LEAD DETECTION Ã¢ÂÂ Background Thread
 # Checks every hour. Fires lead_cold event to Hub for any lead
