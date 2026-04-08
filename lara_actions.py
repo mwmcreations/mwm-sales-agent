@@ -65,6 +65,7 @@ MWM_CLIENTS = [
 
 # ── Intent Detection ────────────────────────────────────────────────
 LARA_ACTION_INTENTS = {
+    # ── Broad overviews first ──
     "production_overview": [
         r"(?:production|project|client)\s*(?:status|summary|overview|report|board|tracker)",
         r"how(?:'s| is| are) (?:the |our )?(?:production|projects?|clients?|pipeline)",
@@ -72,18 +73,12 @@ LARA_ACTION_INTENTS = {
         r"what.?s (?:the )?status (?:of |on )?(?:all |our )?(?:productions?|projects?|clients?)",
         r"(?:como\s+est[aá]|status)\s+(?:da|das|dos)?\s*(?:produ[cç][aã]o|projetos?|clientes?)",
     ],
-    # update_client MUST come before client_status — "update X to Y" would otherwise
-    # match client_status's "update" keyword first.
+    # ── Specific intents BEFORE client_status (which is a greedy catch-all) ──
     "update_client": [
         r"(?:update|change|set|mark)\s+(.+?)\s+(?:script\s*(?:status)?|shoot\s*(?:date|confirmed)?|content\s*(?:status)?|team\s*(?:briefed)?|confirmed|briefed|status|notes|last\s+contact|contact)\s+(?:to|as|→)\s+(.+)",
         r"(?:update|change|set)\s+(.+?)\s+(.+?)\s+(?:to|as|→)\s+(.+)",
         r"(.+?)\s+script\s+(?:is|now)\s+(.*)",
         r"(.+?)\s+shoot\s+(?:is|confirmed|scheduled)\s*(.*)",
-    ],
-    "client_status": [
-        r"(?:status|check|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
-        r"(?:what.?s|where.?s)\s+(.+?)\s+(?:at|status|standing|project)",
-        r"(?:look\s*up|find|check)\s+(?:client\s+)?(.+?)(?:\s+(?:in|on|from)\s+(?:the\s+)?(?:tracker|sheet|board))?$",
     ],
     "upcoming_shoots": [
         r"(?:what|any|show|list)\s+(?:upcoming|next|scheduled)\s+(?:shoots?|sessions?|recordings?)",
@@ -95,16 +90,22 @@ LARA_ACTION_INTENTS = {
         r"(?:send|write|draft|email|message)\s+(?:an?\s+)?(?:email|message)\s+(?:to|for)\s+(.+)",
         r"(?:email|contact|reach out to|message)\s+(.+?)(?:\s+(?:about|regarding|re|saying|to tell|to let))\s+(.+)",
     ],
-    "check_calendar": [
-        r"(?:what.?s|check|show|list)\s+(?:on\s+)?(?:the\s+)?(?:calendar|schedule|agenda)\s*(?:for|on|this|next)?\s*(.*)",
-        r"(?:am i|is michael|are we)\s+(?:free|available|busy)\s+(.*)",
-        r"(?:any|what)\s+(?:meetings?|appointments?|events?)\s+(?:today|tomorrow|this week|next week)",
-    ],
     "read_emails": [
         r"(?:check|show|read|list|any)\s+(?:my\s+|the\s+)?(?:new\s+)?(?:recent\s+)?(?:emails?|messages?|inbox)\s*(?:from|about)?\s*(.*)",
         r"(?:what|any)\s+(?:new\s+)?(?:emails?|messages?)\s+(?:from|about)\s+(.+)",
         r"(?:inbox|email)\s+(?:status|check|update)",
         r"(?:my|the)\s+(?:emails?|inbox|messages?)",
+    ],
+    "check_calendar": [
+        r"(?:what.?s|check|show|list)\s+(?:on\s+)?(?:the\s+)?(?:calendar|schedule|agenda)\s*(?:for|on|this|next)?\s*(.*)",
+        r"(?:am i|is michael|are we)\s+(?:free|available|busy)\s+(.*)",
+        r"(?:any|what)\s+(?:meetings?|appointments?|events?)\s+(?:today|tomorrow|this week|next week)",
+    ],
+    # ── client_status LAST — it's a greedy catch-all with "check/status" ──
+    "client_status": [
+        r"(?:status|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
+        r"(?:what.?s|where.?s)\s+(.+?)\s+(?:at|status|standing|project)",
+        r"(?:look\s*up|find)\s+(?:client\s+)?(.+?)(?:\s+(?:in|on|from)\s+(?:the\s+)?(?:tracker|sheet|board))?$",
     ],
 }
 
