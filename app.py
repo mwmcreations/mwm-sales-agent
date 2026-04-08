@@ -111,6 +111,16 @@ SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 
+# LARA Shadow Mode: mirror every LARA WhatsApp conversation into a dedicated
+# Slack channel as threads-per-phone. Gives Michael oversight so he can
+# intervene if LARA makes a mistake. Set via Railway env var to the #lara-shadow
+# channel ID once the channel is created. Left blank = shadow mode disabled.
+SLACK_LARA_SHADOW_CHANNEL = os.getenv("SLACK_LARA_SHADOW_CHANNEL", "")
+
+# In-memory map: normalized phone digits → Slack thread_ts (parent message).
+# One thread per client phone, persistent within a deploy. Resets on restart.
+lara_shadow_threads = {}
+
 # Trigger words for detecting "hot" leads (high intent signals)
 HOT_SIGNAL_TRIGGERS = {
     "yes", "interested", "how much", "i want", "book", "schedule", "price",
@@ -154,6 +164,127 @@ def _post_to_slack_async(channel, text, blocks=None):
         daemon=True
     )
     thread.start()
+
+
+def _format_phone_for_shadow(phone: str) -> str:
+    """Format phone as '+1 (XXX) XXX-XXXX' for US, '+55 XX XXXXX-XXXX' for BR, else '+DIGITS'."""
+    import re as _re
+    digits = _re.sub(r"\D", "", phone or "")
+    if digits.startswith("1") and len(digits) == 11:
+        return f"+1 ({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+    if digits.startswith("55") and len(digits) >= 12:
+        return f"+55 {digits[2:4]} {digits[4:9]}-{digits[9:]}"
+    return f"+{digits}" if digits else (phone or "unknown")
+
+
+def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: str):
+    """Mirror a LARA WhatsApp message to the #lara-shadow Slack channel.
+
+    Args:
+        sender_identity: dict from lookup_sender_identity() — role, name, phone, is_michael, client_info
+        direction: "inbound" (client → LARA) or "outbound" (LARA → client)
+        message_text: the raw message body
+
+    Skips entirely when:
+        - SLACK_LARA_SHADOW_CHANNEL or SLACK_BOT_TOKEN is not configured
+        - sender_is_michael is True (Michael's own DMs to LARA are not mirrored)
+        - message_text is empty
+
+    Threading: One Slack thread per client phone number. First message creates
+    a header post with the contact info; subsequent messages reply in the thread
+    tagged '📥 Client:' or '🤖 LARA:'. Thread state is in-memory and resets on
+    process restart — that's fine for MVP, the header just gets re-created.
+    """
+    if not SLACK_LARA_SHADOW_CHANNEL:
+        return
+    if not SLACK_BOT_TOKEN:
+        return
+    if sender_identity.get("is_michael", False):
+        return
+    if not message_text:
+        return
+
+    phone = sender_identity.get("phone") or "unknown"
+    name = sender_identity.get("name") or "Unknown"
+    role = sender_identity.get("role") or "unknown"
+    client_info = sender_identity.get("client_info") or {}
+    email = client_info.get("email", "") if isinstance(client_info, dict) else ""
+
+    import re as _re
+    thread_key = _re.sub(r"\D", "", phone) or phone
+
+    thread_ts = lara_shadow_threads.get(thread_key)
+
+    # First message from this phone → create the thread header.
+    if not thread_ts:
+        pretty_phone = _format_phone_for_shadow(phone)
+        header_lines = [f"📱 *Conversation with {name}* — `{pretty_phone}`"]
+        if email:
+            header_lines.append(f"✉️ {email}")
+        header_lines.append(f"👤 Role: {role}")
+        header_text = "\n".join(header_lines)
+
+        try:
+            url = "https://slack.com/api/chat.postMessage"
+            headers = {
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "channel": SLACK_LARA_SHADOW_CHANNEL,
+                "text": header_text,
+            }
+            response = http_requests.post(url, json=payload, headers=headers, timeout=5)
+            response.raise_for_status()
+            result = response.json()
+            if not result.get("ok"):
+                print(f"[LARA SHADOW] Failed to create thread: {result.get('error')}")
+                return
+            thread_ts = result.get("ts")
+            if not thread_ts:
+                print("[LARA SHADOW] No ts returned from thread header post")
+                return
+            lara_shadow_threads[thread_key] = thread_ts
+            print(f"[LARA SHADOW] Created thread for {name} ({pretty_phone}) ts={thread_ts}")
+        except Exception as e:
+            print(f"[LARA SHADOW] Error creating thread header: {e}")
+            return
+
+    # Post the message as a reply in the thread.
+    prefix = "📥 *Client:*" if direction == "inbound" else "🤖 *LARA:*"
+    thread_text = f"{prefix}\n{message_text}"
+
+    try:
+        url = "https://slack.com/api/chat.postMessage"
+        headers = {
+            "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "channel": SLACK_LARA_SHADOW_CHANNEL,
+            "text": thread_text,
+            "thread_ts": thread_ts,
+        }
+        response = http_requests.post(url, json=payload, headers=headers, timeout=5)
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("ok"):
+            print(f"[LARA SHADOW] Failed to post reply: {result.get('error')}")
+    except Exception as e:
+        print(f"[LARA SHADOW] Error posting reply: {e}")
+
+
+def _mirror_to_lara_shadow_async(sender_identity: dict, direction: str, message_text: str):
+    """Fire-and-forget shadow mirror — runs in a background thread so WhatsApp handling stays fast."""
+    try:
+        t = threading.Thread(
+            target=_mirror_to_lara_shadow,
+            args=(sender_identity, direction, message_text),
+            daemon=True,
+        )
+        t.start()
+    except Exception as e:
+        print(f"[LARA SHADOW] Failed to start mirror thread: {e}")
 
 
 def _get_current_time_edt():
@@ -2410,6 +2541,9 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
     sender_is_michael = sender_identity.get("is_michael", False)
     print(f"[LARA WA] Sender identity resolved: {sender_identity['role']} ({sender_identity['name']})")
 
+    # Shadow mode: mirror inbound message to #lara-shadow (skips if Michael).
+    _mirror_to_lara_shadow_async(sender_identity, "inbound", incoming_msg)
+
     # Per-sender history.
     if sender not in lara_history:
         lara_history[sender] = []
@@ -2525,6 +2659,9 @@ through the +1 407-537-7207 number. Adapt accordingly:
 
         send_whatsapp_meta(sender, body=reply, phone_number_id=LARA_PHONE_NUMBER_ID)
         print(f"[LARA WA] Replied to {sender} ({len(reply)} chars)")
+
+        # Shadow mode: mirror outbound reply to #lara-shadow (skips if Michael).
+        _mirror_to_lara_shadow_async(sender_identity, "outbound", reply)
     except Exception as e:
         print(f"[LARA WA] Error: {e}")
         try:
