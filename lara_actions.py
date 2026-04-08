@@ -101,9 +101,10 @@ LARA_ACTION_INTENTS = {
         r"(?:any|what)\s+(?:meetings?|appointments?|events?)\s+(?:today|tomorrow|this week|next week)",
     ],
     "read_emails": [
-        r"(?:check|show|read|list|any)\s+(?:new\s+)?(?:emails?|messages?|inbox)\s*(?:from|about)?\s*(.*)",
+        r"(?:check|show|read|list|any)\s+(?:my\s+|the\s+)?(?:new\s+)?(?:recent\s+)?(?:emails?|messages?|inbox)\s*(?:from|about)?\s*(.*)",
         r"(?:what|any)\s+(?:new\s+)?(?:emails?|messages?)\s+(?:from|about)\s+(.+)",
         r"(?:inbox|email)\s+(?:status|check|update)",
+        r"(?:my|the)\s+(?:emails?|inbox|messages?)",
     ],
 }
 
