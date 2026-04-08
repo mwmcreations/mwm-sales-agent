@@ -338,7 +338,7 @@ def update_client_field(text):
 
         # Try pattern: update [client] [field] to [value]
         match = re.search(
-            r"(?:update|change|set|mark)\s+(.+?)\s+(script|shoot\s*(?:date|confirmed)?|content\s*(?:status)?|team\s*(?:briefed)?|confirmed|briefed|status|notes|last\s+contact|contact)\s+(?:to|as|→)\s+(.+)",
+            r"(?:update|change|set|mark)\s+(.+?)\s+(script\s*(?:status)?|shoot\s*(?:date|confirmed)?|content\s*(?:status)?|team\s*(?:briefed)?|confirmed|briefed|status|notes|last\s+contact|contact)\s+(?:to|as|→)\s+(.+)",
             text_clean, re.IGNORECASE
         )
         if not match:
