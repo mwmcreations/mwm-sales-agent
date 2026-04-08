@@ -2433,14 +2433,15 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
 3. Update client field (script status, shoot date, content status, etc.)
 4. Upcoming shoots (scheduled shoots list)
 5. Send client email (email a client about something)
-6. Check calendar (view schedule/availability)
+6. Check calendar (view schedule/availability, "how is my day")
 7. Read emails (check inbox, emails from a client)
 8. Drive list footage / list client / search / create folder / share
+9. Check crew (crew roster, crew contact info, crew availability for shoots — MWM crew members: Bruno Neri, Guga Carvalho, Asafh Kalebe, Erika Miyamoto, Luis Pereira)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, check_crew, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
 
 If it is NOT a Lara action, respond with: {"action": "none"}""",
                     messages=[{"role": "user", "content": incoming_msg}],
@@ -3695,7 +3696,7 @@ DATA SOURCES YOU OWN:
 • *Michael's Primary Calendar* — accessed via Domain-Wide Delegation when Michael asks about his personal day.
 • *Gmail (michael@mwmcreations.com)* — for reading and sending client emails.
 • *Google Drive* — _clients (deliverables) and FOOTAGE (raw files) shared drives.
-• *MWM Crew Roster* — coming soon. For now, if someone asks about a specific crew member by name, acknowledge you don't have the crew roster loaded yet and ask Michael to add them.
+• *MWM Crew Roster* — 5 crew members: Bruno Neri (crew), Guga Carvalho (camera), Asafh Kalebe (camera), Erika Miyamoto (crew, Brazil), Luis Pereira (crew). You have their phone numbers but NOT their personal calendars — if someone asks "is Bruno available tomorrow" you can look up his contact info and offer to draft a WhatsApp message, but you cannot auto-confirm his calendar availability.
 
 REAL-TIME ACTION CAPABILITIES — you can execute these:
 
@@ -3718,6 +3719,12 @@ REAL-TIME ACTION CAPABILITIES — you can execute these:
 • List footage — "show footage for Victory Martial Arts"
 • List client files — "what files do we have for Green Rest Mattress?"
 • Create folder, share, search
+
+🎬 *Crew Roster*
+• List crew — "show me the crew" / "who's on the crew?"
+• Crew contact info — "phone for Bruno" / "how do I reach Guga?"
+• Crew availability — you have their contacts but NOT their personal calendars, so for availability you look up the contact and offer to draft a WhatsApp message to them
+• Known crew: Bruno Neri, Guga Carvalho (camera), Asafh Kalebe (camera), Erika Miyamoto, Luis Pereira
 
 IDENTITY AWARENESS:
 The SENDER IDENTITY block (if present) tells you exactly who is messaging you. Trust it absolutely. When the sender is Michael:

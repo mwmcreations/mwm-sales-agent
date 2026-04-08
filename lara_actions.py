@@ -134,6 +134,91 @@ def format_sender_identity_block(identity):
     )
 
 
+# MWM CREW ROSTER (added Session 30 — 2026-04-08)
+# Contact info provided by Michael. Roles marked "Crew" are placeholders —
+# Michael can refine them as needed. Emails not yet collected.
+MWM_CREW = [
+    {
+        "name": "Bruno Neri",
+        "role": "Crew",
+        "phone": "+15616392905",
+        "email": "",
+        "notes": "MWM team member",
+    },
+    {
+        "name": "Guga Carvalho",
+        "role": "Camera",
+        "phone": "+13107397521",
+        "email": "",
+        "notes": "Camera operator",
+    },
+    {
+        "name": "Asafh Kalebe",
+        "role": "Camera",
+        "phone": "+18632662266",
+        "email": "",
+        "notes": "Camera operator",
+    },
+    {
+        "name": "Erika Miyamoto",
+        "role": "Crew",
+        "phone": "+5511970646093",
+        "email": "",
+        "notes": "Based in Brazil (+55)",
+    },
+    {
+        "name": "Luis Pereira",
+        "role": "Crew",
+        "phone": "+14077197716",
+        "email": "",
+        "notes": "MWM team member",
+    },
+]
+
+
+_CREW_NAME_ALIASES = {
+    "asaph": "asafh",
+    "kalebe": "asafh",
+    "neri": "bruno",
+    "carvalho": "guga",
+    "miyamoto": "erika",
+    "pereira": "luis",
+}
+
+
+def find_crew_member(query):
+    """Find a crew member by name (partial, case-insensitive), alias, or phone.
+
+    Returns the matching crew dict or None.
+    """
+    if not query:
+        return None
+    q_lower = query.lower().strip()
+    # Resolve alternate spellings / last names first
+    if q_lower in _CREW_NAME_ALIASES:
+        q_lower = _CREW_NAME_ALIASES[q_lower]
+    q_digits = _normalize_phone_digits(query)
+
+    # Exact-ish phone match first
+    if q_digits and len(q_digits) >= 7:
+        for crew in MWM_CREW:
+            if _normalize_phone_digits(crew["phone"]) == q_digits:
+                return crew
+
+    # Name match — first name, last name, or full name substring
+    for crew in MWM_CREW:
+        name_lower = crew["name"].lower()
+        name_parts = name_lower.split()
+        if q_lower == name_lower:
+            return crew
+        if q_lower in name_parts:
+            return crew
+        if q_lower in name_lower:
+            return crew
+
+    return None
+
+
 # 11 MWM clients
 MWM_CLIENTS = [
     {"name": "Victory Martial Arts", "email": "brian@victoryma.com", "phone": "+14075551001", "service": "Video Pro Plan"},
@@ -198,6 +283,27 @@ LARA_ACTION_INTENTS = {
         # Portuguese natural phrasings
         r"como\s+(?:est[aá]|vai|fica)\s+(?:meu|o)\s+(?:dia|manh[aã]|tarde|noite|semana)",
         r"(?:o\s+que\s+eu\s+tenho|o\s+que\s+tem)\s+(?:hoje|amanh[aã]|essa\s+semana)",
+    ],
+    # ── Crew / team queries (BEFORE client_status because it's greedy) ──
+    "check_crew": [
+        # General crew list / roster queries
+        r"(?:show|list|who.?s?|what(?:'s|s)?)\s+(?:on\s+)?(?:the\s+)?(?:crew|team|camera\s+(?:crew|operators?|persons?))",
+        r"(?:crew|team)\s+(?:list|roster|members?|info|contacts?)",
+        r"(?:the\s+)?(?:mwm\s+)?crew(?:\s+members?)?\s*\??\s*$",
+        # Availability of any crew member
+        r"(?:is|can|will)\s+(?:any(?:one)?\s+)?(?:of\s+(?:the\s+)?)?crew\s+(?:member\s+)?(?:available|free|busy|working|on|able)",
+        r"(?:any|a)\s+crew\s+(?:member\s+)?(?:available|free|for)",
+        r"(?:is|will|can)\s+(?:any(?:one)?\s+from\s+)?(?:the\s+)?(?:crew|team)\s+(?:be\s+)?(?:available|free|here|there|on|at)",
+        # Availability of a specific known crew member
+        r"(?:is|can|will)\s+(?:bruno|guga|asafh|asaph|erika|luis)\s+(?:available|free|busy|working|able|here|there|on|be)",
+        r"(?:bruno|guga|asafh|asaph|erika|luis)(?:'s|\s+is)?\s+(?:phone|email|contact|number|availability|schedule)",
+        # Contact lookup
+        r"(?:contact|phone|email|info|number)\s+(?:info\s+)?(?:for\s+)?(?:bruno|guga|asafh|asaph|erika|luis)",
+        r"(?:how\s+do\s+i|how\s+can\s+i)\s+(?:contact|reach|call|text|email)\s+(?:bruno|guga|asafh|asaph|erika|luis)",
+        # Portuguese
+        r"(?:quem|qual)\s+(?:est[aá])?\s*(?:dispon[ií]vel|livre|na\s+equipe)",
+        r"(?:equipe|crew)\s+(?:dispon[ií]vel|hoje|amanh[aã]|lista)",
+        r"algu[eé]m\s+(?:da\s+)?(?:equipe|crew)",
     ],
     # ── Google Drive actions (specific keywords: files/footage/folder/share) ──
     "drive_list_footage": [
@@ -634,6 +740,102 @@ def check_calendar(text, sender_is_michael=False):
         return f"\u26a0\ufe0f Error checking calendar: {str(e)[:200]}"
 
 
+def _format_phone_display(phone):
+    """Format +15616392905 as +1 (561) 639-2905 for display."""
+    digits = _normalize_phone_digits(phone)
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+1 ({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+    if len(digits) == 13 and digits.startswith("55"):
+        return f"+55 {digits[2:4]} {digits[4:9]}-{digits[9:]}"
+    return phone
+
+
+def check_crew(text):
+    """Handle crew-related queries.
+
+    Supports:
+    - Crew list / roster ("show me the crew", "who's on the crew")
+    - Specific crew member lookup ("is Bruno available", "phone for Guga")
+    - Availability queries (deferred: LARA explains she can't auto-check
+      personal calendars for crew, and offers to message them directly)
+    """
+    text_lower = text.lower().strip()
+
+    # Try to find a specific crew member mentioned by name
+    known_names = ["bruno", "guga", "asafh", "asaph", "erika", "luis"]
+    mentioned = None
+    for name in known_names:
+        if re.search(rf"\b{name}\b", text_lower):
+            mentioned = find_crew_member(name)
+            if mentioned:
+                break
+
+    # Detect "availability" intent keywords
+    availability_keywords = [
+        "available", "free", "busy", "dispon", "livre",
+        "can", "will", "able", "working", "on shift", "on set",
+    ]
+    asking_availability = any(kw in text_lower for kw in availability_keywords)
+
+    # Detect "contact/phone/email" intent
+    contact_keywords = ["phone", "contact", "email", "number", "info", "reach", "call", "text"]
+    asking_contact = any(kw in text_lower for kw in contact_keywords)
+
+    # ── Case 1: Specific crew member mentioned ──
+    if mentioned:
+        phone_display = _format_phone_display(mentioned["phone"])
+        if asking_contact and not asking_availability:
+            lines = [
+                f"\U0001f464 *{mentioned['name']}* ({mentioned['role']})",
+                f"\U0001f4f1 {phone_display}",
+            ]
+            if mentioned.get("email"):
+                lines.append(f"\u2709\ufe0f {mentioned['email']}")
+            if mentioned.get("notes"):
+                lines.append(f"_{mentioned['notes']}_")
+            return "\n".join(lines)
+
+        if asking_availability:
+            return (
+                f"I don't have direct access to *{mentioned['name']}*'s personal calendar, "
+                f"so I can't auto-confirm their availability. Their contact is "
+                f"{phone_display} \u2014 want me to draft a quick WhatsApp message to "
+                f"ask them about the shoot, or would you rather reach out yourself?"
+            )
+
+        # Default: full card
+        lines = [
+            f"\U0001f464 *{mentioned['name']}* ({mentioned['role']})",
+            f"\U0001f4f1 {phone_display}",
+        ]
+        if mentioned.get("email"):
+            lines.append(f"\u2709\ufe0f {mentioned['email']}")
+        if mentioned.get("notes"):
+            lines.append(f"_{mentioned['notes']}_")
+        return "\n".join(lines)
+
+    # ── Case 2: Generic crew list / roster request ──
+    lines = [f"\U0001f3ac *MWM Crew* ({len(MWM_CREW)} members)\n"]
+    for crew in MWM_CREW:
+        phone_display = _format_phone_display(crew["phone"])
+        role_tag = f" \u2014 _{crew['role']}_" if crew.get("role") else ""
+        lines.append(f"\u2022 *{crew['name']}*{role_tag}")
+        lines.append(f"  \U0001f4f1 {phone_display}")
+        if crew.get("email"):
+            lines.append(f"  \u2709\ufe0f {crew['email']}")
+
+    # If they were asking about availability (no specific name), add a note
+    if asking_availability:
+        lines.append("")
+        lines.append(
+            "\u26a0\ufe0f I don't have direct access to crew members' personal calendars, "
+            "so for specific availability you'll need to reach out to them directly. "
+            "Let me know which crew member and I can draft a WhatsApp message for you."
+        )
+
+    return "\n".join(lines)
+
+
 def read_emails(text):
     """Read recent emails from Gmail."""
     try:
@@ -717,6 +919,7 @@ def _get_intent_handlers():
         "send_client_email": send_client_email,
         "check_calendar": check_calendar,
         "read_emails": read_emails,
+        "check_crew": check_crew,
     }
     try:
         from lara_drive import DRIVE_HANDLERS
