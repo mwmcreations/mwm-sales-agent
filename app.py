@@ -3206,11 +3206,23 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
 5. Send client email (email a client about something)
 6. Check calendar (view schedule/availability)
 7. Read emails (check inbox, emails from a client)
+8. Drive list footage (list files/folders in the FOOTAGE shared drive — raw footage for the editing team)
+9. Drive list client (list files in a specific client folder inside _CLIENTS)
+10. Drive search (search Google Drive for files/folders by keyword)
+11. Drive create folder (create a new folder inside _CLIENTS for a client)
+12. Drive share (share a Drive file/folder with an external email address — e.g. editor or client)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+
+Drive examples:
+- "What's in the footage drive?" → {"action": "drive_list_footage", "command": "list footage files"}
+- "Show me Victory MA's files" → {"action": "drive_list_client", "command": "list files for Victory MA"}
+- "Find the Victory deliverables sheet" → {"action": "drive_search", "command": "search drive for Victory deliverables"}
+- "Create a folder for Vida Fit in clients" → {"action": "drive_create_folder", "command": "create client folder Vida Fit"}
+- "Share the Victory shoot folder with john@editor.com" → {"action": "drive_share", "command": "share Victory shoot folder with john@editor.com"}
 
 If it is NOT a Lara action, respond with: {"action": "none"}""",
                         messages=[{"role": "user", "content": clean_text}]
@@ -4419,11 +4431,16 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
 5. Send client email (email a client about something)
 6. Check calendar (view schedule/availability)
 7. Read emails (check inbox, emails from a client)
+8. Drive list footage (list files/folders in the FOOTAGE shared drive — raw footage for the editing team)
+9. Drive list client (list files in a specific client folder inside _CLIENTS)
+10. Drive search (search Google Drive for files/folders by keyword)
+11. Drive create folder (create a new folder inside _CLIENTS for a client)
+12. Drive share (share a Drive file/folder with an external email address — e.g. editor or client)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
 
 The "command" should rephrase the user's message as a clear English instruction Lara can parse.
 Examples:
@@ -4434,6 +4451,14 @@ Examples:
 - "Email Green Rest about the shoot" → {"action": "send_client_email", "command": "send email to Green Rest about the shoot"}
 - "What's on the calendar?" → {"action": "check_calendar", "command": "what is on the calendar today"}
 - "Any emails from Victory?" → {"action": "read_emails", "command": "check emails from Victory"}
+- "What's in the footage drive?" → {"action": "drive_list_footage", "command": "list footage files"}
+- "Show me the raw footage" → {"action": "drive_list_footage", "command": "list footage files"}
+- "Show me Victory MA's files" → {"action": "drive_list_client", "command": "list files for Victory MA"}
+- "What do we have for Green Rest in drive?" → {"action": "drive_list_client", "command": "list files for Green Rest"}
+- "Find the Victory deliverables sheet" → {"action": "drive_search", "command": "search drive for Victory deliverables"}
+- "Look for the script in drive" → {"action": "drive_search", "command": "search drive for script"}
+- "Create a folder for Vida Fit in clients" → {"action": "drive_create_folder", "command": "create client folder Vida Fit"}
+- "Share the Victory shoot folder with john@editor.com" → {"action": "drive_share", "command": "share Victory shoot folder with john@editor.com"}
 
 If it is NOT a Lara action, respond with: {"action": "none"}""",
                         messages=[{"role": "user", "content": text}]
