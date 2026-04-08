@@ -88,7 +88,7 @@ LARA_ACTION_INTENTS = {
     ],
     "send_client_email": [
         r"(?:send|write|draft|email|message)\s+(?:an?\s+)?(?:email|message)\s+(?:to|for)\s+(.+)",
-        r"(?:email|contact|reach out to|message)\s+(.+?)(?:\s+(?:about|regarding|re|saying|to tell|to let))\s+(.+)",
+        r"(?:email|contact|reach out to|message)\s+(.+?)(?:\s+(?:about|regarding|re|with\s+subject|saying|to tell|to let))\s+(.+)",
     ],
     "read_emails": [
         r"(?:check|show|read|list|any)\s+(?:my\s+|the\s+)?(?:new\s+)?(?:recent\s+)?(?:emails?|messages?|inbox)\s*(?:from|about)?\s*(.*)",
@@ -441,26 +441,66 @@ def get_upcoming_shoots(text):
         return f"⚠️ Error fetching shoots: {str(e)[:200]}"
 
 
+def _compose_email_body(client_name, service, subject_hint, content_status, script_status):
+    """Compose a professional follow-up email body based on client context."""
+    # Build a contextual body based on the subject hint and production status
+    greeting = f"Hi {client_name.split()[0] if client_name else 'there'},"
+    sign_off = (
+        "\nBest regards,\n"
+        "Michael Moraes\n"
+        "MWM Creations & Studios\n"
+        "michael@mwmcreations.com | (813) 503-1224"
+    )
+
+    if subject_hint:
+        body = (
+            f"{greeting}\n\n"
+            f"I wanted to reach out regarding {subject_hint}.\n\n"
+            f"Please let me know if you have any questions or if there's anything "
+            f"you'd like to discuss.\n"
+            f"{sign_off}"
+        )
+    else:
+        # Generic follow-up based on production status
+        status_line = ""
+        if content_status and content_status != "N/A":
+            status_line = f"Your content is currently in the '{content_status}' stage. "
+        if script_status and script_status != "N/A":
+            status_line += f"Script status: {script_status}. "
+
+        body = (
+            f"{greeting}\n\n"
+            f"I'm following up on your {service if service and service != 'N/A' else 'project'} with MWM Creations. "
+            f"{status_line}\n\n"
+            f"I'd love to touch base and make sure everything is on track. "
+            f"Let me know a good time to connect.\n"
+            f"{sign_off}"
+        )
+    return body
+
+
 def send_client_email(text):
-    """Draft or send an email to a client."""
+    """Compose and send an email to a client in one step via Gmail."""
     try:
         text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        # Strip Slack mailto markup: <mailto:email|email> → email
+        text_clean = re.sub(r"<mailto:[^|]+\|([^>]+)>", r"\1", text_clean)
 
-        # Extract client and message
+        # Extract client and subject/message
         match = re.search(
-            r"(?:send|write|draft|email|message)\s+(?:an?\s+)?(?:email|message)\s+(?:to|for)\s+(.+?)(?:\s+(?:about|regarding|re|saying|to tell|to let)\s+(.+))?$",
+            r"(?:send|write|draft|email|message)\s+(?:an?\s+)?(?:email|message)\s+(?:to|for)\s+(.+?)(?:\s+(?:about|regarding|re|saying|with\s+subject|to tell|to let)\s+(.+))?$",
             text_clean, re.IGNORECASE
         )
         if not match:
             match = re.search(
-                r"(?:email|contact|reach out to|message)\s+(.+?)(?:\s+(?:about|regarding|re|saying|to tell|to let))\s+(.+)",
+                r"(?:email|contact|reach out to|message)\s+(.+?)(?:\s+(?:about|regarding|re|saying|with\s+subject|to tell|to let))\s+(.+)",
                 text_clean, re.IGNORECASE
             )
         if not match:
             return "🤔 I need a client name and subject. Try: *email Victory about the shoot schedule*"
 
         client_name = match.group(1).strip().strip('"\'')
-        subject_hint = match.group(2).strip() if match.lastindex >= 2 and match.group(2) else ""
+        subject_hint = match.group(2).strip().strip('"\'') if match.lastindex >= 2 and match.group(2) else ""
 
         row_idx, client = _find_client(client_name)
         if not client:
@@ -470,19 +510,63 @@ def send_client_email(text):
         if not email:
             return f"⚠️ No email on file for *{client.get('Client', client_name)}*."
 
-        # Build email info for Claude to compose
+        # Build subject line
+        display_name = client.get("Client", client_name)
+        service = client.get("Service", "N/A")
+        content_status = client.get("Content Status", "N/A")
+        script_status = client.get("Script Status", "N/A")
+
+        if subject_hint:
+            subject = f"{subject_hint.title()}" if len(subject_hint) < 60 else subject_hint[:60]
+        else:
+            subject = f"Follow-up — {display_name} | MWM Creations"
+
+        # Compose email body
+        body = _compose_email_body(display_name, service, subject_hint, content_status, script_status)
+
+        # Send via Gmail DWD
+        gmail = _get_gmail_service()
+        message = MIMEText(body)
+        message["to"] = email
+        message["from"] = DELEGATE_EMAIL
+        message["subject"] = subject
+        raw = urlsafe_b64encode(message.as_bytes()).decode()
+
+        sent = gmail.users().messages().send(
+            userId="me",
+            body={"raw": raw}
+        ).execute()
+
+        msg_id = sent.get("id", "unknown")
+        print(f"[LARA] Email sent to {email}, Gmail ID: {msg_id}")
+
+        # Update last contact date in tracker
+        try:
+            now_str = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+            sheets = _get_sheets_service()
+            col_idx = PRODUCTION_HEADERS.index("Last Client Contact")
+            col_letter = chr(ord("A") + col_idx)
+            cell = f"Sheet1!{col_letter}{row_idx}"
+            sheets.spreadsheets().values().update(
+                spreadsheetId=PRODUCTION_SHEET_ID,
+                range=cell,
+                valueInputOption="USER_ENTERED",
+                body={"values": [[now_str]]},
+            ).execute()
+            print(f"[LARA] Updated Last Client Contact for {display_name} to {now_str}")
+        except Exception as up_err:
+            print(f"[LARA] Warning: couldn't update Last Client Contact: {up_err}")
+
         return (
-            f"📧 *Email Draft Ready*\n"
-            f"• *To:* {client.get('Client', client_name)} ({email})\n"
-            f"• *Re:* {subject_hint if subject_hint else 'Follow-up'}\n"
-            f"• *Service:* {client.get('Service', 'N/A')}\n"
-            f"• *Content Status:* {client.get('Content Status', 'N/A')}\n"
-            f"• *Script:* {client.get('Script Status', 'N/A')}\n\n"
-            f"_I've prepared the context. Tell me what to say and I'll send it, or I can draft a professional follow-up based on their current production stage._"
+            f"📧 *Email Sent!*\n"
+            f"• *To:* {display_name} ({email})\n"
+            f"• *Subject:* {subject}\n"
+            f"• *Gmail ID:* `{msg_id}`\n\n"
+            f"_Last Client Contact updated to today in the Production Tracker._"
         )
     except Exception as e:
         print(f"[LARA] Send email error: {e}")
-        return f"⚠️ Error preparing email: {str(e)[:200]}"
+        return f"⚠️ Error sending email: {str(e)[:200]}"
 
 
 def check_calendar(text):
