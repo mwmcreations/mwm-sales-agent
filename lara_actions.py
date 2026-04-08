@@ -72,16 +72,18 @@ LARA_ACTION_INTENTS = {
         r"what.?s (?:the )?status (?:of |on )?(?:all |our )?(?:productions?|projects?|clients?)",
         r"(?:como\s+est[aá]|status)\s+(?:da|das|dos)?\s*(?:produ[cç][aã]o|projetos?|clientes?)",
     ],
-    "client_status": [
-        r"(?:status|check|update|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
-        r"(?:what.?s|where.?s)\s+(.+?)\s+(?:at|status|standing|project)",
-        r"(?:look\s*up|find|check)\s+(?:client\s+)?(.+?)(?:\s+(?:in|on|from)\s+(?:the\s+)?(?:tracker|sheet|board))?$",
-    ],
+    # update_client MUST come before client_status — "update X to Y" would otherwise
+    # match client_status's "update" keyword first.
     "update_client": [
-        r"(?:update|change|set|mark)\s+(.+?)\s+(?:script|shoot|content|team|status)\s+(?:to|as|→)\s+(.+)",
+        r"(?:update|change|set|mark)\s+(.+?)\s+(?:script\s*(?:status)?|shoot\s*(?:date|confirmed)?|content\s*(?:status)?|team\s*(?:briefed)?|confirmed|briefed|status|notes|last\s+contact|contact)\s+(?:to|as|→)\s+(.+)",
         r"(?:update|change|set)\s+(.+?)\s+(.+?)\s+(?:to|as|→)\s+(.+)",
         r"(.+?)\s+script\s+(?:is|now)\s+(.*)",
         r"(.+?)\s+shoot\s+(?:is|confirmed|scheduled)\s*(.*)",
+    ],
+    "client_status": [
+        r"(?:status|check|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
+        r"(?:what.?s|where.?s)\s+(.+?)\s+(?:at|status|standing|project)",
+        r"(?:look\s*up|find|check)\s+(?:client\s+)?(.+?)(?:\s+(?:in|on|from)\s+(?:the\s+)?(?:tracker|sheet|board))?$",
     ],
     "upcoming_shoots": [
         r"(?:what|any|show|list)\s+(?:upcoming|next|scheduled)\s+(?:shoots?|sessions?|recordings?)",
