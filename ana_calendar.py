@@ -28,6 +28,15 @@ ANA_CALENDAR_INTENTS = {
         r"(?:today|tomorrow|this week|next week).?s? (?:schedule|calendar|events|appointments)",
         r"any(?:thing)? (?:on|scheduled)",
         r"my (?:schedule|calendar|events|agenda)",
+        # Natural phrasings
+        r"how(?:'?s|\s+is|\s+are|\s+was|\s+were)?\s+(?:my|the|our|michael'?s)\s+(?:day|morning|afternoon|evening|week|schedule)",
+        r"what(?:'?s|\s+is|\s+are)?\s+(?:my|the|our|michael'?s)\s+(?:day|morning|afternoon|evening|week|schedule)",
+        r"what do (?:i|we|michael) have (?:going on|today|tomorrow|this week|next week|on)",
+        r"what.?s? (?:happening|going on|on) (?:today|tomorrow|this week|next week)",
+        r"(?:tell|give) me (?:my|the|michael.?s) (?:day|schedule|calendar|agenda)",
+        # Portuguese
+        r"como (?:est[aá]|vai|fica) (?:meu|o) (?:dia|manh[aã]|tarde|noite|semana)",
+        r"o que (?:eu )?tenho (?:hoje|amanh[aã]|essa semana)",
     ],
     "check_availability": [
         r"(?:am i |are we |is .+ )?(?:free|available|open) (?:on|at|this|next|tomorrow)",
@@ -415,34 +424,88 @@ def _parse_event_details(text):
 
 
 # ââ Calendar Action Executors ââââââââââââââââââââââââââââââââââââââââââ
-def _list_events(text):
-    """List events from the MWM CREATIONS calendar for a date range."""
+def _list_events(text, calendar_ids=None, include_personal=False):
+    """List events across one or more calendars for a date range.
+
+    Parameters
+    ----------
+    text : str
+        Natural-language query used to parse the date range.
+    calendar_ids : list[str] | None
+        Optional list of calendar IDs to query. Defaults to the shared MWM
+        CREATIONS calendar only.
+    include_personal : bool
+        If True, also pull events from Michael's primary calendar via
+        Domain-Wide Delegation (impersonating GOOGLE_DELEGATE_EMAIL).
+    """
     try:
-        service = _get_cal_service()
         start_dt, end_dt = _parse_date_range(text)
-        events_result = service.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=start_dt.isoformat(),
-            timeMax=end_dt.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-            maxResults=20,
-        ).execute()
-        events = events_result.get("items", [])
-        if not events:
+        if calendar_ids is None:
+            calendar_ids = [CALENDAR_ID]
+
+        # Collect (event, source_label) tuples from every requested calendar
+        all_events = []
+
+        # Shared / explicit calendars via service account (no impersonation)
+        service = _get_cal_service()
+        for cid in calendar_ids:
+            try:
+                events_result = service.events().list(
+                    calendarId=cid,
+                    timeMin=start_dt.isoformat(),
+                    timeMax=end_dt.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=20,
+                ).execute()
+                label = "MWM" if cid == CALENDAR_ID else cid
+                for ev in events_result.get("items", []):
+                    all_events.append((ev, label))
+            except Exception as inner_err:
+                print(f"[ANA] list_events error for {cid}: {inner_err}")
+
+        # Michael's primary calendar via DWD
+        if include_personal:
+            try:
+                delegate = os.getenv("GOOGLE_DELEGATE_EMAIL", "michael@mwmcreations.com")
+                personal_service = _get_cal_service(impersonate=delegate)
+                personal_result = personal_service.events().list(
+                    calendarId="primary",
+                    timeMin=start_dt.isoformat(),
+                    timeMax=end_dt.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=20,
+                ).execute()
+                for ev in personal_result.get("items", []):
+                    all_events.append((ev, "Personal"))
+            except Exception as pers_err:
+                print(f"[ANA] list_events personal calendar error: {pers_err}")
+
+        if not all_events:
             return f"\U0001f4c5 *No events found* for {start_dt.strftime('%b %d')} \u2014 {end_dt.strftime('%b %d %Y')}."
 
-        lines = [f"\U0001f4c5 *Calendar \u2014 {start_dt.strftime('%b %d')} to {end_dt.strftime('%b %d %Y')}*\n"]
-        for ev in events:
+        # Sort by start time, handling both dateTime and date-only events
+        def _sort_key(pair):
+            ev, _label = pair
+            return ev["start"].get("dateTime") or ev["start"].get("date", "")
+        all_events.sort(key=_sort_key)
+
+        header_scope = "Michael's Day" if include_personal else "Calendar"
+        lines = [
+            f"\U0001f4c5 *{header_scope} \u2014 {start_dt.strftime('%b %d')} to {end_dt.strftime('%b %d %Y')}*\n"
+        ]
+        for ev, label in all_events:
             start = ev["start"].get("dateTime", ev["start"].get("date", ""))
             summary = ev.get("summary", "(no title)")
+            tag = f" _[{label}]_" if include_personal else ""
             if "T" in start:
                 dt = datetime.fromisoformat(start)
                 time_str = dt.strftime("%-I:%M %p")
                 date_str = dt.strftime("%a %b %-d")
-                lines.append(f"\u2022 *{time_str}* \u2014 {summary} ({date_str})")
+                lines.append(f"\u2022 *{time_str}* \u2014 {summary} ({date_str}){tag}")
             else:
-                lines.append(f"\u2022 \U0001f4cc *All day* \u2014 {summary} ({start})")
+                lines.append(f"\u2022 \U0001f4cc *All day* \u2014 {summary} ({start}){tag}")
         return "\n".join(lines)
     except Exception as e:
         print(f"[ANA] Error listing events: {e}")
@@ -798,14 +861,28 @@ _INTENT_HANDLERS = {
 }
 
 
-def handle_calendar_action(text):
+def handle_calendar_action(text, include_personal=False):
     """
     Check if text matches a calendar intent and execute it.
+
+    Parameters
+    ----------
+    text : str
+        Natural-language calendar query.
+    include_personal : bool
+        If True and the intent is list_events, also pull from Michael's
+        primary calendar via DWD. Used when LARA is talking to Michael and
+        he asks "how is my day" — pulls both production calendar AND
+        his personal meetings.
+
     Returns (handled: bool, response: str or None).
     """
     intent, match = detect_calendar_intent(text)
     if intent and intent in _INTENT_HANDLERS:
-        print(f"[ANA] Calendar intent detected: {intent} (matched: '{match}')")
-        result = _INTENT_HANDLERS[intent](text)
+        print(f"[ANA] Calendar intent detected: {intent} (matched: '{match}', personal={include_personal})")
+        if intent == "list_events" and include_personal:
+            result = _list_events(text, include_personal=True)
+        else:
+            result = _INTENT_HANDLERS[intent](text)
         return True, result
     return False, None

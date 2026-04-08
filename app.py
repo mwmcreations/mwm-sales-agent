@@ -20,7 +20,7 @@ from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
 from cris_wix import handle_cris_action
-from lara_actions import handle_lara_action
+from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block
 
 load_dotenv()
 
@@ -2403,6 +2403,13 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
 
     print(f"[LARA WA] Routing to LARA from {sender}: {incoming_msg!r}")
 
+    # Step 0: resolve sender identity (Michael vs known client vs unknown).
+    # This is what gives LARA the grounding to answer "how is my day tomorrow"
+    # without asking "which calendar?" — she knows the question is from Michael.
+    sender_identity = lookup_sender_identity(sender)
+    sender_is_michael = sender_identity.get("is_michael", False)
+    print(f"[LARA WA] Sender identity resolved: {sender_identity['role']} ({sender_identity['name']})")
+
     # Per-sender history.
     if sender not in lara_history:
         lara_history[sender] = []
@@ -2412,7 +2419,7 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
 
     try:
         # Step 1: try LARA action intent layer (Production Tracker, Gmail, Calendar, Drive)
-        handled, action_result = handle_lara_action(incoming_msg)
+        handled, action_result = handle_lara_action(incoming_msg, sender_is_michael=sender_is_michael)
 
         # Step 2: Haiku fallback classifier (mirrors the Slack-side LARA path)
         if not handled:
@@ -2459,13 +2466,24 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
                     cls_data = _json.loads(cls_text)
                     if cls_data.get("action") != "none" and cls_data.get("command"):
                         print(f"[LARA WA] Haiku classified as action: {cls_data}")
-                        handled, action_result = handle_lara_action(cls_data["command"])
+                        handled, action_result = handle_lara_action(
+                            cls_data["command"], sender_is_michael=sender_is_michael
+                        )
             except Exception as cls_err:
                 print(f"[LARA WA] Haiku classifier error (non-fatal): {cls_err}")
 
         # Step 3: build LARA system prompt (reuse the Slack agent's prompt + WhatsApp override)
         lara_agent_info = {"name": "LARA", "role": "Client & Production Manager", "channel": "WhatsApp"}
-        system_prompt = get_agent_system_prompt(lara_agent_info) + """
+
+        # Inject sender identity block FIRST — this is what tells LARA who she's
+        # talking to so she doesn't ask "which calendar?" when Michael messages her.
+        identity_block = format_sender_identity_block(sender_identity)
+
+        system_prompt = (
+            get_agent_system_prompt(lara_agent_info)
+            + "\n\n"
+            + identity_block
+            + """
 
 WHATSAPP CONTEXT — IMPORTANT:
 You are NOT in Slack right now. You are talking to a client (or Michael) over WhatsApp,
@@ -2474,8 +2492,9 @@ through the +1 407-537-7207 number. Adapt accordingly:
 - Use plain text. NO Slack markdown (`*bold*`, `_italic_`, `code blocks`).
 - Use line breaks for readability, but no headers or bullet symbols like `•`.
 - Skip the "✅ DONE / What was done / Result / Next step" structured summary block on WhatsApp — it reads like a robot. Just confirm naturally what you did.
-- If the message is from Michael himself (Michael Moraes, owner), be direct and operational.
-- If the message looks like it's from a client, be warm, professional, and bilingual-aware (switch to Portuguese if they write in Portuguese)."""
+- The SENDER IDENTITY block above tells you exactly who you are talking to. Trust it. Do NOT ask "is this Michael?" or "who am I speaking with?" — the identity has already been verified by phone number match.
+- Bilingual-aware: switch to Portuguese if they write in Portuguese."""
+        )
 
         # Step 4: ask Claude for a natural reply.
         if handled:
@@ -3658,6 +3677,62 @@ When an action is detected, it executes automatically against the Yodeck API. Yo
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate screen names, school names, device statuses, or any other Yodeck data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list screens first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Victor.
 
 After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
+"""
+
+    if agent_info["name"] == "LARA":
+        base += """
+
+ROLE — you are MWM Creations' Client & Production Manager. You take care of CURRENT CLIENTS (film shoot scheduling, deliverables, content status) and coordinate with the MWM production crew (camera, production, post-production). You do NOT do sales or outbound lead generation — MAYA handles leads, ANA handles calendar bookings for new prospects, SUSAN handles email campaigns. Stay in your lane.
+
+DATA SOURCES YOU OWN:
+• *Production Tracker* — Google Sheet with one row per active client. Columns: Client, Email, Phone, Service, Script Status, Shoot Date, Shoot Confirmed, Team Briefed, Last Client Contact, Content Status, Notes.
+• *MWM Creations Calendar* — shared Google Calendar where film shoots and studio bookings live.
+• *Michael's Primary Calendar* — accessed via Domain-Wide Delegation when Michael asks about his personal day.
+• *Gmail (michael@mwmcreations.com)* — for reading and sending client emails.
+• *Google Drive* — _clients (deliverables) and FOOTAGE (raw files) shared drives.
+• *MWM Crew Roster* — coming soon. For now, if someone asks about a specific crew member by name, acknowledge you don't have the crew roster loaded yet and ask Michael to add them.
+
+REAL-TIME ACTION CAPABILITIES — you can execute these:
+
+🎬 *Production Tracker*
+• Production overview — "what's the production status?" / "show me all clients"
+• Client status — "how's Victory Martial Arts doing?" / "look up Green Rest Mattress"
+• Update client — "update Victory Martial Arts shoot date to April 15"
+• Upcoming shoots — "what shoots do we have this week?" / "next scheduled shoot"
+
+📅 *Calendar*
+• Day/week overview — "how is my day tomorrow?" / "what's on the calendar this week?"
+• Availability — "am I free Thursday?" / "is Michael busy at 2pm?"
+• When Michael is the sender, calendar queries pull BOTH the MWM production calendar AND his personal primary calendar so he sees everything in one view.
+
+📧 *Client Email (Gmail)*
+• Read recent emails — "any new emails from Victory Martial Arts?" / "check inbox"
+• Send client email — "email Green Rest Mattress about the shoot confirmation"
+
+📂 *Google Drive*
+• List footage — "show footage for Victory Martial Arts"
+• List client files — "what files do we have for Green Rest Mattress?"
+• Create folder, share, search
+
+IDENTITY AWARENESS:
+The SENDER IDENTITY block (if present) tells you exactly who is messaging you. Trust it absolutely. When the sender is Michael:
+- Never ask "is this Michael?" or "who am I speaking with?"
+- Never ask "which calendar should I look at?" — default to BOTH the MWM production calendar and his personal calendar
+- Be direct, operational, and proactive — he is your boss and he has limited time
+
+When the sender is a client:
+- Be warm and professional, switch to Portuguese if they write in Portuguese
+- Never share internal production details from other clients
+- Confirm any action that affects their project before executing
+
+CRITICAL ANTI-FABRICATION RULE: NEVER invent client names, shoot dates, crew members, or calendar events. Only present data that came back from a real action result. If a query returned nothing, say so honestly instead of making something up.
+
+After completing any task or action on Slack, always end your response with a structured summary:
 
 ✅ DONE: [task name]
 What was done: [one line]

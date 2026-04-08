@@ -47,6 +47,93 @@ PRODUCTION_HEADERS = [
     "Notes",
 ]
 
+def _normalize_phone_digits(value):
+    """Strip all non-digit characters from a phone string."""
+    if not value:
+        return ""
+    return re.sub(r"\D", "", str(value))
+
+
+def lookup_sender_identity(sender_phone):
+    """Resolve a WhatsApp sender phone to a known identity.
+
+    Returns a dict describing who is on the other end of the conversation
+    so the LARA system prompt can be grounded properly.
+
+    {
+        "role": "michael" | "client" | "unknown",
+        "name": str,
+        "phone": str,              # original phone
+        "is_michael": bool,
+        "client_info": dict | None # MWM_CLIENTS row when role == "client"
+    }
+    """
+    sender_digits = _normalize_phone_digits(sender_phone)
+    michael_env = os.getenv("MICHAEL_PHONE", "")
+    michael_digits = _normalize_phone_digits(michael_env)
+
+    if sender_digits and michael_digits and sender_digits == michael_digits:
+        return {
+            "role": "michael",
+            "name": "Michael Moraes",
+            "phone": sender_phone,
+            "is_michael": True,
+            "client_info": None,
+        }
+
+    # Look up against known MWM clients
+    for client in MWM_CLIENTS:
+        client_digits = _normalize_phone_digits(client.get("phone", ""))
+        if client_digits and client_digits == sender_digits:
+            return {
+                "role": "client",
+                "name": client["name"],
+                "phone": sender_phone,
+                "is_michael": False,
+                "client_info": client,
+            }
+
+    return {
+        "role": "unknown",
+        "name": "Unknown sender",
+        "phone": sender_phone,
+        "is_michael": False,
+        "client_info": None,
+    }
+
+
+def format_sender_identity_block(identity):
+    """Format an identity dict into a system-prompt block for LARA."""
+    if not identity:
+        return ""
+    if identity["role"] == "michael":
+        return (
+            "SENDER IDENTITY \u2014 CRITICAL:\n"
+            "You are talking to Michael Moraes, the owner of MWM Creations & Studios. "
+            "This is confirmed by phone number match against MICHAEL_PHONE. "
+            "Do NOT ask who is messaging you, do NOT ask which calendar to look at, "
+            "do NOT treat him like a client. When he says \"my calendar\" or \"my day\", "
+            "that means his MWM Creations calendar (michael@mwmcreations.com). "
+            "Be direct, operational, and proactive \u2014 Michael is your boss."
+        )
+    if identity["role"] == "client":
+        client = identity["client_info"] or {}
+        return (
+            "SENDER IDENTITY:\n"
+            f"You are talking to a known MWM client: *{identity['name']}*.\n"
+            f"- Email: {client.get('email', 'unknown')}\n"
+            f"- Service: {client.get('service', 'unknown')}\n"
+            "Be warm, professional, and client-facing. Do NOT share internal production "
+            "details unrelated to their project. Switch to Portuguese if they write in Portuguese."
+        )
+    return (
+        "SENDER IDENTITY:\n"
+        f"The sender phone ({identity.get('phone', 'unknown')}) does not match "
+        "Michael or any known MWM client in the tracker. Treat them as a new "
+        "inquiry \u2014 be warm, professional, and ask who they are and how you can help."
+    )
+
+
 # 11 MWM clients
 MWM_CLIENTS = [
     {"name": "Victory Martial Arts", "email": "brian@victoryma.com", "phone": "+14075551001", "service": "Video Pro Plan"},
@@ -100,6 +187,17 @@ LARA_ACTION_INTENTS = {
         r"(?:what.?s|check|show|list)\s+(?:on\s+)?(?:the\s+)?(?:calendar|schedule|agenda)\s*(?:for|on|this|next)?\s*(.*)",
         r"(?:am i|is michael|are we)\s+(?:free|available|busy)\s+(.*)",
         r"(?:any|what)\s+(?:meetings?|appointments?|events?)\s+(?:today|tomorrow|this week|next week)",
+        # Natural phrasings for "what's my day like"
+        r"how(?:'?s|\s+is|\s+are|\s+was|\s+were)?\s+(?:my|the|our|michael'?s)\s+(?:day|morning|afternoon|evening|week|schedule)",
+        r"what(?:'?s|\s+is|\s+are)?\s+(?:my|the|our|michael'?s)\s+(?:day|morning|afternoon|evening|week|schedule)(?:\s+look(?:ing)?\s+like)?",
+        r"what\s+do\s+(?:i|we|michael)\s+have\s+(?:going on|today|tomorrow|this week|next week|on)",
+        r"what.?s?\s+(?:happening|going on|on)\s+(?:today|tomorrow|this week|next week)",
+        r"(?:tell|give)\s+me\s+(?:my|the|michael.?s)\s+(?:day|schedule|calendar|agenda)",
+        r"(?:my|the|michael.?s)\s+(?:day|schedule|agenda)\s+(?:today|tomorrow|this week|next week)",
+        r"(?:what\s+is|what.?s)\s+(?:on\s+)?(?:for\s+)?(?:today|tomorrow|this week|next week)",
+        # Portuguese natural phrasings
+        r"como\s+(?:est[aá]|vai|fica)\s+(?:meu|o)\s+(?:dia|manh[aã]|tarde|noite|semana)",
+        r"(?:o\s+que\s+eu\s+tenho|o\s+que\s+tem)\s+(?:hoje|amanh[aã]|essa\s+semana)",
     ],
     # ── Google Drive actions (specific keywords: files/footage/folder/share) ──
     "drive_list_footage": [
@@ -510,22 +608,30 @@ def send_client_email(text):
         return f"⚠️ Error preparing email: {str(e)[:200]}"
 
 
-def check_calendar(text):
-    """Check calendar events/availability using ana_calendar."""
+def check_calendar(text, sender_is_michael=False):
+    """Check calendar events/availability using ana_calendar.
+
+    When sender_is_michael is True, LARA will pull BOTH the shared MWM
+    CREATIONS production calendar and Michael's personal calendar
+    (via Domain-Wide Delegation) so "how is my day tomorrow" returns a
+    merged view instead of asking which calendar to look at.
+    """
     try:
         from ana_calendar import handle_calendar_action
         text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
-        handled, result = handle_calendar_action(text_clean)
+        handled, result = handle_calendar_action(text_clean, include_personal=sender_is_michael)
         if handled:
             return result
         # Try rephrasing
-        handled, result = handle_calendar_action(f"what is on my calendar {text_clean}")
+        handled, result = handle_calendar_action(
+            f"what is on my calendar {text_clean}", include_personal=sender_is_michael
+        )
         if handled:
             return result
-        return "🤔 I couldn't parse the calendar request. Try: *what's on the calendar today?*"
+        return "\U0001f914 I couldn't parse the calendar request. Try: *what's on the calendar today?*"
     except Exception as e:
         print(f"[LARA] Calendar check error: {e}")
-        return f"⚠️ Error checking calendar: {str(e)[:200]}"
+        return f"\u26a0\ufe0f Error checking calendar: {str(e)[:200]}"
 
 
 def read_emails(text):
@@ -623,15 +729,29 @@ def _get_intent_handlers():
 _INTENT_HANDLERS = _get_intent_handlers()
 
 
-def handle_lara_action(text):
+def handle_lara_action(text, sender_is_michael=False):
     """Check if text matches a Lara action intent and execute it.
+
+    Parameters
+    ----------
+    text : str
+        The incoming message text.
+    sender_is_michael : bool
+        When True, identity-aware handlers (currently check_calendar) will
+        pull from Michael's personal calendar in addition to the shared
+        MWM production calendar.
+
     Returns (handled: bool, response: str or None).
     """
     intent, match = detect_lara_intent(text)
     if intent and intent in _INTENT_HANDLERS:
-        print(f"[LARA] Action intent detected: {intent} (matched: '{match.group(0)}')")
+        print(f"[LARA] Action intent detected: {intent} (matched: '{match.group(0)}', michael={sender_is_michael})")
         handler = _INTENT_HANDLERS[intent]
-        result = handler(text)
+        # check_calendar is the only handler that currently accepts sender context
+        if intent == "check_calendar":
+            result = handler(text, sender_is_michael=sender_is_michael)
+        else:
+            result = handler(text)
         return True, result
 
     return False, None
