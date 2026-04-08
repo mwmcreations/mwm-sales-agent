@@ -2790,6 +2790,61 @@ def lara_admin_send_template():
         return jsonify({"error": f"exception: {e}"}), 500
 
 
+# ----------------------------------------------------------------------------
+# LARA admin: register the phone number with WhatsApp Cloud API.
+#
+# Voice OTP only verifies number ownership (the green badge in WhatsApp
+# Manager). To actually send/receive messages via the Cloud API, the number
+# must be registered with a 2FA PIN. This endpoint hits Meta's
+# POST /{phone_number_id}/register with the PIN you choose. If the number
+# has no existing 2FA PIN, Meta will set the new PIN and register in one
+# call. If 2FA is already configured, the call must use the existing PIN.
+#
+# After a successful 200 OK from this endpoint, /lara/admin/send_template
+# will start working and the number will surface on personal WhatsApp
+# clients within minutes.
+#
+# Gated by ?token=<WEBHOOK_VERIFY_TOKEN>&pin=<6-digit-PIN>.
+# ----------------------------------------------------------------------------
+@app.route("/lara/admin/register", methods=["GET", "POST"])
+def lara_admin_register():
+    token = request.args.get("token", "")
+    if not WEBHOOK_VERIFY_TOKEN or token != WEBHOOK_VERIFY_TOKEN:
+        return jsonify({"error": "forbidden"}), 403
+
+    pin = request.args.get("pin", "").strip()
+    if not pin or not pin.isdigit() or len(pin) != 6:
+        return jsonify({"error": "missing or invalid 'pin' (must be exactly 6 digits)"}), 400
+    if not LARA_PHONE_NUMBER_ID:
+        return jsonify({"error": "LARA_PHONE_NUMBER_ID not set in env"}), 500
+    if not META_ACCESS_TOKEN:
+        return jsonify({"error": "META_ACCESS_TOKEN not set in env"}), 500
+
+    url = f"https://graph.facebook.com/v19.0/{LARA_PHONE_NUMBER_ID}/register"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "pin": pin,
+    }
+    try:
+        resp = http_requests.post(url, headers=headers, json=payload, timeout=20)
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": resp.text}
+        return jsonify({
+            "status_code": resp.status_code,
+            "phone_number_id": LARA_PHONE_NUMBER_ID,
+            "meta_response": body,
+            "note": "On 200 success, LARA is now Cloud-API-registered. Retry /lara/admin/send_template to verify.",
+        }), (200 if resp.status_code == 200 else resp.status_code)
+    except Exception as e:
+        return jsonify({"error": f"exception: {e}"}), 500
+
+
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 # COLD-LEAD DETECTION Ã¢ÂÂ Background Thread
 # Checks every hour. Fires lead_cold event to Hub for any lead
