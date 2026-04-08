@@ -3369,6 +3369,13 @@ Guidelines:
 - Confirm receipt of tasks and outline next steps
 - Ask for clarification if needed
 - Stay in character as {agent_info['name']}
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "ANA":
@@ -3388,6 +3395,13 @@ For event creation, encourage users to put event names in "quotes" and specify d
 The calendar timezone is America/New_York (EDT).
 
 CRITICAL: NEVER tell the user you created, deleted, or modified a calendar event unless you received a [CALENDAR ACTION RESULT] confirming the action was executed. If someone asks you to do a calendar action and you don't receive a [CALENDAR ACTION RESULT], tell them you couldn't process the request automatically and ask them to rephrase with a clear command like: schedule a "Meeting Name" tomorrow at 2pm for 1 hour.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "MAYA (Slack)":
@@ -3412,6 +3426,13 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 When an action is detected, it executes automatically against the Google Sheets lead tracker or calendar. You will receive the result as a [MAYA ACTION RESULT] and should present it naturally.
 
 CRITICAL: NEVER tell the user you executed a sheets update, handoff, or calendar check unless you received a [MAYA ACTION RESULT] confirming the action was executed. If no result was received, tell them you couldn't process the request automatically and ask them to rephrase.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "SUSAN":
@@ -3433,6 +3454,13 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 When an action is detected, it executes automatically against the Mailchimp API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, stats, open rates, subscriber counts, or any other Mailchimp data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Susan.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "VICTOR":
@@ -3453,6 +3481,13 @@ You manage digital signage across 37 Victory Martial Arts schools. Each school h
 When an action is detected, it executes automatically against the Yodeck API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate screen names, school names, device statuses, or any other Yodeck data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list screens first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Victor.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "ERIC":
@@ -3472,6 +3507,13 @@ You manage paid advertising for MWM Creations through Meta (Facebook/Instagram) 
 When an action is detected, it executes automatically against the Meta Marketing API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, spend amounts, impressions, click rates, or any other Meta Ads data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Eric.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "ROB":
@@ -3491,6 +3533,13 @@ You are the Financial Advisor for MWM Creations. You handle all Stripe data: bal
 When an action is detected, it executes automatically against the Stripe API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate payment amounts, customer names, subscription details, invoice data, or any other Stripe data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list charges first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Rob.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "CRIS":
@@ -3510,6 +3559,13 @@ You are the Website Developer for MWM Creations. You manage Wix websites — sit
 When an action is detected, it executes automatically against the Wix API. You will receive real data from the API and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate site names, contact details, blog posts, product listings, or any other Wix data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list sites first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Cris.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     if agent_info["name"] == "LARA":
@@ -3536,6 +3592,13 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 When an action is detected, it executes automatically against Google Sheets, Gmail, or Calendar. You will receive the result as a [LARA ACTION RESULT] and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate client names, production statuses, shoot dates, email content, or any other data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to check the tracker first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Lara.
+
+After completing any task or action, always end your response with a structured summary:
+
+✅ DONE: [task name]
+What was done: [one line]
+Result: [outcome / data returned]
+Next step: [if applicable, or "awaiting further instructions"]
 """
 
     return base
