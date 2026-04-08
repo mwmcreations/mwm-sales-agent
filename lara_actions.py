@@ -101,6 +101,26 @@ LARA_ACTION_INTENTS = {
         r"(?:am i|is michael|are we)\s+(?:free|available|busy)\s+(.*)",
         r"(?:any|what)\s+(?:meetings?|appointments?|events?)\s+(?:today|tomorrow|this week|next week)",
     ],
+    # ── Google Drive actions (specific keywords: files/footage/folder/share) ──
+    "drive_list_footage": [
+        r"(?:list|show|get|pull|what(?:'s|s)?)\s+(?:me\s+)?(?:the\s+)?(?:footage|raw\s*(?:files|material)?|clips?)\s+(?:for|in|of|from)\s+.+",
+        r"(?:footage|raw)\s+(?:folder|files)\s+(?:for|of)\s+.+",
+    ],
+    "drive_list_client": [
+        r"(?:list|show|get|pull|what(?:'s|s)?)\s+(?:me\s+)?(?:the\s+)?(?:files|documents|deliverables|content|stuff)\s+(?:for|in|of|from)\s+.+",
+        r"(?:client|deliverable)\s+(?:files|folder|content)\s+(?:for|of)\s+.+",
+    ],
+    "drive_create_folder": [
+        r"(?:create|make|add|new)\s+(?:a\s+)?(?:folder|client\s*folder)\s+(?:for\s+)?.+",
+    ],
+    "drive_share": [
+        r"share\s+(?:the\s+)?.+?\s+(?:with|to)\s+\S+@\S+",
+    ],
+    "drive_search": [
+        r"(?:find|locate|look\s*for)\s+(?:the\s+)?.+?\s+(?:in\s+)?(?:drive|google\s*drive|_?clients|footage|folder)\b",
+        r"search\s+drive\s+(?:for\s+)?.+",
+        r"drive\s+search\s+.+",
+    ],
     # ── client_status LAST — it's a greedy catch-all with "check/status" ──
     "client_status": [
         r"(?:status|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
@@ -574,15 +594,28 @@ def read_emails(text):
 
 
 # ── Main Handler ────────────────────────────────────────────────────
-_INTENT_HANDLERS = {
-    "production_overview": get_production_overview,
-    "client_status": get_client_status,
-    "update_client": update_client_field,
-    "upcoming_shoots": get_upcoming_shoots,
-    "send_client_email": send_client_email,
-    "check_calendar": check_calendar,
-    "read_emails": read_emails,
-}
+def _get_intent_handlers():
+    """Build the intent → handler map. Imports lara_drive lazily to avoid
+    circular imports since lara_drive.py calls back into lara_actions._get_google_creds.
+    """
+    handlers = {
+        "production_overview": get_production_overview,
+        "client_status": get_client_status,
+        "update_client": update_client_field,
+        "upcoming_shoots": get_upcoming_shoots,
+        "send_client_email": send_client_email,
+        "check_calendar": check_calendar,
+        "read_emails": read_emails,
+    }
+    try:
+        from lara_drive import DRIVE_HANDLERS
+        handlers.update(DRIVE_HANDLERS)
+    except Exception as e:
+        print(f"[LARA] lara_drive import failed (non-fatal): {e}")
+    return handlers
+
+
+_INTENT_HANDLERS = _get_intent_handlers()
 
 
 def handle_lara_action(text):
