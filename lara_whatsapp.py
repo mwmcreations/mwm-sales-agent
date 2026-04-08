@@ -9,10 +9,13 @@ import os
 import requests as http_requests
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")
-META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
+# LARA_PHONE_NUMBER_ID — Phone number ID for the LARA WhatsApp sender
+# (+1 407-537-7207). LARA is multi-tenant on the same WABA as Maya, but
+# sends FROM her own Meta number, so this module always uses LARA's PNID.
+LARA_PHONE_NUMBER_ID = os.getenv("LARA_PHONE_NUMBER_ID", "")
 LARA_MEDIA_BASE_URL = os.getenv("LARA_MEDIA_BASE_URL", "")
 
-WA_API_URL = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+WA_API_URL = f"https://graph.facebook.com/v19.0/{LARA_PHONE_NUMBER_ID}/messages"
 
 
 def _wa_headers():

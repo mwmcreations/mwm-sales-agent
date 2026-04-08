@@ -29,14 +29,25 @@ app = Flask(__name__)
 
 # ââ Meta WhatsApp Cloud API Configuration âââââââââââââââââââââââââââââââââ
 META_ACCESS_TOKEN    = os.getenv("META_ACCESS_TOKEN", "")
+# META_PHONE_NUMBER_ID — Maya's phone number ID (existing single-tenant default).
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
+# LARA_PHONE_NUMBER_ID — Phone number ID for the LARA WhatsApp sender (+1 407-537-7207).
+# Added Session 29 (2026-04-08) when LARA's WABA registration completed via Voice OTP.
+LARA_PHONE_NUMBER_ID = os.getenv("LARA_PHONE_NUMBER_ID", "")
 WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "mwm-maya-verify-2026")
 
 
-def send_whatsapp_meta(to: str, body: str = None, media_url: str = None):
-    """Send a WhatsApp message via Meta Cloud API (replaces Twilio REST)."""
+def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
+                       phone_number_id: str = None):
+    """Send a WhatsApp message via Meta Cloud API.
+
+    phone_number_id selects which Meta sender number to send FROM.
+    Defaults to META_PHONE_NUMBER_ID (Maya). Pass LARA_PHONE_NUMBER_ID
+    to send as LARA. Both numbers live on the same WABA + access token.
+    """
+    pn_id = phone_number_id or META_PHONE_NUMBER_ID
     phone = to.replace("whatsapp:", "").lstrip("+")
-    url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+    url = f"https://graph.facebook.com/v19.0/{pn_id}/messages"
     headers = {
         "Authorization": f"Bearer {META_ACCESS_TOKEN}",
         "Content-Type": "application/json",
@@ -76,6 +87,11 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Store conversation history per user (in-memory)
 conversation_history = {}
+
+# LARA WhatsApp conversation history per sender (in-memory).
+# Keyed by `whatsapp:+1...`. Independent from Maya's conversation_history
+# so the two agents don't pollute each other's context.
+lara_history = {}
 
 # Ã¢ÂÂÃ¢ÂÂ Lead tracking for cold-lead detection Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 # {sender: {"name": str, "email": str, "last_message_time": datetime, "booked": bool, "cold_fired": bool}}
@@ -2312,6 +2328,10 @@ def webhook():
             value = change.get("value", {})
             if "statuses" in value and "messages" not in value:
                 continue
+            # ── Extract recipient phone_number_id (which Meta sender number was hit) ──
+            # Meta puts this in value.metadata.phone_number_id. Used to fan out
+            # between Maya (default) and LARA without sender-based heuristics.
+            recipient_pn_id = value.get("metadata", {}).get("phone_number_id", "")
             for msg in value.get("messages", []):
                 from_number = msg.get("from", "")
                 msg_type    = msg.get("type", "")
@@ -2348,10 +2368,153 @@ def webhook():
                         incoming_msg = interactive.get("button_reply", {}).get("title", "")
                     elif itype == "list_reply":
                         incoming_msg = interactive.get("list_reply", {}).get("title", "")
-                print(f"ð© Message from {sender}: {incoming_msg!r} | type={msg_type} | media={num_media}")
-                _handle_incoming(sender, incoming_msg, num_media, media_id, content_type)
+                print(f"[INBOUND] Message from {sender}: {incoming_msg!r} | type={msg_type} | media={num_media} | to_pn_id={recipient_pn_id}")
+                # -- Multi-tenant fan-out by recipient phone_number_id --
+                # If the inbound landed on LARA's number, route to LARA's
+                # WhatsApp handler. Everything else (Maya/Gabriela) keeps
+                # using the existing _handle_incoming path.
+                if LARA_PHONE_NUMBER_ID and recipient_pn_id == LARA_PHONE_NUMBER_ID:
+                    _handle_incoming_lara(sender, incoming_msg, num_media, media_id, content_type)
+                else:
+                    _handle_incoming(sender, incoming_msg, num_media, media_id, content_type)
 
     return "OK", 200
+
+
+def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
+                          media_id: str, content_type: str):
+    """Process an incoming WhatsApp message that landed on LARA's number.
+
+    LARA is the Client & Production Manager. She uses the same handle_lara_action
+    intent layer as the Slack-side LARA agent, plus a Claude completion fall-through
+    with LARA's system prompt. Replies are sent FROM LARA's phone_number_id.
+    """
+    # LARA doesn't currently process audio/file inputs.
+    if num_media > 0 and not incoming_msg:
+        send_whatsapp_meta(
+            sender,
+            body="Thanks! I received your file. Could you also send a quick text describing what you'd like me to do with it?",
+            phone_number_id=LARA_PHONE_NUMBER_ID,
+        )
+        return
+
+    if not incoming_msg:
+        return
+
+    print(f"[LARA WA] Routing to LARA from {sender}: {incoming_msg!r}")
+
+    # Per-sender history.
+    if sender not in lara_history:
+        lara_history[sender] = []
+    lara_history[sender].append({"role": "user", "content": incoming_msg})
+    if len(lara_history[sender]) > 20:
+        lara_history[sender] = lara_history[sender][-20:]
+
+    try:
+        # Step 1: try LARA action intent layer (Production Tracker, Gmail, Calendar, Drive)
+        handled, action_result = handle_lara_action(incoming_msg)
+
+        # Step 2: Haiku fallback classifier (mirrors the Slack-side LARA path)
+        if not handled:
+            try:
+                cls_response = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=300,
+                    system="""You classify whether a message is a Lara production/client management action request. Lara handles:
+1. Production overview (all client statuses)
+2. Client status (look up a specific client)
+3. Update client field (script status, shoot date, content status, etc.)
+4. Upcoming shoots (scheduled shoots list)
+5. Send client email (email a client about something)
+6. Check calendar (view schedule/availability)
+7. Read emails (check inbox, emails from a client)
+8. Drive list footage / list client / search / create folder / share
+
+If it IS a Lara action, respond with ONLY valid JSON:
+{"action": "<action_type>", "command": "<clear English command>"}
+
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+
+If it is NOT a Lara action, respond with: {"action": "none"}""",
+                    messages=[{"role": "user", "content": incoming_msg}],
+                )
+                import json as _json
+                cls_text = ""
+                for block in cls_response.content:
+                    if hasattr(block, "text"):
+                        cls_text += block.text
+                cls_text = cls_text.strip()
+                if cls_text.startswith("```"):
+                    lines_raw = cls_text.split("\n")
+                    cls_text = "\n".join(lines_raw[1:])
+                    if cls_text.endswith("```"):
+                        cls_text = cls_text[:-3].strip()
+                if not cls_text.startswith("{"):
+                    js = cls_text.find("{")
+                    if js != -1:
+                        je = cls_text.rfind("}") + 1
+                        if je > js:
+                            cls_text = cls_text[js:je]
+                if cls_text:
+                    cls_data = _json.loads(cls_text)
+                    if cls_data.get("action") != "none" and cls_data.get("command"):
+                        print(f"[LARA WA] Haiku classified as action: {cls_data}")
+                        handled, action_result = handle_lara_action(cls_data["command"])
+            except Exception as cls_err:
+                print(f"[LARA WA] Haiku classifier error (non-fatal): {cls_err}")
+
+        # Step 3: build LARA system prompt (reuse the Slack agent's prompt + WhatsApp override)
+        lara_agent_info = {"name": "LARA", "role": "Client & Production Manager", "channel": "WhatsApp"}
+        system_prompt = get_agent_system_prompt(lara_agent_info) + """
+
+WHATSAPP CONTEXT — IMPORTANT:
+You are NOT in Slack right now. You are talking to a client (or Michael) over WhatsApp,
+through the +1 407-537-7207 number. Adapt accordingly:
+- Keep replies short and conversational. WhatsApp users dislike long walls of text.
+- Use plain text. NO Slack markdown (`*bold*`, `_italic_`, `code blocks`).
+- Use line breaks for readability, but no headers or bullet symbols like `•`.
+- Skip the "✅ DONE / What was done / Result / Next step" structured summary block on WhatsApp — it reads like a robot. Just confirm naturally what you did.
+- If the message is from Michael himself (Michael Moraes, owner), be direct and operational.
+- If the message looks like it's from a client, be warm, professional, and bilingual-aware (switch to Portuguese if they write in Portuguese)."""
+
+        # Step 4: ask Claude for a natural reply.
+        if handled:
+            messages = [
+                {"role": "user", "content": incoming_msg},
+                {"role": "assistant", "content": f"[LARA ACTION RESULT]\n{action_result}"},
+                {"role": "user", "content": "Present the above action result naturally as Lara on WhatsApp. Keep it concise — WhatsApp users prefer short replies. Don't repeat all the data verbatim."},
+            ]
+        else:
+            messages = list(lara_history[sender])
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages,
+        )
+        reply = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                reply += block.text
+        if not reply:
+            reply = action_result if (handled and action_result) else "Hi! I'm Lara from MWM Creations. Could you tell me a bit more about what you need?"
+
+        # Persist assistant reply in history.
+        lara_history[sender].append({"role": "assistant", "content": reply})
+
+        send_whatsapp_meta(sender, body=reply, phone_number_id=LARA_PHONE_NUMBER_ID)
+        print(f"[LARA WA] Replied to {sender} ({len(reply)} chars)")
+    except Exception as e:
+        print(f"[LARA WA] Error: {e}")
+        try:
+            send_whatsapp_meta(
+                sender,
+                body="Sorry, I'm having a technical issue right now. Please try again in a moment.",
+                phone_number_id=LARA_PHONE_NUMBER_ID,
+            )
+        except Exception:
+            pass
 
 
 def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
