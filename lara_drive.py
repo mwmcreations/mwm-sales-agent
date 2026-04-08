@@ -222,12 +222,13 @@ def list_client_files(text):
 
 # ── Action: List Footage Files (FOOTAGE Shared Drive) ───────────────
 def list_footage_files(text):
-    """List files inside a client's folder in the FOOTAGE Shared Drive."""
+    """List files in the FOOTAGE Shared Drive — root if no client given, client folder if specified."""
     try:
         if not FOOTAGE_DRIVE_ID:
             return "⚠️ `LARA_DRIVE_FOOTAGE_DRIVE_ID` not set — can't access FOOTAGE."
 
         text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        # Try: "list footage for <client>"
         match = re.search(
             r"(?:list|show|get|pull|what)(?:\s+me)?\s+(?:the\s+)?(?:footage|raw\s*(?:files|material)?|videos?|clips?)\s+(?:for|in|of|from)\s+(.+?)(?:\s+(?:folder|drive|client))?$",
             text_clean, re.IGNORECASE
@@ -237,9 +238,28 @@ def list_footage_files(text):
                 r"(?:footage|raw)\s+(?:folder|files)\s+(?:for|of)\s+(.+)",
                 text_clean, re.IGNORECASE
             )
-        if not match:
-            return "🔍 Which client's footage? Try: *list footage for Solar Master*"
 
+        # Fallback: no client specified → list the Shared Drive root
+        if not match:
+            root_children = _list_immediate_children(
+                FOOTAGE_DRIVE_ID, is_shared_drive_root=True
+            )
+            if not root_children:
+                return "🎬 *FOOTAGE* Shared Drive is empty."
+            # Sort folders first, then files
+            root_children.sort(key=lambda f: (
+                0 if f.get("mimeType") == "application/vnd.google-apps.folder" else 1,
+                f.get("name", "").lower()
+            ))
+            lines = [f"🎬 *FOOTAGE Shared Drive root* — {len(root_children)} items\n"]
+            for f in root_children[:40]:
+                lines.append(_format_file_line(f))
+            if len(root_children) > 40:
+                lines.append(f"\n_...and {len(root_children) - 40} more._")
+            lines.append(f"\n<https://drive.google.com/drive/folders/{FOOTAGE_DRIVE_ID}|Open FOOTAGE drive>")
+            return "\n".join(lines)
+
+        # Client-specific lookup
         search = match.group(1).strip().strip('"\'')
         folder, all_folders = _resolve_client_folder(search, FOOTAGE_DRIVE_ID, is_shared_drive=True)
         if not folder:

@@ -103,8 +103,13 @@ LARA_ACTION_INTENTS = {
     ],
     # ── Google Drive actions (specific keywords: files/footage/folder/share) ──
     "drive_list_footage": [
+        # With a client/target: "list footage for Victory MA"
         r"(?:list|show|get|pull|what(?:'s|s)?)\s+(?:me\s+)?(?:the\s+)?(?:footage|raw\s*(?:files|material)?|clips?)\s+(?:for|in|of|from)\s+.+",
         r"(?:footage|raw)\s+(?:folder|files)\s+(?:for|of)\s+.+",
+        # Without a client — list the FOOTAGE shared drive root
+        r"(?:list|show|get|pull)\s+(?:me\s+)?(?:the\s+)?footage(?:\s+(?:drive|shared\s*drive|folder|files|root))?\s*\??\s*$",
+        r"what(?:'s|s)?\s+in\s+(?:the\s+)?footage(?:\s+(?:drive|shared\s*drive|folder))?\s*\??\s*$",
+        r"^footage(?:\s+(?:drive|shared\s*drive|folder|files|root))?\s*\??\s*$",
     ],
     "drive_list_client": [
         r"(?:list|show|get|pull|what(?:'s|s)?)\s+(?:me\s+)?(?:the\s+)?(?:files|documents|deliverables|content|stuff)\s+(?:for|in|of|from)\s+.+",
