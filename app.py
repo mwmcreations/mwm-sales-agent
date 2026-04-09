@@ -2785,11 +2785,27 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         send_whatsapp_meta(sender, body=clean_reply)
     else:
         print(f"ð¤ Routing to MAYA (async)")
+
+        # ── Michael short-circuit (Session 30.8) ──
+        # When Michael messages MAYA from his own WhatsApp, she still replies
+        # so he can test the conversation flow, but we skip all lead-funnel
+        # side effects: no Google Sheet logging, no #maya new-lead
+        # notification, no hot signal updates, no extract_lead -> log_lead.
+        # The shadow mirror already has its own MICHAEL_PHONE gate in
+        # _build_maya_sender_identity.
+        import re as _re_maya
+        _sender_digits = _re_maya.sub(r"\D", "", (sender or "").replace("whatsapp:", ""))
+        _michael_env_m = os.getenv("MICHAEL_PHONE", "") or ""
+        _michael_digits_m = _re_maya.sub(r"\D", "", _michael_env_m)
+        is_michael = bool(_sender_digits and _michael_digits_m and _sender_digits == _michael_digits_m)
+        if is_michael:
+            print(f"🧪 MAYA: sender is Michael ({sender}) — test mode, lead-funnel logging disabled")
+
         is_new_sender = sender not in conversation_history
         if is_new_sender:
             conversation_history[sender] = []
         conversation_history[sender].append({"role": "user", "content": incoming_msg})
-        if is_new_sender:
+        if is_new_sender and not is_michael:
             try:
                 log_new_contact_to_sheets(sender)
             except Exception as e:
@@ -2798,15 +2814,15 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             lead_data[sender] = {}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
-        # ── Slack: notify new lead ──
-        if is_new_sender:
+        # ── Slack: notify new lead (skipped for Michael's own test pings) ──
+        if is_new_sender and not is_michael:
             try:
                 _notify_new_lead(sender, incoming_msg)
             except Exception as slack_err:
                 print(f"⚠️ Slack new lead notification failed (non-fatal): {slack_err}")
 
-        # ── Slack: detect hot signal ──
-        if _detect_hot_signal(incoming_msg):
+        # ── Slack: detect hot signal (skipped for Michael's own test pings) ──
+        if _detect_hot_signal(incoming_msg) and not is_michael:
             try:
                 _ld = lead_data.get(sender, {})
                 _notify_hot_signal(sender, _ld.get("name", "Unknown"), incoming_msg)
@@ -2835,14 +2851,14 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         maya_identity = _build_maya_sender_identity(sender)
         _mirror_to_maya_shadow_async(maya_identity, "inbound", incoming_msg)
 
-        def process_maya(snap, sndr, ctx="", identity=None):
+        def process_maya(snap, sndr, ctx="", identity=None, is_michael_ping=False):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
             try:
                 reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx)
                 conversation_history[sndr] = updated_history
                 try:
                     lead_info = extract_lead(reply)
-                    if lead_info:
+                    if lead_info and not is_michael_ping:
                         log_lead(lead_info, sender=sndr, history=updated_history)
                         try:
                             fields = _parse_lead_fields(lead_info)
@@ -2882,7 +2898,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 except Exception as photo_err:
                     print(f"\u26a0\ufe0f Could not send studio photos (non-fatal): {photo_err}")
 
-        threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx, maya_identity), daemon=True).start()
+        threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx, maya_identity, is_michael), daemon=True).start()
 
 @app.route("/send-intro", methods=["POST"])
 def send_intro():
