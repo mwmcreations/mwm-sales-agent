@@ -1550,13 +1550,14 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
         # Each attempt: (calendarId, include_attendees, sendUpdates, label)
         attempts = [
-            (CALENDAR_ID, False, "none", "MWM Creations cal, no attendees"),
             (CALENDAR_ID, True,  "all",  "MWM Creations cal + attendees + invites"),
             (CALENDAR_ID, True,  "none", "MWM Creations cal + attendees, no invites"),
+            (CALENDAR_ID, False, "none", "MWM Creations cal, no attendees"),
         ]
 
         created = None
         used_attendees = False
+        used_send_updates = "none"
         used_calendar = CALENDAR_ID
 
         for cal_id, with_attendees, send_upd, label in attempts:
@@ -1572,6 +1573,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     sendUpdates=send_upd
                 ).execute()
                 used_attendees = with_attendees
+                used_send_updates = send_upd
                 used_calendar = cal_id
                 print(f"Ã¢ÂÂ Booking strategy used: {label}")
                 break
@@ -1585,23 +1587,33 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
         event_link = created.get("htmlLink", "")
 
+        # ── Michael short-circuit (Session 30.9): skip lead-funnel pollution for test bookings ──
+        import re as _re_bk
+        _lead_digits = _re_bk.sub(r"\D", "", (lead_phone or "").replace("whatsapp:", ""))
+        _michael_env_bk = os.getenv("MICHAEL_PHONE", "") or ""
+        _michael_digits_bk = _re_bk.sub(r"\D", "", _michael_env_bk)
+        is_michael_booking = bool(_lead_digits and _michael_digits_bk and _lead_digits == _michael_digits_bk)
+        if is_michael_booking:
+            print(f"🧪 book_appointment: Michael test booking — skipping Slack notify + Sheet update")
+
         # ── Slack: notify appointment booked ──
-        try:
-            _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
-            _interest = appointment_type.replace("_", " ").title()
-            _notify_appointment_booked(lead_name or "Prospect", lead_phone or "N/A", _slot_str, _interest)
-            # ── Update Google Sheet: mark as booked ──
+        if not is_michael_booking:
             try:
-                if lead_phone:
-                    update_lead_columns(lead_phone, {
-                        "WhatsApp Status": "Booked",
-                        "Appointment Booked": "Y",
-                        "Lead Temperature": "Hot",
-                    })
-            except Exception as _sheet_err:
-                print(f"\u26a0\ufe0f Sheet booking update failed (non-fatal): {_sheet_err}")
-        except Exception as slack_err:
-            print(f"⚠️ Slack booking notification failed (non-fatal): {slack_err}")
+                _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
+                _interest = appointment_type.replace("_", " ").title()
+                _notify_appointment_booked(lead_name or "Prospect", lead_phone or "N/A", _slot_str, _interest)
+                # ── Update Google Sheet: mark as booked ──
+                try:
+                    if lead_phone:
+                        update_lead_columns(lead_phone, {
+                            "WhatsApp Status": "Booked",
+                            "Appointment Booked": "Y",
+                            "Lead Temperature": "Hot",
+                        })
+                except Exception as _sheet_err:
+                    print(f"\u26a0\ufe0f Sheet booking update failed (non-fatal): {_sheet_err}")
+            except Exception as slack_err:
+                print(f"⚠️ Slack booking notification failed (non-fatal): {slack_err}")
         print(f"Ã¢ÂÂ Appointment booked: {created.get('id')} for {lead_name} at {start_dt}")
         print(f"Ã°ÂÂÂ Calendar: {used_calendar} | Attendees included: {used_attendees}")
         print(f"Ã°ÂÂÂ Event link: {event_link}")
@@ -1611,22 +1623,23 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
         if michael_phone and META_ACCESS_TOKEN:
             try:
-                invite_note = (
-                    "\u2709\ufe0f Calendar invite sent to lead."
-                    if used_attendees else
-                    "\u26a0\ufe0f Calendar invite NOT sent (DWD not yet configured â see setup guide)."
-                )
+                if used_attendees and used_send_updates == "all":
+                    invite_note = "\u2709\ufe0f Calendar invite sent to lead."
+                elif used_attendees:
+                    invite_note = "\u2709\ufe0f Lead added as attendee (no email invite)."
+                else:
+                    invite_note = "\u26a0\ufe0f Calendar invite NOT sent (DWD not configured — see setup guide)."
                 phone_line = ""
                 if lead_phone:
                     clean_phone = lead_phone.replace("whatsapp:", "")
-                    phone_line = f"ð± Phone: {clean_phone}\n"
+                    phone_line = f"📱 Phone: {clean_phone}\n"
                 notification = (
-                    f"ð *New Studio Visit Booked via Maya!*\n\n"
-                    f"ð¤ Name: {lead_name}\n"
-                    f"ð¢ Business: {lead_business}\n"
-                    f"ð§ Email: {lead_email}\n"
+                    f"🎉 *New Studio Visit Booked via Maya!*\n\n"
+                    f"👤 Name: {lead_name}\n"
+                    f"🏢 Business: {lead_business}\n"
+                    f"📧 Email: {lead_email}\n"
                     f"{phone_line}"
-                    f"ð Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
+                    f"🕐 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
                     f"{invite_note}"
                 )
                 send_whatsapp_meta(michael_phone, body=notification)
@@ -2157,7 +2170,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
         tab_name = now.strftime("%b %Y")
         clean_phone = sender.replace("whatsapp:", "").replace("+", "")
 
-        status = "Ã¢ÂÂ Studio Visit Booked" if appointment_type == "studio_visit" else "Ã°ÂÂÂ Strategy Call Booked"
+        status = "✅ Studio Visit Booked" if appointment_type == "studio_visit" else "📞 Strategy Call Booked"
 
         appt_dt = datetime.fromisoformat(slot_id).astimezone(pytz.timezone(TIMEZONE))
         appt_str = appt_dt.strftime("%a %b %d, %Y at %I:%M %p")
