@@ -111,15 +111,17 @@ SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 
-# LARA Shadow Mode: mirror every LARA WhatsApp conversation into a dedicated
-# Slack channel as threads-per-phone. Gives Michael oversight so he can
-# intervene if LARA makes a mistake. Set via Railway env var to the #lara-shadow
-# channel ID once the channel is created. Left blank = shadow mode disabled.
-SLACK_LARA_SHADOW_CHANNEL = os.getenv("SLACK_LARA_SHADOW_CHANNEL", "")
+# Shadow Mode: mirror every agent's WhatsApp conversations into dedicated
+# Slack channels as threads-per-phone. Gives Michael oversight so he can
+# intervene if an agent makes a mistake. Each channel is set via Railway env
+# var; left blank = shadow mode disabled for that agent.
+SLACK_LARA_SHADOW_CHANNEL = os.getenv("SLACK_LARA_SHADOW_CHANNEL", "")  # #lara-shadow
+SLACK_MAYA_SHADOW_CHANNEL = os.getenv("SLACK_MAYA_SHADOW_CHANNEL", "")  # #maya-shadow
 
-# In-memory map: normalized phone digits → Slack thread_ts (parent message).
-# One thread per client phone, persistent within a deploy. Resets on restart.
+# In-memory maps: normalized phone digits → Slack thread_ts (parent message).
+# One thread per sender phone, persistent within a deploy. Resets on restart.
 lara_shadow_threads = {}
+maya_shadow_threads = {}
 
 # Trigger words for detecting "hot" leads (high intent signals)
 HOT_SIGNAL_TRIGGERS = {
@@ -177,25 +179,33 @@ def _format_phone_for_shadow(phone: str) -> str:
     return f"+{digits}" if digits else (phone or "unknown")
 
 
-def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: str):
-    """Mirror a LARA WhatsApp message to the #lara-shadow Slack channel.
+def _mirror_to_shadow(channel_id: str, thread_state: dict, agent_name: str,
+                      inbound_role_label: str, sender_identity: dict,
+                      direction: str, message_text: str):
+    """Generic shadow-mirror core. Used by both LARA and MAYA wrappers.
 
     Args:
-        sender_identity: dict from lookup_sender_identity() — role, name, phone, is_michael, client_info
-        direction: "inbound" (client → LARA) or "outbound" (LARA → client)
+        channel_id: Slack channel ID to mirror into (e.g. #lara-shadow or #maya-shadow).
+                    If empty, the call is a no-op (shadow disabled for this agent).
+        thread_state: dict mapping phone_digits → thread_ts. Mutated in place.
+        agent_name: "LARA" or "MAYA" — used in the outbound tag and in log lines.
+        inbound_role_label: what to call the sender in the inbound tag,
+                            e.g. "Client" (LARA) or "Lead" (MAYA).
+        sender_identity: dict with keys: name, phone, role, is_michael, client_info
+        direction: "inbound" (sender → agent) or "outbound" (agent → sender)
         message_text: the raw message body
 
     Skips entirely when:
-        - SLACK_LARA_SHADOW_CHANNEL or SLACK_BOT_TOKEN is not configured
-        - sender_is_michael is True (Michael's own DMs to LARA are not mirrored)
+        - channel_id or SLACK_BOT_TOKEN is not configured
+        - sender_identity["is_michael"] is True
         - message_text is empty
 
-    Threading: One Slack thread per client phone number. First message creates
+    Threading: One Slack thread per sender phone number. First message creates
     a header post with the contact info; subsequent messages reply in the thread
-    tagged '📥 Client:' or '🤖 LARA:'. Thread state is in-memory and resets on
-    process restart — that's fine for MVP, the header just gets re-created.
+    tagged with the inbound_role_label or the agent_name. Thread state is
+    in-memory and resets on process restart.
     """
-    if not SLACK_LARA_SHADOW_CHANNEL:
+    if not channel_id:
         return
     if not SLACK_BOT_TOKEN:
         return
@@ -213,7 +223,7 @@ def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: 
     import re as _re
     thread_key = _re.sub(r"\D", "", phone) or phone
 
-    thread_ts = lara_shadow_threads.get(thread_key)
+    thread_ts = thread_state.get(thread_key)
 
     # First message from this phone → create the thread header.
     if not thread_ts:
@@ -231,27 +241,27 @@ def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: 
                 "Content-Type": "application/json",
             }
             payload = {
-                "channel": SLACK_LARA_SHADOW_CHANNEL,
+                "channel": channel_id,
                 "text": header_text,
             }
             response = http_requests.post(url, json=payload, headers=headers, timeout=5)
             response.raise_for_status()
             result = response.json()
             if not result.get("ok"):
-                print(f"[LARA SHADOW] Failed to create thread: {result.get('error')}")
+                print(f"[{agent_name} SHADOW] Failed to create thread: {result.get('error')}")
                 return
             thread_ts = result.get("ts")
             if not thread_ts:
-                print("[LARA SHADOW] No ts returned from thread header post")
+                print(f"[{agent_name} SHADOW] No ts returned from thread header post")
                 return
-            lara_shadow_threads[thread_key] = thread_ts
-            print(f"[LARA SHADOW] Created thread for {name} ({pretty_phone}) ts={thread_ts}")
+            thread_state[thread_key] = thread_ts
+            print(f"[{agent_name} SHADOW] Created thread for {name} ({pretty_phone}) ts={thread_ts}")
         except Exception as e:
-            print(f"[LARA SHADOW] Error creating thread header: {e}")
+            print(f"[{agent_name} SHADOW] Error creating thread header: {e}")
             return
 
     # Post the message as a reply in the thread.
-    prefix = "📥 *Client:*" if direction == "inbound" else "🤖 *LARA:*"
+    prefix = f"📥 *{inbound_role_label}:*" if direction == "inbound" else f"🤖 *{agent_name}:*"
     thread_text = f"{prefix}\n{message_text}"
 
     try:
@@ -261,7 +271,7 @@ def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: 
             "Content-Type": "application/json",
         }
         payload = {
-            "channel": SLACK_LARA_SHADOW_CHANNEL,
+            "channel": channel_id,
             "text": thread_text,
             "thread_ts": thread_ts,
         }
@@ -269,22 +279,65 @@ def _mirror_to_lara_shadow(sender_identity: dict, direction: str, message_text: 
         response.raise_for_status()
         result = response.json()
         if not result.get("ok"):
-            print(f"[LARA SHADOW] Failed to post reply: {result.get('error')}")
+            print(f"[{agent_name} SHADOW] Failed to post reply: {result.get('error')}")
     except Exception as e:
-        print(f"[LARA SHADOW] Error posting reply: {e}")
+        print(f"[{agent_name} SHADOW] Error posting reply: {e}")
 
 
 def _mirror_to_lara_shadow_async(sender_identity: dict, direction: str, message_text: str):
-    """Fire-and-forget shadow mirror — runs in a background thread so WhatsApp handling stays fast."""
+    """Fire-and-forget LARA shadow mirror. Runs in a background thread so WhatsApp stays fast."""
     try:
         t = threading.Thread(
-            target=_mirror_to_lara_shadow,
-            args=(sender_identity, direction, message_text),
+            target=_mirror_to_shadow,
+            args=(SLACK_LARA_SHADOW_CHANNEL, lara_shadow_threads, "LARA",
+                  "Client", sender_identity, direction, message_text),
             daemon=True,
         )
         t.start()
     except Exception as e:
         print(f"[LARA SHADOW] Failed to start mirror thread: {e}")
+
+
+def _mirror_to_maya_shadow_async(sender_identity: dict, direction: str, message_text: str):
+    """Fire-and-forget MAYA shadow mirror. Runs in a background thread so WhatsApp stays fast."""
+    try:
+        t = threading.Thread(
+            target=_mirror_to_shadow,
+            args=(SLACK_MAYA_SHADOW_CHANNEL, maya_shadow_threads, "MAYA",
+                  "Lead", sender_identity, direction, message_text),
+            daemon=True,
+        )
+        t.start()
+    except Exception as e:
+        print(f"[MAYA SHADOW] Failed to start mirror thread: {e}")
+
+
+def _build_maya_sender_identity(sender: str) -> dict:
+    """Construct a minimal sender_identity dict for MAYA leads.
+
+    Unlike LARA (which has a known-client roster), MAYA's senders are mostly
+    unknown leads. We hydrate from lead_data if available (set by Maya's flow
+    when it extracts names / emails from the conversation) and check
+    MICHAEL_PHONE to gate Michael's own DMs out of the shadow.
+    """
+    import re as _re
+    raw_phone = (sender or "").replace("whatsapp:", "")
+    digits = _re.sub(r"\D", "", raw_phone)
+    michael_phone = os.getenv("MICHAEL_PHONE", "") or ""
+    michael_digits = _re.sub(r"\D", "", michael_phone)
+    is_michael = bool(digits and michael_digits and digits == michael_digits)
+
+    ld = lead_data.get(sender) or {}
+    name = ld.get("name") or "Unknown lead"
+    email = ld.get("email") or ""
+
+    return {
+        "name": name,
+        "phone": raw_phone or "unknown",
+        "role": "lead",
+        "is_michael": is_michael,
+        "client_info": {"email": email} if email else {},
+    }
 
 
 def _get_current_time_edt():
@@ -2777,7 +2830,12 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
 
         history_snapshot = list(conversation_history[sender])
 
-        def process_maya(snap, sndr, ctx=""):
+        # Shadow mode: build identity dict + mirror inbound (skips if Michael
+        # or if SLACK_MAYA_SHADOW_CHANNEL is not configured).
+        maya_identity = _build_maya_sender_identity(sender)
+        _mirror_to_maya_shadow_async(maya_identity, "inbound", incoming_msg)
+
+        def process_maya(snap, sndr, ctx="", identity=None):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
             try:
                 reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx)
@@ -2791,6 +2849,14 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                             if sndr not in lead_data:
                                 lead_data[sndr] = {}
                             lead_data[sndr].update({"name": fields.get("name", lead_data[sndr].get("name", "")), "email": fields.get("email", lead_data[sndr].get("email", ""))})
+                            # Refresh identity with newly-extracted name/email so the
+                            # shadow thread reflects the real lead (not "Unknown lead")
+                            # on the outbound mirror that's about to happen.
+                            if identity is not None:
+                                if fields.get("name"):
+                                    identity["name"] = fields["name"]
+                                if fields.get("email"):
+                                    identity["client_info"] = {"email": fields["email"]}
                         except Exception:
                             pass
                 except Exception as lead_err:
@@ -2803,6 +2869,11 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 send_photos = False
             send_whatsapp_meta(to_wa, body=clean_reply)
             print(f"\u2705 Maya reply sent to {to_wa}")
+
+            # Shadow mode: mirror outbound reply to #maya-shadow.
+            if identity is not None:
+                _mirror_to_maya_shadow_async(identity, "outbound", clean_reply)
+
             if send_photos:
                 try:
                     for photo_url in STUDIO_PHOTOS:
@@ -2811,7 +2882,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 except Exception as photo_err:
                     print(f"\u26a0\ufe0f Could not send studio photos (non-fatal): {photo_err}")
 
-        threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx), daemon=True).start()
+        threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx, maya_identity), daemon=True).start()
 
 @app.route("/send-intro", methods=["POST"])
 def send_intro():
