@@ -54,8 +54,15 @@ def _normalize_phone_digits(value):
     return re.sub(r"\D", "", str(value))
 
 
-def lookup_sender_identity(sender_phone):
+def lookup_sender_identity(sender_phone, clients=None):
     """Resolve a WhatsApp sender phone to a known identity.
+
+    Args:
+        sender_phone: The WhatsApp sender phone string (may include "whatsapp:" prefix).
+        clients: Optional list of client dicts from Sheet-backed roster (Session 30.10).
+                 Each dict has: name, email, phone, business, service, notes.
+                 If provided and non-empty, this takes priority over the hardcoded MWM_CLIENTS.
+                 If None or empty, falls back to MWM_CLIENTS for backwards compatibility.
 
     Returns a dict describing who is on the other end of the conversation
     so the LARA system prompt can be grounded properly.
@@ -65,7 +72,7 @@ def lookup_sender_identity(sender_phone):
         "name": str,
         "phone": str,              # original phone
         "is_michael": bool,
-        "client_info": dict | None # MWM_CLIENTS row when role == "client"
+        "client_info": dict | None # client row when role == "client"
     }
     """
     sender_digits = _normalize_phone_digits(sender_phone)
@@ -81,13 +88,16 @@ def lookup_sender_identity(sender_phone):
             "client_info": None,
         }
 
+    # Use Sheet-backed roster if available, otherwise fall back to hardcoded
+    roster = clients if clients else MWM_CLIENTS
+
     # Look up against known MWM clients
-    for client in MWM_CLIENTS:
+    for client in roster:
         client_digits = _normalize_phone_digits(client.get("phone", ""))
         if client_digits and client_digits == sender_digits:
             return {
                 "role": "client",
-                "name": client["name"],
+                "name": client.get("name", "Unknown client"),
                 "phone": sender_phone,
                 "is_michael": False,
                 "client_info": client,
@@ -118,14 +128,23 @@ def format_sender_identity_block(identity):
         )
     if identity["role"] == "client":
         client = identity["client_info"] or {}
-        return (
-            "SENDER IDENTITY:\n"
-            f"You are talking to a known MWM client: *{identity['name']}*.\n"
-            f"- Email: {client.get('email', 'unknown')}\n"
-            f"- Service: {client.get('service', 'unknown')}\n"
+        lines = [
+            "SENDER IDENTITY:\n",
+            f"You are talking to a known MWM client: *{identity['name']}*.\n",
+        ]
+        if client.get("business"):
+            lines.append(f"- Business: {client['business']}\n")
+        if client.get("email"):
+            lines.append(f"- Email: {client['email']}\n")
+        if client.get("service"):
+            lines.append(f"- Service: {client['service']}\n")
+        if client.get("notes"):
+            lines.append(f"- Notes: {client['notes']}\n")
+        lines.append(
             "Be warm, professional, and client-facing. Do NOT share internal production "
             "details unrelated to their project. Switch to Portuguese if they write in Portuguese."
         )
+        return "".join(lines)
     return (
         "SENDER IDENTITY:\n"
         f"The sender phone ({identity.get('phone', 'unknown')}) does not match "

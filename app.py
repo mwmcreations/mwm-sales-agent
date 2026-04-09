@@ -1835,6 +1835,101 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
+# ── Client Roster (Sheet-backed, Session 30.10) ─────────────────────────────
+# Lives in the same spreadsheet as leads (SHEETS_LEADS_ID), tab "Client Roster".
+# Columns: Name | Email | Phone | Business | Service | Notes
+# Auto-creates the tab on first access if it doesn't exist.
+# Cached in memory with a 5-minute TTL to avoid hammering the Sheets API.
+
+_CLIENT_ROSTER_CACHE = {"data": None, "loaded_at": 0.0}
+_CLIENT_ROSTER_TTL = 300  # 5 minutes
+
+_CLIENT_ROSTER_TAB = "Client Roster"
+_CLIENT_ROSTER_HEADERS = ["Name", "Email", "Phone", "Business", "Service", "Notes"]
+
+
+def _ensure_client_roster_tab(svc, sheet_id):
+    """Create the Client Roster tab with headers if it doesn't exist."""
+    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    existing = {s["properties"]["title"] for s in meta["sheets"]}
+    if _CLIENT_ROSTER_TAB in existing:
+        return
+    svc.spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={"requests": [{"addSheet": {"properties": {"title": _CLIENT_ROSTER_TAB, "gridProperties": {"frozenRowCount": 1}}}}]}
+    ).execute()
+    # Write header + seed data for known clients
+    seed_rows = [
+        _CLIENT_ROSTER_HEADERS,
+        ["Juliane Almeida", "", "+18134492627", "Vida Fit", "Podcast", "First real client entry — Session 30.10"],
+    ]
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{_CLIENT_ROSTER_TAB}'!A1",
+        valueInputOption="RAW",
+        body={"values": seed_rows},
+    ).execute()
+    print(f"[Client Roster] Created '{_CLIENT_ROSTER_TAB}' tab with headers + {len(seed_rows) - 1} seed client(s)")
+
+
+def load_client_roster(force_refresh=False):
+    """Read the Client Roster from Google Sheets, with a 5-min cache.
+
+    Returns a list of dicts matching the shape lara_actions.lookup_sender_identity
+    expects: [{"name": ..., "email": ..., "phone": ..., "service": ..., "business": ..., "notes": ...}]
+    Returns an empty list on any error (graceful degradation — lookup falls back to hardcoded).
+    """
+    import time as _time
+    now = _time.time()
+    if not force_refresh and _CLIENT_ROSTER_CACHE["data"] is not None and (now - _CLIENT_ROSTER_CACHE["loaded_at"]) < _CLIENT_ROSTER_TTL:
+        return _CLIENT_ROSTER_CACHE["data"]
+
+    if not SHEETS_LEADS_ID:
+        return []
+
+    try:
+        svc = get_sheets_service()
+        _ensure_client_roster_tab(svc, SHEETS_LEADS_ID)
+
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{_CLIENT_ROSTER_TAB}'!A:F",
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            # Only header row or empty
+            _CLIENT_ROSTER_CACHE["data"] = []
+            _CLIENT_ROSTER_CACHE["loaded_at"] = now
+            return []
+
+        header = [h.strip().lower() for h in rows[0]]
+        clients = []
+        for row in rows[1:]:
+            # Pad row to match header length
+            padded = row + [""] * (len(header) - len(row))
+            entry = {}
+            for i, col in enumerate(header):
+                if i < len(padded):
+                    entry[col] = padded[i].strip()
+            # Normalize to the dict keys lara_actions expects
+            clients.append({
+                "name": entry.get("name", ""),
+                "email": entry.get("email", ""),
+                "phone": entry.get("phone", ""),
+                "business": entry.get("business", ""),
+                "service": entry.get("service", ""),
+                "notes": entry.get("notes", ""),
+            })
+        _CLIENT_ROSTER_CACHE["data"] = clients
+        _CLIENT_ROSTER_CACHE["loaded_at"] = now
+        print(f"[Client Roster] Loaded {len(clients)} client(s) from Sheet")
+        return clients
+
+    except Exception as e:
+        print(f"[Client Roster] Failed to load from Sheet (falling back to hardcoded): {e}")
+        return []
+
+
 def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
     """Create the monthly tab with headers if it doesn't exist yet. Returns the tab's sheetId (gid)."""
     meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
@@ -2603,7 +2698,9 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
     # Step 0: resolve sender identity (Michael vs known client vs unknown).
     # This is what gives LARA the grounding to answer "how is my day tomorrow"
     # without asking "which calendar?" — she knows the question is from Michael.
-    sender_identity = lookup_sender_identity(sender)
+    # Load client roster from Google Sheet (cached 5 min) — Session 30.10
+    sheet_clients = load_client_roster()
+    sender_identity = lookup_sender_identity(sender, clients=sheet_clients if sheet_clients else None)
     sender_is_michael = sender_identity.get("is_michael", False)
     print(f"[LARA WA] Sender identity resolved: {sender_identity['role']} ({sender_identity['name']})")
 
