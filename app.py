@@ -1835,49 +1835,134 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
-# ── Client Roster (Sheet-backed, Session 30.10) ─────────────────────────────
-# Lives in the same spreadsheet as leads (SHEETS_LEADS_ID), tab "Client Roster".
-# Columns: Name | Email | Phone | Business | Service | Notes
-# Auto-creates the tab on first access if it doesn't exist.
+# ── MWM Clients Roster (Sheet-backed, Session 30.11) ────────────────────────
+# Single source of truth for all MWM client data, shared between Cowork LARA
+# (who edits via MCP) and WhatsApp LARA (who reads via load_client_roster).
+#
+# Lives in the MWM Leads Pipeline spreadsheet (SHEETS_LEADS_ID), tab "MWM Clients".
+#
+# Canonical 10-column schema (Session 30.11):
+#   Name | Company | Email | Phone | Plan | Status | Delivered | Upcoming | Last Contact | Notes
+#
+# Legacy 6-column schema (Session 30.10, kept for backward compatibility
+# while Cowork LARA migrates the existing rows):
+#   Name | Email | Phone | Business | Service | Notes
+#
+# The loader is schema-agnostic — it reads row 1 as headers, normalizes them
+# to lowercase, maps via HEADER_ALIASES to canonical keys, and fills any
+# missing fields with "". This means the same code works before and during
+# the migration.
+#
 # Cached in memory with a 5-minute TTL to avoid hammering the Sheets API.
 
 _CLIENT_ROSTER_CACHE = {"data": None, "loaded_at": 0.0}
 _CLIENT_ROSTER_TTL = 300  # 5 minutes
 
-_CLIENT_ROSTER_TAB = "Client Roster"
-_CLIENT_ROSTER_HEADERS = ["Name", "Email", "Phone", "Business", "Service", "Notes"]
+_CLIENT_ROSTER_TAB = "MWM Clients"
+_CLIENT_ROSTER_TAB_LEGACY = "Client Roster"  # Session 30.10 name, read-only fallback
+_CLIENT_ROSTER_HEADERS = [
+    "Name", "Company", "Email", "Phone", "Plan", "Status",
+    "Delivered", "Upcoming", "Last Contact", "Notes",
+]
+
+# Maps lowercase header strings found in row 1 to canonical dict keys.
+# This lets the loader handle both the 10-col and 6-col schemas, plus
+# common variations, without breaking.
+_CLIENT_ROSTER_HEADER_ALIASES = {
+    "name": "name",
+    "client": "name",
+    "company": "company",
+    "business": "company",
+    "email": "email",
+    "phone": "phone",
+    "whatsapp": "phone",
+    "plan": "plan",
+    "service": "plan",
+    "status": "status",
+    "content status": "status",
+    "delivered": "delivered",
+    "produced": "delivered",
+    "upcoming": "upcoming",
+    "next shoot": "upcoming",
+    "shoot date": "upcoming",
+    "last contact": "last_contact",
+    "last client contact": "last_contact",
+    "notes": "notes",
+}
+
+_CANONICAL_CLIENT_FIELDS = [
+    "name", "company", "email", "phone", "plan", "status",
+    "delivered", "upcoming", "last_contact", "notes",
+]
 
 
 def _ensure_client_roster_tab(svc, sheet_id):
-    """Create the Client Roster tab with headers if it doesn't exist."""
+    """Create the MWM Clients tab with headers if neither it nor the legacy tab exists.
+
+    Session 30.11 behavior:
+      - If 'MWM Clients' exists → done.
+      - Else if 'Client Roster' exists (Session 30.10 name) → done, leave alone.
+        The loader will read from the legacy tab transparently until Cowork LARA
+        renames it to 'MWM Clients'.
+      - Else create 'MWM Clients' with just the header row (no seed data —
+        Cowork LARA and Michael are the writers).
+    """
     meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
     existing = {s["properties"]["title"] for s in meta["sheets"]}
     if _CLIENT_ROSTER_TAB in existing:
+        return
+    if _CLIENT_ROSTER_TAB_LEGACY in existing:
+        print(f"[MWM Clients] Using legacy tab '{_CLIENT_ROSTER_TAB_LEGACY}' — ask Cowork LARA to rename it to '{_CLIENT_ROSTER_TAB}'")
         return
     svc.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": _CLIENT_ROSTER_TAB, "gridProperties": {"frozenRowCount": 1}}}}]}
     ).execute()
-    # Write header + seed data for known clients
-    seed_rows = [
-        _CLIENT_ROSTER_HEADERS,
-        ["Juliane Almeida", "", "+18134492627", "Vida Fit", "Podcast", "First real client entry — Session 30.10"],
-    ]
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{_CLIENT_ROSTER_TAB}'!A1",
         valueInputOption="RAW",
-        body={"values": seed_rows},
+        body={"values": [_CLIENT_ROSTER_HEADERS]},
     ).execute()
-    print(f"[Client Roster] Created '{_CLIENT_ROSTER_TAB}' tab with headers + {len(seed_rows) - 1} seed client(s)")
+    print(f"[MWM Clients] Created '{_CLIENT_ROSTER_TAB}' tab with headers (no seed data)")
+
+
+def _resolve_client_roster_tab_name(svc, sheet_id):
+    """Return whichever of 'MWM Clients' or 'Client Roster' exists in the sheet.
+
+    Preference order: new name → legacy name → None (meaning neither exists).
+    """
+    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    existing = {s["properties"]["title"] for s in meta["sheets"]}
+    if _CLIENT_ROSTER_TAB in existing:
+        return _CLIENT_ROSTER_TAB
+    if _CLIENT_ROSTER_TAB_LEGACY in existing:
+        return _CLIENT_ROSTER_TAB_LEGACY
+    return None
 
 
 def load_client_roster(force_refresh=False):
-    """Read the Client Roster from Google Sheets, with a 5-min cache.
+    """Read the MWM Clients roster from Google Sheets, with a 5-min cache.
 
     Returns a list of dicts matching the shape lara_actions.lookup_sender_identity
-    expects: [{"name": ..., "email": ..., "phone": ..., "service": ..., "business": ..., "notes": ...}]
-    Returns an empty list on any error (graceful degradation — lookup falls back to hardcoded).
+    and the Production Tracker helpers expect:
+
+        {
+            "name": str,
+            "company": str,
+            "email": str,
+            "phone": str,
+            "plan": str,
+            "status": str,
+            "delivered": str,
+            "upcoming": str,
+            "last_contact": str,
+            "notes": str,
+        }
+
+    Header-aliased so it works with both the Session 30.11 canonical 10-col
+    schema and the Session 30.10 legacy 6-col schema during the migration
+    window. Returns an empty list on any error (graceful degradation).
     """
     import time as _time
     now = _time.time()
@@ -1891,42 +1976,52 @@ def load_client_roster(force_refresh=False):
         svc = get_sheets_service()
         _ensure_client_roster_tab(svc, SHEETS_LEADS_ID)
 
-        result = svc.spreadsheets().values().get(
-            spreadsheetId=SHEETS_LEADS_ID,
-            range=f"'{_CLIENT_ROSTER_TAB}'!A:F",
-        ).execute()
-        rows = result.get("values", [])
-        if len(rows) < 2:
-            # Only header row or empty
+        tab = _resolve_client_roster_tab_name(svc, SHEETS_LEADS_ID)
+        if tab is None:
             _CLIENT_ROSTER_CACHE["data"] = []
             _CLIENT_ROSTER_CACHE["loaded_at"] = now
             return []
 
-        header = [h.strip().lower() for h in rows[0]]
+        # Read widely enough to cover both schemas (A:J = 10 cols).
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{tab}'!A:J",
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            _CLIENT_ROSTER_CACHE["data"] = []
+            _CLIENT_ROSTER_CACHE["loaded_at"] = now
+            return []
+
+        # Map row 1 headers to canonical field keys via aliases.
+        raw_headers = [h.strip().lower() for h in rows[0]]
+        col_to_field = {}  # column index -> canonical key
+        for i, h in enumerate(raw_headers):
+            canonical = _CLIENT_ROSTER_HEADER_ALIASES.get(h)
+            if canonical:
+                col_to_field[i] = canonical
+
         clients = []
         for row in rows[1:]:
-            # Pad row to match header length
-            padded = row + [""] * (len(header) - len(row))
-            entry = {}
-            for i, col in enumerate(header):
-                if i < len(padded):
-                    entry[col] = padded[i].strip()
-            # Normalize to the dict keys lara_actions expects
-            clients.append({
-                "name": entry.get("name", ""),
-                "email": entry.get("email", ""),
-                "phone": entry.get("phone", ""),
-                "business": entry.get("business", ""),
-                "service": entry.get("service", ""),
-                "notes": entry.get("notes", ""),
-            })
+            # Skip fully empty rows
+            if not any((str(c).strip() for c in row)):
+                continue
+            entry = {k: "" for k in _CANONICAL_CLIENT_FIELDS}
+            for col_idx, canonical in col_to_field.items():
+                if col_idx < len(row):
+                    entry[canonical] = str(row[col_idx]).strip()
+            # Require at least a name OR phone to be useful
+            if not entry["name"] and not entry["phone"]:
+                continue
+            clients.append(entry)
+
         _CLIENT_ROSTER_CACHE["data"] = clients
         _CLIENT_ROSTER_CACHE["loaded_at"] = now
-        print(f"[Client Roster] Loaded {len(clients)} client(s) from Sheet")
+        print(f"[MWM Clients] Loaded {len(clients)} client(s) from tab '{tab}'")
         return clients
 
     except Exception as e:
-        print(f"[Client Roster] Failed to load from Sheet (falling back to hardcoded): {e}")
+        print(f"[MWM Clients] Failed to load from Sheet (falling back to empty): {e}")
         return []
 
 
@@ -2698,7 +2793,7 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
     # Step 0: resolve sender identity (Michael vs known client vs unknown).
     # This is what gives LARA the grounding to answer "how is my day tomorrow"
     # without asking "which calendar?" — she knows the question is from Michael.
-    # Load client roster from Google Sheet (cached 5 min) — Session 30.10
+    # Load MWM Clients roster from Google Sheet (cached 5 min) — Session 30.11
     sheet_clients = load_client_roster()
     sender_identity = lookup_sender_identity(sender, clients=sheet_clients if sheet_clients else None)
     sender_is_michael = sender_identity.get("is_michael", False)
@@ -2715,7 +2810,7 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
         lara_history[sender] = lara_history[sender][-20:]
 
     try:
-        # Step 1: try LARA action intent layer (Production Tracker, Gmail, Calendar, Drive)
+        # Step 1: try LARA action intent layer (MWM Clients sheet, Gmail, Calendar, Drive)
         handled, action_result = handle_lara_action(incoming_msg, sender_is_michael=sender_is_michael)
 
         # Step 2: Haiku fallback classifier (mirrors the Slack-side LARA path)
@@ -4025,20 +4120,26 @@ Next step: [if applicable, or "awaiting further instructions"]
 ROLE — you are MWM Creations' Client & Production Manager. You take care of CURRENT CLIENTS (film shoot scheduling, deliverables, content status) and coordinate with the MWM production crew (camera, production, post-production). You do NOT do sales or outbound lead generation — MAYA handles leads, ANA handles calendar bookings for new prospects, SUSAN handles email campaigns. Stay in your lane.
 
 DATA SOURCES YOU OWN:
-• *Production Tracker* — Google Sheet with one row per active client. Columns: Client, Email, Phone, Service, Script Status, Shoot Date, Shoot Confirmed, Team Briefed, Last Client Contact, Content Status, Notes.
+• *MWM Clients (Google Sheets)* — THE single source of truth for every active MWM client. Lives in the "MWM Clients" tab of the MWM Leads Pipeline spreadsheet. Shared with and updated daily by Michael and Cowork LARA. Canonical 10-column schema:
+    Name | Company | Email | Phone | Plan | Status | Delivered | Upcoming | Last Contact | Notes
+  Real URL (the ONLY URL you should ever cite for this sheet):
+    https://docs.google.com/spreadsheets/d/1gfncRmtktbpEea1J2HFzAeA2r7E1JeNapW6VOmuDyIw/edit
 • *MWM Creations Calendar* — shared Google Calendar where film shoots and studio bookings live.
 • *Michael's Primary Calendar* — accessed via Domain-Wide Delegation when Michael asks about his personal day.
 • *Gmail (michael@mwmcreations.com)* — for reading and sending client emails.
 • *Google Drive* — _clients (deliverables) and FOOTAGE (raw files) shared drives.
 • *MWM Crew Roster* — 5 crew members: Bruno Neri (crew), Guga Carvalho (camera), Asafh Kalebe (camera), Erika Miyamoto (crew, Brazil), Luis Pereira (crew). You have their phone numbers but NOT their personal calendars — if someone asks "is Bruno available tomorrow" you can look up his contact info and offer to draft a WhatsApp message, but you cannot auto-confirm his calendar availability.
 
+URL ANTI-FABRICATION RULE — READ THIS CAREFULLY:
+The ONLY sheet URL you are ever allowed to share is the one listed above for MWM Clients. If someone asks you for a link to any other sheet, doc, drive folder, dashboard, or system that is NOT explicitly listed in this prompt, you MUST respond honestly: "I don't have a direct link for that — let me check with Michael or DEV." NEVER generate URLs with placeholders like YOUR_SHEET_ID, EXAMPLE_ID, SHEET_ID_HERE, or made-up hashes. NEVER assemble URLs from fragments. A wrong URL is worse than no URL.
+
 REAL-TIME ACTION CAPABILITIES — you can execute these:
 
-🎬 *Production Tracker*
-• Production overview — "what's the production status?" / "show me all clients"
+🎬 *MWM Clients*
+• Client overview — "what's the production status?" / "show me all clients"
 • Client status — "how's Victory Martial Arts doing?" / "look up Green Rest Mattress"
-• Update client — "update Victory Martial Arts shoot date to April 15"
-• Upcoming shoots — "what shoots do we have this week?" / "next scheduled shoot"
+• Update client — "update Victory Martial Arts plan to Gold" / "mark Juliane's last contact to today"
+• Upcoming deliveries — "what shoots do we have this week?" / "what's coming up for Vida Fit?"
 
 📅 *Calendar*
 • Day/week overview — "how is my day tomorrow?" / "what's on the calendar this week?"
@@ -4164,13 +4265,22 @@ Next step: [if applicable, or "awaiting further instructions"]
 
 You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
 
+YOUR ONE SOURCE OF TRUTH FOR CLIENTS:
+MWM Clients tab inside the MWM Leads Pipeline Google Sheet. 10 columns:
+  Name | Company | Email | Phone | Plan | Status | Delivered | Upcoming | Last Contact | Notes
+Real URL (the ONLY sheet URL you are ever permitted to share):
+  https://docs.google.com/spreadsheets/d/1gfncRmtktbpEea1J2HFzAeA2r7E1JeNapW6VOmuDyIw/edit
+This sheet is updated daily by Michael and Cowork LARA. When a client messages you, their identity (if known) is injected into a SENDER IDENTITY block at the top of your context, already populated from this sheet.
+
+URL ANTI-FABRICATION RULE: If someone asks you for any URL, link, path, or location that is NOT explicitly listed in this prompt, respond honestly: "I don't have a direct link for that — let me check with Michael or DEV." NEVER invent URLs with placeholders like YOUR_SHEET_ID, EXAMPLE_ID, or made-up hashes. NEVER assemble URLs from fragments. A wrong URL is worse than no URL.
+
 REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 
-📋 *Production Tracker (Google Sheets)*
-• Production overview — "What's the production status?" / "How are our projects?"
-• Client status — "Status on Victory Martial Arts" / "Check Green Rest"
-• Update client — "Update Victory script to Approved" / "Mark Green Rest shoot confirmed as Yes"
-• Upcoming shoots — "What shoots are coming up?" / "Next scheduled sessions"
+📋 *MWM Clients (Google Sheets)*
+• Client overview — "What's the production status?" / "How are our clients doing?"
+• Client status — "Status on Victory Martial Arts" / "Check Vida Fit"
+• Update client — "Update Victory plan to Gold" / "Mark Juliane's last contact to today"
+• Upcoming deliveries — "What's coming up?" / "Next scheduled shoots"
 
 📧 *Email (Gmail)*
 • Read emails — "Check inbox" / "Any emails from Victory?" / "Show recent emails"
@@ -4182,7 +4292,7 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 
 When an action is detected, it executes automatically against Google Sheets, Gmail, or Calendar. You will receive the result as a [LARA ACTION RESULT] and should present it naturally.
 
-CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate client names, production statuses, shoot dates, email content, or any other data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to check the tracker first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Lara.
+CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate client names, plans, statuses, deliveries, upcoming shoots, email content, or any other data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that right now — try rephrasing your request or ask me to check the MWM Clients sheet first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Lara.
 
 After completing any task or action, always end your response with a structured summary:
 

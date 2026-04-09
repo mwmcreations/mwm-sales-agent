@@ -463,7 +463,7 @@ def share_with_external(text):
             supportsAllDrives=True,
         ).execute()
 
-        # Audit log to Production Tracker (best-effort)
+        # Audit log to MWM Leads Pipeline sheet (best-effort)
         _audit_log_share(
             folder_name=folder["name"],
             folder_type=root_label,
@@ -478,7 +478,7 @@ def share_with_external(text):
             f"• *With:* {target_email}\n"
             f"• *Role:* Editor\n"
             f"• Notification email sent by Google\n\n"
-            f"_Audit logged to Production Tracker._"
+            f"_Audit logged to MWM Leads Pipeline._"
         )
     except Exception as e:
         print(f"[LARA] Share error: {e}")
@@ -487,19 +487,21 @@ def share_with_external(text):
 
 # ── Audit Log ───────────────────────────────────────────────────────
 def _audit_log_share(folder_name, folder_type, folder_id, recipient, role):
-    """Append a row to the LARA_Share_Audit_Log tab in the Production Tracker."""
+    """Append a row to the LARA_Share_Audit_Log tab in the MWM Leads Pipeline sheet."""
     try:
-        from lara_actions import _get_sheets_service, PRODUCTION_SHEET_ID
-        if not PRODUCTION_SHEET_ID:
+        from lara_actions import _get_sheets_service, LEADS_SHEET_ID
+        if not LEADS_SHEET_ID:
             return
         svc = _get_sheets_service()
         now = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
         row = [now, folder_type, folder_name, folder_id, recipient, role, "LARA"]
 
-        # Try append to existing tab; if missing, create it
+        # Session 30.11: Audit log now lives in the MWM Leads Pipeline sheet
+        # (LEADS_SHEET_ID) alongside MWM Clients, since the old Production
+        # Tracker sheet was retired.
         try:
             svc.spreadsheets().values().append(
-                spreadsheetId=PRODUCTION_SHEET_ID,
+                spreadsheetId=LEADS_SHEET_ID,
                 range="LARA_Share_Audit_Log!A:G",
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",
@@ -508,18 +510,18 @@ def _audit_log_share(folder_name, folder_type, folder_id, recipient, role):
         except Exception:
             # Tab doesn't exist — create it
             svc.spreadsheets().batchUpdate(
-                spreadsheetId=PRODUCTION_SHEET_ID,
+                spreadsheetId=LEADS_SHEET_ID,
                 body={"requests": [{"addSheet": {"properties": {"title": "LARA_Share_Audit_Log"}}}]},
             ).execute()
             header = ["Timestamp", "Folder Type", "Folder Name", "Folder ID", "Recipient", "Role", "Actor"]
             svc.spreadsheets().values().update(
-                spreadsheetId=PRODUCTION_SHEET_ID,
+                spreadsheetId=LEADS_SHEET_ID,
                 range="LARA_Share_Audit_Log!A1:G1",
                 valueInputOption="RAW",
                 body={"values": [header]},
             ).execute()
             svc.spreadsheets().values().append(
-                spreadsheetId=PRODUCTION_SHEET_ID,
+                spreadsheetId=LEADS_SHEET_ID,
                 range="LARA_Share_Audit_Log!A:G",
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",

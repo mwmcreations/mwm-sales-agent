@@ -2,12 +2,16 @@
 LARA Action Handlers — Client & Production Manager Agent.
 
 Handles:
-- Production Tracker (Google Sheets) — read/update client production status
+- MWM Clients (Google Sheets) — read/update client production status
 - Calendar access (reuses Google Calendar DWD)
 - Gmail integration — read/send emails for client communication
 
 Uses GOOGLE_CREDENTIALS_JSON + GOOGLE_DELEGATE_EMAIL (DWD) from Railway env vars.
-Production Tracker sheet ID stored in GOOGLE_SHEETS_PRODUCTION_ID.
+
+Session 30.11: The old "Production Tracker" (stored under GOOGLE_SHEETS_PRODUCTION_ID)
+is retired. All client data now lives in the MWM Clients tab of the MWM Leads Pipeline
+spreadsheet, identified by GOOGLE_SHEETS_LEADS_ID. Same sheet, one source of truth,
+shared with Cowork LARA and Michael.
 """
 
 import os
@@ -23,7 +27,9 @@ from googleapiclient.discovery import build
 
 # ── Config ──────────────────────────────────────────────────────────
 TIMEZONE = "America/New_York"
-PRODUCTION_SHEET_ID = os.getenv("GOOGLE_SHEETS_PRODUCTION_ID", "")
+# Session 30.11: Unified on SHEETS_LEADS_ID — the old GOOGLE_SHEETS_PRODUCTION_ID
+# env var is deprecated (never pointed at a real sheet in production).
+LEADS_SHEET_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
 DELEGATE_EMAIL = os.getenv("GOOGLE_DELEGATE_EMAIL", "michael@mwmcreations.com")
 
@@ -40,12 +46,54 @@ SCOPES_GMAIL = [
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
 
-PRODUCTION_HEADERS = [
-    "Client", "Email", "Phone", "Service",
-    "Script Status", "Shoot Date", "Shoot Confirmed",
-    "Team Briefed", "Last Client Contact", "Content Status",
-    "Notes",
+# Session 30.11 — MWM Clients canonical 10-column schema
+MWM_CLIENTS_TAB = "MWM Clients"
+MWM_CLIENTS_TAB_LEGACY = "Client Roster"  # Session 30.10 name, read-only fallback
+
+MWM_CLIENTS_HEADERS = [
+    "Name", "Company", "Email", "Phone", "Plan", "Status",
+    "Delivered", "Upcoming", "Last Contact", "Notes",
 ]
+
+# Column letter for each canonical field in the 10-col schema (for update writes).
+# Used by update_client_field when the tab is in the new schema.
+_MWM_CLIENTS_COL_LETTER = {
+    "name": "A",
+    "company": "B",
+    "email": "C",
+    "phone": "D",
+    "plan": "E",
+    "status": "F",
+    "delivered": "G",
+    "upcoming": "H",
+    "last_contact": "I",
+    "notes": "J",
+}
+
+# Header → canonical field alias map. Same logic as load_client_roster() in app.py
+# so the two loaders agree on how to read rows regardless of which schema the
+# sheet is currently in.
+_MWM_CLIENTS_HEADER_ALIASES = {
+    "name": "name",
+    "client": "name",
+    "company": "company",
+    "business": "company",
+    "email": "email",
+    "phone": "phone",
+    "whatsapp": "phone",
+    "plan": "plan",
+    "service": "plan",
+    "status": "status",
+    "content status": "status",
+    "delivered": "delivered",
+    "produced": "delivered",
+    "upcoming": "upcoming",
+    "next shoot": "upcoming",
+    "shoot date": "upcoming",
+    "last contact": "last_contact",
+    "last client contact": "last_contact",
+    "notes": "notes",
+}
 
 def _normalize_phone_digits(value):
     """Strip all non-digit characters from a phone string."""
@@ -59,21 +107,22 @@ def lookup_sender_identity(sender_phone, clients=None):
 
     Args:
         sender_phone: The WhatsApp sender phone string (may include "whatsapp:" prefix).
-        clients: Optional list of client dicts from Sheet-backed roster (Session 30.10).
-                 Each dict has: name, email, phone, business, service, notes.
-                 If provided and non-empty, this takes priority over the hardcoded MWM_CLIENTS.
-                 If None or empty, falls back to MWM_CLIENTS for backwards compatibility.
+        clients: Optional list of client dicts from the Sheet-backed MWM Clients
+                 loader (Session 30.11). Each dict has the canonical keys:
+                 name, company, email, phone, plan, status, delivered, upcoming,
+                 last_contact, notes.
+                 If None or empty, falls back to MWM_CLIENTS (empty by default).
 
     Returns a dict describing who is on the other end of the conversation
-    so the LARA system prompt can be grounded properly.
+    so the LARA system prompt can be grounded properly:
 
-    {
-        "role": "michael" | "client" | "unknown",
-        "name": str,
-        "phone": str,              # original phone
-        "is_michael": bool,
-        "client_info": dict | None # client row when role == "client"
-    }
+        {
+            "role": "michael" | "client" | "unknown",
+            "name": str,
+            "phone": str,              # original phone
+            "is_michael": bool,
+            "client_info": dict | None # full client row when role == "client"
+        }
     """
     sender_digits = _normalize_phone_digits(sender_phone)
     michael_env = os.getenv("MICHAEL_PHONE", "")
@@ -91,13 +140,12 @@ def lookup_sender_identity(sender_phone, clients=None):
     # Use Sheet-backed roster if available, otherwise fall back to hardcoded
     roster = clients if clients else MWM_CLIENTS
 
-    # Look up against known MWM clients
     for client in roster:
         client_digits = _normalize_phone_digits(client.get("phone", ""))
         if client_digits and client_digits == sender_digits:
             return {
                 "role": "client",
-                "name": client.get("name", "Unknown client"),
+                "name": client.get("name") or client.get("company") or "Unknown client",
                 "phone": sender_phone,
                 "is_michael": False,
                 "client_info": client,
@@ -128,28 +176,45 @@ def format_sender_identity_block(identity):
         )
     if identity["role"] == "client":
         client = identity["client_info"] or {}
+        name = identity.get("name") or client.get("name") or "this client"
         lines = [
             "SENDER IDENTITY:\n",
-            f"You are talking to a known MWM client: *{identity['name']}*.\n",
+            f"You are talking to a known MWM client: *{name}*.\n",
+            "Everything below comes from the MWM Clients sheet and is authoritative. "
+            "Use it to answer their questions naturally. Do NOT fabricate any detail "
+            "not listed here.\n",
         ]
-        if client.get("business"):
-            lines.append(f"- Business: {client['business']}\n")
+        if client.get("company"):
+            lines.append(f"- Company: {client['company']}\n")
         if client.get("email"):
             lines.append(f"- Email: {client['email']}\n")
-        if client.get("service"):
-            lines.append(f"- Service: {client['service']}\n")
+        if client.get("phone"):
+            lines.append(f"- Phone: {client['phone']}\n")
+        if client.get("plan"):
+            lines.append(f"- Plan: {client['plan']}\n")
+        if client.get("status"):
+            lines.append(f"- Status: {client['status']}\n")
+        if client.get("delivered"):
+            lines.append(f"- Delivered so far: {client['delivered']}\n")
+        if client.get("upcoming"):
+            lines.append(f"- Upcoming: {client['upcoming']}\n")
+        if client.get("last_contact"):
+            lines.append(f"- Last contact: {client['last_contact']}\n")
         if client.get("notes"):
             lines.append(f"- Notes: {client['notes']}\n")
         lines.append(
             "Be warm, professional, and client-facing. Do NOT share internal production "
-            "details unrelated to their project. Switch to Portuguese if they write in Portuguese."
+            "details unrelated to their project. Switch to Portuguese if they write in Portuguese. "
+            "If they ask something you don't have in the fields above, say you'll check with "
+            "Michael and follow up \u2014 do NOT invent an answer."
         )
         return "".join(lines)
     return (
         "SENDER IDENTITY:\n"
         f"The sender phone ({identity.get('phone', 'unknown')}) does not match "
-        "Michael or any known MWM client in the tracker. Treat them as a new "
-        "inquiry \u2014 be warm, professional, and ask who they are and how you can help."
+        "Michael or any known MWM client in the MWM Clients sheet. Treat them as a "
+        "new inquiry \u2014 be warm, professional, and ask who they are and how you "
+        "can help."
     )
 
 
@@ -238,20 +303,13 @@ def find_crew_member(query):
     return None
 
 
-# 11 MWM clients
-MWM_CLIENTS = [
-    {"name": "Victory Martial Arts", "email": "brian@victoryma.com", "phone": "+14075551001", "service": "Video Pro Plan"},
-    {"name": "Green Rest Mattress", "email": "info@greenrestmattress.com", "phone": "+14075551002", "service": "Video Production"},
-    {"name": "One Stop Financial", "email": "info@onestopfinancial.com", "phone": "+14075551003", "service": "ROADMAP"},
-    {"name": "Dr. Phillips Chiropractic", "email": "office@drphillipschiro.com", "phone": "+14075551004", "service": "Video Pro Plan"},
-    {"name": "Orlando Dance Academy", "email": "info@orlandodanceacademy.com", "phone": "+14075551005", "service": "Content Package"},
-    {"name": "Sunshine Pediatrics", "email": "admin@sunshinepediatrics.com", "phone": "+14075551006", "service": "Video Pro Plan"},
-    {"name": "Lake Nona Realty", "email": "contact@lakenonarealty.com", "phone": "+14075551007", "service": "ROADMAP"},
-    {"name": "FitLife Gym Orlando", "email": "manager@fitlifegym.com", "phone": "+14075551008", "service": "Video Production"},
-    {"name": "Bella Cucina Restaurant", "email": "info@bellacucinaorl.com", "phone": "+14075551009", "service": "Content Package"},
-    {"name": "TechStart Academy", "email": "hello@techstartacademy.com", "phone": "+14075551010", "service": "ROADMAP"},
-    {"name": "Prestige Auto Detailing", "email": "book@prestigeautodetail.com", "phone": "+14075551011", "service": "Video Production"},
-]
+# Session 30.11 — the hardcoded MWM_CLIENTS list (originally 11 placeholder
+# entries from earlier sessions) is retired. The MWM Clients Google Sheet is
+# now the single source of truth. This empty list remains only as a defensive
+# fallback: if load_client_roster() fails entirely, lookup_sender_identity()
+# will degrade to "unknown" for every sender instead of incorrectly matching
+# against fake placeholder numbers.
+MWM_CLIENTS = []
 
 
 # ── Intent Detection ────────────────────────────────────────────────
@@ -415,52 +473,96 @@ def _get_gmail_service():
     return build("gmail", "v1", credentials=_get_google_creds(SCOPES_GMAIL, use_dwd=True), cache_discovery=False)
 
 
-# ── Production Tracker Helpers ──────────────────────────────────────
+# ── MWM Clients Sheet Helpers (Session 30.11) ───────────────────────
+def _resolve_mwm_clients_tab(svc):
+    """Return whichever of 'MWM Clients' or 'Client Roster' exists in the sheet.
+    Preference: new name → legacy → None."""
+    if not LEADS_SHEET_ID:
+        return None
+    meta = svc.spreadsheets().get(spreadsheetId=LEADS_SHEET_ID).execute()
+    existing = {s["properties"]["title"] for s in meta["sheets"]}
+    if MWM_CLIENTS_TAB in existing:
+        return MWM_CLIENTS_TAB
+    if MWM_CLIENTS_TAB_LEGACY in existing:
+        return MWM_CLIENTS_TAB_LEGACY
+    return None
+
+
 def _get_all_clients():
-    """Read all clients from the Production Tracker sheet.
-    Returns list of (row_index, row_dict) tuples.
+    """Read all clients from the MWM Clients tab (Session 30.11).
+
+    Returns list of (row_index, client_dict) tuples where client_dict uses the
+    canonical lowercase keys: name, company, email, phone, plan, status,
+    delivered, upcoming, last_contact, notes.
+
+    Works with both the canonical 10-col schema and the legacy 6-col schema
+    via header aliasing.
     """
-    if not PRODUCTION_SHEET_ID:
+    if not LEADS_SHEET_ID:
         return []
 
     svc = _get_sheets_service()
-    result = svc.spreadsheets().values().get(
-        spreadsheetId=PRODUCTION_SHEET_ID,
-        range="Production!A1:K",
-    ).execute()
-    rows = result.get("values", [])
-    if not rows:
+    tab = _resolve_mwm_clients_tab(svc)
+    if tab is None:
         return []
 
-    headers = rows[0]
+    result = svc.spreadsheets().values().get(
+        spreadsheetId=LEADS_SHEET_ID,
+        range=f"'{tab}'!A1:J",
+    ).execute()
+    rows = result.get("values", [])
+    if len(rows) < 2:
+        return []
+
+    # Map row 1 headers to canonical field keys via aliases.
+    raw_headers = [h.strip().lower() for h in rows[0]]
+    col_to_field = {}  # column index -> canonical key
+    for i, h in enumerate(raw_headers):
+        canonical = _MWM_CLIENTS_HEADER_ALIASES.get(h)
+        if canonical:
+            col_to_field[i] = canonical
+
     clients = []
     for i, row in enumerate(rows[1:], start=2):
-        row_dict = {}
-        for j, h in enumerate(headers):
-            row_dict[h] = row[j] if j < len(row) else ""
-        clients.append((i, row_dict))
+        if not any((str(c).strip() for c in row)):
+            continue
+        client_dict = {k: "" for k in _MWM_CLIENTS_COL_LETTER.keys()}
+        for col_idx, canonical in col_to_field.items():
+            if col_idx < len(row):
+                client_dict[canonical] = str(row[col_idx]).strip()
+        if not client_dict["name"] and not client_dict["phone"]:
+            continue
+        clients.append((i, client_dict))
     return clients
 
 
 def _find_client(search_term):
-    """Find a client by name (fuzzy match).
+    """Find a client by name OR company (fuzzy match).
     Returns (row_index, client_dict) or (None, None).
     """
     clients = _get_all_clients()
     search_lower = search_term.lower().strip()
 
-    # Exact substring match first
+    # Exact substring match on name or company
     for row_idx, client in clients:
-        name = client.get("Client", "").lower()
-        if search_lower in name or name in search_lower:
+        name = (client.get("name") or "").lower()
+        company = (client.get("company") or "").lower()
+        if search_lower and (search_lower in name or search_lower in company):
+            return row_idx, client
+        if name and name in search_lower:
+            return row_idx, client
+        if company and company in search_lower:
             return row_idx, client
 
     # Partial word match
-    search_words = search_lower.split()
-    for row_idx, client in clients:
-        name = client.get("Client", "").lower()
-        if all(w in name for w in search_words):
-            return row_idx, client
+    search_words = [w for w in search_lower.split() if w]
+    if search_words:
+        for row_idx, client in clients:
+            name = (client.get("name") or "").lower()
+            company = (client.get("company") or "").lower()
+            target = f"{name} {company}"
+            if all(w in target for w in search_words):
+                return row_idx, client
 
     return None, None
 
@@ -468,60 +570,68 @@ def _find_client(search_term):
 # ── Action Handlers ─────────────────────────────────────────────────
 
 def get_production_overview(text):
-    """Return a summary of all client production statuses."""
+    """Return a summary of all MWM clients grouped by status."""
     try:
         clients = _get_all_clients()
         if not clients:
-            return "📋 *Production Tracker is empty* — no clients found."
+            return "📋 *MWM Clients sheet is empty* — no clients found."
 
-        lines = [f"📋 *Production Overview* — {len(clients)} clients\n"]
+        lines = [f"📋 *MWM Clients Overview* — {len(clients)} clients\n"]
 
-        # Group by content status
+        # Group by status column
         status_groups = {}
         for row_idx, client in clients:
-            status = client.get("Content Status", "").strip() or "Not Started"
-            if status not in status_groups:
-                status_groups[status] = []
-            status_groups[status].append(client)
+            status = (client.get("status") or "").strip() or "unspecified"
+            status_groups.setdefault(status, []).append(client)
 
-        status_emoji = {
-            "Not Started": "⬜", "Script Phase": "📝", "Script Approved": "✅",
-            "Shoot Scheduled": "📅", "Shoot Complete": "🎬", "In Post-Production": "🎞️",
-            "Review": "👀", "Delivered": "🎉", "On Hold": "⏸️",
+        # Rough ordering — most active first, then everything else alphabetically
+        preferred_order = ["active", "onboarding", "new client", "paused", "at-risk", "unspecified"]
+        def _sort_key(item):
+            s = item[0].lower()
+            for i, p in enumerate(preferred_order):
+                if p in s:
+                    return (i, s)
+            return (len(preferred_order), s)
+
+        status_emoji_map = {
+            "active": "🟢",
+            "onboarding": "🆕",
+            "new": "🆕",
+            "paused": "⏸️",
+            "at-risk": "⚠️",
+            "delivered": "🎉",
         }
+        def _emoji_for(status):
+            s = status.lower()
+            for key, em in status_emoji_map.items():
+                if key in s:
+                    return em
+            return "•"
 
-        for status, group in sorted(status_groups.items(), key=lambda x: list(status_emoji.keys()).index(x[0]) if x[0] in status_emoji else 99):
-            emoji = status_emoji.get(status, "•")
-            names = [c.get("Client", "?") for c in group]
+        for status, group in sorted(status_groups.items(), key=_sort_key):
+            emoji = _emoji_for(status)
+            names = [(c.get("name") or c.get("company") or "?") for c in group]
             lines.append(f"{emoji} *{status}:* {len(group)} — {', '.join(names)}")
 
-        # Upcoming shoots
-        upcoming = []
-        for row_idx, client in clients:
-            shoot_date = client.get("Shoot Date", "").strip()
-            if shoot_date:
-                try:
-                    dt = datetime.strptime(shoot_date, "%Y-%m-%d")
-                    if dt.date() >= datetime.now(pytz.timezone(TIMEZONE)).date():
-                        upcoming.append((dt, client))
-                except ValueError:
-                    pass
-
+        # Clients with anything in Upcoming — show the top few
+        upcoming = [
+            (client.get("name") or client.get("company") or "?", client.get("upcoming") or "")
+            for _, client in clients
+            if (client.get("upcoming") or "").strip()
+        ]
         if upcoming:
-            upcoming.sort(key=lambda x: x[0])
-            lines.append(f"\n📅 *Upcoming Shoots:*")
-            for dt, client in upcoming[:5]:
-                confirmed = "✅" if client.get("Shoot Confirmed", "").lower() in ("yes", "true", "confirmed") else "⏳"
-                lines.append(f"  {confirmed} {client.get('Client', '?')} — {dt.strftime('%b %d, %Y')}")
+            lines.append(f"\n📅 *Upcoming:*")
+            for name, up_text in upcoming[:5]:
+                lines.append(f"  • {name} — {up_text[:120]}")
 
         return "\n".join(lines)
     except Exception as e:
-        print(f"[LARA] Production overview error: {e}")
-        return f"⚠️ Error reading production tracker: {str(e)[:200]}"
+        print(f"[LARA] MWM Clients overview error: {e}")
+        return f"⚠️ Error reading MWM Clients sheet: {str(e)[:200]}"
 
 
 def get_client_status(text):
-    """Look up a specific client's production status."""
+    """Look up a specific client's status in the MWM Clients sheet."""
     try:
         # Extract client name
         text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
@@ -529,32 +639,37 @@ def get_client_status(text):
             r"^(?:status|check|update|how.?s|what.?s|where.?s|look\s*up|find)\s+(?:on\s+)?(?:client\s+)?",
             "", text_clean, flags=re.IGNORECASE
         ).strip()
-        search = re.sub(r"\s+(?:project|production|status|going|standing|at|in the tracker).*$", "", search, flags=re.IGNORECASE).strip().strip('"\'')
+        search = re.sub(r"\s+(?:project|production|status|going|standing|at|in the sheet|in the tracker).*$", "", search, flags=re.IGNORECASE).strip().strip('"\'')
 
         if not search or len(search) < 2:
-            return "🔍 Which client? Give me a name like *Victory Martial Arts* or *Green Rest*."
+            return "🔍 Which client? Give me a name or company like *Juliane Almeida* or *Vida Fit*."
 
         row_idx, client = _find_client(search)
         if not client:
             return f'🔍 No client found matching *"{search}"*.'
 
-        name = client.get("Client", "(unknown)")
-        lines = [f"📋 *Client Status: {name}*\n"]
-        lines.append(f"📧 Email: {client.get('Email', 'N/A')}")
-        lines.append(f"📱 Phone: {client.get('Phone', 'N/A')}")
-        lines.append(f"🎯 Service: {client.get('Service', 'N/A')}")
-        lines.append(f"📝 Script: {client.get('Script Status', 'N/A')}")
-        lines.append(f"📅 Shoot Date: {client.get('Shoot Date', 'Not scheduled')}")
-
-        confirmed = client.get("Shoot Confirmed", "")
-        lines.append(f"✅ Shoot Confirmed: {confirmed if confirmed else 'No'}")
-        lines.append(f"👥 Team Briefed: {client.get('Team Briefed', 'No')}")
-        lines.append(f"📞 Last Contact: {client.get('Last Client Contact', 'N/A')}")
-        lines.append(f"🎬 Content Status: {client.get('Content Status', 'Not Started')}")
-
-        notes = client.get("Notes", "")
-        if notes:
-            lines.append(f"📝 Notes: {notes[:200]}")
+        name = client.get("name") or "(unknown)"
+        company = client.get("company") or ""
+        header = f"📋 *Client Status: {name}*"
+        if company and company.lower() != name.lower():
+            header += f" _({company})_"
+        lines = [header, ""]
+        if client.get("email"):
+            lines.append(f"📧 Email: {client['email']}")
+        if client.get("phone"):
+            lines.append(f"📱 Phone: {client['phone']}")
+        if client.get("plan"):
+            lines.append(f"🎯 Plan: {client['plan']}")
+        if client.get("status"):
+            lines.append(f"🔖 Status: {client['status']}")
+        if client.get("delivered"):
+            lines.append(f"✅ Delivered: {client['delivered'][:300]}")
+        if client.get("upcoming"):
+            lines.append(f"📅 Upcoming: {client['upcoming'][:300]}")
+        if client.get("last_contact"):
+            lines.append(f"📞 Last Contact: {client['last_contact']}")
+        if client.get("notes"):
+            lines.append(f"📝 Notes: {client['notes'][:300]}")
 
         return "\n".join(lines)
     except Exception as e:
@@ -563,85 +678,106 @@ def get_client_status(text):
 
 
 def update_client_field(text):
-    """Update a client's production field (script status, shoot date, etc.)."""
+    """Update a client's field in the MWM Clients sheet (plan, status, delivered, upcoming, last_contact, notes)."""
     try:
         text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
 
-        # Parse: "update Victory script to Approved"
-        # or: "update Victory shoot date to 2026-04-15"
-        # or: "mark Victory team briefed as Yes"
+        # Parse: "update Victory plan to Gold"
+        # or: "update Juliane last contact to 2026-04-09"
+        # or: "mark Vida Fit status as active"
+        # Keys map to canonical field names (lowercase internal keys).
         field_map = {
-            "script": "Script Status",
-            "script status": "Script Status",
-            "shoot date": "Shoot Date",
-            "shoot": "Shoot Date",
-            "shoot confirmed": "Shoot Confirmed",
-            "confirmed": "Shoot Confirmed",
-            "team briefed": "Team Briefed",
-            "team": "Team Briefed",
-            "briefed": "Team Briefed",
-            "content status": "Content Status",
-            "content": "Content Status",
-            "status": "Content Status",
-            "notes": "Notes",
-            "last contact": "Last Client Contact",
-            "contact": "Last Client Contact",
+            "name": "name",
+            "company": "company",
+            "business": "company",
+            "email": "email",
+            "phone": "phone",
+            "plan": "plan",
+            "service": "plan",  # legacy alias
+            "status": "status",
+            "delivered": "delivered",
+            "produced": "delivered",
+            "upcoming": "upcoming",
+            "next shoot": "upcoming",
+            "shoot date": "upcoming",
+            "shoot": "upcoming",
+            "last contact": "last_contact",
+            "contact": "last_contact",
+            "notes": "notes",
         }
 
         # Try pattern: update [client] [field] to [value]
         match = re.search(
-            r"(?:update|change|set|mark)\s+(.+?)\s+(script\s*(?:status)?|shoot\s*(?:date|confirmed)?|content\s*(?:status)?|team\s*(?:briefed)?|confirmed|briefed|status|notes|last\s+contact|contact)\s+(?:to|as|→)\s+(.+)",
+            r"(?:update|change|set|mark)\s+(.+?)\s+(name|company|business|email|phone|plan|service|status|delivered|produced|upcoming|next\s+shoot|shoot\s+date|shoot|last\s+contact|contact|notes)\s+(?:to|as|=|→)\s+(.+)",
             text_clean, re.IGNORECASE
         )
         if not match:
-            return "🤔 I need a client name, field, and value. Try: *update Victory script to Approved*"
+            return "🤔 I need a client name, field, and value. Try: *update Victory plan to Gold* or *update Juliane status to active*"
 
         client_name = match.group(1).strip().strip('"\'')
         field_key = match.group(2).strip().lower()
         new_value = match.group(3).strip().strip('"\'')
 
-        sheet_field = field_map.get(field_key)
-        if not sheet_field:
-            return f"🤔 I don't recognize the field *{field_key}*. Try: script, shoot date, shoot confirmed, team briefed, content status, notes"
+        canonical_field = field_map.get(field_key)
+        if not canonical_field:
+            return f"🤔 I don't recognize the field *{field_key}*. Try: plan, status, delivered, upcoming, last contact, notes"
 
         row_idx, client = _find_client(client_name)
         if not client:
             return f'🔍 No client found matching *"{client_name}"*.'
 
-        # Write update
+        # Determine which tab and which column letter to write.
         svc = _get_sheets_service()
+        tab = _resolve_mwm_clients_tab(svc)
+        if tab is None:
+            return "⚠️ MWM Clients sheet/tab not found."
+
+        # For the canonical 10-col schema we have a fixed column letter map.
+        # For the legacy 6-col schema we need to resolve the column by reading headers.
         result = svc.spreadsheets().values().get(
-            spreadsheetId=PRODUCTION_SHEET_ID,
-            range="Production!1:1",
+            spreadsheetId=LEADS_SHEET_ID,
+            range=f"'{tab}'!1:1",
         ).execute()
-        headers = result.get("values", [[]])[0]
+        raw_headers = [h.strip().lower() for h in result.get("values", [[]])[0]]
 
-        if sheet_field not in headers:
-            return f"⚠️ Column *{sheet_field}* not found in tracker."
+        # Find the column letter for the requested canonical field
+        col_idx = None
+        for i, h in enumerate(raw_headers):
+            if _MWM_CLIENTS_HEADER_ALIASES.get(h) == canonical_field:
+                col_idx = i
+                break
+        if col_idx is None:
+            return f"⚠️ Column for *{canonical_field}* not found in tab '{tab}'. Ask DEV or Cowork LARA to add it."
 
-        col_idx = headers.index(sheet_field)
         col_letter = chr(65 + col_idx) if col_idx < 26 else chr(64 + col_idx // 26) + chr(65 + col_idx % 26)
 
-        # Also update Last Client Contact timestamp
         updates = [
-            {"range": f"Production!{col_letter}{row_idx}", "values": [[new_value]]}
+            {"range": f"'{tab}'!{col_letter}{row_idx}", "values": [[new_value]]}
         ]
-        if sheet_field != "Last Client Contact" and "Last Client Contact" in headers:
-            contact_idx = headers.index("Last Client Contact")
-            contact_letter = chr(65 + contact_idx) if contact_idx < 26 else chr(64 + contact_idx // 26) + chr(65 + contact_idx % 26)
-            now = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
-            updates.append({"range": f"Production!{contact_letter}{row_idx}", "values": [[now]]})
+
+        # Auto-stamp Last Contact (unless that's the field being updated)
+        if canonical_field != "last_contact":
+            contact_col_idx = None
+            for i, h in enumerate(raw_headers):
+                if _MWM_CLIENTS_HEADER_ALIASES.get(h) == "last_contact":
+                    contact_col_idx = i
+                    break
+            if contact_col_idx is not None:
+                contact_letter = chr(65 + contact_col_idx) if contact_col_idx < 26 else chr(64 + contact_col_idx // 26) + chr(65 + contact_col_idx % 26)
+                now = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+                updates.append({"range": f"'{tab}'!{contact_letter}{row_idx}", "values": [[now]]})
 
         svc.spreadsheets().values().batchUpdate(
-            spreadsheetId=PRODUCTION_SHEET_ID,
+            spreadsheetId=LEADS_SHEET_ID,
             body={"valueInputOption": "RAW", "data": updates},
         ).execute()
 
-        old_value = client.get(sheet_field, "(empty)")
+        old_value = client.get(canonical_field, "") or "(empty)"
+        display_name = client.get("name") or client.get("company") or client_name
         return (
             f"✅ *Client updated!*\n"
-            f"• *Client:* {client.get('Client', client_name)}\n"
-            f"• *{sheet_field}:* {old_value} → *{new_value}*"
+            f"• *Client:* {display_name}\n"
+            f"• *{canonical_field}:* {old_value} → *{new_value}*"
         )
     except Exception as e:
         print(f"[LARA] Update client error: {e}")
@@ -649,44 +785,44 @@ def update_client_field(text):
 
 
 def get_upcoming_shoots(text):
-    """List upcoming shoot dates sorted by date."""
+    """List clients who have anything in their Upcoming column.
+
+    Session 30.11: Upcoming is free-text (e.g. "Apr 15 shoot at studio, 3 eps")
+    rather than a structured date, so we can't sort by date — we just list
+    every client who has something scheduled.
+    """
     try:
         clients = _get_all_clients()
         if not clients:
-            return "📅 No clients in production tracker."
+            return "📅 No clients in MWM Clients sheet."
 
-        now = datetime.now(pytz.timezone(TIMEZONE))
-        upcoming = []
+        with_upcoming = [
+            client for _, client in clients
+            if (client.get("upcoming") or "").strip()
+        ]
 
-        for row_idx, client in clients:
-            shoot_date = client.get("Shoot Date", "").strip()
-            if shoot_date:
-                try:
-                    dt = datetime.strptime(shoot_date, "%Y-%m-%d")
-                    if dt.date() >= now.date():
-                        upcoming.append((dt, client))
-                except ValueError:
-                    pass
+        if not with_upcoming:
+            return "📅 *No upcoming shoots or deliveries scheduled.*"
 
-        if not upcoming:
-            return "📅 *No upcoming shoots scheduled.*"
+        lines = [f"📅 *Upcoming* — {len(with_upcoming)} client(s) with scheduled work\n"]
 
-        upcoming.sort(key=lambda x: x[0])
-        lines = [f"📅 *Upcoming Shoots* — {len(upcoming)} scheduled\n"]
-
-        for dt, client in upcoming:
-            confirmed = "✅" if client.get("Shoot Confirmed", "").lower() in ("yes", "true", "confirmed") else "⏳ Unconfirmed"
-            team = "👥 Team briefed" if client.get("Team Briefed", "").lower() in ("yes", "true") else "⚠️ Team not briefed"
-            days_until = (dt.date() - now.date()).days
-            urgency = "🔴" if days_until <= 2 else "🟡" if days_until <= 7 else "🟢"
-
-            lines.append(f"{urgency} *{client.get('Client', '?')}* — {dt.strftime('%b %d, %Y')} ({days_until}d)")
-            lines.append(f"   {confirmed} | {team} | Script: {client.get('Script Status', '?')}")
+        for client in with_upcoming:
+            name = client.get("name") or client.get("company") or "?"
+            company = client.get("company") or ""
+            plan = client.get("plan") or ""
+            upcoming = (client.get("upcoming") or "").strip()
+            header_bits = [f"*{name}*"]
+            if company and company.lower() != name.lower():
+                header_bits.append(f"_({company})_")
+            if plan:
+                header_bits.append(f"— {plan}")
+            lines.append(" ".join(header_bits))
+            lines.append(f"   📅 {upcoming[:300]}")
 
         return "\n".join(lines)
     except Exception as e:
         print(f"[LARA] Upcoming shoots error: {e}")
-        return f"⚠️ Error fetching shoots: {str(e)[:200]}"
+        return f"⚠️ Error fetching upcoming: {str(e)[:200]}"
 
 
 def send_client_email(text):
@@ -714,18 +850,24 @@ def send_client_email(text):
         if not client:
             return f'🔍 No client found matching *"{client_name}"*.'
 
-        email = client.get("Email", "").strip()
+        email = (client.get("email") or "").strip()
+        display_name = client.get("name") or client.get("company") or client_name
         if not email:
-            return f"⚠️ No email on file for *{client.get('Client', client_name)}*."
+            return f"⚠️ No email on file for *{display_name}*."
 
-        # Build email info for Claude to compose
+        # Build email info for Claude to compose (new 10-col schema)
+        plan = client.get("plan") or "N/A"
+        status = client.get("status") or "N/A"
+        delivered = client.get("delivered") or "—"
+        upcoming = client.get("upcoming") or "—"
         return (
             f"📧 *Email Draft Ready*\n"
-            f"• *To:* {client.get('Client', client_name)} ({email})\n"
+            f"• *To:* {display_name} ({email})\n"
             f"• *Re:* {subject_hint if subject_hint else 'Follow-up'}\n"
-            f"• *Service:* {client.get('Service', 'N/A')}\n"
-            f"• *Content Status:* {client.get('Content Status', 'N/A')}\n"
-            f"• *Script:* {client.get('Script Status', 'N/A')}\n\n"
+            f"• *Plan:* {plan}\n"
+            f"• *Status:* {status}\n"
+            f"• *Delivered:* {delivered}\n"
+            f"• *Upcoming:* {upcoming}\n\n"
             f"_I've prepared the context. Tell me what to say and I'll send it, or I can draft a professional follow-up based on their current production stage._"
         )
     except Exception as e:
@@ -871,8 +1013,8 @@ def read_emails(text):
         if from_filter:
             # Check if it's a client name
             _, client = _find_client(from_filter)
-            if client and client.get("Email"):
-                query += f" from:{client['Email']}"
+            if client and client.get("email"):
+                query += f" from:{client['email']}"
             else:
                 query += f" {from_filter}"
 
