@@ -14,7 +14,12 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests as http_requests
 from ana_calendar import handle_calendar_action
-from maya_actions import handle_maya_action
+from maya_actions import (handle_maya_action, get_reengagement_queue,
+                          add_to_reengagement_queue, update_reengagement_row,
+                          send_reengagement_template, mark_reengagement_replied,
+                          mark_reengagement_opted_out, is_in_active_reengagement,
+                          REENGAGEMENT_CADENCE, REENGAGEMENT_TEMPLATES,
+                          REENGAGEMENT_COLD_DAYS)
 from susan_mailchimp import handle_susan_action
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
@@ -100,6 +105,8 @@ lead_data = {}
 # Google Calendar config
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
 MICHAEL_EMAIL = os.getenv("MICHAEL_EMAIL", "michael@mwmcreations.com")
+BRIEFING_TOKEN = os.getenv("BRIEFING_TOKEN", "")
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 TIMEZONE = "America/New_York"  # Orlando, Florida
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -1392,6 +1399,21 @@ def get_calendar_service(impersonate=None):
         print(f"[calendar] DWD as: {impersonate}")
 
     return build("calendar", "v3", credentials=creds)
+
+
+def get_gmail_service(impersonate=None):
+    """Gmail API client via Domain-Wide Delegation."""
+    import json
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    if not creds_json:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
+    info = json.loads(creds_json)
+    from google.oauth2 import service_account as _sa
+    creds = _sa.Credentials.from_service_account_info(info, scopes=GMAIL_SCOPES)
+    if impersonate:
+        creds = creds.with_subject(impersonate)
+    from googleapiclient.discovery import build as _build
+    return _build("gmail", "v1", credentials=creds)
 
 
 def get_available_slots():
@@ -2692,6 +2714,171 @@ def _process_gabriela_audio_async(sender: str, media_url: str):
             pass
 
 
+@app.route("/send-briefing", methods=["POST"])
+def send_briefing():
+    """ANA daily briefing -> Gmail DWD -> Michael inbox."""
+    import base64
+    from email.mime.text import MIMEText
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    subject = data.get("subject", "Daily Briefing")
+    body = data.get("body", "")
+    content_type = data.get("content_type", "plain")
+    if not body:
+        return jsonify({"ok": False, "error": "body is required"}), 400
+    try:
+        service = get_gmail_service(impersonate=MICHAEL_EMAIL)
+        msg = MIMEText(body, content_type)
+        msg["To"] = MICHAEL_EMAIL
+        msg["From"] = MICHAEL_EMAIL
+        msg["Subject"] = subject
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        result = service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+        return jsonify({"ok": True, "messageId": result.get("id", "")})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+# ── Daily Briefing Daemon (Session 30.14b) ──────────────────────────
+def _daily_briefing_thread():
+    """Sends daily briefing email at 7 AM Eastern every day."""
+    import time
+    import pytz as _pytz
+    from datetime import datetime, timedelta
+    import traceback
+
+    EASTERN = _pytz.timezone("America/New_York")
+    BRIEFING_HOUR = 7
+    PERSONAL_CAL = "michael@mwmcreations.com"
+    MWM_CAL = "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com"
+
+    def _seconds_until_next(hour):
+        now = datetime.now(EASTERN)
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+
+    def _fetch_events(cal_service, calendar_id, date_obj):
+        start = date_obj.isoformat() + "T00:00:00"
+        end = date_obj.isoformat() + "T23:59:59"
+        try:
+            result = cal_service.events().list(
+                calendarId=calendar_id,
+                timeMin=start + "-04:00",
+                timeMax=end + "-04:00",
+                singleEvents=True,
+                orderBy="startTime",
+                timeZone="America/New_York",
+            ).execute()
+            return result.get("items", [])
+        except Exception:
+            return []
+
+    def _format_event(ev):
+        s = ev.get("start", {})
+        summary = ev.get("summary", "(sem titulo)")
+        if "dateTime" in s:
+            try:
+                from datetime import datetime as _dt
+                dt = _dt.fromisoformat(s["dateTime"].replace("Z", "+00:00"))
+                return f"  {dt.astimezone(EASTERN).strftime('%H:%M')} - {summary}"
+            except Exception:
+                return f"  {s['dateTime'][11:16]} - {summary}"
+        return f"  (dia inteiro) - {summary}"
+
+    def _build_and_send():
+        from datetime import date
+        import base64
+        from email.mime.text import MIMEText
+
+        today = date.today()
+        dias = {
+            0: "Segunda-feira", 1: "Terca-feira", 2: "Quarta-feira",
+            3: "Quinta-feira", 4: "Sexta-feira", 5: "Sabado", 6: "Domingo"
+        }
+        meses = {
+            1: "Janeiro", 2: "Fevereiro", 3: "Marco", 4: "Abril",
+            5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+            9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
+        }
+        date_str = f"{dias.get(today.weekday(), '')}, {today.day} de {meses.get(today.month, '')} de {today.year}"
+
+        cal = get_calendar_service(impersonate=MICHAEL_EMAIL)
+        personal = _fetch_events(cal, PERSONAL_CAL, today)
+        mwm = _fetch_events(cal, MWM_CAL, today)
+
+        lines = [
+            "Bom dia, Michael!", "",
+            f"Briefing Diario - {date_str}", "",
+            "Agenda de Hoje:", "",
+        ]
+        has = False
+        if personal:
+            has = True
+            lines.append("Calendario Pessoal:")
+            lines.extend(_format_event(e) for e in personal)
+            lines.append("")
+        if mwm:
+            has = True
+            lines.append("Calendario MWM CREATIONS:")
+            lines.extend(_format_event(e) for e in mwm)
+            lines.append("")
+        if not has:
+            lines.append(
+                "Nenhum evento agendado para hoje em nenhum dos "
+                "calendarios (Pessoal e MWM CREATIONS)."
+            )
+            lines.append("")
+            if today.weekday() >= 5:
+                lines.append(
+                    "Seu fim de semana esta livre! "
+                    "Aproveite para descansar."
+                )
+            else:
+                lines.append(
+                    "Seu dia esta livre! Boa oportunidade "
+                    "para focar em projetos pendentes."
+                )
+            lines.append("")
+        lines.extend([
+            "Se precisar de algo, estou aqui.", "",
+            "ANA | MWM Creations AI Assistant",
+        ])
+
+        body = "\n".join(lines)
+        subject = f"Briefing Diario - {date_str}"
+
+        gmail = get_gmail_service(impersonate=MICHAEL_EMAIL)
+        msg = MIMEText(body, "plain")
+        msg["To"] = MICHAEL_EMAIL
+        msg["From"] = MICHAEL_EMAIL
+        msg["Subject"] = subject
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        gmail.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+        print(f"[BRIEFING] Sent daily briefing for {date_str}")
+
+    print("[BRIEFING] Daily briefing thread started")
+    while True:
+        try:
+            wait = _seconds_until_next(BRIEFING_HOUR)
+            print(f"[BRIEFING] Next briefing in {wait/3600:.1f}h")
+            time.sleep(wait)
+            _build_and_send()
+        except Exception as exc:
+            print(f"[BRIEFING] Error: {exc}")
+            traceback.print_exc()
+            time.sleep(600)  # retry in 10 min on error
+
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # ââ GET: Meta webhook verification âââââââââââââââââââââââââââââââ
@@ -3006,6 +3193,37 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         if is_michael:
             print(f"🧪 MAYA: sender is Michael ({sender}) — test mode, lead-funnel logging disabled")
 
+        # ── Re-engagement QUICK_REPLY handling (Session 30.13) ──────────
+        # Template buttons: "Schedule a call", "Visit the studio", "Not right now"
+        # Any reply from a lead in the Active re-engagement queue marks them
+        # as Replied (stops the template sequence). "Not right now" is terminal.
+        _msg_lower = (incoming_msg or "").strip().lower()
+        if not is_michael:
+            # Mark lead as replied in re-engagement queue (idempotent, no-op if not in queue)
+            try:
+                _was_reengagement = mark_reengagement_replied(sender)
+                if _was_reengagement:
+                    print(f"[Re-engagement] {sender} replied — sequence stopped")
+            except Exception:
+                pass
+
+            if _msg_lower == "not right now":
+                # Terminal opt-out — acknowledge and return without entering Maya conversation
+                try:
+                    mark_reengagement_opted_out(sender)
+                except Exception:
+                    pass
+                send_whatsapp_meta(sender, body="No problem at all! We're here whenever you're ready. Feel free to message us anytime.")
+                return
+
+            if _msg_lower == "schedule a call":
+                # Inject context so Maya knows this came from a re-engagement button
+                incoming_msg = "I'd like to schedule a call with MWM Creations please."
+
+            elif _msg_lower == "visit the studio":
+                # Inject context so Maya handles studio visit scheduling
+                incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
+
         is_new_sender = sender not in conversation_history
         if is_new_sender:
             conversation_history[sender] = []
@@ -3194,7 +3412,30 @@ def _cold_lead_checker():
                 if not last_msg:
                     continue
                 hours_silent = (now - last_msg).total_seconds() / 3600
+
+                # ── Session 30.13: At 24h, add to re-engagement queue ──
+                if hours_silent >= 24 and not data.get("reengagement_enqueued"):
+                    _re_name = data.get("name") or ""
+                    _re_biz = data.get("business") or ""
+                    _re_last = last_msg.strftime("%Y-%m-%d %H:%M")
+                    try:
+                        _re_added = add_to_reengagement_queue(
+                            phone, name=_re_name, business=_re_biz,
+                            last_inbound=_re_last,
+                        )
+                        if _re_added:
+                            lead_data[phone]["reengagement_enqueued"] = True
+                            print(f"[Re-engagement] Enqueued {phone} ({_re_name}) — {int(hours_silent)}h silent")
+                    except Exception as _re_err:
+                        print(f"[Re-engagement] Enqueue error for {phone} (non-fatal): {_re_err}")
+
+                # ── Original 48h cold-lead logic — skip if in active re-engagement ──
                 if hours_silent >= 48:
+                    try:
+                        if is_in_active_reengagement(phone):
+                            continue
+                    except Exception:
+                        pass
                     name  = data.get("name") or ""
                     email = data.get("email") or ""
                     print(f"Ã¢ÂÂÃ¯Â¸Â  Cold lead detected: {phone} ({int(hours_silent)}h silent) Ã¢ÂÂ firing Hub event")
@@ -3226,6 +3467,129 @@ def _cold_lead_checker():
 
 threading.Thread(target=_cold_lead_checker, daemon=True).start()
 
+
+# ══════════════════════════════════════════════════════════════════════
+# RE-ENGAGEMENT CHECKER — Background Thread (Session 30.13)
+# Processes the Re-engagement Queue Sheet tab every 30 minutes.
+# Sends templates on the 24h/4d/7d cadence. Marks leads Cold + hands
+# off to Susan when the 3-template sequence is exhausted with no reply.
+# ══════════════════════════════════════════════════════════════════════
+
+SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID
+
+
+def _notify_susan_cold_lead(phone, name, business):
+    """Post a cold-lead handoff to #susan for email nurture."""
+    try:
+        msg = (
+            f"*Cold Lead Handoff from Maya*\n"
+            f"*Name:* {name or 'Unknown'}"
+            + (f" ({business})" if business else "") + "\n"
+            f"*Phone:* {phone}\n"
+            f"*Context:* Lead completed Maya's full WhatsApp re-engagement sequence "
+            f"(3 templates over 7 days) with no reply.\n"
+            f"*Action:* Add to email nurture drip campaign."
+        )
+        _post_to_slack_async(SLACK_SUSAN_CHANNEL, msg)
+    except Exception as e:
+        print(f"Susan cold-lead notification failed (non-fatal): {e}")
+
+
+def _reengagement_checker():
+    """Background thread: process re-engagement queue every 30 minutes.
+
+    For each Active entry, check hours since last inbound and send the
+    next template in sequence (T1->T2->T3). After T3 + REENGAGEMENT_COLD_DAYS
+    with no reply, mark Cold and hand off to Susan for email nurture.
+    """
+    import time as _time
+    print("[Re-engagement] Checker started (polls every 30 min, cadence 24h/4d/7d)")
+    _time.sleep(1800)  # First check after 30 min
+    while True:
+        try:
+            queue = get_reengagement_queue()
+            now = datetime.now(pytz.timezone(TIMEZONE))
+
+            for row_idx, entry in queue:
+                if entry.get("Status", "") != "Active":
+                    continue
+
+                phone = entry.get("Phone", "").strip()
+                name = entry.get("Name", "").strip()
+                business = entry.get("Business", "").strip()
+                last_inbound_str = entry.get("Last Inbound", "").strip()
+
+                if not phone or not last_inbound_str:
+                    continue
+
+                # Parse last inbound time
+                try:
+                    last_inbound = datetime.strptime(last_inbound_str, "%Y-%m-%d %H:%M")
+                    last_inbound = pytz.timezone(TIMEZONE).localize(last_inbound)
+                except Exception:
+                    continue
+
+                hours_since = (now - last_inbound).total_seconds() / 3600
+
+                t1_sent = entry.get("T1 Sent", "").strip()
+                t2_sent = entry.get("T2 Sent", "").strip()
+                t3_sent = entry.get("T3 Sent", "").strip()
+
+                # Determine which template to send next
+                if not t1_sent and hours_since >= REENGAGEMENT_CADENCE["T1"]:
+                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T1"]):
+                        update_reengagement_row(row_idx, {
+                            "T1 Sent": now.strftime("%Y-%m-%d %H:%M"),
+                        })
+                        print(f"[Re-engagement] T1 sent to {phone} ({name})")
+
+                elif t1_sent and not t2_sent and hours_since >= REENGAGEMENT_CADENCE["T2"]:
+                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T2"]):
+                        update_reengagement_row(row_idx, {
+                            "T2 Sent": now.strftime("%Y-%m-%d %H:%M"),
+                        })
+                        print(f"[Re-engagement] T2 sent to {phone} ({name})")
+
+                elif t2_sent and not t3_sent and hours_since >= REENGAGEMENT_CADENCE["T3"]:
+                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T3"]):
+                        update_reengagement_row(row_idx, {
+                            "T3 Sent": now.strftime("%Y-%m-%d %H:%M"),
+                        })
+                        print(f"[Re-engagement] T3 sent to {phone} ({name})")
+
+                elif t3_sent:
+                    # Check if enough time has passed since T3 to mark Cold
+                    try:
+                        t3_time = datetime.strptime(t3_sent, "%Y-%m-%d %H:%M")
+                        t3_time = pytz.timezone(TIMEZONE).localize(t3_time)
+                        days_since_t3 = (now - t3_time).total_seconds() / 86400
+                        if days_since_t3 >= REENGAGEMENT_COLD_DAYS:
+                            update_reengagement_row(row_idx, {
+                                "Status": "Cold",
+                                "Notes": f"Exhausted sequence — no reply after T3. Flagged cold {now.strftime('%Y-%m-%d')}",
+                            })
+                            # Update lead temperature in the main pipeline Sheet
+                            try:
+                                update_lead_columns(f"whatsapp:+{re.sub(r'[^0-9]', '', phone)}", {
+                                    "WhatsApp Status": "Cold - Re-engagement Exhausted",
+                                    "Lead Temperature": "Cold",
+                                })
+                            except Exception:
+                                pass
+                            # Hand off to Susan for email nurture
+                            _notify_susan_cold_lead(phone, name, business)
+                            print(f"[Re-engagement] {phone} ({name}) marked Cold — handed to Susan")
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            print(f"[Re-engagement] Checker error: {e}")
+        _time.sleep(1800)  # Check every 30 min
+
+threading.Thread(target=_reengagement_checker, daemon=True).start()
+
+# Daily Briefing thread (7 AM Eastern)
+threading.Thread(target=_daily_briefing_thread, daemon=True).start()
 
 
 # ── Slack Events API: Real-Time Agent Responsiveness ─────────────────────────────
