@@ -649,3 +649,271 @@ def handle_maya_action(text):
         return True, result, None
 
     return False, None, None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RE-ENGAGEMENT QUEUE — Session 30.13
+# Tracks leads who went silent after initial Maya conversation.
+# Templates: maya_reengagement_1 (24h), maya_reengagement_2 (4d),
+#            maya_reengagement_3 (7d). All approved MARKETING category.
+# ══════════════════════════════════════════════════════════════════════
+
+import requests as http_requests
+
+REENGAGEMENT_TAB = "Re-engagement Queue"
+REENGAGEMENT_HEADERS = [
+    "Phone", "Name", "Business", "Added", "Last Inbound",
+    "T1 Sent", "T2 Sent", "T3 Sent", "Status", "Notes",
+]
+
+# Template names — must match what Meta approved
+REENGAGEMENT_TEMPLATES = {
+    "T1": "maya_reengagement_1",
+    "T2": "maya_reengagement_2",
+    "T3": "maya_reengagement_3",
+}
+
+# Cadence: hours since last INBOUND message from the lead
+REENGAGEMENT_CADENCE = {
+    "T1": 24,    # 24 hours  (1 day)
+    "T2": 96,    # 96 hours  (4 days)
+    "T3": 168,   # 168 hours (7 days)
+}
+
+# Days after T3 with no reply before marking Cold
+REENGAGEMENT_COLD_DAYS = 7
+
+
+def _ensure_reengagement_tab():
+    """Create the Re-engagement Queue tab if it doesn't exist."""
+    if not SHEETS_LEADS_ID:
+        return
+    svc = _get_sheets_service()
+    meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+    existing = {s["properties"]["title"] for s in meta["sheets"]}
+    if REENGAGEMENT_TAB not in existing:
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=SHEETS_LEADS_ID,
+            body={"requests": [{"addSheet": {"properties": {
+                "title": REENGAGEMENT_TAB,
+                "gridProperties": {"frozenRowCount": 1},
+            }}}]},
+        ).execute()
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{REENGAGEMENT_TAB}'!A1",
+            valueInputOption="RAW",
+            body={"values": [REENGAGEMENT_HEADERS]},
+        ).execute()
+        print(f"[Maya] Created '{REENGAGEMENT_TAB}' tab with headers")
+
+
+def get_reengagement_queue():
+    """Read all rows from the Re-engagement Queue tab.
+    Returns list of (row_index, row_dict) tuples.
+    """
+    if not SHEETS_LEADS_ID:
+        return []
+    try:
+        _ensure_reengagement_tab()
+        svc = _get_sheets_service()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{REENGAGEMENT_TAB}'!A1:J",
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return []
+        headers = rows[0]
+        entries = []
+        for i, row in enumerate(rows[1:], start=2):
+            row_dict = {}
+            for j, h in enumerate(headers):
+                row_dict[h] = row[j] if j < len(row) else ""
+            if not row_dict.get("Phone", "").strip():
+                continue
+            entries.append((i, row_dict))
+        return entries
+    except Exception as e:
+        print(f"[Maya] Error reading re-engagement queue: {e}")
+        return []
+
+
+def add_to_reengagement_queue(phone, name="", business="", last_inbound=None):
+    """Add a lead to the re-engagement queue if not already Active there.
+    Returns True if added, False if skipped or error.
+    """
+    if not SHEETS_LEADS_ID:
+        return False
+    try:
+        existing = get_reengagement_queue()
+        phone_clean = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+        for _, entry in existing:
+            entry_digits = re.sub(r"\D", "", entry.get("Phone", ""))
+            if entry_digits == phone_clean and entry.get("Status", "") == "Active":
+                print(f"[Maya] {phone} already in re-engagement queue (Active)")
+                return False
+
+        _ensure_reengagement_tab()
+        svc = _get_sheets_service()
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        row = [
+            phone,                                                  # Phone
+            name,                                                   # Name
+            business,                                               # Business
+            now.strftime("%Y-%m-%d %H:%M"),                        # Added
+            last_inbound or now.strftime("%Y-%m-%d %H:%M"),        # Last Inbound
+            "",                                                     # T1 Sent
+            "",                                                     # T2 Sent
+            "",                                                     # T3 Sent
+            "Active",                                               # Status
+            "",                                                     # Notes
+        ]
+        svc.spreadsheets().values().append(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{REENGAGEMENT_TAB}'!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row]},
+        ).execute()
+        print(f"[Maya] Added {phone} ({name}) to re-engagement queue")
+        return True
+    except Exception as e:
+        print(f"[Maya] Error adding to re-engagement queue: {e}")
+        return False
+
+
+def update_reengagement_row(row_index, updates):
+    """Update specific columns in a re-engagement queue row.
+    updates: dict of {column_name: value}
+    """
+    if not SHEETS_LEADS_ID:
+        return
+    try:
+        svc = _get_sheets_service()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID,
+            range=f"'{REENGAGEMENT_TAB}'!1:1",
+        ).execute()
+        headers = result.get("values", [[]])[0]
+
+        data = []
+        for col_name, value in updates.items():
+            if col_name in headers:
+                col_idx = headers.index(col_name)
+                col_letter = chr(65 + col_idx) if col_idx < 26 else chr(64 + col_idx // 26) + chr(65 + col_idx % 26)
+                data.append({"range": f"'{REENGAGEMENT_TAB}'!{col_letter}{row_index}", "values": [[value]]})
+
+        if data:
+            svc.spreadsheets().values().batchUpdate(
+                spreadsheetId=SHEETS_LEADS_ID,
+                body={"valueInputOption": "RAW", "data": data},
+            ).execute()
+    except Exception as e:
+        print(f"[Maya] Error updating re-engagement row {row_index}: {e}")
+
+
+def send_reengagement_template(phone, name, template_name):
+    """Send a Maya re-engagement template via Meta WhatsApp Cloud API.
+    Returns True if sent successfully, False otherwise.
+    """
+    meta_token = os.getenv("META_ACCESS_TOKEN", "")
+    phone_number_id = os.getenv("META_PHONE_NUMBER_ID", "")
+
+    if not meta_token or not phone_number_id:
+        print("[Maya] Cannot send template: missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID")
+        return False
+
+    clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+    first_name = (name or "there").split()[0]
+
+    url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {meta_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": "en_US"},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": first_name}],
+                }
+            ],
+        },
+    }
+
+    try:
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        msg_id = resp.json().get("messages", [{}])[0].get("id", "")
+        print(f"[Maya] Re-engagement template '{template_name}' sent to {clean_phone} (name={first_name}): {msg_id}")
+        return True
+    except Exception as e:
+        print(f"[Maya] Re-engagement template send FAILED for {clean_phone}: {e}")
+        if hasattr(e, "response") and e.response is not None:
+            print(f"   Response: {e.response.text}")
+        return False
+
+
+def mark_reengagement_replied(phone):
+    """When a lead in the re-engagement queue replies, mark them as Replied.
+    Returns True if a matching Active entry was found and updated.
+    """
+    try:
+        queue = get_reengagement_queue()
+        phone_clean = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+        for row_idx, entry in queue:
+            entry_digits = re.sub(r"\D", "", entry.get("Phone", ""))
+            if entry_digits == phone_clean and entry.get("Status", "") == "Active":
+                now = datetime.now(pytz.timezone(TIMEZONE))
+                update_reengagement_row(row_idx, {
+                    "Status": "Replied",
+                    "Notes": f"Lead replied {now.strftime('%Y-%m-%d %H:%M')}",
+                })
+                print(f"[Maya] Re-engagement: {phone} marked as Replied")
+                return True
+        return False
+    except Exception as e:
+        print(f"[Maya] Error marking lead replied: {e}")
+        return False
+
+
+def mark_reengagement_opted_out(phone):
+    """When a lead clicks 'Not right now', mark them as Opted Out."""
+    try:
+        queue = get_reengagement_queue()
+        phone_clean = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+        for row_idx, entry in queue:
+            entry_digits = re.sub(r"\D", "", entry.get("Phone", ""))
+            if entry_digits == phone_clean and entry.get("Status", "") == "Active":
+                now = datetime.now(pytz.timezone(TIMEZONE))
+                update_reengagement_row(row_idx, {
+                    "Status": "Opted Out",
+                    "Notes": f"Clicked 'Not right now' {now.strftime('%Y-%m-%d %H:%M')}",
+                })
+                print(f"[Maya] Re-engagement: {phone} opted out")
+                return True
+        return False
+    except Exception as e:
+        print(f"[Maya] Error marking lead opted out: {e}")
+        return False
+
+
+def is_in_active_reengagement(phone):
+    """Check if a phone number has an Active entry in the re-engagement queue."""
+    try:
+        queue = get_reengagement_queue()
+        phone_clean = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+        for _, entry in queue:
+            entry_digits = re.sub(r"\D", "", entry.get("Phone", ""))
+            if entry_digits == phone_clean and entry.get("Status", "") == "Active":
+                return True
+        return False
+    except Exception:
+        return False
