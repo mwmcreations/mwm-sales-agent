@@ -2748,18 +2748,19 @@ def send_briefing():
 @app.route("/admin/submit-lara-templates", methods=["POST"])
 def submit_lara_templates():
     """One-time: submit 5 LARA WhatsApp message templates to Meta."""
-    import requests as _req
-    auth = request.headers.get("Authorization", "")
-    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    if not META_ACCESS_TOKEN:
-        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
-    WABA_ID = "1172161621528249"
-    url = f"https://graph.facebook.com/v19.0/{WABA_ID}/message_templates"
-    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
-    templates = [
+    import traceback as _tb
+    try:
+        auth = request.headers.get("Authorization", "")
+        if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        if not META_ACCESS_TOKEN:
+            return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
+        WABA_ID = "1172161621528249"
+        url = f"https://graph.facebook.com/v19.0/{WABA_ID}/message_templates"
+        hdrs = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
+        templates = [
         {
             "name": "lara_crew_availability",
             "category": "UTILITY",
@@ -2790,15 +2791,21 @@ def submit_lara_templates():
             "language": "pt_BR",
             "components": [{"type": "BODY", "text": "Oi {{1}}, aqui \u00e9 a LARA da MWM Creations entrando em contato sobre seu projeto. Tenho uma atualiza\u00e7\u00e3o e gostaria de falar com voc\u00ea. Responda SIM quando puder que eu passo os detalhes.", "example": {"body_text": [["Pedro"]]}}]
         },
-    ]
-    results = []
-    for t in templates:
-        try:
-            r = _req.post(url, headers=headers, json=t, timeout=15)
-            results.append({"name": t["name"], "status": r.status_code, "response": r.json()})
-        except Exception as e:
-            results.append({"name": t["name"], "status": "error", "response": str(e)})
-    return jsonify({"ok": True, "results": results})
+        ]
+        results = []
+        for t in templates:
+            try:
+                r = http_requests.post(url, headers=hdrs, json=t, timeout=15)
+                try:
+                    body = r.json()
+                except Exception:
+                    body = r.text
+                results.append({"name": t["name"], "status": r.status_code, "response": body})
+            except Exception as e:
+                results.append({"name": t["name"], "status": "error", "response": str(e)})
+        return jsonify({"ok": True, "results": results})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "trace": _tb.format_exc()}), 500
 
 
 # ── Daily Briefing Daemon (Session 30.14b) ──────────────────────────
