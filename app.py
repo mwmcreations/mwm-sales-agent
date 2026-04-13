@@ -3083,11 +3083,12 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
 7. Read emails (check inbox, emails from a client)
 8. Drive list footage / list client / search / create folder / share
 9. Check crew (crew roster, crew contact info, crew availability for shoots — MWM crew members: Bruno Neri, Guga Carvalho, Asafh Kalebe, Erika Miyamoto, Luis Pereira)
+10. Send WhatsApp template (reach out to a client/crew via WhatsApp template — reminders, confirmations, video approvals, availability checks, general outreach)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, check_crew, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, check_crew, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share, send_template
 
 If it is NOT a Lara action, respond with: {"action": "none"}""",
                     messages=[{"role": "user", "content": incoming_msg}],
@@ -3140,7 +3141,19 @@ through the +1 407-537-7207 number. Adapt accordingly:
 - Use line breaks for readability, but no headers or bullet symbols like `•`.
 - Skip the "✅ DONE / What was done / Result / Next step" structured summary block on WhatsApp — it reads like a robot. Just confirm naturally what you did.
 - The SENDER IDENTITY block above tells you exactly who you are talking to. Trust it. Do NOT ask "is this Michael?" or "who am I speaking with?" — the identity has already been verified by phone number match.
-- Bilingual-aware: switch to Portuguese if they write in Portuguese."""
+- Bilingual-aware: switch to Portuguese if they write in Portuguese.
+
+OUTBOUND TEMPLATE CAPABILITY:
+You can send WhatsApp template messages to clients and crew. When Michael asks you to
+reach out to someone, remind someone, confirm a shoot, or send a video approval, the
+action layer will handle it automatically. Available templates:
+- lara_crew_availability: Check if crew is available for a shoot date
+- lara_client_confirmation: Confirm a shoot date/location with a client
+- lara_shoot_reminder: Send a shoot reminder with date and time
+- lara_video_approval: Notify client their video is ready for review
+- lara_general_outreach: General contact about project updates
+If a client or crew member hasn't messaged you recently (outside the 24h window),
+tell Michael you'll send a template message to initiate the conversation."""
         )
 
         # Step 4: ask Claude for a natural reply.

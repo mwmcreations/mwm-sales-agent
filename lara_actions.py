@@ -496,6 +496,27 @@ LARA_ACTION_INTENTS = {
         r"search\s+drive\s+(?:for\s+)?.+",
         r"drive\s+search\s+.+",
     ],
+    # ── Outbound WhatsApp template messages (Session 30.15) ──
+    "send_template": [
+        # "send a reminder to João about the shoot"
+        r"(?:send|enviar?)\s+(?:a\s+)?(?:reminder|lembrete|shoot\s*reminder)\s+(?:to|para|for)\s+(.+)",
+        # "remind João / Maria about the shoot tomorrow"
+        r"(?:remind|lembrar?)\s+(.+?)(?:\s+(?:about|sobre|regarding|of|que|da|do))\s+(.+)",
+        # "reach out to / contact / message João"
+        r"(?:reach\s*out\s+to|contact|message|text|whatsapp|falar?\s+com|mandar?\s+(?:msg|mensagem)\s+(?:para|pro|pra))\s+(.+)",
+        # "send crew availability check to Bruno"
+        r"(?:send|enviar?)\s+(?:a?\s+)?(?:crew\s+)?(?:availability|disponibilidade)\s+(?:check\s+)?(?:to|para|for)\s+(.+)",
+        # "ask João if he's available for the shoot on April 20"
+        r"(?:ask|perguntar?)\s+(.+?)\s+(?:if|se)\s+(?:he|she|they|ele|ela).?s?\s+(?:available|free|dispon[ií]vel)",
+        # "send video approval to Maria"
+        r"(?:send|enviar?)\s+(?:a?\s+)?(?:video|v[ií]deo)\s+(?:approval|aprova[çc][aã]o)\s+(?:to|para|for)\s+(.+)",
+        # "confirm shoot with Maria" / "confirmar gravação com Maria"
+        r"(?:confirm|confirmar?)\s+(?:the\s+)?(?:shoot|grava[çc][aã]o|session|sess[aã]o)\s+(?:with|com)\s+(.+)",
+        # "send template lara_crew_availability to João"
+        r"(?:send|enviar?)\s+(?:the\s+)?template\s+(\S+)\s+(?:to|para|for)\s+(.+)",
+        # Portuguese: "entrar em contato com João"
+        r"entrar?\s+em\s+contato\s+com\s+(.+)",
+    ],
     # ── client_status LAST — it's a greedy catch-all with "check/status" ──
     "client_status": [
         r"(?:status|how.?s)\s+(?:on\s+)?(.+?)(?:\s+(?:project|production|status|going))?$",
@@ -1156,6 +1177,163 @@ def read_emails(text):
         return f"⚠️ Error reading emails: {str(e)[:200]}"
 
 
+# ── Outbound Template Handler (Session 30.15) ───────────────────────
+
+# Map keywords/context → template name for smart template selection.
+_TEMPLATE_KEYWORD_MAP = {
+    "availability": "lara_crew_availability",
+    "disponibilidade": "lara_crew_availability",
+    "disponível": "lara_crew_availability",
+    "available": "lara_crew_availability",
+    "crew": "lara_crew_availability",
+    "confirm": "lara_client_confirmation",
+    "confirmar": "lara_client_confirmation",
+    "confirmation": "lara_client_confirmation",
+    "confirmação": "lara_client_confirmation",
+    "reminder": "lara_shoot_reminder",
+    "lembrete": "lara_shoot_reminder",
+    "remind": "lara_shoot_reminder",
+    "lembrar": "lara_shoot_reminder",
+    "video": "lara_video_approval",
+    "vídeo": "lara_video_approval",
+    "approval": "lara_video_approval",
+    "aprovação": "lara_video_approval",
+}
+
+
+def send_template_to_client(text):
+    """Parse a template-send request, look up the client, pick the right template,
+    and send it via the Meta Cloud API.
+
+    This handler is triggered by the 'send_template' intent in LARA_ACTION_INTENTS.
+    Michael says things like:
+    - "send a reminder to João about the shoot on April 20"
+    - "reach out to Maria"
+    - "confirm shoot with Victory MA at Orlando"
+    - "send video approval to Ana"
+    """
+    try:
+        text_clean = re.sub(r"^(?:lara[,:\s]*)?", "", text.strip(), flags=re.IGNORECASE).strip()
+        text_lower = text_clean.lower()
+
+        # ── 1. Detect explicit template name (e.g. "send template lara_crew_availability to João")
+        explicit_match = re.search(r"template\s+(lara_\w+)\s+(?:to|para|for)\s+(.+)", text_lower)
+        if explicit_match:
+            template_name = explicit_match.group(1)
+            client_search = explicit_match.group(2).strip()
+        else:
+            template_name = None
+            client_search = None
+
+        # ── 2. Extract client name from various patterns
+        if not client_search:
+            # Try "to/para/for/com <name>" patterns
+            name_match = re.search(
+                r"(?:to|para|for|com|pra|pro)\s+(.+?)(?:\s+(?:about|sobre|regarding|on|no|na|em|at|às|as)\s+|$)",
+                text_lower,
+            )
+            if name_match:
+                client_search = name_match.group(1).strip()
+            else:
+                # Try "remind/ask <name> ..."
+                name_match2 = re.search(
+                    r"(?:remind|ask|lembrar?|perguntar?|contact|message|text)\s+(.+?)(?:\s+(?:about|if|se|regarding|of|que)\s+|$)",
+                    text_lower,
+                )
+                if name_match2:
+                    client_search = name_match2.group(1).strip()
+                else:
+                    # Last resort: "contato com <name>"
+                    name_match3 = re.search(r"contato\s+com\s+(.+)", text_lower)
+                    if name_match3:
+                        client_search = name_match3.group(1).strip()
+
+        if not client_search or len(client_search) < 2:
+            return "📱 Quem você quer que eu contate? Me diz o nome do cliente ou membro da equipe."
+
+        # Clean up client search — remove trailing noise
+        client_search = re.sub(r"\s+(?:please|por favor|obrigad[oa])\s*$", "", client_search).strip()
+
+        # ── 3. Look up client in the MWM Clients sheet
+        row_idx, client = _find_client(client_search)
+        if not client:
+            return f'📱 Não encontrei *"{client_search}"* na planilha de clientes. Confere o nome e tenta de novo?'
+
+        client_phone = client.get("phone", "")
+        client_name = client.get("name") or client.get("company") or client_search
+
+        if not client_phone:
+            return f"📱 Encontrei *{client_name}*, mas não tem telefone cadastrado na planilha. Adiciona o número primeiro."
+
+        # ── 4. Auto-detect template if not explicitly provided
+        if not template_name:
+            for keyword, tpl in _TEMPLATE_KEYWORD_MAP.items():
+                if keyword in text_lower:
+                    template_name = tpl
+                    break
+
+        if not template_name:
+            # Default: general outreach
+            template_name = "lara_general_outreach"
+
+        if template_name not in LARA_TEMPLATES:
+            return f"⚠️ Template desconhecido: {template_name}"
+
+        # ── 5. Build parameters based on template
+        params = [client_name]  # {{1}} is always the name
+
+        if template_name == "lara_crew_availability":
+            # Try to extract a date from the message
+            date_match = re.search(
+                r"(?:on|para|dia|em|for)\s+(\d{1,2}\s+(?:de\s+)?\w+|\w+\s+\d{1,2}(?:st|nd|rd|th)?)",
+                text_clean, re.IGNORECASE,
+            )
+            params.append(date_match.group(1).strip() if date_match else "a próxima gravação")
+
+        elif template_name == "lara_client_confirmation":
+            date_match = re.search(
+                r"(?:on|para|dia|em|for)\s+(\d{1,2}\s+(?:de\s+)?\w+|\w+\s+\d{1,2}(?:st|nd|rd|th)?)",
+                text_clean, re.IGNORECASE,
+            )
+            location_match = re.search(
+                r"(?:at|em|in|no|na)\s+([A-Z][a-zA-Z\s]+?)(?:\s+(?:on|para|dia|about|$)|\s*$)",
+                text_clean,
+            )
+            params.append(date_match.group(1).strip() if date_match else "a data agendada")
+            params.append(location_match.group(1).strip() if location_match else "o local combinado")
+
+        elif template_name == "lara_shoot_reminder":
+            date_match = re.search(
+                r"(?:on|para|dia|em|for)\s+(\d{1,2}\s+(?:de\s+)?\w+|\w+\s+\d{1,2}(?:st|nd|rd|th)?)",
+                text_clean, re.IGNORECASE,
+            )
+            time_match = re.search(
+                r"(?:at|às|as)\s+(\d{1,2}[h:]\d{0,2}\s*(?:am|pm)?)",
+                text_clean, re.IGNORECASE,
+            )
+            params.append(date_match.group(1).strip() if date_match else "a data agendada")
+            params.append(time_match.group(1).strip() if time_match else "o horário combinado")
+
+        # lara_video_approval and lara_general_outreach: only {{1}} = name (already set)
+
+        # ── 6. Send it!
+        result = send_lara_template(client_phone, template_name, params)
+
+        if result.get("ok"):
+            template_label = template_name.replace("lara_", "").replace("_", " ").title()
+            return (
+                f"✅ Template *{template_label}* enviado para *{client_name}* "
+                f"({client_phone}).\n"
+                f"Message ID: {result.get('message_id', 'n/a')}"
+            )
+        else:
+            return f"⚠️ Falha ao enviar template para {client_name}: {result.get('error', 'unknown error')}"
+
+    except Exception as e:
+        print(f"[LARA] send_template_to_client error: {e}")
+        return f"⚠️ Erro ao enviar template: {str(e)[:200]}"
+
+
 # ── Main Handler ────────────────────────────────────────────────────
 def _get_intent_handlers():
     """Build the intent → handler map. Imports lara_drive lazily to avoid
@@ -1170,6 +1348,7 @@ def _get_intent_handlers():
         "check_calendar": check_calendar,
         "read_emails": read_emails,
         "check_crew": check_crew,
+        "send_template": send_template_to_client,
     }
     try:
         from lara_drive import DRIVE_HANDLERS
