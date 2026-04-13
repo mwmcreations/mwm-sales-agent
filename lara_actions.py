@@ -95,6 +95,95 @@ _MWM_CLIENTS_HEADER_ALIASES = {
     "notes": "notes",
 }
 
+# ── LARA Outbound WhatsApp Templates (Session 30.15) ─────────────────────────
+# Approved by Meta (UTILITY, pt_BR). Each template has a different number of
+# parameters — the mapping below defines them.
+#
+# Template name              → Variables
+# lara_crew_availability     → {{1}}=name, {{2}}=shoot_date
+# lara_client_confirmation   → {{1}}=name, {{2}}=shoot_date, {{3}}=location
+# lara_shoot_reminder        → {{1}}=name, {{2}}=shoot_date, {{3}}=time
+# lara_video_approval        → {{1}}=name
+# lara_general_outreach      → {{1}}=name
+
+LARA_TEMPLATES = {
+    "lara_crew_availability",
+    "lara_client_confirmation",
+    "lara_shoot_reminder",
+    "lara_video_approval",
+    "lara_general_outreach",
+}
+
+
+def send_lara_template(phone, template_name, parameters):
+    """Send a LARA outbound WhatsApp template message via Meta Cloud API.
+
+    Args:
+        phone: Recipient phone number (any format — digits extracted).
+        template_name: One of the LARA_TEMPLATES names.
+        parameters: List of strings — positional template variables.
+            e.g. ["João", "15 de Abril"] for lara_crew_availability
+            e.g. ["Maria", "20 de Abril", "Orlando"] for lara_client_confirmation
+            e.g. ["Ana"] for lara_video_approval
+
+    Returns:
+        dict with {"ok": True/False, "message_id": "...", "error": "..."}
+    """
+    import requests as _req
+
+    meta_token = os.getenv("META_ACCESS_TOKEN", "")
+    lara_pn_id = os.getenv("LARA_PHONE_NUMBER_ID", "")
+
+    if not meta_token or not lara_pn_id:
+        msg = "Cannot send LARA template: missing META_ACCESS_TOKEN or LARA_PHONE_NUMBER_ID"
+        print(f"[LARA] {msg}")
+        return {"ok": False, "error": msg}
+
+    if template_name not in LARA_TEMPLATES:
+        msg = f"Unknown LARA template: {template_name}"
+        print(f"[LARA] {msg}")
+        return {"ok": False, "error": msg}
+
+    clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+
+    url = f"https://graph.facebook.com/v20.0/{lara_pn_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {meta_token}",
+        "Content-Type": "application/json",
+    }
+
+    # Build template components with positional parameters
+    body_params = [{"type": "text", "text": str(p)} for p in parameters]
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": "pt_BR"},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": body_params,
+                }
+            ] if body_params else [],
+        },
+    }
+
+    try:
+        resp = _req.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        msg_id = resp.json().get("messages", [{}])[0].get("id", "")
+        print(f"[LARA] Template '{template_name}' sent to {clean_phone}: {msg_id}")
+        return {"ok": True, "message_id": msg_id}
+    except Exception as e:
+        err = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            err += f" | Response: {e.response.text[:300]}"
+        print(f"[LARA] Template send FAILED to {clean_phone}: {err}")
+        return {"ok": False, "error": err}
+
+
 def _normalize_phone_digits(value):
     """Strip all non-digit characters from a phone string."""
     if not value:

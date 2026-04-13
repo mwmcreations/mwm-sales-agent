@@ -25,7 +25,7 @@ from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
 from cris_wix import handle_cris_action
-from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block
+from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block, send_lara_template, LARA_TEMPLATES
 
 load_dotenv()
 
@@ -2745,9 +2745,13 @@ def send_briefing():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@app.route("/admin/submit-lara-templates", methods=["POST"])
-def submit_lara_templates():
-    """One-time: submit 5 LARA WhatsApp message templates to Meta."""
+# NOTE: /admin/submit-lara-templates endpoint REMOVED (Session 30.15).
+# Templates were submitted and approved via Meta Business Manager directly.
+# LARA outbound template sending is now in lara_actions.send_lara_template().
+#
+# @app.route("/admin/submit-lara-templates", methods=["POST"])  # REMOVED
+def _submit_lara_templates_REMOVED():
+    """REMOVED — templates already approved. Left as dead code reference."""
     import traceback as _tb
     try:
         auth = request.headers.get("Authorization", "")
@@ -3653,6 +3657,8 @@ threading.Thread(target=_reengagement_checker, daemon=True).start()
 
 # Daily Briefing thread (7 AM Eastern)
 threading.Thread(target=_daily_briefing_thread, daemon=True).start()
+
+
 
 
 # ── Slack Events API: Real-Time Agent Responsiveness ─────────────────────────────
