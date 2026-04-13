@@ -2745,6 +2745,62 @@ def send_briefing():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@app.route("/admin/submit-lara-templates", methods=["POST"])
+def submit_lara_templates():
+    """One-time: submit 5 LARA WhatsApp message templates to Meta."""
+    import requests as _req
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if not META_ACCESS_TOKEN:
+        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
+    WABA_ID = "1172161621528249"
+    url = f"https://graph.facebook.com/v19.0/{WABA_ID}/message_templates"
+    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    templates = [
+        {
+            "name": "lara_crew_availability",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "components": [{"type": "BODY", "text": "Oi {{1}}, aqui \u00e9 a LARA da MWM Creations. Temos uma grava\u00e7\u00e3o marcada para {{2}} e gostaria de saber se voc\u00ea est\u00e1 dispon\u00edvel. Pode confirmar? Responda SIM ou N\u00c3O que eu envio mais detalhes.", "example": {"body_text": [["Jo\u00e3o", "15 de Abril"]]}}]
+        },
+        {
+            "name": "lara_client_confirmation",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "components": [{"type": "BODY", "text": "Oi {{1}}, aqui \u00e9 a LARA da MWM Creations. Estou entrando em contato para confirmar sua grava\u00e7\u00e3o no dia {{2}} em {{3}}. Est\u00e1 tudo certo da sua parte? Responda CONFIRMAR ou me avise se precisar de alguma altera\u00e7\u00e3o.", "example": {"body_text": [["Maria", "20 de Abril", "Orlando"]]}}]
+        },
+        {
+            "name": "lara_shoot_reminder",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "components": [{"type": "BODY", "text": "Oi {{1}}, lembrete da MWM Creations \u2014 voc\u00ea tem uma grava\u00e7\u00e3o marcada para {{2}} \u00e0s {{3}}. Se tiver alguma d\u00favida ou precisar de algo antes, \u00e9 s\u00f3 me avisar. At\u00e9 l\u00e1!", "example": {"body_text": [["Carlos", "18 de Abril", "09:00"]]}}]
+        },
+        {
+            "name": "lara_video_approval",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "components": [{"type": "BODY", "text": "Oi {{1}}, aqui \u00e9 a LARA da MWM Creations. Seu v\u00eddeo est\u00e1 pronto para revis\u00e3o! Por favor, responda ENVIAR, que j\u00e1 te mando por aqui.", "example": {"body_text": [["Ana"]]}}]
+        },
+        {
+            "name": "lara_general_outreach",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "components": [{"type": "BODY", "text": "Oi {{1}}, aqui \u00e9 a LARA da MWM Creations entrando em contato sobre seu projeto. Tenho uma atualiza\u00e7\u00e3o e gostaria de falar com voc\u00ea. Responda SIM quando puder que eu passo os detalhes.", "example": {"body_text": [["Pedro"]]}}]
+        },
+    ]
+    results = []
+    for t in templates:
+        try:
+            r = _req.post(url, headers=headers, json=t, timeout=15)
+            results.append({"name": t["name"], "status": r.status_code, "response": r.json()})
+        except Exception as e:
+            results.append({"name": t["name"], "status": "error", "response": str(e)})
+    return jsonify({"ok": True, "results": results})
+
+
 # ── Daily Briefing Daemon (Session 30.14b) ──────────────────────────
 def _daily_briefing_thread():
     """Sends daily briefing email at 7 AM Eastern every day."""
