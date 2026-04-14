@@ -21,6 +21,20 @@ SCOPES = [
 
 # ââ Intent Detection Patterns ââââââââââââââââââââââââââââââââââââââââââ
 ANA_CALENDAR_INTENTS = {
+    # NOTE: create_event is checked FIRST because its patterns have strong
+    # action-verb signals (add/schedule/book/create). This prevents ambiguous
+    # messages like "add to my today's calendar..." from being misclassified
+    # as list_events (which also matches "today's calendar").
+    "create_event": [
+        r"(?:add|create|schedule|book|set up|put|block) (?:a |an )?(?:event|meeting|appointment|block|session|call|reminder)",
+        r"block (?:off|out) ",
+        r"(?:add|put) .+ (?:on|to) (?:my |the )?(?:\w+(?:'s)?\s+)?calendar",
+        r"(?:schedule|book|set) .+ (?:for|on|at) ",
+        # Catch "add to my today's/tomorrow's calendar to do X" phrasing
+        r"(?:add|put) (?:to|on) (?:my |the )?(?:today'?s?|tomorrow'?s?) calendar",
+        # "schedule a X today/tomorrow from Xpm" — no preposition needed after title
+        r"(?:schedule|book|set|create|add) (?:a |an )?(?:(?!event|meeting|appointment|block|session|call|reminder)\w[\w\s]*?)(?:today|tomorrow|tonight) (?:from|at) \d",
+    ],
     "list_events": [
         r"what.?s on (?:my |the )?calendar",
         r"(?:show|list|get|check) (?:my |the )?(?:events|appointments|schedule|calendar)",
@@ -44,12 +58,6 @@ ANA_CALENDAR_INTENTS = {
         r"(?:can i|can we) (?:do|meet|schedule|book) (?:something |a meeting )?(?:on|at|this|next|tomorrow)",
         r"(?:is|are) there (?:any )?(?:openings|slots|availability)",
         r"(?:do i have|is there) (?:anything|something) (?:on|at|scheduled)",
-    ],
-    "create_event": [
-        r"(?:add|create|schedule|book|set up|put|block) (?:a |an )?(?:event|meeting|appointment|block|session|call|reminder)",
-        r"block (?:off|out) ",
-        r"(?:add|put) .+ (?:on|to) (?:my |the )?calendar",
-        r"(?:schedule|book|set) .+ (?:for|on|at) ",
     ],
     "find_free_time": [
         r"(?:find|when is|when am i) (?:the next |my next )?(?:free|available|open)",

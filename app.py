@@ -4979,7 +4979,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                     messages=[
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[CALENDAR ACTION RESULT]\n{calendar_result}"},
-                        {"role": "user", "content": "Present the above calendar result naturally as ANA. Keep it concise — the data is already formatted. Add a brief friendly note if appropriate, but don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                        {"role": "user", "content": "Present the above calendar result naturally as ANA. Keep it concise — the data is already formatted. Add a brief friendly note if appropriate, but don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot.\n\nCRITICAL: NEVER change, paraphrase, or recalculate any dates, times, or durations from the calendar result. Copy them EXACTLY as they appear. Do NOT interpret 'today' or 'tomorrow' yourself — use only the explicit date/time values from the result above."},
                     ]
                 )
                 reply = ""
