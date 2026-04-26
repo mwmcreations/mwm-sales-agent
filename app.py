@@ -1217,11 +1217,11 @@ def transcribe_audio(media_id: str, language: str = None) -> str:
             os.unlink(tmp_path)
 
 
-# TEXT-TO-SPEECH Ã¢ÂÂ ElevenLabs (Gabriela audio replies)
+# TEXT-TO-SPEECH — ElevenLabs (Maya audio replies)
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
-# Voice: Roberta (conversational, sounds natural in Brazilian Portuguese)
+# Voice: Rachel (warm, clear, conversational English)
 # Model: eleven_multilingual_v2 Ã¢ÂÂ best multilingual quality
-# Voice ID: RGymW84CSmfVugnA5tvA
+# Voice ID: 21m00Tcm4TlvDq8ikWAM
 
 def generate_audio_reply(text: str) -> str | None:
     """
@@ -1246,7 +1246,7 @@ def generate_audio_reply(text: str) -> str | None:
         print("Ã¢ÂÂ Ã¯Â¸Â TTS skipped: RAILWAY_PUBLIC_DOMAIN / APP_BASE_URL not set")
         return None
 
-    VOICE_ID = "RGymW84CSmfVugnA5tvA"   # Roberta Ã¢ÂÂ conversational, great in PT-BR
+    VOICE_ID = "21m00Tcm4TlvDq8ikWAM"   # Rachel — warm, clear English
     TTS_URL  = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
 
     os.makedirs("/tmp/audio", exist_ok=True)
@@ -3213,10 +3213,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
     if num_media > 0:
         if "audio" in content_type and media_id:
             print(f"ð¤ï¸ Voice note received â ContentType: {content_type}")
-            if is_expo_lead(sender):
-                print(f"\u23f1\ufe0f Launching async Gabriela audio processing for {sender}")
-                threading.Thread(target=_process_gabriela_audio_async, args=(sender, media_id), daemon=True).start()
-                return
+            # [Gabriela retired] All voice notes now handled by Maya
+            
+            
+            
             try:
                 incoming_msg = transcribe_audio(media_id, language=None)
                 was_audio = True
@@ -3225,13 +3225,13 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 send_whatsapp_meta(sender, body="Sorry, I couldn't process your voice message. Could you send it as text instead? ð")
                 return
         elif not incoming_msg:
-            if is_expo_lead(sender):
+            if False:  # [Gabriela retired] was: is_expo_lead(sender)
                 send_whatsapp_meta(sender, body="Recebi seu arquivo! ð Posso te ajudar com os pacotes de v\u00eddeo da Expo Brazil?")
             else:
                 send_whatsapp_meta(sender, body="Thanks for the file! How can I help you today? ð")
             return
 
-    if is_expo_lead(sender):
+    if False:  # [Gabriela retired] was: is_expo_lead(sender)
         print(f"ð§ð· Routing to GABRIELA (Expo Brazil lead)")
         if sender not in gabriela_history:
             gabriela_history[sender] = []
@@ -3392,7 +3392,20 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"\u274c Maya error: {e}")
                 clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
                 send_photos = False
-            send_whatsapp_meta(to_wa, body=clean_reply)
+            # —— Voice note reply: send TTS audio if incoming was a voice note ——
+            if was_audio:
+                try:
+                    audio_url = generate_audio_reply(clean_reply)
+                    if audio_url:
+                        send_whatsapp_meta(to_wa, media_url=audio_url)
+                        print(f"🔊 Maya audio reply sent to {to_wa}")
+                    else:
+                        send_whatsapp_meta(to_wa, body=clean_reply)
+                except Exception as tts_err:
+                    print(f"⚠️ Maya TTS failed, falling back to text: {tts_err}")
+                    send_whatsapp_meta(to_wa, body=clean_reply)
+            else:
+                send_whatsapp_meta(to_wa, body=clean_reply)
             print(f"\u2705 Maya reply sent to {to_wa}")
 
             # Shadow mode: mirror outbound reply to #maya-shadow.
