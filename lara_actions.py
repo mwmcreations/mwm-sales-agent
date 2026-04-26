@@ -240,6 +240,19 @@ def lookup_sender_identity(sender_phone, clients=None):
                 "client_info": client,
             }
 
+    # ---- Check MWM_CREW roster ----
+    for crew in MWM_CREW:
+        crew_digits = _normalize_phone_digits(crew.get("phone", ""))
+        if crew_digits and crew_digits == sender_digits:
+            return {
+                "role": "crew",
+                "name": crew.get("name", "Unknown crew"),
+                "phone": sender_phone,
+                "is_michael": False,
+                "client_info": None,
+                "crew_info": crew,
+            }
+
     return {
         "role": "unknown",
         "name": "Unknown sender",
@@ -292,12 +305,38 @@ def format_sender_identity_block(identity):
         if client.get("notes"):
             lines.append(f"- Notes: {client['notes']}\n")
         lines.append(
-            "Be warm, professional, and client-facing. Do NOT share internal production "
-            "details unrelated to their project. Switch to Portuguese if they write in Portuguese. "
+            "SECURITY RULES FOR CLIENT CONVERSATIONS:\n"
+            "1. Be warm, professional, and client-facing.\n"
+            "2. ONLY discuss THIS client's projects, bookings, and account details.\n"
+            "3. NEVER share information about other MWM clients — names, projects, schedules, or any details.\n"
+            "4. NEVER share internal production details, crew schedules, or business operations unrelated to their project.\n"
+            "5. NEVER share pricing of other clients' deals, packages, or financial arrangements.\n"
+            "6. NEVER share Michael's personal schedule or availability beyond what relates to this client's project.\n"
+            "7. If they ask about other clients or internal matters, say: 'I can only help with your projects. Let me check with Michael if you need anything else.'\n"
+            "8. Switch to Portuguese if they write in Portuguese.\n"
             "If they ask something you don't have in the fields above, say you'll check with "
             "Michael and follow up \u2014 do NOT invent an answer."
         )
         return "".join(lines)
+    if identity["role"] == "crew":
+        crew = identity.get("crew_info") or {}
+        name = identity.get("name", "this crew member")
+        role = crew.get("role", "Crew")
+        return (
+            "SENDER IDENTITY \u2014 CREW MEMBER:\n"
+            f"You are talking to {name}, a {role} on the MWM team.\n\n"
+            "SECURITY RULES FOR CREW:\n"
+            "1. When they ask about the calendar or schedule, ONLY share events/jobs that "
+            f"{name} is personally assigned to or involved in. NEVER show the full week\u2019s "
+            "calendar or other people\u2019s bookings.\n"
+            "2. NEVER share client contact information, pricing, budgets, or financial details.\n"
+            "3. NEVER share details about jobs or projects they are not assigned to.\n"
+            "4. NEVER share information about other crew members\u2019 schedules or assignments.\n"
+            "5. Keep responses operational and job-focused \u2014 share call times, locations, "
+            "equipment needs, and production details for THEIR assigned jobs only.\n"
+            "6. If they ask about something outside their assignments, say: "
+            "\"Let me check with Michael on that and get back to you.\"\n"
+        )
     return (
         "SENDER IDENTITY:\n"
         f"The sender phone ({identity.get('phone', 'unknown')}) does not match "
