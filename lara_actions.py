@@ -385,6 +385,13 @@ MWM_CREW = [
         "email": "",
         "notes": "MWM team member",
     },
+    {
+        "name": "Adriano Max",
+        "role": "Photographer/Videographer",
+        "phone": "+17708823503",
+        "email": "",
+        "notes": "Audio Engineer, Photographer, Videographer — Master Group Orlando",
+    },
 ]
 
 
