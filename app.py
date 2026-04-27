@@ -14,7 +14,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import requests as http_requests
 from ana_calendar import handle_calendar_action
-from maya_actions import (handle_maya_action, get_reengagement_quee,
+from maya_actions import (handle_maya_action, get_reengagement_queue,
                           add_to_reengagement_queue, update_reengagement_row,
                           send_reengagement_template, mark_reengagement_replied,
                           mark_reengagement_opted_out, is_in_active_reengagement,
