@@ -726,11 +726,13 @@ def get_system_prompt():
     she already has the options and can present them directly.
     """
     tz = pytz.timezone(TIMEZONE)
-    today_str = datetime.now(tz).strftime("%A, %B %d, %Y")
+    now = datetime.now(tz)
+    today_str = now.strftime("%A, %B %d, %Y")
+    time_str = now.strftime("%I:%M %p")
     date_line = (
-        f"- TODAY'S DATE: Today is {today_str} Eastern Time. "
-        "Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"this Friday\", etc. "
-        "Never ask the lead what today's date is Ã¢ÂÂ you already know it.\n"
+        f"- TODAY'S DATE AND TIME: Today is {today_str}, and the current time is {time_str} Eastern Time. "
+        "Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"this Friday\", \"later today\", \"this afternoon\", etc. "
+        "Never ask the lead what today's date or time is — you already know it.\n"
     )
 
     # Pre-fetch available slots so Maya has them immediately
@@ -3140,11 +3142,18 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
 
         # Inject sender identity block FIRST — this is what tells LARA who she's
         # talking to so she doesn't ask "which calendar?" when Michael messages her.
+        tz = pytz.timezone(TIMEZONE)
+        _now = datetime.now(tz)
+        today_str = _now.strftime("%A, %B %d, %Y")
+        time_str = _now.strftime("%I:%M %p")
+
         identity_block = format_sender_identity_block(sender_identity)
 
         system_prompt = (
             get_agent_system_prompt(lara_agent_info)
             + "\n\n"
+            + f"- TODAY'S DATE AND TIME: Today is {today_str}, and the current time is {time_str} Eastern Time. Use this to resolve relative references like \"tomorrow\", \"next Monday\", \"later today\", etc. Never ask what today's date or time is — you already know it.\n"
+            + "\n"
             + identity_block
             + """
 
