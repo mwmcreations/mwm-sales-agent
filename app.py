@@ -3515,6 +3515,149 @@ def index():
 # silent 48+ hours who hasn't booked and hasn't already been flagged.
 # Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
 
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# STARTUP REPOPULATION — Populate lead_data from Google Sheets
+# Solves the deploy gap: lead_data is in-memory and resets to {} on every
+# Railway deploy. Without this, _cold_lead_checker can't detect 24h silence
+# for leads that messaged before the deploy.
+# ══════════════════════════════════════════════════════════════════════════════════
+
+def _repopulate_lead_data_from_sheets():
+    """Read recent leads from Google Sheets and pre-populate lead_data.
+    Called once at startup so _cold_lead_checker has data to work with
+    even after a Railway deploy resets the in-memory dict.
+    """
+    if not SHEETS_LEADS_ID:
+        print("[Startup] SHEETS_LEADS_ID not set — skipping lead_data repopulation")
+        return
+    try:
+        svc = get_sheets_service()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        tabs = [s["properties"]["title"] for s in meta["sheets"]]
+        month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                       "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+        def tab_sort_key(t):
+            parts = t.split()
+            if len(parts) == 2 and parts[0] in month_order:
+                return (int(parts[1]), month_order[parts[0]])
+            return (0, 0)
+        tabs.sort(key=tab_sort_key, reverse=True)
+
+        # Get phones already in re-engagement queue (Active) — skip those
+        try:
+            reengagement_phones = set()
+            queue = get_reengagement_queue()
+            for _, entry in queue:
+                if entry.get("Status", "") == "Active":
+                    reengagement_phones.add(re.sub(r"\D", "", entry.get("Phone", "")))
+        except Exception:
+            reengagement_phones = set()
+
+        populated = 0
+        now = datetime.now(pytz.timezone(TIMEZONE))
+
+        # Only check the 2 most recent monthly tabs
+        monthly_tabs = [t for t in tabs if tab_sort_key(t) != (0, 0)][:2]
+
+        for tab in monthly_tabs:
+            try:
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"\'{tab}\'!A1:T",
+                ).execute()
+                rows = result.get("values", [])
+                if len(rows) < 2:
+                    continue
+                headers = rows[0]
+                phone_idx = headers.index("Phone") if "Phone" in headers else 4
+                lcd_idx = headers.index("Last Contact Date") if "Last Contact Date" in headers else -1
+                status_idx = headers.index("Status") if "Status" in headers else 7
+                name_idx = headers.index("Name") if "Name" in headers else 2
+                biz_idx = headers.index("Business") if "Business" in headers else 3
+                email_idx = headers.index("Email") if "Email" in headers else 5
+                ws_idx = headers.index("WhatsApp Status") if "WhatsApp Status" in headers else -1
+                appt_idx = headers.index("Appointment Booked") if "Appointment Booked" in headers else -1
+
+                for row in rows[1:]:
+                    if len(row) <= phone_idx:
+                        continue
+                    raw_phone = re.sub(r"\D", "", row[phone_idx])
+                    if not raw_phone or len(raw_phone) < 7:
+                        continue
+
+                    # Build the sender key (same format as webhook)
+                    sender_key = raw_phone
+
+                    # Skip if already in lead_data
+                    if sender_key in lead_data:
+                        continue
+
+                    # Skip if marked as booked
+                    if appt_idx >= 0 and len(row) > appt_idx and row[appt_idx].strip().upper() in ("Y", "YES"):
+                        continue
+
+                    # Skip if WhatsApp Status indicates cold/exhausted
+                    ws_status = row[ws_idx].strip() if ws_idx >= 0 and len(row) > ws_idx else ""
+                    if "Cold" in ws_status or "Exhausted" in ws_status:
+                        continue
+
+                    # Skip if already in active re-engagement queue
+                    if raw_phone in reengagement_phones:
+                        continue
+
+                    # Determine last_message_time from Last Contact Date or Date column
+                    last_contact_str = ""
+                    if lcd_idx >= 0 and len(row) > lcd_idx:
+                        last_contact_str = row[lcd_idx].strip()
+                    if not last_contact_str and len(row) > 0:
+                        last_contact_str = row[0].strip()  # Date column (A)
+
+                    if not last_contact_str:
+                        continue
+
+                    try:
+                        lcd = datetime.strptime(last_contact_str, "%Y-%m-%d")
+                        lcd = pytz.timezone(TIMEZONE).localize(lcd)
+                    except ValueError:
+                        try:
+                            lcd = datetime.strptime(last_contact_str, "%Y-%m-%d %H:%M")
+                            lcd = pytz.timezone(TIMEZONE).localize(lcd)
+                        except ValueError:
+                            continue
+
+                    # Only populate if the lead contacted within the last 14 days
+                    days_ago = (now - lcd).total_seconds() / 86400
+                    if days_ago > 14:
+                        continue
+
+                    # Populate lead_data
+                    name = row[name_idx].strip() if len(row) > name_idx else ""
+                    email = row[email_idx].strip() if len(row) > email_idx else ""
+
+                    lead_data[sender_key] = {
+                        "name": name,
+                        "email": email,
+                        "last_message_time": lcd,
+                        "booked": False,
+                        "cold_fired": False,
+                        "reengagement_enqueued": False,
+                    }
+                    populated += 1
+
+            except Exception as tab_err:
+                print(f"[Startup] Error reading tab \'{tab}\': {tab_err}")
+                continue
+
+        print(f"[Startup] Repopulated lead_data with {populated} leads from Google Sheets")
+
+    except Exception as e:
+        print(f"[Startup] lead_data repopulation error (non-fatal): {e}")
+
+# Run repopulation at startup
+_repopulate_lead_data_from_sheets()
+
+
 def _cold_lead_checker():
     import time
     print("Ã¢ÂÂÃ¯Â¸Â  Cold-lead checker started (polls every hour, fires at 48h silence)")
