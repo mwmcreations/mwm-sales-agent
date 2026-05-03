@@ -3767,24 +3767,49 @@ threading.Thread(target=_cold_lead_checker, daemon=True).start()
 # off to Susan when the 3-template sequence is exhausted with no reply.
 # ══════════════════════════════════════════════════════════════════════
 
-SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID
+SLACK_MAYA_AGENT_CHANNEL = "C0APE5S76HH"  # #maya channel ID (for Agent Maya WhatsApp Web outreach)
+SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"  # #eric channel ID (for retargeting audiences)
 
+def _notify_cold_lead_pipeline(phone, name, business):
+    """Notify Agent Maya and Eric when a lead exhausts the re-engagement sequence.
 
-def _notify_susan_cold_lead(phone, name, business):
-    """Post a cold-lead handoff to #susan for email nurture."""
+    Agent Maya (WhatsApp Web): Gets a directive to send a personalized follow-up
+    from her dedicated WhatsApp number - no template restrictions.
+
+    Eric (Traffic Manager): Gets the phone number to add to Meta retargeting
+    custom audiences so the lead sees MWM content in their feed.
+    """
+    first_name = (name or "Unknown").split()[0]
     try:
-        msg = (
-            f"*Cold Lead Handoff from Maya*\n"
+        maya_msg = (
+            f"*Cold Lead - Personalized WhatsApp Outreach Needed*\n"
             f"*Name:* {name or 'Unknown'}"
             + (f" ({business})" if business else "") + "\n"
             f"*Phone:* {phone}\n"
-            f"*Context:* Lead completed Maya's full WhatsApp re-engagement sequence "
-            f"(3 templates over 7 days) with no reply.\n"
-            f"*Action:* Add to email nurture drip campaign."
+            f"*Context:* {first_name} completed Maya Bot's full re-engagement sequence "
+            f"(3 templates over 2+ weeks) with no reply.\n"
+            f"*Action:* Send a personalized WhatsApp message from Agent Maya's "
+            f"dedicated number. Be natural and conversational - reference their "
+            f"video production interest. This is the last direct outreach attempt."
         )
-        _post_to_slack_async(SLACK_SUSAN_CHANNEL, msg)
+        _post_to_slack_async(SLACK_MAYA_AGENT_CHANNEL, maya_msg)
     except Exception as e:
-        print(f"Susan cold-lead notification failed (non-fatal): {e}")
+        print(f"Agent Maya cold-lead notification failed (non-fatal): {e}")
+
+    try:
+        eric_msg = (
+            f"*Cold Lead - Add to Retargeting Audience*\n"
+            f"*Name:* {name or 'Unknown'}"
+            + (f" ({business})" if business else "") + "\n"
+            f"*Phone:* {phone}\n"
+            f"*Context:* Lead exhausted Maya's WhatsApp re-engagement sequence "
+            f"with no reply. Direct outreach has not worked.\n"
+            f"*Action:* Add this phone number to the Meta Ads cold lead "
+            f"retargeting custom audience so they see MWM content in their feed."
+        )
+        _post_to_slack_async(SLACK_ERIC_CHANNEL, eric_msg)
+    except Exception as e:
+        print(f"Eric cold-lead notification failed (non-fatal): {e}")
 
 
 def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False):
@@ -3795,7 +3820,7 @@ def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=Fa
         first_name = (name or "there").split()[0]
         if is_cold:
             msg = (f"\u2744\ufe0f *Re-engagement sequence exhausted* for {first_name}\n"
-                   f"All 3 templates sent with no reply. Lead marked *Cold* and handed to Susan for email nurture.")
+                   f"All 3 templates sent with no reply. Lead marked *Cold* — queued for Agent Maya personalized outreach + Eric retargeting.")
         else:
             msg = (f"\U0001f4e4 *Re-engagement {stage} sent* to {first_name}\n"
                    f"Template: `{template_name}`")
@@ -3891,14 +3916,14 @@ def _reengagement_checker():
                             # Update lead temperature in the main pipeline Sheet
                             try:
                                 update_lead_columns(f"whatsapp:+{re.sub(r'[^0-9]', '', phone)}", {
-                                    "WhatsApp Status": "Cold - Re-engagement Exhausted",
+                                    "WhatsApp Status": "Cold - Queued for Agent Maya + Retargeting",
                                     "Lead Temperature": "Cold",
                                 })
                             except Exception:
                                 pass
-                            # Hand off to Susan for email nurture
-                            _notify_susan_cold_lead(phone, name, business)
-                            print(f"[Re-engagement] {phone} ({name}) marked Cold — handed to Susan")
+                            # Hand off to Agent Maya (WhatsApp Web) + Eric (retargeting)
+                            _notify_cold_lead_pipeline(phone, name, business)
+                            print(f"[Re-engagement] {phone} ({name}) marked Cold — queued for Agent Maya outreach + Eric retargeting")
                             _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True)
                     except Exception:
                         pass
