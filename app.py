@@ -3755,6 +3755,30 @@ def _notify_susan_cold_lead(phone, name, business):
         print(f"Susan cold-lead notification failed (non-fatal): {e}")
 
 
+def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False):
+    """Mirror re-engagement template sends to #maya-shadow for visibility."""
+    if not SLACK_MAYA_SHADOW_CHANNEL:
+        return
+    try:
+        first_name = (name or "there").split()[0]
+        if is_cold:
+            msg = (f"\u2744\ufe0f *Re-engagement sequence exhausted* for {first_name}\n"
+                   f"All 3 templates sent with no reply. Lead marked *Cold* and handed to Susan for email nurture.")
+        else:
+            msg = (f"\U0001f4e4 *Re-engagement {stage} sent* to {first_name}\n"
+                   f"Template: `{template_name}`")
+        shadow_identity = {
+            "name": name or "Unknown",
+            "phone": phone,
+            "role": "lead",
+            "is_michael": False,
+            "client_info": {},
+        }
+        _mirror_to_maya_shadow_async(shadow_identity, "outbound", msg)
+    except Exception as e:
+        print(f"[MAYA SHADOW] Re-engagement mirror error: {e}")
+
+
 def _reengagement_checker():
     """Background thread: process re-engagement queue every 30 minutes.
 
@@ -3802,6 +3826,8 @@ def _reengagement_checker():
                             "T1 Sent": now.strftime("%Y-%m-%d %H:%M"),
                         })
                         print(f"[Re-engagement] T1 sent to {phone} ({name})")
+                        # Mirror to #maya-shadow so Michael can see the template send
+                        _mirror_reengagement_to_shadow(phone, name, "T1", REENGAGEMENT_TEMPLATES["T1"])
 
                 elif t1_sent and not t2_sent and hours_since >= REENGAGEMENT_CADENCE["T2"]:
                     if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T2"]):
@@ -3809,6 +3835,7 @@ def _reengagement_checker():
                             "T2 Sent": now.strftime("%Y-%m-%d %H:%M"),
                         })
                         print(f"[Re-engagement] T2 sent to {phone} ({name})")
+                        _mirror_reengagement_to_shadow(phone, name, "T2", REENGAGEMENT_TEMPLATES["T2"])
 
                 elif t2_sent and not t3_sent and hours_since >= REENGAGEMENT_CADENCE["T3"]:
                     if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T3"]):
@@ -3816,6 +3843,7 @@ def _reengagement_checker():
                             "T3 Sent": now.strftime("%Y-%m-%d %H:%M"),
                         })
                         print(f"[Re-engagement] T3 sent to {phone} ({name})")
+                        _mirror_reengagement_to_shadow(phone, name, "T3", REENGAGEMENT_TEMPLATES["T3"])
 
                 elif t3_sent:
                     # Check if enough time has passed since T3 to mark Cold
@@ -3839,6 +3867,7 @@ def _reengagement_checker():
                             # Hand off to Susan for email nurture
                             _notify_susan_cold_lead(phone, name, business)
                             print(f"[Re-engagement] {phone} ({name}) marked Cold — handed to Susan")
+                            _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True)
                     except Exception:
                         pass
 
