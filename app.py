@@ -3840,11 +3840,11 @@ def _reengagement_checker():
     """Background thread: process re-engagement queue every 30 minutes.
 
     For each Active entry, check hours since last inbound and send the
-    next template in sequence (T1->T2->T3). After T3 + REENGAGEMENT_COLD_DAYS
-    with no reply, mark Cold and hand off to Susan for email nurture.
+    next template in sequence (T1->T2->T3->T4->T5->T6->T7). After T7 +
+    REENGAGEMENT_COLD_DAYS with no reply, mark Cold and notify Agent Maya + Eric.
     """
     import time as _time
-    print("[Re-engagement] Checker started (polls every 30 min, cadence 24h/4d/7d)")
+    print("[Re-engagement] Checker started (polls every 30 min, 7-touch cadence over 14 days)")
     _time.sleep(1800)  # First check after 30 min
     while True:
         try:
@@ -3872,46 +3872,39 @@ def _reengagement_checker():
 
                 hours_since = (now - last_inbound).total_seconds() / 3600
 
-                t1_sent = entry.get("T1 Sent", "").strip()
-                t2_sent = entry.get("T2 Sent", "").strip()
-                t3_sent = entry.get("T3 Sent", "").strip()
+                # Dynamic 7-touchpoint sequence: T1 through T7
+                stages = ["T1", "T2", "T3", "T4", "T5", "T6", "T7"]
+                sent_flags = {s: entry.get(f"{s} Sent", "").strip() for s in stages}
 
-                # Determine which template to send next
-                if not t1_sent and hours_since >= REENGAGEMENT_CADENCE["T1"]:
-                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T1"]):
+                # Find next unsent stage
+                next_stage = None
+                for s in stages:
+                    if not sent_flags[s]:
+                        # Check if all previous stages are sent
+                        idx = stages.index(s)
+                        if idx == 0 or all(sent_flags[stages[j]] for j in range(idx)):
+                            if hours_since >= REENGAGEMENT_CADENCE[s]:
+                                next_stage = s
+                        break
+
+                if next_stage:
+                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES[next_stage]):
                         update_reengagement_row(row_idx, {
-                            "T1 Sent": now.strftime("%Y-%m-%d %H:%M"),
+                            f"{next_stage} Sent": now.strftime("%Y-%m-%d %H:%M"),
                         })
-                        print(f"[Re-engagement] T1 sent to {phone} ({name})")
-                        # Mirror to #maya-shadow so Michael can see the template send
-                        _mirror_reengagement_to_shadow(phone, name, "T1", REENGAGEMENT_TEMPLATES["T1"])
+                        print(f"[Re-engagement] {next_stage} sent to {phone} ({name})")
+                        _mirror_reengagement_to_shadow(phone, name, next_stage, REENGAGEMENT_TEMPLATES[next_stage])
 
-                elif t1_sent and not t2_sent and hours_since >= REENGAGEMENT_CADENCE["T2"]:
-                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T2"]):
-                        update_reengagement_row(row_idx, {
-                            "T2 Sent": now.strftime("%Y-%m-%d %H:%M"),
-                        })
-                        print(f"[Re-engagement] T2 sent to {phone} ({name})")
-                        _mirror_reengagement_to_shadow(phone, name, "T2", REENGAGEMENT_TEMPLATES["T2"])
-
-                elif t2_sent and not t3_sent and hours_since >= REENGAGEMENT_CADENCE["T3"]:
-                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES["T3"]):
-                        update_reengagement_row(row_idx, {
-                            "T3 Sent": now.strftime("%Y-%m-%d %H:%M"),
-                        })
-                        print(f"[Re-engagement] T3 sent to {phone} ({name})")
-                        _mirror_reengagement_to_shadow(phone, name, "T3", REENGAGEMENT_TEMPLATES["T3"])
-
-                elif t3_sent:
-                    # Check if enough time has passed since T3 to mark Cold
+                elif all(sent_flags[s] for s in stages):
+                    # All 7 templates sent - check if cold threshold reached
                     try:
-                        t3_time = datetime.strptime(t3_sent, "%Y-%m-%d %H:%M")
-                        t3_time = pytz.timezone(TIMEZONE).localize(t3_time)
-                        days_since_t3 = (now - t3_time).total_seconds() / 86400
-                        if days_since_t3 >= REENGAGEMENT_COLD_DAYS:
+                        t7_time = datetime.strptime(sent_flags["T7"], "%Y-%m-%d %H:%M")
+                        t7_time = pytz.timezone(TIMEZONE).localize(t7_time)
+                        days_since_t7 = (now - t7_time).total_seconds() / 86400
+                        if days_since_t7 >= REENGAGEMENT_COLD_DAYS:
                             update_reengagement_row(row_idx, {
                                 "Status": "Cold",
-                                "Notes": f"Exhausted sequence — no reply after T3. Flagged cold {now.strftime('%Y-%m-%d')}",
+                                "Notes": f"Exhausted sequence — no reply after T7. Flagged cold {now.strftime('%Y-%m-%d')}",
                             })
                             # Update lead temperature in the main pipeline Sheet
                             try:

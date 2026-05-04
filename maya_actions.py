@@ -663,24 +663,32 @@ import requests as http_requests
 REENGAGEMENT_TAB = "Re-engagement Queue"
 REENGAGEMENT_HEADERS = [
     "Phone", "Name", "Business", "Added", "Last Inbound",
-    "T1 Sent", "T2 Sent", "T3 Sent", "Status", "Notes",
+    "T1 Sent", "T2 Sent", "T3 Sent", "T4 Sent", "T5 Sent", "T6 Sent", "T7 Sent", "Status", "Notes",
 ]
 
 # Template names — must match what Meta approved
 REENGAGEMENT_TEMPLATES = {
-    "T1": "maya_reengagement_1",
-    "T2": "maya_reengagement_2",
-    "T3": "maya_reengagement_3",
+    "T1": "maya_reengagement_1",        # Day 1  — ASK: Warm check-in (text)
+    "T2": "maya_reengagement_2_v2",     # Day 3  — GIVE: Portfolio showcase (video)
+    "T3": "maya_reengagement_2",        # Day 5  — ASK: Soft re-engagement (text)
+    "T4": "maya_reengagement_4",        # Day 7  — GIVE: Client testimonial (video)
+    "T5": "maya_reengagement_5",        # Day 10 — ASK: Free consultation offer (image)
+    "T6": "maya_reengagement_6",        # Day 12 — GIVE: Industry tip (image)
+    "T7": "maya_reengagement_3",        # Day 14 — CLOSE: Final friendly close (text)
 }
 
 # Cadence: hours since last INBOUND message from the lead
 REENGAGEMENT_CADENCE = {
-    "T1": 24,    # 24 hours  (1 day)
-    "T2": 96,    # 96 hours  (4 days)
-    "T3": 168,   # 168 hours (7 days)
+    "T1": 24,    # 24 hours   (Day 1)
+    "T2": 72,    # 72 hours   (Day 3)
+    "T3": 120,   # 120 hours  (Day 5)
+    "T4": 168,   # 168 hours  (Day 7)
+    "T5": 240,   # 240 hours  (Day 10)
+    "T6": 288,   # 288 hours  (Day 12)
+    "T7": 336,   # 336 hours  (Day 14)
 }
 
-# Days after T3 with no reply before marking Cold
+# Days after T7 with no reply before marking Cold
 REENGAGEMENT_COLD_DAYS = 7
 
 
@@ -719,7 +727,7 @@ def get_reengagement_queue():
         svc = _get_sheets_service()
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
-            range=f"'{REENGAGEMENT_TAB}'!A1:J",
+            range=f"'{REENGAGEMENT_TAB}'!A1:N",
         ).execute()
         rows = result.get("values", [])
         if len(rows) < 2:
@@ -766,6 +774,10 @@ def add_to_reengagement_queue(phone, name="", business="", last_inbound=None):
             "",                                                     # T1 Sent
             "",                                                     # T2 Sent
             "",                                                     # T3 Sent
+            "",                                                     # T4 Sent
+            "",                                                     # T5 Sent
+            "",                                                     # T6 Sent
+            "",                                                     # T7 Sent
             "Active",                                               # Status
             "",                                                     # Notes
         ]
