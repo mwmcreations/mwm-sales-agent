@@ -5,9 +5,44 @@ Provides intent detection + calendar action execution for ANA's Slack handler.
 
 import re
 import os
+import unicodedata
 from datetime import datetime, timedelta
 
 import pytz
+
+
+def _sanitize_text(text):
+    """Fix double-encoded UTF-8 and normalize special characters to ASCII-safe equivalents.
+    Prevents garbled characters like 'Ã¢Â€Â' (double-encoded em dash) in calendar events."""
+    if not text:
+        return text
+    # Step 1: Fix double-encoded UTF-8 (Latin-1 interpretation of UTF-8 bytes)
+    try:
+        fixed = text.encode("latin-1").decode("utf-8")
+        text = fixed
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        pass
+    # Step 2: Replace common Unicode characters with ASCII equivalents
+    replacements = {
+        "—": " - ",   # em dash
+        "–": " - ",   # en dash
+        "―": " - ",   # horizontal bar
+        "‘": "'",     # left single quote
+        "’": "'",     # right single quote / apostrophe
+        "“": '"',     # left double quote
+        "”": '"',     # right double quote
+        "…": "...",   # ellipsis
+        " ": " ",     # non-breaking space
+        "​": "",      # zero-width space
+        "‎": "",      # left-to-right mark
+        "‏": "",      # right-to-left mark
+        "﻿": "",      # BOM
+    }
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+    # Clean up any double spaces
+    text = re.sub(r"  +", " ", text).strip()
+    return text
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -579,6 +614,11 @@ def _create_event(text):
         tz = pytz.timezone(TIMEZONE)
         if not details["title"]:
             details["title"] = "New Event (via ANA)"
+
+        # Sanitize title and description to prevent encoding issues (e.g. em dash → garbled chars)
+        details["title"] = _sanitize_text(details["title"])
+        if details["description"]:
+            details["description"] = _sanitize_text(details["description"])
 
         start_hour, start_min = map(int, details["start_time"].split(":"))
         start_dt = tz.localize(
