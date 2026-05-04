@@ -6040,6 +6040,178 @@ def slack_events():
     return "OK", 200
 
 
+# == Temporary: Media upload endpoint for WhatsApp template headers ==
+# Accepts file upload via multipart/form-data, uploads to Meta via
+# Resumable Upload API (server-side, no CORS issues), then edits the
+# template to attach the media header.  Remove after templates are set.
+
+UPLOAD_SECRET = os.getenv("UPLOAD_SECRET", "mwm-media-2026")
+GRAPH_APP_ID = "1506472514232143"
+
+@app.route("/upload-template-media", methods=["POST", "OPTIONS"])
+def upload_template_media():
+    """Upload media and attach to WhatsApp template header."""
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Upload-Secret"
+        return resp
+
+    secret = request.headers.get("X-Upload-Secret", "") or request.form.get("secret", "")
+    if secret != UPLOAD_SECRET:
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+    if not META_ACCESS_TOKEN:
+        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
+
+    template_name = request.form.get("template_name", "")
+    media_type = request.form.get("media_type", "").upper()
+    file = request.files.get("file")
+
+    if not template_name or not media_type or not file:
+        return jsonify({"ok": False, "error": "Missing template_name, media_type, or file"}), 400
+
+    if media_type not in ("VIDEO", "IMAGE"):
+        return jsonify({"ok": False, "error": "media_type must be VIDEO or IMAGE"}), 400
+
+    try:
+        file_data = file.read()
+        file_size = len(file_data)
+        mime_type = file.content_type or ("video/mp4" if media_type == "VIDEO" else "image/png")
+        file_name = file.filename or "upload"
+
+        print(f"\xf0\x9f\x93\xa4 Uploading {file_name} ({file_size} bytes, {mime_type}) for template {template_name}")
+
+        # Step 1: Create upload session
+        session_url = f"https://graph.facebook.com/v20.0/{GRAPH_APP_ID}/uploads"
+        session_resp = http_requests.post(session_url, params={
+            "file_length": file_size,
+            "file_type": mime_type,
+            "file_name": file_name,
+            "access_token": META_ACCESS_TOKEN,
+        })
+        session_data = session_resp.json()
+        if "id" not in session_data:
+            return jsonify({"ok": False, "error": "Session creation failed", "detail": session_data}), 500
+
+        upload_session_id = session_data["id"]
+        print(f"  Session: {upload_session_id[:50]}...")
+
+        # Step 2: Upload binary data
+        upload_url = f"https://graph.facebook.com/v20.0/{upload_session_id}"
+        upload_resp = http_requests.post(upload_url, headers={
+            "Authorization": f"OAuth {META_ACCESS_TOKEN}",
+            "file_offset": "0",
+            "Content-Type": "application/octet-stream",
+        }, data=file_data)
+        upload_data = upload_resp.json()
+        if "h" not in upload_data:
+            return jsonify({"ok": False, "error": "Binary upload failed", "detail": upload_data}), 500
+
+        handle = upload_data["h"]
+        print(f"  Handle: {handle[:50]}...")
+
+        # Step 3: Get template info
+        waba_id = "1172161621528249"
+        templates_url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
+        tpl_resp = http_requests.get(templates_url, params={
+            "name": template_name,
+            "access_token": META_ACCESS_TOKEN,
+        })
+        tpl_data = tpl_resp.json()
+        templates = tpl_data.get("data", [])
+        if not templates:
+            return jsonify({"ok": False, "error": f"Template \'{template_name}\' not found"}), 404
+
+        template = templates[0]
+        template_id = template["id"]
+        existing_components = template.get("components", [])
+        print(f"  Template: {template_name} (ID: {template_id})")
+
+        # Step 4: Build updated components
+        new_components = [
+            {"type": "HEADER", "format": media_type, "example": {"header_handle": [handle]}}
+        ]
+        for comp in existing_components:
+            if comp["type"] == "BODY":
+                body_comp = {"type": "BODY", "text": comp["text"]}
+                if comp.get("example"):
+                    body_comp["example"] = comp["example"]
+                new_components.append(body_comp)
+            elif comp["type"] == "BUTTONS":
+                new_components.append(comp)
+
+        # Step 5: Edit template
+        edit_url = f"https://graph.facebook.com/v20.0/{template_id}"
+        edit_resp = http_requests.post(edit_url, headers={
+            "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        }, json={"components": new_components})
+        edit_data = edit_resp.json()
+
+        if edit_data.get("success"):
+            print(f"  Template {template_name} updated with {media_type} header!")
+            return jsonify({"ok": True, "template": template_name, "handle": handle[:30] + "..."})
+        else:
+            return jsonify({"ok": False, "error": "Template edit failed", "detail": edit_data}), 500
+
+    except Exception as e:
+        print(f"  Upload error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/upload-template-media-ui", methods=["GET"])
+def upload_template_media_ui():
+    """Simple HTML UI for uploading media to templates."""
+    return '''<!DOCTYPE html>
+<html><head><title>MWM Template Media Upload</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#1a1a2e;color:#eee}
+h1{color:#00d4ff}
+.card{background:#16213e;border-radius:12px;padding:20px;margin:16px 0}
+.card h3{margin-top:0;color:#00d4ff}
+input[type=file]{margin:8px 0}
+button{background:#00d4ff;color:#1a1a2e;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:bold;font-size:16px}
+button:disabled{opacity:.5}
+.status{margin-top:8px;font-size:14px}
+.ok{color:#00ff88}.err{color:#ff4444}.loading{color:#ffaa00}
+</style></head><body>
+<h1>WhatsApp Template Media Upload</h1>
+<p>Select files for each template, then click Upload All.</p>
+<div class="card"><h3>1. maya_reengagement_2_v2 (VIDEO)</h3>
+<input type="file" accept="video/mp4" id="f0"><div class="status" id="s0"></div></div>
+<div class="card"><h3>2. maya_reengagement_4 (VIDEO)</h3>
+<input type="file" accept="video/mp4" id="f1"><div class="status" id="s1"></div></div>
+<div class="card"><h3>3. maya_reengagement_5 (IMAGE)</h3>
+<input type="file" accept="image/png,image/jpeg" id="f2"><div class="status" id="s2"></div></div>
+<div class="card"><h3>4. maya_reengagement_6 (IMAGE)</h3>
+<input type="file" accept="image/png,image/jpeg" id="f3"><div class="status" id="s3"></div></div>
+<br><button onclick="uploadAll()" id="btn" style="font-size:18px;padding:14px 36px">Upload All</button>
+<div id="ov" style="margin-top:12px;font-size:16px"></div>
+<script>
+const T=[{n:"maya_reengagement_2_v2",t:"VIDEO"},{n:"maya_reengagement_4",t:"VIDEO"},
+{n:"maya_reengagement_5",t:"IMAGE"},{n:"maya_reengagement_6",t:"IMAGE"}];
+async function up(i){
+ const s=document.getElementById("s"+i),fi=document.getElementById("f"+i).files[0];
+ if(!fi){s.innerHTML='<span class="err">No file selected</span>';return false}
+ s.innerHTML='<span class="loading">Uploading '+fi.name+' ('+((fi.size/1048576)|0)+' MB)...</span>';
+ const fd=new FormData();fd.append("file",fi);fd.append("template_name",T[i].n);
+ fd.append("media_type",T[i].t);fd.append("secret","mwm-media-2026");
+ try{const r=await fetch("/upload-template-media",{method:"POST",body:fd});
+ const d=await r.json();
+ if(d.ok){s.innerHTML='<span class="ok">Done! Template updated.</span>';return true}
+ else{s.innerHTML='<span class="err">'+d.error+'</span>';return false}
+ }catch(e){s.innerHTML='<span class="err">Network error: '+e.message+'</span>';return false}}
+async function uploadAll(){
+ const o=document.getElementById("ov");o.innerHTML='<span class="loading">Uploading...</span>';
+ document.getElementById("btn").disabled=true;let ok=0;
+ for(let i=0;i<4;i++){if(await up(i))ok++}
+ o.innerHTML='<span class="'+(ok===4?"ok":"err")+'">'+ok+'/4 templates updated</span>';
+ document.getElementById("btn").disabled=false}
+</script></body></html>'''
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent Ã¢ÂÂ Maya")
     print("Server running on http://127.0.0.1:5000")
