@@ -693,7 +693,8 @@ REENGAGEMENT_COLD_DAYS = 7
 
 
 def _ensure_reengagement_tab():
-    """Create the Re-engagement Queue tab if it doesn't exist."""
+    """Create the Re-engagement Queue tab if it doesn't exist,
+    and upgrade headers if columns are missing (e.g. T4-T7 added later)."""
     if not SHEETS_LEADS_ID:
         return
     svc = _get_sheets_service()
@@ -714,6 +715,53 @@ def _ensure_reengagement_tab():
             body={"values": [REENGAGEMENT_HEADERS]},
         ).execute()
         print(f"[Maya] Created '{REENGAGEMENT_TAB}' tab with headers")
+    else:
+        # Upgrade existing tab: ensure all expected headers exist
+        try:
+            result = svc.spreadsheets().values().get(
+                spreadsheetId=SHEETS_LEADS_ID,
+                range=f"'{REENGAGEMENT_TAB}'!1:1",
+            ).execute()
+            current_headers = result.get("values", [[]])[0]
+
+            missing = [h for h in REENGAGEMENT_HEADERS if h not in current_headers]
+            if missing:
+                # Insert missing columns before Status column
+                status_idx = current_headers.index("Status") if "Status" in current_headers else len(current_headers)
+                new_headers = current_headers[:status_idx] + missing + current_headers[status_idx:]
+                # Also shift existing data rows: read all, rebuild, write back
+                all_result = svc.spreadsheets().values().get(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"'{REENGAGEMENT_TAB}'!A1:Z",
+                ).execute()
+                all_rows = all_result.get("values", [])
+                if len(all_rows) > 1:
+                    old_header_map = {h: i for i, h in enumerate(current_headers)}
+                    rebuilt = [new_headers]
+                    for row in all_rows[1:]:
+                        new_row = []
+                        for h in new_headers:
+                            if h in old_header_map and old_header_map[h] < len(row):
+                                new_row.append(row[old_header_map[h]])
+                            else:
+                                new_row.append("")
+                        rebuilt.append(new_row)
+                    svc.spreadsheets().values().update(
+                        spreadsheetId=SHEETS_LEADS_ID,
+                        range=f"'{REENGAGEMENT_TAB}'!A1",
+                        valueInputOption="RAW",
+                        body={"values": rebuilt},
+                    ).execute()
+                else:
+                    svc.spreadsheets().values().update(
+                        spreadsheetId=SHEETS_LEADS_ID,
+                        range=f"'{REENGAGEMENT_TAB}'!A1",
+                        valueInputOption="RAW",
+                        body={"values": [new_headers]},
+                    ).execute()
+                print(f"[Maya] Upgraded '{REENGAGEMENT_TAB}' headers — added: {missing}")
+        except Exception as e:
+            print(f"[Maya] Error checking/upgrading re-engagement headers: {e}")
 
 
 def get_reengagement_queue():
