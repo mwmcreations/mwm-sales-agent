@@ -545,10 +545,12 @@ def _list_events(text, calendar_ids=None, include_personal=False):
             if "T" in start:
                 dt = datetime.fromisoformat(start)
                 time_str = dt.strftime("%-I:%M %p")
-                date_str = dt.strftime("%a %b %-d")
+                date_str = dt.strftime("%A, %b %-d")  # Full day name (e.g. "Tuesday, May 5") to prevent LLM miscalculating day-of-week
                 lines.append(f"\u2022 *{time_str}* \u2014 {summary} ({date_str}){tag}")
             else:
-                lines.append(f"\u2022 \U0001f4cc *All day* \u2014 {summary} ({start}){tag}")
+                dt_date = datetime.fromisoformat(start)
+                date_str = dt_date.strftime("%A, %b %-d")
+                lines.append(f"\u2022 \U0001f4cc *All day* \u2014 {summary} ({date_str}){tag}")
         return "\n".join(lines)
     except Exception as e:
         print(f"[ANA] Error listing events: {e}")
