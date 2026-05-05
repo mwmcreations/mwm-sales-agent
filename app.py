@@ -6041,6 +6041,32 @@ def slack_events():
 
 
 # == Temporary: Media upload endpoint for WhatsApp template headers ==
+# ── ADMIN: Send a proactive Maya message to a lead ──────────────────
+# Used when Maya needs to follow up after a technical error or re-engage
+# a lead who might not message back. Protected by UPLOAD_SECRET.
+@app.route("/admin/send-maya-message", methods=["POST"])
+def admin_send_maya_message():
+    secret = request.form.get("secret", "")
+    if secret != os.getenv("UPLOAD_SECRET", "mwm-media-2026"):
+        return jsonify({"error": "unauthorized"}), 403
+    phone = request.form.get("phone", "").strip()
+    message = request.form.get("message", "").strip()
+    if not phone or not message:
+        return jsonify({"error": "phone and message required"}), 400
+    # Normalize phone
+    if not phone.startswith("whatsapp:"):
+        phone = f"whatsapp:+{phone.lstrip('+')}"
+    try:
+        send_whatsapp_meta(phone, body=message)
+        # Also append to conversation history so Maya has context
+        if phone not in conversation_history:
+            conversation_history[phone] = []
+        conversation_history[phone].append({"role": "assistant", "content": message})
+        return jsonify({"ok": True, "sent_to": phone})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Accepts file upload via multipart/form-data, uploads to Meta via
 # Resumable Upload API (server-side, no CORS issues), then edits the
 # template to attach the media header.  Remove after templates are set.
