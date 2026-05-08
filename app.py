@@ -347,22 +347,48 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
     if channel_id != SLACK_MAYA_SHADOW_CHANNEL:
         return
 
-    # Reverse lookup: find which phone number owns this thread
+    # Reverse lookup: find which phone number owns this thread.
+    # First try in-memory map, then fall back to parsing the thread header
+    # from Slack (works for threads created before the last deploy/restart).
     target_phone_digits = None
     for phone_digits, ts in maya_shadow_threads.items():
         if ts == thread_ts:
             target_phone_digits = phone_digits
             break
 
+    # Fallback: fetch the thread's parent message and extract phone from header
+    if not target_phone_digits:
+        print(f"[SHADOW RELAY] Phone not in memory for thread_ts={thread_ts}, trying Slack header fallback")
+        try:
+            resp = http_requests.get(
+                "https://slack.com/api/conversations.history",
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                params={"channel": channel_id, "latest": thread_ts, "inclusive": "true", "limit": 1},
+                timeout=5,
+            )
+            resp_data = resp.json()
+            if resp_data.get("ok"):
+                msgs = resp_data.get("messages", [])
+                if msgs:
+                    header_text = msgs[0].get("text", "")
+                    # Header format: "📱 *Conversation with Name* — `+1 (407) 747-2041`"
+                    phone_match = _re.search(r"\+?[\d\s().-]{10,}", header_text)
+                    if phone_match:
+                        target_phone_digits = _re.sub(r"\D", "", phone_match.group())
+                        # Cache it so future messages in this thread are instant
+                        maya_shadow_threads[target_phone_digits] = thread_ts
+                        print(f"[SHADOW RELAY] Recovered phone {target_phone_digits} from thread header")
+        except Exception as e:
+            print(f"[SHADOW RELAY] Header fallback failed: {e}")
+
     if not target_phone_digits:
         print(f"[SHADOW RELAY] No phone found for thread_ts={thread_ts}")
-        # Post feedback in thread so Michael knows it didn't work
         try:
             http_requests.post(
                 "https://slack.com/api/chat.postMessage",
                 json={
                     "channel": channel_id,
-                    "text": "⚠️ Could not find the lead's phone number for this thread. This may be an older thread from before the last deploy.",
+                    "text": "⚠️ Could not find the lead's phone number for this thread.",
                     "thread_ts": thread_ts,
                 },
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
