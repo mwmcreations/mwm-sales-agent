@@ -124,6 +124,7 @@ SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 # var; left blank = shadow mode disabled for that agent.
 SLACK_LARA_SHADOW_CHANNEL = os.getenv("SLACK_LARA_SHADOW_CHANNEL", "")  # #lara-shadow
 SLACK_MAYA_SHADOW_CHANNEL = os.getenv("SLACK_MAYA_SHADOW_CHANNEL", "")  # #maya-shadow
+MICHAEL_SLACK_USER_ID = os.getenv("MICHAEL_SLACK_USER_ID", "")  # Michael's Slack user ID for shadow relay
 
 # In-memory maps: normalized phone digits → Slack thread_ts (parent message).
 # One thread per sender phone, persistent within a deploy. Resets on restart.
@@ -317,6 +318,103 @@ def _mirror_to_maya_shadow_async(sender_identity: dict, direction: str, message_
         t.start()
     except Exception as e:
         print(f"[MAYA SHADOW] Failed to start mirror thread: {e}")
+
+
+def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: str):
+    """Relay Michael's #maya-shadow thread replies to the lead on WhatsApp.
+
+    When Michael replies in a shadow thread, this function:
+    1. Reverse-looks up the lead's phone from the thread_ts
+    2. Sends the message via WhatsApp as Maya
+    3. Adds the message to conversation_history so Maya stays in sync
+    4. Posts a confirmation back in the Slack thread
+
+    Only processes messages from Michael (MICHAEL_SLACK_USER_ID) in
+    #maya-shadow threads. All other messages are ignored.
+    """
+    import re as _re
+
+    # Only allow Michael to relay messages
+    if not MICHAEL_SLACK_USER_ID or user_id != MICHAEL_SLACK_USER_ID:
+        print(f"[SHADOW RELAY] Ignored — user {user_id} is not Michael")
+        return
+
+    # Must be a thread reply (not a top-level message)
+    if not thread_ts:
+        return
+
+    # Must be in #maya-shadow
+    if channel_id != SLACK_MAYA_SHADOW_CHANNEL:
+        return
+
+    # Reverse lookup: find which phone number owns this thread
+    target_phone_digits = None
+    for phone_digits, ts in maya_shadow_threads.items():
+        if ts == thread_ts:
+            target_phone_digits = phone_digits
+            break
+
+    if not target_phone_digits:
+        print(f"[SHADOW RELAY] No phone found for thread_ts={thread_ts}")
+        # Post feedback in thread so Michael knows it didn't work
+        try:
+            http_requests.post(
+                "https://slack.com/api/chat.postMessage",
+                json={
+                    "channel": channel_id,
+                    "text": "⚠️ Could not find the lead's phone number for this thread. This may be an older thread from before the last deploy.",
+                    "thread_ts": thread_ts,
+                },
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                timeout=5,
+            )
+        except Exception:
+            pass
+        return
+
+    # Build the WhatsApp sender key (format: whatsapp:+1234567890)
+    wa_sender = f"whatsapp:+{target_phone_digits}"
+
+    # Send via WhatsApp
+    try:
+        send_whatsapp_meta(wa_sender, body=text)
+        print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_phone_digits}")
+    except Exception as e:
+        print(f"[SHADOW RELAY] ❌ WhatsApp send failed: {e}")
+        try:
+            http_requests.post(
+                "https://slack.com/api/chat.postMessage",
+                json={
+                    "channel": channel_id,
+                    "text": f"❌ Failed to send message to lead: {e}",
+                    "thread_ts": thread_ts,
+                },
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                timeout=5,
+            )
+        except Exception:
+            pass
+        return
+
+    # Add to conversation_history so Maya stays in sync
+    if wa_sender not in conversation_history:
+        conversation_history[wa_sender] = []
+    conversation_history[wa_sender].append({"role": "assistant", "content": text})
+
+    # Post confirmation in the Slack thread
+    try:
+        http_requests.post(
+            "https://slack.com/api/chat.postMessage",
+            json={
+                "channel": channel_id,
+                "text": f"✅ *MICHAEL (via Maya):*\n{text}",
+                "thread_ts": thread_ts,
+            },
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+            timeout=5,
+        )
+    except Exception as e:
+        print(f"[SHADOW RELAY] Confirmation post failed: {e}")
 
 
 def _build_maya_sender_identity(sender: str) -> dict:
@@ -5992,6 +6090,19 @@ def slack_events():
         text = event.get("text", "")
         user_id = event.get("user", "")
         thread_ts = event.get("thread_ts")
+
+        # ── #maya-shadow: relay Michael's thread replies to WhatsApp ──
+        if (channel_id == SLACK_MAYA_SHADOW_CHANNEL
+                and SLACK_MAYA_SHADOW_CHANNEL
+                and thread_ts
+                and text.strip()
+                and user_id == MICHAEL_SLACK_USER_ID):
+            threading.Thread(
+                target=_handle_shadow_relay,
+                args=(channel_id, text, user_id, thread_ts),
+                daemon=True,
+            ).start()
+            return "OK", 200
 
         # ── #general: mention-based multi-agent routing ──
         if channel_id == GENERAL_CHANNEL_ID and text.strip():
