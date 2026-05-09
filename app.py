@@ -568,7 +568,7 @@ Your role is to help business owners and entrepreneurs understand how MWM Creati
 
 Your PRIMARY goal is to invite the lead to visit MWM Studios in person. Nothing closes a deal faster than someone walking through the studio, seeing the equipment, and meeting Michael personally. Everything you do should move the conversation toward scheduling that studio visit. Pricing can be shared if the person asks, but always position the visit as the logical next step — not the price.
 
-If the lead cannot visit in person (out of state, busy schedule, etc.), offer a free 45-minute strategy call with Michael as the secondary option.
+If the lead cannot visit in person (out of state, busy schedule, etc.), offer a free 30-minute strategy call with Michael as the secondary option.
 
 ---
 
@@ -770,10 +770,10 @@ Drop one of these naturally (don’t list all of them):
 - “Most companies waste money on random videos. We build a content system, starting right here in the studio.”
 
 Step 3B — FREE CALL + BOOKING LINK (Path B only)
-Be warm and helpful. Offer a free 45-minute strategy call with Michael, and also send them the direct booking link for studio time:
+Be warm and helpful. Offer a free 30-minute strategy call with Michael, and also send them the direct booking link for studio time:
 
 Say something like:
-“I’d love to connect you with Michael Moraes, our founder — he does free 45-minute strategy calls where he can walk you through what would work best for your situation. Want me to check his availability?”
+“I’d love to connect you with Michael Moraes, our founder — he does free 30-minute strategy calls where he can walk you through what would work best for your situation. Want me to check his availability?”
 
 And also share:
 “In the meantime, you can also browse and book studio time directly here: www.videoproductionplans.com/book-studio”
@@ -784,7 +784,7 @@ Step 4 — INVITE TO THE STUDIO (Path A only)
 Once the lead is engaged, go straight for the visit. This is the most important step.
 
 Say something like:
-"Honestly, the best way to see what we do is just come by the studio — it takes about 45 minutes, Michael walks you through everything, no pressure. Would that work?"
+"Honestly, the best way to see what we do is just come by the studio — it takes about 30 minutes, Michael walks you through everything, no pressure. Would that work?"
 
 When making this studio visit invitation, include the following tag at the very end of your message (invisible to the user, used to trigger photo sending):
 [SEND_STUDIO_PHOTOS]
@@ -830,7 +830,7 @@ Then confirm warmly:
 You'll receive a calendar invite at [email] shortly. See you then!"
 
 If the lead says they cannot visit in person (out of state, too busy, etc.), offer the strategy call as an alternative:
-"No problem at all! We can also do a free 45-minute call with Michael — he'll walk you through everything virtually. Want me to check his availability for that?"
+"No problem at all! We can also do a free 30-minute call with Michael — he'll walk you through everything virtually. Want me to check his availability for that?"
 
 Step 6 — PRICING & ROUTING (only if they ask)
 If someone directly asks about pricing, share the plans honestly and briefly.
@@ -1459,7 +1459,7 @@ TOOLS = [
     {
         "name": "get_available_slots",
         "description": (
-            "Fetch Michael's real available time slots for a free 45-minute session. "
+            "Fetch Michael's real available time slots for a session (blocks 1 hour on the calendar). "
             "Call this as soon as the lead agrees to book a meeting. "
             "Returns up to 5 available slots with a display label and a slot_id to use when booking."
         ),
@@ -1491,7 +1491,7 @@ TOOLS = [
     {
         "name": "book_appointment",
         "description": (
-            "Book a 45-minute appointment on Michael's Google Calendar. "
+            "Book a 1-hour appointment on Michael's Google Calendar. "
             "Call this after the lead replies with their chosen slot number. "
             "Sends a calendar invite to the lead's email automatically. "
             "Use appointment_type='studio_visit' when booking a studio visit, "
@@ -1652,7 +1652,7 @@ def get_available_slots():
                 if candidate <= now:
                     continue
 
-                slot_end = candidate + timedelta(minutes=45)
+                slot_end = candidate + timedelta(minutes=60)
                 # 15-min buffer before and after to avoid back-to-back meetings
                 buffer_start = candidate - timedelta(minutes=15)
                 buffer_end = slot_end + timedelta(minutes=15)
@@ -1682,7 +1682,7 @@ def get_available_slots():
 
 def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit"):
     """
-    Create a 45-minute Google Calendar event on the MWM Creations calendar.
+    Create a 1-hour Google Calendar event on the MWM Creations calendar.
     Tries three strategies in order, using the first that succeeds:
 
       1. MWM Creations calendar  + attendees + send invites
@@ -1711,11 +1711,11 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 raise
         tz = pytz.timezone(TIMEZONE)
         start_dt = datetime.fromisoformat(slot_id).astimezone(tz)
-        end_dt = start_dt + timedelta(minutes=45)
+        end_dt = start_dt + timedelta(minutes=60)
 
         if appointment_type == "strategy_call":
             event_title = f"Strategy Call — {lead_name} ({lead_business})"
-            event_desc_header = "Free 45-Minute Strategy Call with Michael Moraes / MWM Creations"
+            event_desc_header = "Strategy Call with Michael Moraes / MWM Creations"
         else:
             event_title = f"Studio Visit — {lead_name} ({lead_business})"
             event_desc_header = "Studio Visit with Michael Moraes / MWM Creations Studios"
@@ -1893,7 +1893,7 @@ def check_specific_slot(requested_datetime):
         if candidate.weekday() >= 5:
             print(f"[check_specific_slot] rejected: weekend (weekday={candidate.weekday()})")
             return {"available": False, "reason": "weekends are not available"}
-        if not (9 <= candidate.hour < 17) or (candidate.hour == 16 and candidate.minute > 15):
+        if not (9 <= candidate.hour < 17) or (candidate.hour == 16 and candidate.minute > 0):
             print(f"[check_specific_slot] rejected: outside business hours (hour={candidate.hour})")
             return {"available": False, "reason": "outside business hours (9 AM – 5 PM EST)"}
         # Must be in the future
@@ -1902,7 +1902,7 @@ def check_specific_slot(requested_datetime):
             print(f"[check_specific_slot] rejected: in the past (candidate={candidate.isoformat()}, now={now_et.isoformat()})")
             return {"available": False, "reason": "that time has already passed"}
 
-        slot_end = candidate + timedelta(minutes=45)
+        slot_end = candidate + timedelta(minutes=60)
         # 15-min buffer before and after to avoid back-to-back meetings
         window_start = candidate - timedelta(minutes=15)
         window_end = slot_end + timedelta(minutes=15)
