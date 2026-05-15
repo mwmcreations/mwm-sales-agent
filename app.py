@@ -99,7 +99,7 @@ conversation_history = {}
 lara_history = {}
 
 # ââ Lead tracking for cold-lead detection âââââââââââââââââââââââââââââââââââ
-# {sender: {"name": str, "email": str, "last_message_time": datetime, "booked": bool, "cold_fired": bool}}
+# {sender: {"name": str, "email": str, "last_message_time": datetime, "booked": bool, "cold_fired": bool, "event_id": str|None}}
 lead_data = {}
 
 # Google Calendar config
@@ -513,6 +513,26 @@ def _notify_appointment_booked(lead_name, sender, slot_info, interest):
     _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
 
 
+def _notify_appointment_cancelled(lead_name, sender, event_summary, cancel_reason):
+    """Notify Slack when an appointment is cancelled via WhatsApp."""
+    timestamp = _get_current_time_edt()
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "❌ Appointment Cancelled", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Lead:*\n{lead_name}"},
+            {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"}
+        ]},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Event:*\n{event_summary}"},
+            {"type": "mrkdwn", "text": f"*Reason:*\n{cancel_reason}"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"🕒 Cancelled at {timestamp}"}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"❌ {lead_name} ({sender}) cancelled: {event_summary}"
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
+
+
 def _notify_cold_lead(sender, lead_name, last_message_time, hours_silent):
     """Notify Slack when a lead goes cold (48+ hours silent)."""
     timestamp = _get_current_time_edt()
@@ -871,6 +891,8 @@ IMPORTANT GUIDELINES
 - If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable
 - If the lead's suggested time IS available, book it immediately — don't present more options
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options above again
+- CANCELLATIONS AND RESCHEDULING: If a lead says they need to cancel, can't make it, have a conflict, or want to reschedule their appointment, IMMEDIATELY call the cancel_appointment tool with their name and the reason they gave. Do NOT just acknowledge the cancellation verbally without cancelling the calendar event. After cancelling, respond warmly and offer to reschedule: "No worries at all! I've cancelled your appointment. Whenever you're ready to reschedule, just let me know and I'll find a new time with Michael."
+- If a lead wants to RESCHEDULE (not just cancel), first cancel the existing appointment using cancel_appointment, then proceed with get_available_slots to book a new time.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
 
@@ -1524,6 +1546,29 @@ TOOLS = [
             },
             "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
         }
+    },
+    {
+        "name": "cancel_appointment",
+        "description": (
+            "Cancel or remove an existing appointment from Michael's calendar. "
+            "Use this when a lead says they need to cancel, can't make it, or wants to cancel their appointment. "
+            "The system will find the appointment by the lead's name or phone number and cancel it. "
+            "Optionally provide a reason for the cancellation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {
+                    "type": "string",
+                    "description": "The lead's full name (used to find the calendar event)."
+                },
+                "cancel_reason": {
+                    "type": "string",
+                    "description": "The reason for cancellation provided by the lead."
+                }
+            },
+            "required": ["lead_name", "cancel_reason"]
+        }
     }
 ]
 
@@ -1846,6 +1891,138 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         return None
 
 
+def cancel_appointment(sender=None, lead_name="", cancel_reason=""):
+    """
+    Cancel an existing appointment from Michael's Google Calendar.
+
+    Strategy:
+      1. If lead_data has a stored event_id for this sender, delete that event directly.
+      2. Otherwise, search upcoming calendar events for the lead's name in the summary.
+      3. Delete the matching event and notify Slack + update Google Sheets.
+
+    Returns a dict with success/failure info.
+    """
+    try:
+        service = get_calendar_service()
+        event_id = None
+        event_summary = ""
+
+        # Strategy 1: Use stored event_id from lead_data
+        if sender and sender in lead_data and lead_data[sender].get("event_id"):
+            event_id = lead_data[sender]["event_id"]
+            print(f"[cancel_appointment] Found stored event_id: {event_id}")
+            try:
+                event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+                event_summary = event.get("summary", "Appointment")
+            except Exception:
+                event_summary = f"Appointment with {lead_name}"
+
+        # Strategy 2: Search calendar by lead name
+        if not event_id and lead_name:
+            print(f"[cancel_appointment] Searching calendar for events matching '{lead_name}'")
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+            # Search upcoming events in the next 60 days
+            time_max = now + timedelta(days=60)
+            events_result = service.events().list(
+                calendarId=CALENDAR_ID,
+                timeMin=now.isoformat(),
+                timeMax=time_max.isoformat(),
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+            events = events_result.get("items", [])
+
+            # Find event matching lead name (case-insensitive search in summary + description)
+            for ev in events:
+                summary = ev.get("summary", "")
+                description = ev.get("description", "")
+                search_text = f"{summary} {description}".lower()
+                if lead_name.lower() in search_text:
+                    event_id = ev["id"]
+                    event_summary = summary
+                    print(f"[cancel_appointment] Found matching event: {event_summary} (ID: {event_id})")
+                    break
+
+            # Also try searching by phone number if available
+            if not event_id and sender:
+                clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+                for ev in events:
+                    description = ev.get("description", "")
+                    if clean_phone in description:
+                        event_id = ev["id"]
+                        event_summary = ev.get("summary", "Appointment")
+                        print(f"[cancel_appointment] Found event by phone: {event_summary} (ID: {event_id})")
+                        break
+
+        if not event_id:
+            print(f"[cancel_appointment] No matching event found for {lead_name} / {sender}")
+            return {
+                "success": False,
+                "error": f"Could not find an upcoming appointment for {lead_name}. The appointment may have already been cancelled or may not exist in the system."
+            }
+
+        # Delete the calendar event
+        service.events().delete(
+            calendarId=CALENDAR_ID,
+            eventId=event_id,
+            sendUpdates="all"  # Notify attendees about the cancellation
+        ).execute()
+        print(f"[cancel_appointment] Successfully deleted event {event_id}: {event_summary}")
+
+        # Update lead_data
+        if sender and sender in lead_data:
+            lead_data[sender]["booked"] = False
+            lead_data[sender]["event_id"] = None
+
+        # Notify Slack
+        _notify_appointment_cancelled(
+            lead_name=lead_name or (lead_data.get(sender, {}).get("name", "Unknown")),
+            sender=sender or "Unknown",
+            event_summary=event_summary,
+            cancel_reason=cancel_reason or "No reason provided"
+        )
+
+        # Update Google Sheets
+        try:
+            if sender:
+                update_lead_columns(sender, {
+                    "WhatsApp Status": "Cancelled",
+                    "Appointment Booked": "N",
+                    "Notes": f"Cancelled: {cancel_reason}",
+                })
+        except Exception as sheet_err:
+            print(f"⚠️ Sheet cancellation update failed (non-fatal): {sheet_err}")
+
+        # Notify Michael via WhatsApp
+        michael_phone = os.getenv("MICHAEL_PHONE")
+        if michael_phone and META_ACCESS_TOKEN:
+            try:
+                clean_sender = (sender or "").replace("whatsapp:", "")
+                notification = (
+                    f"❌ *Appointment Cancelled*\n\n"
+                    f"👤 Lead: {lead_name}\n"
+                    f"📱 Phone: {clean_sender}\n"
+                    f"📅 Event: {event_summary}\n"
+                    f"💬 Reason: {cancel_reason}\n\n"
+                    f"Maya handled the cancellation automatically."
+                )
+                send_whatsapp_meta(michael_phone, body=notification)
+                print(f"✅ Michael notified of cancellation via WhatsApp")
+            except Exception as notify_err:
+                print(f"⚠️ Could not notify Michael of cancellation: {notify_err}")
+
+        return {
+            "success": True,
+            "cancelled_event": event_summary,
+            "message": f"Successfully cancelled: {event_summary}"
+        }
+
+    except Exception as e:
+        print(f"[cancel_appointment] ERROR: {e}")
+        return {"success": False, "error": f"Failed to cancel appointment: {str(e)}"}
+
+
 def _parse_datetime_flexible(dt_string):
     """
     Parse a datetime string in ISO 8601 or other common formats.
@@ -1982,9 +2159,10 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             try:
                 appt_type  = tool_input.get("appointment_type", "studio_visit")
                 hub_event  = "booking_confirmed_tour" if appt_type == "studio_visit" else "booking_confirmed_call"
-                # Mark lead as booked so cold-lead checker skips them
+                # Mark lead as booked and store event_id for cancellation support
                 if sender and sender in lead_data:
                     lead_data[sender]["booked"] = True
+                    lead_data[sender]["event_id"] = event_id
                 fire_hub_event(
                     event_type  = hub_event,
                     lead_name   = tool_input.get("lead_name"),
@@ -2001,6 +2179,13 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             return {"success": True, "event_id": event_id}
         else:
             return {"success": False, "error": "Could not book the appointment. Please try again."}
+
+    elif tool_name == "cancel_appointment":
+        return cancel_appointment(
+            sender=sender,
+            lead_name=tool_input.get("lead_name", ""),
+            cancel_reason=tool_input.get("cancel_reason", "No reason provided")
+        )
 
     return {"error": f"Unknown tool: {tool_name}"}
 
