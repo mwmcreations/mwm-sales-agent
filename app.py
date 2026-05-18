@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import time
 from flask import Flask, request, send_from_directory, jsonify
+from flask_cors import CORS
 import anthropic
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -30,6 +31,10 @@ from lara_actions import handle_lara_action, lookup_sender_identity, format_send
 load_dotenv()
 
 app = Flask(__name__)
+
+# ── CORS for website chat widget ──
+CORS_ORIGIN = os.getenv('CORS_ORIGIN', 'https://mwmcreations.com')
+CORS(app, resources={r"/chat": {"origins": [CORS_ORIGIN, "https://www.mwmcreations.com"]}})
 
 
 # ââ Meta WhatsApp Cloud API Configuration âââââââââââââââââââââââââââââââââ
@@ -6593,6 +6598,161 @@ async function uploadAll(){
  document.getElementById("btn").disabled=false}
 </script></body></html>'''
 
+
+
+# ── Maya Website Chat Endpoint ──────────────────────────────────────────────
+# Powers the chat widget on mwmcreations.com
+# Added 2026-05-18
+
+MAYA_WEB_SYSTEM_PROMPT = """You are Maya, the AI sales and support assistant for MWM Creations & Studios, a video production company based in Orlando, Florida.
+
+COMPANY INFO:
+- Company: MWM Creations & Studios
+- Address: 1500 Park Center Dr, Suite 230, Orlando, FL 32835
+- Phone: +1 (813) 503-1224
+- Email: info@mwmcreations.com
+- Website: mwmcreations.com
+- Owner: Michael Moraes
+
+SERVICES & PRICING:
+1. Studio Rental: $249/hour — Includes professional director, full equipment (cameras, lighting, sound), and post-production editing
+2. Video Production Plans: Starting at $997/month — Ongoing monthly content packages for businesses
+3. MWM Roadmap: Strategic video planning service — Custom video strategy for brands
+4. Enterprise Branded TV: Custom streaming platform build — Full OTT platform development for organizations
+
+WHAT THE STUDIO INCLUDES:
+- Professional cinema cameras and lenses
+- Full lighting kit (key, fill, back, accent)
+- Professional audio (lavs, shotgun mics, soundproofing)
+- Teleprompter
+- Green screen capability
+- Post-production editing suite
+- Director on set
+
+YOUR BEHAVIOR:
+- Be warm, professional, and conversational — like a helpful team member, not a robot
+- Speak in English by default, but switch to Portuguese if the visitor writes in Portuguese
+- Keep responses concise (2-4 short paragraphs max) — this is a chat, not an email
+- Your goal is to QUALIFY leads and BOOK consultations/studio visits with Michael
+- Always try to collect: name, phone/email, and what they need
+- If someone shows interest, push toward booking a consultation or studio tour
+- Never make up information you don't know — offer to connect them with Michael instead
+- If asked about things outside MWM's services, politely redirect
+- Use **bold** for emphasis on key info like prices and phone numbers
+- You can use line breaks but keep it clean and scannable
+- If the conversation goes well, suggest they call +1 (813) 503-1224 or book a visit
+
+IMPORTANT:
+- You are on the WEBSITE chat, not WhatsApp. Don't mention WhatsApp or ask for WhatsApp numbers.
+- Never share internal business details, profit margins, or team structure
+- If someone asks for a custom quote, collect their details and say Michael will follow up
+- Current date: {current_date}
+"""
+
+# In-memory conversation store for web chat
+_web_conversations = {}
+_WEB_CONVERSATION_TTL = 3600  # 1 hour
+
+def _cleanup_web_conversations():
+    """Remove web chat conversations older than TTL"""
+    now = time.time()
+    expired = [cid for cid, data in _web_conversations.items()
+               if now - data['last_active'] > _WEB_CONVERSATION_TTL]
+    for cid in expired:
+        del _web_conversations[cid]
+
+
+@app.route('/chat', methods=['POST', 'OPTIONS'])
+def web_chat_endpoint():
+    """Website chat endpoint for Maya."""
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Origin'] = CORS_ORIGIN
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return response
+
+    try:
+        data = request.get_json()
+        if not data or 'message' not in data:
+            return jsonify({'error': 'Missing message field'}), 400
+
+        user_message = data['message'].strip()
+        conversation_id = data.get('conversation_id', f"web_{int(time.time())}")
+        page_url = data.get('page_url', '')
+
+        if not user_message:
+            return jsonify({'error': 'Empty message'}), 400
+
+        # Cleanup old conversations periodically
+        if len(_web_conversations) > 100:
+            _cleanup_web_conversations()
+
+        # Get or create conversation
+        if conversation_id not in _web_conversations:
+            _web_conversations[conversation_id] = {
+                'messages': [],
+                'created': time.time(),
+                'last_active': time.time(),
+                'page_url': page_url
+            }
+
+        conv = _web_conversations[conversation_id]
+        conv['last_active'] = time.time()
+
+        # Add user message to history
+        conv['messages'].append({
+            'role': 'user',
+            'content': user_message
+        })
+
+        # Build the system prompt with current date
+        system_prompt = MAYA_WEB_SYSTEM_PROMPT.format(
+            current_date=datetime.now().strftime('%B %d, %Y')
+        )
+
+        # If visitor came from a specific page, add context
+        if page_url:
+            system_prompt += f"\n\nThe visitor is currently on: {page_url}"
+
+        # Call Anthropic API (Claude)
+        client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system=system_prompt,
+            messages=conv['messages'][-10:]  # Last 10 messages for context window
+        )
+
+        assistant_reply = response.content[0].text
+
+        # Store Maya's reply in conversation history
+        conv['messages'].append({
+            'role': 'assistant',
+            'content': assistant_reply
+        })
+
+        return jsonify({
+            'reply': assistant_reply,
+            'conversation_id': conversation_id
+        })
+
+    except anthropic.APIError as e:
+        print(f"Web chat Anthropic API error: {e}")
+        return jsonify({
+            'reply': "Thanks for reaching out! I'm having a brief technical moment. "
+                     "You can reach us directly at +1 (813) 503-1224 or email info@mwmcreations.com.",
+            'conversation_id': data.get('conversation_id', '')
+        })
+
+    except Exception as e:
+        print(f"Web chat endpoint error: {e}")
+        return jsonify({
+            'reply': "Thanks for reaching out! I'll make sure someone from our team gets back to you soon. "
+                     "You can also call us at +1 (813) 503-1224.",
+            'conversation_id': data.get('conversation_id', '')
+        }), 500
 
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
