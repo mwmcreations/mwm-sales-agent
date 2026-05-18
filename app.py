@@ -6616,9 +6616,12 @@ COMPANY INFO:
 
 SERVICES & PRICING:
 1. Studio Rental: $249/hour — Includes professional director, full equipment (cameras, lighting, sound), and post-production editing
-2. Video Production Plans: Starting at $997/month — Ongoing monthly content packages for businesses
-3. MWM Roadmap: Strategic video planning service — Custom video strategy for brands
-4. Enterprise Branded TV: Custom streaming platform build — Full OTT platform development for organizations
+2. MWM Roadmap Plans (monthly video production subscriptions):
+   - Silver Plan: $1,997/month — Up to 6 strategic campaigns/year, curated filming sessions, multi-video asset delivery, multi-platform formatting, creative direction. For new brands and personal projects ready to grow.
+   - Gold Plan: $2,497/month (Most Popular) — Up to 12 strategic campaigns/year, monthly curated filming sessions, multi-video asset delivery, multi-platform formatting and publishing guidance, ongoing creative direction and optimization. For professionals and businesses scaling their authority.
+   - Platinum Plan: $4,397/month — Up to 24 strategic campaigns/year, frequent curated filming sessions, multi-video asset delivery, brand strategy, positioning and ongoing consulting. For leaders building long-term brand legacy.
+   - Enterprise Plan: $6,997/month — Unlimited strategic campaigns, dedicated content strategist and production team, custom filming schedules, unlimited video asset execution and delivery, scripting, creative direction and strategic consulting. For larger companies, multi-location brands, or full-scale media partners.
+3. Enterprise Branded TV: Custom streaming platform build — Full OTT platform development for organizations
 
 WHAT THE STUDIO INCLUDES:
 - Professional cinema cameras and lenses
