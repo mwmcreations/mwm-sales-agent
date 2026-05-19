@@ -6643,16 +6643,27 @@ YOUR BEHAVIOR:
 SALES STRATEGY — THIS IS CRITICAL:
 - You are NOT the closer. Michael is the closer. Your #1 job is to get leads to MEET Michael.
 - Your ultimate goal is to book a STUDIO VISIT where Michael can show them the space and close the deal in person. This is the preferred outcome for every conversation.
-- If a studio visit isn't possible, collect THEIR phone number or email so Michael can reach out to them.
+- If a studio visit isn't possible, a STRATEGY CALL is the fallback.
 - NEVER share Michael's phone number or any team phone numbers on the website chat. The visitor should give YOU their contact info, not the other way around.
 - NEVER try to close a deal, finalize pricing, or process any commitment yourself.
 - For Studio Rental ($249/hour): You can share this price since it's straightforward, but STAY FOCUSED on studio rental for the rest of the conversation. Push to either: (1) a studio VISIT so they can see the space in person, (2) a quick call with Michael, or (3) booking studio time directly on the website. Do NOT pivot to other services — keep selling the studio visit.
 - For Roadmap Plans: Give a general range ("plans start at $1,997/month and scale based on your needs") but do NOT list all tier prices. Instead, say something like "Michael can walk you through the different tiers and find the right fit for your business — want to schedule a studio visit?"
 - For Enterprise Branded TV: Never quote a price. Say it's custom-built for each organization and Michael would love to discuss their vision. Push directly to a studio visit or collecting their info.
-- Every conversation should end with either: (1) a studio visit booked/suggested, or (2) their contact info (name + phone or email) collected so Michael can follow up.
 - NEVER go generic. If the visitor is asking about a specific service, stay focused on THAT service ONLY. Do not reset or list all services. Do not mention other services. Stay in the flow of the conversation.
 - When a visitor says "yes" or shows interest, go DEEPER into what they need — ask about their business, their goals, their timeline — then funnel to a studio visit. Do NOT restart with a generic "what are you looking for?" response.
 - If someone asks about studio rental, your ONLY goal is to lock in a studio visit, a call with Michael, or get them to book studio time. Do not pivot to Roadmap Plans or Enterprise TV. Stay on studio rental until the lead converts or changes the topic themselves.
+
+SCHEDULING — THIS IS HOW YOU BOOK:
+- When the lead is ready to schedule (studio visit or strategy call), present MICHAEL'S NEXT 3 AVAILABLE TIMES (listed below) — numbered 1, 2, 3 — directly to the lead.
+- Do NOT ask "what day works?" or "what time works?" — just show the 3 pre-loaded options.
+- After the lead picks a number (1, 2, or 3), collect their name, email, and business, then call book_appointment to confirm.
+- Only if the lead says NONE of the 3 options work, THEN ask them to suggest a day and time and use check_specific_slot to verify.
+- If the lead's suggested time IS available, book it immediately.
+- If NOT available, show the 3 pre-loaded options again.
+- Use appointment_type="studio_visit" for in-person visits, "strategy_call" for remote calls.
+- CANCELLATIONS: If a lead needs to cancel or reschedule, call cancel_appointment, then offer to rebook.
+
+{slots_block}
 
 IMPORTANT:
 - You are on the WEBSITE chat, not WhatsApp. Don't mention WhatsApp or ask for WhatsApp numbers.
@@ -6660,8 +6671,126 @@ IMPORTANT:
 - Never share internal business details, profit margins, or team structure
 - If someone asks for a custom quote, collect their details and say Michael will follow up personally
 - Never pressure or hard-sell — be genuinely helpful and let Michael handle the conversion
-- Current date: {current_date}
+- Current date and time: {current_date}, {current_time} Eastern Time
 """
+
+# Calendar tools available to web chat Maya (subset of WhatsApp tools)
+WEB_CHAT_TOOLS = [
+    {
+        "name": "get_available_slots",
+        "description": (
+            "Fetch Michael's real available time slots for a session (blocks 1 hour on the calendar). "
+            "Returns up to 5 available slots with a display label and a slot_id to use when booking."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "check_specific_slot",
+        "description": (
+            "Check if a specific date and time requested by the lead is available on Michael's calendar. "
+            "Use this when the lead asks for a time not in the pre-loaded list."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "requested_datetime": {
+                    "type": "string",
+                    "description": "The requested date and time in ISO 8601 format, e.g. '2026-03-11T14:00:00'. Always use Eastern Time."
+                }
+            },
+            "required": ["requested_datetime"]
+        }
+    },
+    {
+        "name": "book_appointment",
+        "description": (
+            "Book a 1-hour appointment on Michael's Google Calendar. "
+            "Sends a calendar invite to the lead's email automatically. "
+            "Use appointment_type='studio_visit' for in-person visits, 'strategy_call' for remote calls."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "slot_id": {"type": "string", "description": "ISO datetime string of the chosen slot."},
+                "lead_name": {"type": "string", "description": "The lead's full name."},
+                "lead_email": {"type": "string", "description": "The lead's email address."},
+                "lead_business": {"type": "string", "description": "The lead's business name or description."},
+                "appointment_type": {
+                    "type": "string",
+                    "enum": ["studio_visit", "strategy_call"],
+                    "description": "Type of appointment."
+                }
+            },
+            "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
+        }
+    },
+    {
+        "name": "cancel_appointment",
+        "description": "Cancel an existing appointment from Michael's calendar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {"type": "string", "description": "The lead's full name."},
+                "cancel_reason": {"type": "string", "description": "Reason for cancellation."}
+            },
+            "required": ["lead_name", "cancel_reason"]
+        }
+    }
+]
+
+
+def _get_web_slots_block():
+    """Pre-fetch Michael's available slots for the web chat system prompt."""
+    try:
+        slots = get_available_slots()
+        if slots:
+            display_lines = "\n".join([f"  {i+1}. {s['display']}" for i, s in enumerate(slots)])
+            id_lines = "\n".join([f"  slot_{i+1}_id = {s['id']}" for i, s in enumerate(slots)])
+            return (
+                "MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded — present these directly):\n"
+                f"{display_lines}\n"
+                f"  Slot IDs for book_appointment: {id_lines}\n"
+                "  Present options 1, 2, 3 to the lead exactly as shown above."
+            )
+        else:
+            return (
+                "MICHAEL'S NEXT 3 AVAILABLE TIMES: No slots currently available. "
+                "Ask the lead to suggest a preferred day and time, then use check_specific_slot to verify."
+            )
+    except Exception as e:
+        print(f"[web_chat] slot pre-fetch failed: {e}")
+        return (
+            "MICHAEL'S NEXT 3 AVAILABLE TIMES: Could not load — call get_available_slots() to fetch them."
+        )
+
+
+def _handle_web_tool_call(tool_name, tool_input):
+    """Execute a web chat tool call and return the result."""
+    if tool_name == "get_available_slots":
+        slots = get_available_slots()
+        return {"slots": slots} if slots else {"error": "No slots found. Ask the lead to suggest a day/time."}
+    elif tool_name == "check_specific_slot":
+        return check_specific_slot(tool_input["requested_datetime"])
+    elif tool_name == "book_appointment":
+        event_id = book_appointment(
+            slot_id=tool_input["slot_id"],
+            lead_name=tool_input["lead_name"],
+            lead_email=tool_input["lead_email"],
+            lead_business=tool_input["lead_business"],
+            lead_phone=None,
+            appointment_type=tool_input.get("appointment_type", "studio_visit")
+        )
+        if event_id:
+            return {"success": True, "event_id": event_id}
+        return {"success": False, "error": "Could not book. Please try again."}
+    elif tool_name == "cancel_appointment":
+        return cancel_appointment(
+            sender=None,
+            lead_name=tool_input.get("lead_name", ""),
+            cancel_reason=tool_input.get("cancel_reason", "No reason provided")
+        )
+    return {"error": f"Unknown tool: {tool_name}"}
+
 
 # In-memory conversation store for web chat
 _web_conversations = {}
@@ -6720,26 +6849,63 @@ def web_chat_endpoint():
             'content': user_message
         })
 
-        # Build the system prompt with current date
+        # Build the system prompt with current date and pre-loaded slots
+        tz = pytz.timezone(TIMEZONE)
+        now = datetime.now(tz)
+        slots_block = _get_web_slots_block()
         system_prompt = MAYA_WEB_SYSTEM_PROMPT.format(
-            current_date=datetime.now().strftime('%B %d, %Y')
+            current_date=now.strftime('%B %d, %Y'),
+            current_time=now.strftime('%I:%M %p'),
+            slots_block=slots_block
         )
 
         # If visitor came from a specific page, add context
         if page_url:
             system_prompt += f"\n\nThe visitor is currently on: {page_url}"
 
-        # Call Anthropic API (Claude)
+        # Call Anthropic API (Claude) with calendar tools
         client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=system_prompt,
-            messages=conv['messages'][-10:]  # Last 10 messages for context window
-        )
+        # Build messages for API call (last 10 for context)
+        api_messages = conv['messages'][-10:]
 
-        assistant_reply = response.content[0].text
+        # Tool loop — keep calling until we get a final text response
+        max_tool_rounds = 5
+        for _ in range(max_tool_rounds):
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=600,
+                system=system_prompt,
+                messages=api_messages,
+                tools=WEB_CHAT_TOOLS
+            )
+
+            if response.stop_reason == "tool_use":
+                # Process tool calls
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        print(f"[web_chat] Tool call: {block.name} | Input: {block.input}")
+                        result = _handle_web_tool_call(block.name, block.input)
+                        print(f"[web_chat] Tool result: {result}")
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result)
+                        })
+
+                # Add assistant's tool-use turn and results to messages
+                api_messages.append({"role": "assistant", "content": response.content})
+                api_messages.append({"role": "user", "content": tool_results})
+            else:
+                # Final text response
+                break
+
+        # Extract final text
+        assistant_reply = ""
+        for block in response.content:
+            if hasattr(block, "text"):
+                assistant_reply += block.text
 
         # Store Maya's reply in conversation history
         conv['messages'].append({
