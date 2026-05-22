@@ -4034,8 +4034,9 @@ def _repopulate_lead_data_from_sheets():
     except Exception as e:
         print(f"[Startup] lead_data repopulation error (non-fatal): {e}")
 
-# Run repopulation at startup
-_repopulate_lead_data_from_sheets()
+# Run repopulation at startup — in a background thread to avoid blocking
+# gunicorn worker boot (default 30s timeout kills workers during slow API calls).
+threading.Thread(target=_repopulate_lead_data_from_sheets, daemon=True).start()
 
 
 def _cold_lead_checker():
