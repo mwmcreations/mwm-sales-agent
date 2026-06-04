@@ -57,9 +57,9 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
     """
     pn_id = phone_number_id or META_PHONE_NUMBER_ID
 
-                           # Strip Slack "Sent using Claude/Cowork" suffix before sending to WhatsApp
-                           if body:
-                                 body = re.sub(r"\s*\*?Sent using\s*\*?\s+\w+\s*$", "", body, flags=re.IGNORECASE).strip()
+               # Strip Slack "Sent using Claude/Cowork" suffix before sending to WhatsApp
+               if body:
+                     body = re.sub(r"\s*\*?Sent using\s*\*?\s+\w+\s*$", "", body, flags=re.IGNORECASE).strip()
     phone = to.replace("whatsapp:", "").lstrip("+")
     url = f"https://graph.facebook.com/v19.0/{pn_id}/messages"
     headers = {
