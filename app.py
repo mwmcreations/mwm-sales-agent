@@ -483,7 +483,7 @@ def _build_maya_sender_identity(sender: str) -> dict:
 def _get_current_time_edt():
     """Get current time formatted in EDT timezone."""
     edt = pytz.timezone('US/Eastern')
-    return datetime.datetime.now(edt).strftime("%Y-%m-%d %H:%M:%S %Z")
+    return datetime.now(edt).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def _notify_new_lead(sender, incoming_msg):
