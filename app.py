@@ -775,8 +775,8 @@ SCHEDULING — HOW TO BOOK (apply to ALL channels):
 - If the lead's suggested time IS available, book it immediately — don't present more options.
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options again.
 - Use appointment_type="studio_visit" for in-person visits, "strategy_call" for remote calls.
-- CANCELLATIONS: If a lead needs to cancel or reschedule, call cancel_appointment, then offer to rebook.
-- If a lead wants to RESCHEDULE (not just cancel), first cancel using cancel_appointment, then proceed with get_available_slots to book a new time.
+- CANCELLATIONS/RESCHEDULING — TWO-STEP RULE: If a lead needs to cancel or reschedule, ALWAYS call cancel_appointment FIRST to remove the old event, THEN offer to rebook. Never book a new slot without cancelling the old one — that leaves a ghost event on Michael's calendar.
+- If a lead wants to RESCHEDULE (not just cancel), first cancel the existing appointment using cancel_appointment, then proceed with get_available_slots to book a new time. NEVER skip the cancel step.
 """
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -942,8 +942,11 @@ IMPORTANT GUIDELINES
 - If the lead suggests a specific date/time (e.g. "do you have Wednesday at 4pm?" or "I prefer mornings next week"), ALWAYS call check_specific_slot to verify availability before responding — never assume it's unavailable
 - If the lead's suggested time IS available, book it immediately — don't present more options
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options above again
-- CANCELLATIONS AND RESCHEDULING: If a lead says they need to cancel, can't make it, have a conflict, or want to reschedule their appointment, IMMEDIATELY call the cancel_appointment tool with their name and the reason they gave. Do NOT just acknowledge the cancellation verbally without cancelling the calendar event. After cancelling, respond warmly and offer to reschedule: "No worries at all! I've cancelled your appointment. Whenever you're ready to reschedule, just let me know and I'll find a new time with Michael."
-- If a lead wants to RESCHEDULE (not just cancel), first cancel the existing appointment using cancel_appointment, then proceed with get_available_slots to book a new time.
+- CANCELLATIONS AND RESCHEDULING — CRITICAL TWO-STEP RULE:
+  ★ STEP 1: ALWAYS call cancel_appointment FIRST to remove the OLD event from the calendar. Do this the MOMENT a lead says they can't make it, need to reschedule, have a conflict, want a different time, or anything indicating they won't attend their existing appointment. Do NOT skip this step. Do NOT just book a new slot without cancelling the old one — that leaves a ghost event on Michael's calendar.
+  ★ STEP 2: THEN offer to rebook. If they already suggested a new time in their message, use check_specific_slot or get_available_slots and book the new time.
+  Example: Lead says "I can't make my appointment, can we do next Tuesday instead?" → FIRST call cancel_appointment (reason: "Lead requested reschedule to next Tuesday"), THEN find and book the new slot.
+  NEVER skip Step 1. Two events for the same lead = a scheduling conflict on Michael's calendar.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
 
