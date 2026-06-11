@@ -3935,6 +3935,22 @@ def index():
     return "MWM Creations Sales Agent (Maya + Gabriela) is running! â"
 
 
+@app.route("/test-notify", methods=["GET"])
+def test_notify():
+    """Temporary test endpoint - fires a test booking notification to #maya."""
+    try:
+        _notify_appointment_booked(
+            "TEST LEAD (ignore)",
+            "DEV test - verifying Slack notifications",
+            "This is a test - no real booking",
+            "System Test"
+        )
+        return "Test notification sent to #maya. Check Slack.", 200
+    except Exception as e:
+        return f"Notification failed: {e}", 500
+
+
+
 # âââââââââââââââââââââââââââââââââââââââââââââ
 # COLD-LEAD DETECTION — Background Thread
 # Checks every hour. Fires lead_cold event to Hub for any lead
