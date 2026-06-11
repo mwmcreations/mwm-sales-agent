@@ -1774,7 +1774,7 @@ def get_available_slots():
         return []
 
 
-def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit"):
+def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via="WhatsApp"):
     """
     Create a 1-hour Google Calendar event on the MWM Creations calendar.
     Tries three strategies in order, using the first that succeeds:
@@ -1821,7 +1821,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 f"Lead: {lead_name}\n"
                 f"Business: {lead_business}\n"
                 f"Email: {lead_email}\n"
-                f"Booked via: Maya (WhatsApp Sales Agent)"
+                f"Booked via: Maya ({booked_via})"
             ),
             "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
@@ -1887,7 +1887,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             try:
                 _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
                 _interest = appointment_type.replace("_", " ").title()
-                _notify_appointment_booked(lead_name or "Prospect", lead_phone or "N/A", _slot_str, _interest)
+                _contact = lead_phone or lead_email or "N/A"
+                _source_label = f" · via {booked_via}" if booked_via != "WhatsApp" else ""
+                _notify_appointment_booked(lead_name or "Prospect", _contact + _source_label, _slot_str, _interest)
                 # ── Update Google Sheet: mark as booked ──
                 try:
                     if lead_phone:
@@ -6798,7 +6800,8 @@ def _handle_web_tool_call(tool_name, tool_input):
             lead_email=tool_input["lead_email"],
             lead_business=tool_input["lead_business"],
             lead_phone=None,
-            appointment_type=tool_input.get("appointment_type", "studio_visit")
+            appointment_type=tool_input.get("appointment_type", "studio_visit"),
+            booked_via="Website Chat"
         )
         if event_id:
             return {"success": True, "event_id": event_id}
