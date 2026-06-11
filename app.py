@@ -502,9 +502,10 @@ def _notify_new_lead(sender, incoming_msg):
     _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
 
 
-def _notify_appointment_booked(lead_name, sender, slot_info, interest):
+def _notify_appointment_booked(lead_name, sender, slot_info, interest, lead_email=None):
     """Notify Slack when an appointment is successfully booked."""
     timestamp = _get_current_time_edt()
+    _email_display = lead_email if lead_email else "Not provided"
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": "✅ Appointment Booked", "emoji": True}},
         {"type": "section", "fields": [
@@ -512,13 +513,14 @@ def _notify_appointment_booked(lead_name, sender, slot_info, interest):
             {"type": "mrkdwn", "text": f"*Phone:*\n{sender}"}
         ]},
         {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Confirmed Slot:*\n{slot_info}"},
+            {"type": "mrkdwn", "text": f"*Email:*\n{_email_display}"},
             {"type": "mrkdwn", "text": f"*Interested In:*\n{interest}"}
         ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*Confirmed Slot:*\n{slot_info}"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": f"🕐 Booked at {timestamp}"}},
         {"type": "divider"}
     ]
-    text_fallback = f"✅ {lead_name} ({sender}) booked for {slot_info}"
+    text_fallback = f"✅ {lead_name} ({sender} | {_email_display}) booked for {slot_info}"
     _post_to_slack_async(SLACK_MAYA_CHANNEL, text_fallback, blocks=blocks)
 
 
@@ -1889,7 +1891,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 _interest = appointment_type.replace("_", " ").title()
                 _contact = lead_phone or lead_email or "N/A"
                 _source_label = f" · via {booked_via}" if booked_via != "WhatsApp" else ""
-                _notify_appointment_booked(lead_name or "Prospect", _contact + _source_label, _slot_str, _interest)
+                _notify_appointment_booked(lead_name or "Prospect", _contact + _source_label, _slot_str, _interest, lead_email=lead_email)
                 # ── Update Google Sheet: mark as booked ──
                 try:
                     if lead_phone:
