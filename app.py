@@ -807,6 +807,137 @@ def _detect_hot_signal(incoming_msg):
             return True
     return False
 
+
+# ─── Lead Scoring Engine ─────────────────────────────────────────────────────
+# Automated scoring (0–100) based on engagement signals, business fit, and timing.
+# Stored in lead_data[sender]["lead_score"]. Updated on every message and event.
+#
+# Score brackets:
+#   90-100 = 🔥 Scorching (book NOW or lose them)
+#   70-89  = ⭐ Hot (highly engaged, strong fit)
+#   50-69  = 🟡 Warm (interested but needs nurturing)
+#   30-49  = 🟠 Cool (low engagement, may re-engage)
+#   0-29   = ❄️ Cold (unresponsive, move to re-engagement)
+
+# High-value business keywords (studio visit more likely to convert)
+_SCORE_BIZ_KEYWORDS = {
+    "restaurant": 8, "hotel": 10, "real estate": 10, "law firm": 8,
+    "medical": 8, "dental": 8, "gym": 7, "salon": 7, "spa": 7,
+    "church": 6, "nonprofit": 5, "startup": 6, "agency": 7,
+    "construction": 7, "wedding": 9, "event": 8, "corporate": 9,
+    "brand": 8, "ecommerce": 6, "coaching": 6, "consulting": 7,
+    "fitness": 7, "music": 6, "podcast": 5, "youtube": 5,
+}
+
+# High-intent message signals
+_SCORE_INTENT_SIGNALS = {
+    "how much": 15, "price": 15, "cost": 15, "budget": 12,
+    "book": 20, "schedule": 20, "appointment": 20, "visit": 18,
+    "when can": 15, "how soon": 15, "available": 12,
+    "sign me up": 25, "let's do it": 25, "count me in": 25,
+    "i want": 15, "i need": 12, "interested": 10, "tell me more": 8,
+    "sounds good": 15, "definitely": 15, "yes": 10,
+    "website": 5, "video": 5, "commercial": 8, "film": 8,
+}
+
+# Role-based scoring (decision makers score higher)
+_SCORE_ROLES = {
+    "owner": 15, "ceo": 15, "founder": 15, "president": 12,
+    "director": 10, "manager": 8, "vp": 12, "partner": 12,
+    "marketing": 8, "brand": 8, "creative": 6,
+}
+
+
+def _calculate_lead_score(sender, incoming_msg=None):
+    """Calculate and update lead score for a sender.
+
+    Scoring formula:
+    - Base: 10 (they contacted us)
+    - +5 per message exchange (up to +25)
+    - +15-25 for intent signals in messages
+    - +8-15 for business type match
+    - +8-15 for role/title
+    - +10 for having email (shows commitment)
+    - +15 for booking (definitive intent)
+    - +5 for fast response (replied within 1 hour)
+    - -10 for each day of silence (decays over time)
+    """
+    data = lead_data.get(sender, {})
+    if not data:
+        return 0
+
+    score = 10  # Base: they reached out
+
+    # ── Message volume (engagement depth) ──
+    msg_count = len(conversation_history.get(sender, []))
+    score += min(msg_count * 5, 25)  # Up to +25 for 5+ messages
+
+    # ── Intent signals in current message ──
+    if incoming_msg:
+        msg_lower = incoming_msg.lower()
+        for signal, points in _SCORE_INTENT_SIGNALS.items():
+            if signal in msg_lower:
+                score += points
+                break  # Only count highest signal per message
+
+    # ── Business type fit ──
+    biz = (data.get("business") or "").lower()
+    for keyword, points in _SCORE_BIZ_KEYWORDS.items():
+        if keyword in biz:
+            score += points
+            break
+
+    # ── Role/title match ──
+    name_or_title = ((data.get("name") or "") + " " + (data.get("business") or "")).lower()
+    for role, points in _SCORE_ROLES.items():
+        if role in name_or_title:
+            score += points
+            break
+
+    # ── Has email (commitment signal) ──
+    if data.get("email"):
+        score += 10
+
+    # ── Booked appointment (strongest signal) ──
+    if data.get("booked"):
+        score += 15
+
+    # ── Response speed bonus ──
+    last_msg_time = data.get("last_message_time")
+    created_time = data.get("first_contact_time")
+    if last_msg_time and created_time:
+        response_hours = (last_msg_time - created_time).total_seconds() / 3600
+        if response_hours <= 1 and msg_count >= 2:
+            score += 5  # Fast responder
+
+    # ── Silence decay ──
+    if last_msg_time and not data.get("booked"):
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        days_silent = (now - last_msg_time).total_seconds() / 86400
+        if days_silent > 1:
+            score -= int(min(days_silent * 10, 50))  # -10/day, cap at -50
+
+    # Clamp to 0-100
+    score = max(0, min(100, score))
+
+    # Store in lead_data
+    lead_data[sender]["lead_score"] = score
+
+    # Determine temperature label
+    if score >= 90:
+        lead_data[sender]["temperature"] = "Scorching"
+    elif score >= 70:
+        lead_data[sender]["temperature"] = "Hot"
+    elif score >= 50:
+        lead_data[sender]["temperature"] = "Warm"
+    elif score >= 30:
+        lead_data[sender]["temperature"] = "Cool"
+    else:
+        lead_data[sender]["temperature"] = "Cold"
+
+    return score
+
+
 # ══════════════════════════════════════════════════════════════════════════════════
 # MAYA — SHARED KNOWLEDGE BASE
 # Single source of truth for BOTH WhatsApp and Website chat Maya.
@@ -4144,6 +4275,21 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 assigned_agents=_assigned,
                 context=f"First message: {incoming_msg[:200]}"
             )
+
+        # ── Lead Scoring: update on every message ──
+        if not is_michael:
+            _new_score = _calculate_lead_score(sender, incoming_msg)
+            _temp = lead_data.get(sender, {}).get("temperature", "")
+            if is_new_sender:
+                lead_data[sender]["first_contact_time"] = datetime.now(pytz.timezone(TIMEZONE))
+            # Update Google Sheets with score + temperature (non-blocking)
+            try:
+                update_lead_columns(sender, {
+                    "Lead Temperature": _temp,
+                })
+            except Exception:
+                pass
+            print(f"[Score] {sender}: {_new_score}/100 ({_temp})")
 
         # ── Slack: new lead notification DISABLED (Session 31 — Michael: "#maya is too busy,
         #    I just want appointment book confirmations"). Keeping function for potential
