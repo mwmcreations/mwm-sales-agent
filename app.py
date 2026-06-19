@@ -143,7 +143,64 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
 SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
+SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID — email marketing
+SLACK_LARA_CHANNEL = "C0ARC24S9PF"   # #lara channel ID — CRM/follow-up
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
+
+# ══════════════════════════════════════════════════════════════════════
+# BACKGROUND THREAD HEARTBEAT MONITORING
+# Each background thread updates its heartbeat timestamp periodically.
+# A health-check endpoint and a watchdog thread detect dead threads.
+# ══════════════════════════════════════════════════════════════════════
+
+import threading as _threading_hb
+
+_thread_heartbeats = {}  # thread_name -> last_heartbeat_datetime
+_HEARTBEAT_STALE_MINUTES = 30  # If no heartbeat for 30 min, consider dead
+
+
+def _heartbeat(thread_name):
+    """Called by each background thread to register it's alive."""
+    _thread_heartbeats[thread_name] = datetime.now(pytz.timezone(TIMEZONE))
+
+
+def _get_thread_health():
+    """Return health status of all monitored threads."""
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    statuses = {}
+    for name, last_beat in _thread_heartbeats.items():
+        age_minutes = (now - last_beat).total_seconds() / 60
+        statuses[name] = {
+            "last_heartbeat": last_beat.isoformat(),
+            "age_minutes": round(age_minutes, 1),
+            "healthy": age_minutes < _HEARTBEAT_STALE_MINUTES,
+        }
+    return statuses
+
+
+def _thread_watchdog():
+    """Background watchdog: checks heartbeats every 15 min, alerts if a thread dies."""
+    import time as _tw
+    _tw.sleep(600)  # Wait 10 min after startup for threads to register
+    while True:
+        try:
+            now = datetime.now(pytz.timezone(TIMEZONE))
+            for name, last_beat in _thread_heartbeats.items():
+                age_minutes = (now - last_beat).total_seconds() / 60
+                if age_minutes > _HEARTBEAT_STALE_MINUTES:
+                    alert_msg = (
+                        f"THREAD DEAD: `{name}` last heartbeat {int(age_minutes)} min ago. "
+                        f"This thread may have crashed silently. Investigate immediately."
+                    )
+                    _post_to_slack_async(SLACK_DEV_CHANNEL, alert_msg)
+                    print(f"[Watchdog] ALERT: {name} appears dead (last heartbeat {int(age_minutes)} min ago)")
+        except Exception as e:
+            print(f"[Watchdog] Error: {e}")
+        _tw.sleep(900)  # Check every 15 min
+
+
+_threading_hb.Thread(target=_thread_watchdog, daemon=True, name="thread-watchdog").start()
+
 
 # ─── Capacity Management ─────────────────────────────────────────────────────
 # Max bookings per day to prevent overbooking. Michael can override via env var.
@@ -966,6 +1023,23 @@ def _calculate_lead_score(sender, incoming_msg=None):
     else:
         lead_data[sender]["temperature"] = "Cold"
 
+    # ── Fire QUALIFIED event when score crosses 60 for first time ──
+    _was_qualified = data.get("_qualified_notified", False)
+    if score >= 60 and not _was_qualified:
+        lead_data[sender]["_qualified_notified"] = True
+        _q_name = data.get("name", "")
+        _post_pipeline_event(
+            "QUALIFIED",
+            lead_name=_q_name,
+            lead_phone=sender,
+            source=data.get("source", "Unknown"),
+            old_stage="Engaged",
+            new_stage="Qualified",
+            assigned_agents=["Matt", "Maya"],
+            context=f"Lead score reached {score}/100 ({lead_data[sender].get('temperature', 'Warm')}). High conversion probability.",
+            extra_fields={"Score": str(score), "Business": data.get("business", "N/A")},
+        )
+
     return score
 
 
@@ -979,6 +1053,34 @@ def _calculate_lead_score(sender, incoming_msg=None):
 # Usage:
 #   _record_win(sender, deal_value=5000, service="Brand Story Package")
 #   _record_loss(sender, reason="Went with competitor", stage_lost="Proposal")
+
+
+def _record_proposal(sender, service="", proposal_type="Standard"):
+    """Track that a proposal was sent to a lead."""
+    data = lead_data.get(sender, {})
+    if not data:
+        return
+    lead_data[sender]["proposal_sent"] = True
+    lead_data[sender]["proposal_date"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+    lead_data[sender]["proposal_service"] = service
+
+    _post_pipeline_event(
+        "PROPOSAL_SENT",
+        lead_name=data.get("name", ""),
+        lead_phone=sender,
+        source=data.get("source", "Unknown"),
+        old_stage="Qualified",
+        new_stage="Proposal",
+        assigned_agents=["Matt"],
+        context=f"Proposal sent for: {service or 'General'}. Type: {proposal_type}",
+        extra_fields={"Service": service or "N/A", "Type": proposal_type},
+    )
+
+    try:
+        update_lead_columns(sender, {"WhatsApp Status": "Proposal Sent"})
+    except Exception:
+        pass
+
 
 # In-memory conversion stats (reset on deploy — persistent copy in Sheets)
 _conversion_stats = {
@@ -4466,6 +4568,21 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"\u26a0\ufe0f First-contact Sheets log error (non-fatal): {e}")
         if sender not in lead_data:
             lead_data[sender] = {"source": "WhatsApp"}
+        # ── UTM / Ad Referral tracking from WhatsApp Click-to-Message ads ──
+        _wa_referral = value.get("contacts", [{}])[0].get("referral", {}) if "contacts" in value else {}
+        if not _wa_referral:
+            # Also check messages level for referral data
+            for _msg_obj in messages:
+                if "referral" in _msg_obj:
+                    _wa_referral = _msg_obj["referral"]
+                    break
+        if _wa_referral:
+            lead_data[sender]["utm_source"] = _wa_referral.get("source_type", "ad")
+            lead_data[sender]["utm_medium"] = _wa_referral.get("source_url", "")
+            lead_data[sender]["utm_campaign"] = _wa_referral.get("headline", "")
+            lead_data[sender]["utm_content"] = _wa_referral.get("body", "")
+            lead_data[sender]["ad_referral"] = True
+            print(f"[UTM] WhatsApp ad referral detected for {sender}: {_wa_referral.get('headline', 'N/A')}")
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
         # ── Pipeline Event: NEW_LEAD ──
@@ -4606,6 +4723,41 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                             if sndr not in lead_data:
                                 lead_data[sndr] = {}
                             lead_data[sndr].update({"name": fields.get("name", lead_data[sndr].get("name", "")), "email": fields.get("email", lead_data[sndr].get("email", ""))})
+                            # ── Email Capture Dynamic Upgrade ──
+                            # When Maya captures email from a lead who had no email before,
+                            # upgrade routing: add Susan (email) + LARA (CRM)
+                            _new_email = fields.get("email", "")
+                            _had_email_before = bool(lead_data[sndr].get("_email_notified"))
+                            if _new_email and not _had_email_before:
+                                lead_data[sndr]["_email_notified"] = True
+                                _lead_nm = fields.get("name") or lead_data[sndr].get("name", "Unknown")
+                                # Notify Susan
+                                _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                                    f"*EMAIL CAPTURED — Routing Upgrade*\n"
+                                    f"Lead: {_lead_nm}\n"
+                                    f"Email: {_new_email}\n"
+                                    f"Source: {lead_data[sndr].get('source', 'WhatsApp')}\n"
+                                    f"Action: Add to nurture email sequence"
+                                )
+                                # Notify LARA
+                                _post_to_slack_async(SLACK_LARA_CHANNEL,
+                                    f"*EMAIL CAPTURED — CRM Update*\n"
+                                    f"Lead: {_lead_nm}\n"
+                                    f"Email: {_new_email}\n"
+                                    f"Phone: {sndr}\n"
+                                    f"Action: Update CRM record, begin email follow-up"
+                                )
+                                # Pipeline event
+                                _post_pipeline_event(
+                                    "STAGE_CHANGE",
+                                    lead_name=_lead_nm,
+                                    lead_phone=sndr,
+                                    source=lead_data[sndr].get("source", "WhatsApp"),
+                                    old_stage="No-Email Track",
+                                    new_stage="Full Track (Email Captured)",
+                                    assigned_agents=["Maya", "Susan", "Eric", "LARA"],
+                                    context=f"Email {_new_email} captured during conversation. Full agent track now active.",
+                                )
                             # Refresh identity with newly-extracted name/email so the
                             # shadow thread reflects the real lead (not "Unknown lead")
                             # on the outbound mirror that's about to happen.
@@ -5213,6 +5365,146 @@ def _pre_meeting_briefer():
         time.sleep(900)  # Check every 15 minutes
 
 threading.Thread(target=_pre_meeting_briefer, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# NO-SHOW DETECTION — Background Thread
+# Runs at 6 PM daily. Checks today's calendar for booked events that
+# ended but have no Golden Hour follow-up (meaning the visit didn't happen).
+# Posts NO_SHOW pipeline event, alerts Matt, updates lead status.
+# ══════════════════════════════════════════════════════════════════════
+
+_noshow_processed = set()  # event IDs already flagged as no-show
+
+
+def _noshow_detector():
+    """Background thread: detect no-shows by checking for booked events
+    that ended today but were never processed by Golden Hour (no visit happened)."""
+    import time as _time_ns
+    print("[No-Show] Detector started (checks at 6 PM daily)")
+    _heartbeat("noshow_detector")
+    _time_ns.sleep(600)  # Wait 10 min after startup
+
+    while True:
+        try:
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+
+            # Only run between 6 PM and 7 PM
+            if now.hour == 18:
+                service = get_calendar_service()
+
+                # Check today's events
+                day_start = tz.localize(datetime(now.year, now.month, now.day, 0, 0))
+                day_end = day_start + timedelta(days=1)
+
+                events_result = service.events().list(
+                    calendarId=CALENDAR_ID,
+                    timeMin=day_start.isoformat(),
+                    timeMax=day_end.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime"
+                ).execute()
+
+                for event in events_result.get("items", []):
+                    event_id = event.get("id", "")
+                    summary = event.get("summary", "")
+                    description = event.get("description", "")
+
+                    # Only check MWM booking events
+                    if not any(kw in summary for kw in ["Studio Visit", "Strategy Call", "MWM", "Consultation"]):
+                        continue
+
+                    # Skip if already processed
+                    if event_id in _noshow_processed:
+                        continue
+
+                    # Skip if Golden Hour already handled it (visit happened)
+                    if event_id in _golden_hour_processed:
+                        continue
+
+                    end_info = event.get("end", {})
+                    if "dateTime" not in end_info:
+                        continue
+
+                    event_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
+
+                    # Only flag events that have already ended
+                    if event_end > now:
+                        continue
+
+                    # This event ended today, was NOT processed by Golden Hour = NO-SHOW
+                    _noshow_processed.add(event_id)
+
+                    # Extract lead info from description
+                    _ns_name = ""
+                    _ns_email = ""
+                    _ns_phone = ""
+                    for line in description.split("\n"):
+                        if line.startswith("Lead:"):
+                            _ns_name = line.replace("Lead:", "").strip()
+                        elif line.startswith("Email:"):
+                            _ns_email = line.replace("Email:", "").strip()
+
+                    # Find phone from lead_data
+                    if _ns_name:
+                        for ph, ld in lead_data.items():
+                            if ld.get("name", "").strip().lower() == _ns_name.lower():
+                                _ns_phone = ph
+                                break
+
+                    print(f"[No-Show] DETECTED: {_ns_name} missed {summary} (event {event_id})")
+
+                    # Pipeline event
+                    _post_pipeline_event(
+                        "NO_SHOW",
+                        lead_name=_ns_name,
+                        lead_phone=_ns_phone,
+                        source=lead_data.get(_ns_phone, {}).get("source", "Unknown"),
+                        old_stage="Booked",
+                        new_stage="No-Show",
+                        assigned_agents=["Matt", "Maya"],
+                        context=f"Missed: {summary}. Maya should send a warm reschedule message.",
+                        extra_fields={"Event": summary, "Email": _ns_email or "N/A"},
+                    )
+
+                    # Alert Matt
+                    _notify_escalation_to_matt(
+                        _ns_name or "Unknown",
+                        _ns_phone.replace("whatsapp:", "") if _ns_phone else "Unknown",
+                        f"NO-SHOW: Lead missed their {summary}. Consider reaching out to reschedule.",
+                    )
+
+                    # Update lead status
+                    if _ns_phone and _ns_phone in lead_data:
+                        lead_data[_ns_phone]["booked"] = False
+                        lead_data[_ns_phone]["no_show"] = True
+                    try:
+                        if _ns_phone:
+                            update_lead_columns(_ns_phone, {
+                                "WhatsApp Status": "No-Show",
+                                "Lead Temperature": "Cool",
+                                "Appointment Booked": "No-Show",
+                            })
+                    except Exception:
+                        pass
+
+                    # Send Maya a reschedule message to the lead (if we have their phone)
+                    if _ns_phone and _ns_phone.startswith("whatsapp:"):
+                        first_name = (_ns_name or "there").split()[0]
+                        reschedule_msg = (
+                            f"Hey {first_name}! We missed you at the studio today. "
+                            f"No worries at all — things come up! Would you like to reschedule? "
+                            f"Just let me know what day works best for you."
+                        )
+                        send_whatsapp_meta(_ns_phone, body=reschedule_msg)
+
+        except Exception as e:
+            print(f"[No-Show] Detector error: {e}")
+        _time_ns.sleep(3600)  # Check every hour (6 PM window catches it)
+
+
+threading.Thread(target=_noshow_detector, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -7872,16 +8164,21 @@ def _handle_web_tool_call(tool_name, tool_input):
             # ── Dedup + persist: register web chat lead in lead_data ──
             _web_key = f"web:{_web_lead_email or _web_lead_name or 'unknown'}"
             _dedup_match = None
-            # Cross-reference with existing WhatsApp leads by name or email
-            for _ph, _ld in lead_data.items():
-                _ld_name = (_ld.get("name") or "").strip().lower()
-                _ld_email = (_ld.get("email") or "").strip().lower()
-                if (_web_lead_name and _ld_name and _web_lead_name.strip().lower() == _ld_name):
-                    _dedup_match = _ph
-                    break
-                elif (_web_lead_email and _ld_email and _web_lead_email.strip().lower() == _ld_email):
-                    _dedup_match = _ph
-                    break
+            # Cross-reference with existing leads by phone, email, or name
+            if _web_lead_phone:
+                _phone_key, _phone_data = _find_lead_by_phone(_web_lead_phone)
+                if _phone_key:
+                    _dedup_match = _phone_key
+            if not _dedup_match and _web_lead_email:
+                _email_key, _email_data = _find_lead_by_email(_web_lead_email)
+                if _email_key:
+                    _dedup_match = _email_key
+            if not _dedup_match:
+                for _ph, _ld in lead_data.items():
+                    _ld_name = (_ld.get("name") or "").strip().lower()
+                    if (_web_lead_name and _ld_name and _web_lead_name.strip().lower() == _ld_name):
+                        _dedup_match = _ph
+                        break
             if _dedup_match:
                 print(f"[DEDUP] Web chat lead {_web_lead_name} matches WhatsApp lead {_dedup_match}")
                 # Update existing record with web context
@@ -7959,6 +8256,14 @@ def web_chat_endpoint():
         conversation_id = data.get('conversation_id', f"web_{int(time.time())}")
         page_url = data.get('page_url', '')
 
+        # UTM tracking from chat widget
+        _chat_utm = {
+            "utm_source": data.get("utm_source", ""),
+            "utm_medium": data.get("utm_medium", ""),
+            "utm_campaign": data.get("utm_campaign", ""),
+            "utm_content": data.get("utm_content", ""),
+        }
+
         if not user_message:
             return jsonify({'error': 'Empty message'}), 400
 
@@ -7972,7 +8277,8 @@ def web_chat_endpoint():
                 'messages': [],
                 'created': time.time(),
                 'last_active': time.time(),
-                'page_url': page_url
+                'page_url': page_url,
+                'utm': _chat_utm,
             }
 
         conv = _web_conversations[conversation_id]
@@ -8145,6 +8451,219 @@ def record_outcome_api():
         )
 
     return jsonify({"success": True, "outcome": outcome, "sender": sender})
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint with thread monitoring."""
+    thread_health = _get_thread_health()
+    all_healthy = all(s.get("healthy", False) for s in thread_health.values())
+    
+    return jsonify({
+        "status": "healthy" if all_healthy else "degraded",
+        "threads": thread_health,
+        "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
+        "lead_count": len(lead_data),
+        "active_conversations": len(conversation_history),
+    }), 200 if all_healthy else 503
+
+
+# FORM LEAD ENDPOINT — Inbound Website Forms
+# Receives leads from website contact/inquiry forms.
+# Form leads always have phone + email = full-track routing.
+# Routes to: Maya (WhatsApp) + Susan (email) + Eric (retargeting) + LARA (CRM)
+# ══════════════════════════════════════════════════════════════════════
+
+@app.route('/form', methods=['POST'])
+def form_webhook():
+    """Handle inbound form submissions from the website."""
+    try:
+        data = request.get_json(force=True) if request.is_json else request.form.to_dict()
+    except Exception:
+        data = request.form.to_dict()
+
+    name = (data.get("name") or data.get("full_name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    phone_raw = (data.get("phone") or data.get("phone_number") or "").strip()
+    message = (data.get("message") or data.get("inquiry") or data.get("notes") or "").strip()
+    service = (data.get("service") or data.get("interest") or "").strip()
+    business = (data.get("business") or data.get("company") or "").strip()
+
+    # UTM tracking
+    utm_source = (data.get("utm_source") or "").strip()
+    utm_medium = (data.get("utm_medium") or "").strip()
+    utm_campaign = (data.get("utm_campaign") or "").strip()
+    utm_content = (data.get("utm_content") or "").strip()
+
+    if not name and not email and not phone_raw:
+        return jsonify({"error": "Name, email, or phone required"}), 400
+
+    # Normalize phone
+    phone_digits = re.sub(r"\D", "", phone_raw)
+    if phone_digits and len(phone_digits) == 10:
+        phone_digits = "1" + phone_digits
+    sender_key = f"whatsapp:+{phone_digits}" if phone_digits else email or name
+
+    # Check for existing lead (dedup by phone or email)
+    existing_key, existing_data = None, None
+    if phone_digits:
+        existing_key, existing_data = _find_lead_by_phone(phone_digits)
+    if not existing_key and email:
+        existing_key, existing_data = _find_lead_by_email(email)
+
+    if existing_key:
+        # Update existing lead with new info
+        if name:
+            lead_data[existing_key]["name"] = name
+        if email:
+            lead_data[existing_key]["email"] = email
+        if business:
+            lead_data[existing_key]["business"] = business
+        if service:
+            lead_data[existing_key]["service_interest"] = service
+        lead_data[existing_key]["form_submitted"] = True
+        lead_data[existing_key]["form_message"] = message
+        sender_key = existing_key
+        print(f"[Form] Existing lead updated: {name} ({sender_key})")
+    else:
+        # New lead
+        lead_data[sender_key] = {
+            "name": name,
+            "email": email,
+            "phone": phone_raw,
+            "business": business,
+            "service_interest": service,
+            "source": "Website Form",
+            "form_submitted": True,
+            "form_message": message,
+            "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
+            "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
+        }
+        print(f"[Form] New lead registered: {name} ({sender_key})")
+
+    # UTM data
+    if utm_source or utm_campaign:
+        lead_data[sender_key]["utm_source"] = utm_source
+        lead_data[sender_key]["utm_medium"] = utm_medium
+        lead_data[sender_key]["utm_campaign"] = utm_campaign
+        lead_data[sender_key]["utm_content"] = utm_content
+
+    # Log to Google Sheets
+    try:
+        log_new_contact_to_sheets(sender_key)
+    except Exception as e:
+        print(f"[Form] Sheets log error (non-fatal): {e}")
+
+    # Calculate lead score (form leads start higher)
+    try:
+        _calculate_lead_score(sender_key, message)
+    except Exception:
+        pass
+
+    # Pipeline event
+    _post_pipeline_event(
+        "NEW_LEAD",
+        lead_name=name,
+        lead_phone=sender_key,
+        source="Website Form",
+        new_stage="New",
+        assigned_agents=["Maya", "Susan", "Eric", "LARA"],
+        context=f"Form submission: {message[:200]}" if message else f"Service interest: {service}",
+        extra_fields={
+            "Email": email or "N/A",
+            "Service": service or "N/A",
+            "UTM": f"{utm_source}/{utm_medium}/{utm_campaign}" if utm_source else "Direct",
+        },
+    )
+
+    # Notify agents via Slack
+
+    # 1. Maya — she'll initiate WhatsApp outreach
+    maya_msg = (
+        f"*NEW FORM LEAD*\n"
+        f"Name: {name}\n"
+        f"Phone: {phone_raw}\n"
+        f"Email: {email}\n"
+        f"Business: {business or 'N/A'}\n"
+        f"Service: {service or 'N/A'}\n"
+        f"Message: {message[:300] or 'N/A'}\n"
+        f"Source: Website Form"
+    )
+    if utm_campaign:
+        maya_msg += f"\nCampaign: {utm_campaign}"
+    _post_to_slack_async(SLACK_MAYA_CHANNEL, maya_msg)
+
+    # 2. Susan — email nurture sequence
+    if email:
+        susan_msg = (
+            f"*NEW FORM LEAD — Email Track*\n"
+            f"Name: {name}\n"
+            f"Email: {email}\n"
+            f"Business: {business or 'N/A'}\n"
+            f"Interest: {service or 'N/A'}\n"
+            f"Message: {message[:300] or 'N/A'}\n"
+            f"Action: Add to welcome email sequence"
+        )
+        _post_to_slack_async(SLACK_SUSAN_CHANNEL, susan_msg)
+
+    # 3. LARA — CRM tracking
+    if email:
+        lara_msg = (
+            f"*NEW FORM LEAD — CRM Entry*\n"
+            f"Name: {name}\n"
+            f"Email: {email}\n"
+            f"Phone: {phone_raw}\n"
+            f"Business: {business or 'N/A'}\n"
+            f"Source: Website Form\n"
+            f"Action: Create CRM record, begin follow-up sequence"
+        )
+        _post_to_slack_async(SLACK_LARA_CHANNEL, lara_msg)
+
+    # 4. Eric — retargeting audience
+    eric_retarget = (
+        f"*FORM LEAD — Retargeting*\n"
+        f"Name: {name}\n"
+        f"Email: {email or 'N/A'}\n"
+        f"Interest: {service or 'N/A'}"
+    )
+    if utm_campaign:
+        eric_retarget += f"\nCampaign: {utm_campaign}"
+    _post_to_slack_async(SLACK_ERIC_CHANNEL, eric_retarget)
+
+    # 5. Matt — brief notification
+    _post_to_slack_async(SLACK_MATT_CHANNEL, f"New form lead: *{name}* ({service or 'General inquiry'}). Full track activated (Maya + Susan + Eric + LARA).")
+
+    # Auto-send WhatsApp greeting if we have a phone number
+    if phone_digits and len(phone_digits) >= 10:
+        first_name = name.split()[0] if name else "there"
+        wa_target = f"whatsapp:+{phone_digits}"
+        greeting = (
+            f"Hi {first_name}! Thanks for reaching out to MWM Creations & Studios. "
+            f"I'm Maya, and I'd love to help you with your {service or 'project'}. "
+        )
+        if message:
+            greeting += "I saw your message and I'll make sure to address everything. "
+        greeting += "What's the best time for a quick chat about your vision?"
+
+        try:
+            send_whatsapp_meta(wa_target, body=greeting)
+            # Add to conversation history
+            if wa_target not in conversation_history:
+                conversation_history[wa_target] = []
+            conversation_history[wa_target].append({"role": "assistant", "content": greeting})
+            print(f"[Form] Auto-greeting sent to {wa_target}")
+        except Exception as e:
+            print(f"[Form] WhatsApp greeting error (non-fatal): {e}")
+
+    return jsonify({
+        "success": True,
+        "lead_id": sender_key,
+        "message": "Lead received and routed to all agents"
+    })
 
 
 if __name__ == "__main__":
