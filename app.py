@@ -3825,19 +3825,22 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             lead_data[sender] = {}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
-        # ── Slack: notify new lead (skipped for Michael's own test pings) ──
-        if is_new_sender and not is_michael:
-            try:
-                _notify_new_lead(sender, incoming_msg)
-            except Exception as slack_err:
-                print(f"⚠️ Slack new lead notification failed (non-fatal): {slack_err}")
+        # ── Slack: new lead notification DISABLED (Session 31 — Michael: "#maya is too busy,
+        #    I just want appointment book confirmations"). Keeping function for potential
+        #    re-enable later. ──
+        # if is_new_sender and not is_michael:
+        #     try:
+        #         _notify_new_lead(sender, incoming_msg)
+        #     except Exception as slack_err:
+        #         print(f"⚠️ Slack new lead notification failed (non-fatal): {slack_err}")
 
-        # ── Slack: detect hot signal (skipped for Michael's own test pings) ──
+        # ── Slack: hot signal notification DISABLED (Session 31 — #maya bookings only) ──
+        # Sheet update kept — still useful for lead scoring without the Slack noise.
         if _detect_hot_signal(incoming_msg) and not is_michael:
             try:
-                _ld = lead_data.get(sender, {})
-                _notify_hot_signal(sender, _ld.get("name", "Unknown"), incoming_msg)
-                # -- Update Google Sheet: mark as hot --
+                # _ld = lead_data.get(sender, {})
+                # _notify_hot_signal(sender, _ld.get("name", "Unknown"), incoming_msg)
+                # -- Update Google Sheet: mark as hot (kept active) --
                 try:
                     update_lead_columns(sender, {
                         "Lead Temperature": "Hot",
@@ -4202,11 +4205,11 @@ def _cold_lead_checker():
                         })
                     except Exception:
                         pass
-                    # Notify Slack of cold lead
-                    try:
-                        _notify_cold_lead(phone, name, last_msg, int(hours_silent))
-                    except Exception as slack_err:
-                        print(f"⚠️ Slack cold lead notification failed (non-fatal): {slack_err}")
+                    # Slack cold lead notification DISABLED (Session 31 — #maya bookings only)
+                    # try:
+                    #     _notify_cold_lead(phone, name, last_msg, int(hours_silent))
+                    # except Exception as slack_err:
+                    #     print(f"⚠️ Slack cold lead notification failed (non-fatal): {slack_err}")
         except Exception as e:
             print(f"â ï¸  Cold-lead checker error: {e}")
         time.sleep(3600)  # Check again in 1 hour
