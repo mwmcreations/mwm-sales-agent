@@ -938,6 +938,163 @@ def _calculate_lead_score(sender, incoming_msg=None):
     return score
 
 
+# ─── Win/Loss Tracking & Source Attribution ──────────────────────────────────
+# Track conversion outcomes and attribute them to the source channel.
+# Stores outcomes in lead_data and logs to Google Sheets + pipeline events.
+#
+# Sources: Instagram, WhatsApp, Website Chat, Form, Referral
+# Outcomes: Won (Client), Lost (reason tracked), No-Show, Stale
+#
+# Usage:
+#   _record_win(sender, deal_value=5000, service="Brand Story Package")
+#   _record_loss(sender, reason="Went with competitor", stage_lost="Proposal")
+
+# In-memory conversion stats (reset on deploy — persistent copy in Sheets)
+_conversion_stats = {
+    "wins": 0,
+    "losses": 0,
+    "by_source": {},  # source → {"wins": n, "losses": n, "revenue": n}
+}
+
+
+def _record_win(sender, deal_value=0, service="", notes=""):
+    """Record a won deal — lead converted to client.
+
+    Args:
+        sender: The lead's key in lead_data
+        deal_value: Dollar value of the deal (for ROI tracking)
+        service: Which service they purchased
+        notes: Free-text notes about the deal
+    """
+    data = lead_data.get(sender, {})
+    source = data.get("source", "WhatsApp")
+    lead_name = data.get("name", "Unknown")
+
+    # Update lead_data
+    data["outcome"] = "Won"
+    data["outcome_date"] = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+    data["deal_value"] = deal_value
+    data["service"] = service
+
+    # Update conversion stats
+    _conversion_stats["wins"] += 1
+    if source not in _conversion_stats["by_source"]:
+        _conversion_stats["by_source"][source] = {"wins": 0, "losses": 0, "revenue": 0}
+    _conversion_stats["by_source"][source]["wins"] += 1
+    _conversion_stats["by_source"][source]["revenue"] += deal_value
+
+    # Pipeline event
+    _post_pipeline_event(
+        "CLIENT_WON",
+        lead_name=lead_name,
+        lead_phone=sender,
+        source=source,
+        old_stage="Proposal",
+        new_stage="Client",
+        assigned_agents=["Matt", "Susan", "Eric"],
+        context=notes or f"Deal closed: {service}",
+        extra_fields={
+            "Deal Value": f"${deal_value:,.0f}" if deal_value else "TBD",
+            "Service": service or "N/A",
+            "Lead Score": str(data.get("lead_score", "N/A")),
+        },
+    )
+
+    # Update Google Sheets
+    try:
+        update_lead_columns(sender, {
+            "WhatsApp Status": "Client - Won",
+            "Lead Temperature": "Converted",
+        })
+    except Exception:
+        pass
+
+    print(f"🎉 [WIN] {lead_name} converted via {source} — ${deal_value:,.0f} ({service})")
+
+
+def _record_loss(sender, reason="Unknown", stage_lost=""):
+    """Record a lost deal — lead did not convert.
+
+    Args:
+        sender: The lead's key in lead_data
+        reason: Why they didn't convert (competitor, budget, timing, ghosted, etc.)
+        stage_lost: At which pipeline stage they dropped off
+    """
+    data = lead_data.get(sender, {})
+    source = data.get("source", "WhatsApp")
+    lead_name = data.get("name", "Unknown")
+
+    # Update lead_data
+    data["outcome"] = "Lost"
+    data["outcome_date"] = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+    data["loss_reason"] = reason
+    data["stage_lost"] = stage_lost
+
+    # Update conversion stats
+    _conversion_stats["losses"] += 1
+    if source not in _conversion_stats["by_source"]:
+        _conversion_stats["by_source"][source] = {"wins": 0, "losses": 0, "revenue": 0}
+    _conversion_stats["by_source"][source]["losses"] += 1
+
+    # Pipeline event
+    _post_pipeline_event(
+        "CLIENT_LOST",
+        lead_name=lead_name,
+        lead_phone=sender,
+        source=source,
+        old_stage=stage_lost or "Unknown",
+        new_stage="Lost",
+        assigned_agents=["Matt"],
+        context=f"Reason: {reason}",
+        extra_fields={
+            "Stage Lost": stage_lost or "N/A",
+            "Lead Score at Loss": str(data.get("lead_score", "N/A")),
+        },
+    )
+
+    # Update Google Sheets
+    try:
+        update_lead_columns(sender, {
+            "WhatsApp Status": f"Lost - {reason[:30]}",
+            "Lead Temperature": "Lost",
+        })
+    except Exception:
+        pass
+
+    print(f"💔 [LOSS] {lead_name} lost at {stage_lost or 'unknown stage'} via {source} — {reason}")
+
+
+def _get_conversion_report():
+    """Generate a conversion report with source attribution.
+
+    Returns a dict with:
+    - total_wins, total_losses, win_rate
+    - by_source: {source: {wins, losses, revenue, win_rate}}
+    """
+    total_wins = _conversion_stats["wins"]
+    total_losses = _conversion_stats["losses"]
+    total = total_wins + total_losses
+
+    report = {
+        "total_wins": total_wins,
+        "total_losses": total_losses,
+        "win_rate": f"{(total_wins / total * 100):.1f}%" if total > 0 else "N/A",
+        "total_leads": total,
+        "by_source": {},
+    }
+
+    for source, stats in _conversion_stats["by_source"].items():
+        src_total = stats["wins"] + stats["losses"]
+        report["by_source"][source] = {
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+            "revenue": stats["revenue"],
+            "win_rate": f"{(stats['wins'] / src_total * 100):.1f}%" if src_total > 0 else "N/A",
+        }
+
+    return report
+
+
 # ══════════════════════════════════════════════════════════════════════════════════
 # MAYA — SHARED KNOWLEDGE BASE
 # Single source of truth for BOTH WhatsApp and Website chat Maya.
@@ -4256,7 +4413,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             except Exception as e:
                 print(f"\u26a0\ufe0f First-contact Sheets log error (non-fatal): {e}")
         if sender not in lead_data:
-            lead_data[sender] = {}
+            lead_data[sender] = {"source": "WhatsApp"}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
         # ── Pipeline Event: NEW_LEAD ──
@@ -7807,6 +7964,84 @@ def web_chat_endpoint():
                      "Could you share your name and best contact info?",
             'conversation_id': data.get('conversation_id', '')
         }), 500
+
+# ─── Conversion Report API ────────────────────────────────────────────────────
+@app.route('/api/conversions', methods=['GET'])
+def conversion_report_api():
+    """Return conversion stats with source attribution. Used by health checks and dashboards."""
+    api_key = request.headers.get("X-API-Key", "")
+    expected_key = os.getenv("AGENT_HUB_API_KEY", "")
+    if expected_key and api_key != expected_key:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    report = _get_conversion_report()
+
+    # Add current pipeline snapshot
+    pipeline_snapshot = {"New": 0, "Contacted": 0, "Engaged": 0, "Qualified": 0,
+                         "Booked": 0, "Visit Completed": 0, "Proposal": 0, "Client": 0,
+                         "Cold": 0, "No-Show": 0}
+    for ph, ld in lead_data.items():
+        temp = ld.get("temperature", "")
+        if ld.get("outcome") == "Won":
+            pipeline_snapshot["Client"] += 1
+        elif ld.get("booked"):
+            pipeline_snapshot["Booked"] += 1
+        elif temp == "Cold":
+            pipeline_snapshot["Cold"] += 1
+        elif ld.get("lead_score", 0) >= 50:
+            pipeline_snapshot["Engaged"] += 1
+        else:
+            pipeline_snapshot["Contacted"] += 1
+
+    report["pipeline_snapshot"] = pipeline_snapshot
+    report["active_leads"] = len(lead_data)
+
+    return jsonify(report)
+
+
+# ─── Win/Loss Recording API (for Matt or manual entry) ───────────────────────
+@app.route('/api/record-outcome', methods=['POST'])
+def record_outcome_api():
+    """Record a win or loss. Called by Matt agent or manual dashboard."""
+    api_key = request.headers.get("X-API-Key", "")
+    expected_key = os.getenv("AGENT_HUB_API_KEY", "")
+    if expected_key and api_key != expected_key:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON body"}), 400
+
+    sender = data.get("sender", "")
+    outcome = data.get("outcome", "").lower()
+
+    if not sender or outcome not in ("won", "lost"):
+        return jsonify({"error": "Required: sender, outcome (won/lost)"}), 400
+
+    # Find lead in lead_data (try both formats)
+    if sender not in lead_data:
+        _match_key, _ = _find_lead_by_phone(sender)
+        if _match_key:
+            sender = _match_key
+        else:
+            return jsonify({"error": f"Lead not found: {sender}"}), 404
+
+    if outcome == "won":
+        _record_win(
+            sender,
+            deal_value=data.get("deal_value", 0),
+            service=data.get("service", ""),
+            notes=data.get("notes", ""),
+        )
+    else:
+        _record_loss(
+            sender,
+            reason=data.get("reason", "Unknown"),
+            stage_lost=data.get("stage_lost", ""),
+        )
+
+    return jsonify({"success": True, "outcome": outcome, "sender": sender})
+
 
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
