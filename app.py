@@ -8666,6 +8666,261 @@ def form_webhook():
     })
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+# META LEAD ADS WEBHOOK — Eric's Facebook/Instagram Ad Campaigns
+# When someone fills out a Lead Ad form on Facebook or Instagram,
+# Meta sends a webhook notification here. We fetch the full lead data
+# from the Graph API and route it through the Sales Machine pipeline.
+#
+# Setup in Meta Business Suite:
+#   1. Go to Business Settings → Integrations → Leads Access
+#   2. Set webhook URL to: https://<railway-domain>/meta-leads
+#   3. Subscribe to "leadgen" field on your Page
+#   4. The same WEBHOOK_VERIFY_TOKEN is used for verification
+# ══════════════════════════════════════════════════════════════════════
+
+@app.route("/meta-leads", methods=["GET", "POST"])
+def meta_leads_webhook():
+    """Handle Meta Lead Ads webhooks from Eric's FB/IG campaigns."""
+
+    # ── GET: Meta webhook verification ──
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
+            print("[Meta Leads] Webhook verified by Meta")
+            return challenge, 200
+        return "Forbidden", 403
+
+    # ── POST: Incoming lead from Meta Lead Ad ──
+    data = request.get_json(force=True, silent=True) or {}
+
+    # Meta Lead Ads send object="page" with field="leadgen"
+    if data.get("object") not in ("page", "instagram"):
+        return "OK", 200
+
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            if change.get("field") != "leadgen":
+                continue
+
+            leadgen_value = change.get("value", {})
+            leadgen_id = leadgen_value.get("leadgen_id")
+            form_id = leadgen_value.get("form_id", "")
+            page_id = leadgen_value.get("page_id", "")
+            ad_id = leadgen_value.get("ad_id", "")
+            adgroup_id = leadgen_value.get("adgroup_id", "")
+            created_time = leadgen_value.get("created_time", "")
+
+            if not leadgen_id:
+                print("[Meta Leads] No leadgen_id in webhook — skipping")
+                continue
+
+            print(f"[Meta Leads] New lead ad submission: leadgen_id={leadgen_id}, form_id={form_id}, ad_id={ad_id}")
+
+            # Fetch full lead data from Meta Graph API
+            try:
+                lead_url = f"https://graph.facebook.com/v19.0/{leadgen_id}"
+                lead_resp = http_requests.get(
+                    lead_url,
+                    params={"access_token": META_ACCESS_TOKEN},
+                    timeout=15,
+                )
+                lead_resp.raise_for_status()
+                lead_data_meta = lead_resp.json()
+            except Exception as e:
+                print(f"[Meta Leads] Error fetching lead data: {e}")
+                _post_to_slack_async(SLACK_DEV_CHANNEL,
+                    f"Meta Lead Ad error: could not fetch lead `{leadgen_id}`: {e}")
+                continue
+
+            # Parse the field_data array into a dict
+            # Meta returns: {"field_data": [{"name": "email", "values": ["user@example.com"]}, ...]}
+            field_data = lead_data_meta.get("field_data", [])
+            fields = {}
+            for field in field_data:
+                fname = field.get("name", "").lower().replace(" ", "_")
+                fvalues = field.get("values", [])
+                fields[fname] = fvalues[0] if fvalues else ""
+
+            # Extract standard fields (Meta form fields can have varying names)
+            name = fields.get("full_name") or fields.get("name") or fields.get("first_name", "")
+            if not name and fields.get("first_name"):
+                name = fields.get("first_name", "")
+                if fields.get("last_name"):
+                    name += " " + fields["last_name"]
+            email = fields.get("email", "").strip().lower()
+            phone_raw = fields.get("phone_number") or fields.get("phone") or fields.get("cell_phone", "")
+            company = fields.get("company_name") or fields.get("company") or fields.get("business", "")
+            # Custom fields Eric might add to the form
+            service_interest = fields.get("service") or fields.get("interest") or fields.get("what_service_are_you_interested_in", "")
+            city = fields.get("city", "")
+            state = fields.get("state", "")
+
+            print(f"[Meta Leads] Parsed: name={name}, email={email}, phone={phone_raw}, biz={company}")
+
+            # Normalize phone
+            phone_digits = re.sub(r"\D", "", phone_raw)
+            if phone_digits and len(phone_digits) == 10:
+                phone_digits = "1" + phone_digits
+            sender_key = f"whatsapp:+{phone_digits}" if phone_digits else email or name or f"meta_lead_{leadgen_id}"
+
+            # Dedup check
+            existing_key, existing_data = None, None
+            if phone_digits:
+                existing_key, existing_data = _find_lead_by_phone(phone_digits)
+            if not existing_key and email:
+                existing_key, existing_data = _find_lead_by_email(email)
+
+            if existing_key:
+                # Update existing lead
+                if name:
+                    lead_data[existing_key]["name"] = name
+                if email:
+                    lead_data[existing_key]["email"] = email
+                if company:
+                    lead_data[existing_key]["business"] = company
+                lead_data[existing_key]["meta_lead_ad"] = True
+                lead_data[existing_key]["ad_id"] = ad_id
+                lead_data[existing_key]["form_id"] = form_id
+                sender_key = existing_key
+                print(f"[Meta Leads] Existing lead updated: {name} ({sender_key})")
+            else:
+                # New lead
+                lead_data[sender_key] = {
+                    "name": name,
+                    "email": email,
+                    "phone": phone_raw,
+                    "business": company,
+                    "service_interest": service_interest,
+                    "source": "Meta Lead Ad",
+                    "meta_lead_ad": True,
+                    "leadgen_id": leadgen_id,
+                    "ad_id": ad_id,
+                    "form_id": form_id,
+                    "adgroup_id": adgroup_id,
+                    "city": city,
+                    "state": state,
+                    "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
+                    "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
+                }
+                print(f"[Meta Leads] New lead registered: {name} ({sender_key})")
+
+            # Log to Google Sheets
+            try:
+                log_new_contact_to_sheets(sender_key)
+            except Exception as e:
+                print(f"[Meta Leads] Sheets log error (non-fatal): {e}")
+
+            # Calculate lead score
+            try:
+                _calculate_lead_score(sender_key, service_interest or company)
+            except Exception:
+                pass
+
+            # Pipeline event
+            _post_pipeline_event(
+                "NEW_LEAD",
+                lead_name=name,
+                lead_phone=sender_key,
+                source="Meta Lead Ad",
+                new_stage="New",
+                assigned_agents=["Maya", "Susan", "Eric", "LARA"] if email else ["Maya", "Eric"],
+                context=f"Lead Ad form submission. Interest: {service_interest or 'General'}. Business: {company or 'N/A'}",
+                extra_fields={
+                    "Email": email or "N/A",
+                    "Business": company or "N/A",
+                    "Ad ID": ad_id or "N/A",
+                    "City": city or "N/A",
+                },
+            )
+
+            # ── Notify agents via Slack ──
+
+            # Maya — she'll initiate WhatsApp outreach
+            _lead_loc = f"{city}, {state}" if city else ""
+            maya_msg = (
+                f"*NEW LEAD — Meta Lead Ad*\n"
+                f"Name: {name}\n"
+                f"Phone: {phone_raw}\n"
+                f"Email: {email or 'N/A'}\n"
+                f"Business: {company or 'N/A'}\n"
+                f"Interest: {service_interest or 'N/A'}\n"
+            )
+            if _lead_loc:
+                maya_msg += f"Location: {_lead_loc}\n"
+            maya_msg += f"Source: Facebook/Instagram Lead Ad"
+            _post_to_slack_async(SLACK_MAYA_CHANNEL, maya_msg)
+
+            # Susan — email nurture (if email provided)
+            if email:
+                _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                    f"*NEW LEAD — Meta Ad Email Track*\n"
+                    f"Name: {name}\n"
+                    f"Email: {email}\n"
+                    f"Business: {company or 'N/A'}\n"
+                    f"Interest: {service_interest or 'N/A'}\n"
+                    f"Action: Add to welcome email sequence"
+                )
+
+            # LARA — CRM (if email provided)
+            if email:
+                _post_to_slack_async(SLACK_LARA_CHANNEL,
+                    f"*NEW LEAD — Meta Ad CRM Entry*\n"
+                    f"Name: {name}\n"
+                    f"Email: {email}\n"
+                    f"Phone: {phone_raw}\n"
+                    f"Business: {company or 'N/A'}\n"
+                    f"Source: Meta Lead Ad\n"
+                    f"Action: Create CRM record"
+                )
+
+            # Eric — ad performance tracking (always)
+            _post_to_slack_async(SLACK_ERIC_CHANNEL,
+                f"*LEAD CAPTURED — Meta Ad*\n"
+                f"Name: {name}\n"
+                f"Ad ID: {ad_id or 'N/A'}\n"
+                f"Form ID: {form_id or 'N/A'}\n"
+                f"Interest: {service_interest or 'N/A'}\n"
+                f"Location: {_lead_loc or 'N/A'}\n"
+                f"Lead entered pipeline. Track conversion in /api/conversions"
+            )
+
+            # Matt — brief notification
+            _post_to_slack_async(SLACK_MATT_CHANNEL,
+                f"New Meta Lead Ad: *{name}* ({service_interest or company or 'General inquiry'}). "
+                f"Full track activated." if email else
+                f"New Meta Lead Ad: *{name}* ({service_interest or company or 'General inquiry'}). "
+                f"Maya + Eric track (no email)."
+            )
+
+            # Auto-send WhatsApp greeting if we have a phone number
+            if phone_digits and len(phone_digits) >= 10:
+                first_name = name.split()[0] if name else "there"
+                wa_target = f"whatsapp:+{phone_digits}"
+                greeting = (
+                    f"Hi {first_name}! Thanks for your interest in MWM Creations & Studios! "
+                    f"I'm Maya, and I'd love to learn more about what you're looking for. "
+                )
+                if service_interest:
+                    greeting += f"I see you're interested in {service_interest} — great choice! "
+                greeting += "What's the best time for a quick chat about your vision?"
+
+                try:
+                    send_whatsapp_meta(wa_target, body=greeting)
+                    if wa_target not in conversation_history:
+                        conversation_history[wa_target] = []
+                    conversation_history[wa_target].append({"role": "assistant", "content": greeting})
+                    print(f"[Meta Leads] Auto-greeting sent to {wa_target}")
+                except Exception as e:
+                    print(f"[Meta Leads] WhatsApp greeting error (non-fatal): {e}")
+
+    return "OK", 200
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")
