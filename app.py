@@ -145,6 +145,37 @@ SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
 SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0AR7NY6SHF")  # #pipeline event bus (defaults to #dev)
 
+# ─── Capacity Management ─────────────────────────────────────────────────────
+# Max bookings per day to prevent overbooking. Michael can override via env var.
+MAX_BOOKINGS_PER_DAY = int(os.getenv("MAX_BOOKINGS_PER_DAY", "4"))
+
+
+def _count_bookings_on_date(target_date):
+    """Count how many bookings exist on a given date by checking the calendar.
+    Returns int count of timed events that look like studio visits or calls."""
+    try:
+        service = get_calendar_service()
+        tz = pytz.timezone(TIMEZONE)
+        day_start = tz.localize(datetime(target_date.year, target_date.month, target_date.day, 0, 0))
+        day_end = day_start + timedelta(days=1)
+        events_result = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=day_start.isoformat(),
+            timeMax=day_end.isoformat(),
+            singleEvents=True,
+        ).execute()
+        booking_count = 0
+        for event in events_result.get("items", []):
+            summary = event.get("summary", "")
+            if "dateTime" in event.get("start", {}):
+                # Count MWM-related events (studio visits, strategy calls, consultations)
+                if any(kw in summary for kw in ["Studio Visit", "Strategy Call", "MWM", "Consultation"]):
+                    booking_count += 1
+        return booking_count
+    except Exception as e:
+        print(f"[Capacity] Error counting bookings: {e}")
+        return 0  # Fail open — allow booking if we can't count
+
 
 # ─── Pipeline Event Bus ──────────────────────────────────────────────────────
 # Structured event system for agent-to-agent communication.
@@ -2245,6 +2276,11 @@ def get_available_slots():
             if current_day.weekday() >= 5:
                 continue
 
+            # ── Capacity check: skip days that are fully booked ──
+            if _count_bookings_on_date(current_day) >= MAX_BOOKINGS_PER_DAY:
+                print(f"[Capacity] {current_day} has {MAX_BOOKINGS_PER_DAY}+ bookings — skipping")
+                continue
+
             times_to_try = day_patterns[len(slots)]
 
             for (hour, minute) in times_to_try:
@@ -2428,6 +2464,22 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         except Exception as race_err:
             # Non-fatal: if re-check fails, still attempt the booking
             print(f"[book_appointment] Race-check failed (non-fatal): {race_err}")
+
+        # ── Capacity guard: enforce daily booking limit ──
+        try:
+            _booking_date = start_dt.date()
+            _day_count = _count_bookings_on_date(_booking_date)
+            if _day_count >= MAX_BOOKINGS_PER_DAY:
+                print(f"[Capacity] BLOCKED: {_booking_date} already has {_day_count} bookings (max {MAX_BOOKINGS_PER_DAY})")
+                _notify_error_to_dev(
+                    "Capacity Limit Reached",
+                    f"Booking blocked for {_booking_date.strftime('%B %d')} — already {_day_count}/{MAX_BOOKINGS_PER_DAY} bookings",
+                    lead_info=f"{lead_name} ({lead_phone})",
+                    severity="WARNING"
+                )
+                return None
+        except Exception as _cap_err:
+            print(f"[Capacity] Check failed (non-fatal): {_cap_err}")
 
         # Each attempt: (calendarId, include_attendees, sendUpdates, label)
         attempts = [
@@ -4480,6 +4532,58 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         except Exception as _ctx_err:
             print(f"\u26a0\ufe0f Lead context lookup error (non-fatal): {_ctx_err}")
             _lead_ctx = ""
+
+
+        # -- AI Re-engagement context injection --
+        # When a lead replies after being in the re-engagement queue,
+        # inject deep context so Maya sounds like she remembers them.
+        try:
+            _was_re = _was_reengagement
+        except NameError:
+            _was_re = False
+        if not is_michael and _was_re:
+            _ld_re = lead_data.get(sender, {})
+            _re_name = _ld_re.get("name", "")
+            _re_biz = _ld_re.get("business", "")
+            _re_score = _ld_re.get("lead_score", 0)
+            _re_source = _ld_re.get("source", "WhatsApp")
+            _re_ctx = []
+            _re_ctx.append(
+                "RE-ENGAGEMENT ALERT: This lead is RETURNING after going silent. "
+                "They were in the re-engagement queue and just replied to a follow-up template. "
+                "This is a critical moment - they re-engaged, meaning they still have interest. "
+                "Be warm, reference that you remember them, and move quickly toward booking."
+            )
+            if _re_name:
+                _re_ctx.append(f"Name: {_re_name}")
+            if _re_biz:
+                _re_ctx.append(f"Business: {_re_biz}")
+            if _re_score:
+                _re_ctx.append(f"Lead Score: {_re_score}/100")
+            _re_ctx.append(f"Source: {_re_source}")
+            _prev_msgs = conversation_history.get(sender, [])
+            if len(_prev_msgs) > 1:
+                _re_ctx.append("Previous conversation highlights:")
+                for _pm in _prev_msgs[-6:-1]:
+                    _role_label = "Lead" if _pm.get("role") == "user" else "Maya"
+                    _pm_text = (_pm.get("content") or "")[:150]
+                    _re_ctx.append(f"  {_role_label}: {_pm_text}")
+            _re_ctx.append(
+                "STRATEGY: Welcome them back warmly. Reference their business or interests "
+                "from the previous conversation. Pick up where you left off and guide toward booking."
+            )
+            _lead_ctx = (_lead_ctx or "") + "\n".join(_re_ctx)
+            print(f"[Re-engagement AI] Enhanced context injected for {sender} ({_re_name})")
+            _post_pipeline_event(
+                "RE_ENGAGED",
+                lead_name=_re_name,
+                lead_phone=sender,
+                source=_re_source,
+                old_stage="Cold",
+                new_stage="Re-engaged",
+                assigned_agents=["Maya", "Eric"],
+                context=f"Lead replied after re-engagement. Score: {_re_score}/100. Message: {incoming_msg[:200]}",
+            )
 
         history_snapshot = list(conversation_history[sender])
 
