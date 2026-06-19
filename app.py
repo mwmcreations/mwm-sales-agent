@@ -143,6 +143,103 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
 SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
+SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0AR7NY6SHF")  # #pipeline event bus (defaults to #dev)
+
+
+# ─── Pipeline Event Bus ──────────────────────────────────────────────────────
+# Structured event system for agent-to-agent communication.
+# Every lead lifecycle change posts a machine-readable event to #pipeline.
+# Agents subscribe by reading events tagged with their name.
+#
+# Event format:
+#   🔔 PIPELINE EVENT: {event_type}
+#   Lead: {name} | Phone: {phone_masked} | Source: {source}
+#   Stage: {old_stage} → {new_stage}
+#   Assigned: {agent_list}
+#   Context: {free-text context for handoff}
+#   ────────────────────────────
+
+_PIPELINE_EVENT_TYPES = {
+    "NEW_LEAD":        "🆕",
+    "STAGE_CHANGE":    "📊",
+    "BOOKING":         "📅",
+    "VISIT_COMPLETE":  "🏁",
+    "NO_SHOW":         "❌",
+    "COLD_DETECTED":   "❄️",
+    "RE_ENGAGED":      "🔄",
+    "ESCALATION":      "🚨",
+    "QUALIFIED":       "⭐",
+    "PROPOSAL_SENT":   "📄",
+    "CLIENT_WON":      "🎉",
+    "CLIENT_LOST":     "💔",
+}
+
+
+def _post_pipeline_event(event_type, lead_name="", lead_phone="", source="",
+                         old_stage="", new_stage="", assigned_agents=None,
+                         context="", extra_fields=None):
+    """Post a structured pipeline event to #pipeline for agent communication.
+
+    Args:
+        event_type: Key from _PIPELINE_EVENT_TYPES (e.g., 'NEW_LEAD', 'BOOKING')
+        lead_name: Lead's display name
+        lead_phone: Lead's phone (will be masked for privacy in Slack)
+        source: Lead source (Instagram, WhatsApp, Website Chat, Form)
+        old_stage / new_stage: Pipeline stage transition
+        assigned_agents: List of agent names this event is relevant to
+        context: Free-text handoff context (conversation highlights, what to do next)
+        extra_fields: Dict of additional key-value pairs to include
+    """
+    emoji = _PIPELINE_EVENT_TYPES.get(event_type, "🔔")
+    agents_str = ", ".join(assigned_agents) if assigned_agents else "All"
+
+    # Mask phone for Slack display (show last 4 digits only)
+    _digits = re.sub(r"\D", "", lead_phone or "")
+    phone_display = f"***{_digits[-4:]}" if len(_digits) >= 4 else lead_phone or "N/A"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{emoji} PIPELINE: {event_type.replace('_', ' ')}"}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Lead:* {lead_name or 'Unknown'}"},
+                {"type": "mrkdwn", "text": f"*Phone:* {phone_display}"},
+                {"type": "mrkdwn", "text": f"*Source:* {source or 'N/A'}"},
+                {"type": "mrkdwn", "text": f"*Assigned:* {agents_str}"},
+            ]
+        },
+    ]
+
+    if old_stage or new_stage:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Stage:* {old_stage or '—'} → *{new_stage or '—'}*"}
+        })
+
+    if context:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Context:* {context[:500]}"}
+        })
+
+    if extra_fields:
+        extra_lines = "\n".join(f"*{k}:* {v}" for k, v in extra_fields.items())
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": extra_lines}
+        })
+
+    blocks.append({"type": "divider"})
+
+    text_fallback = f"{emoji} PIPELINE: {event_type} | {lead_name} | {new_stage} | → {agents_str}"
+
+    try:
+        _post_to_slack_async(SLACK_PIPELINE_CHANNEL, text_fallback, blocks=blocks)
+    except Exception as e:
+        print(f"⚠️ Pipeline event post failed (non-fatal): {e}")
 
 
 # ─── Phone Normalization & Cross-Channel Lead Deduplication ───────────────────
@@ -2437,6 +2534,27 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             except Exception as hub_err:
                 print(f"â ï¸ Hub booking event error (non-fatal): {hub_err}")
 
+
+            # ── Pipeline Event: BOOKING ──
+            _ld_book = lead_data.get(sender, {})
+            _book_agents = ["Maya", "Susan", "Eric"]
+            if _ld_book.get("email"):
+                _book_agents.append("LARA")
+            _post_pipeline_event(
+                "BOOKING",
+                lead_name=tool_input.get("lead_name", ""),
+                lead_phone=sender,
+                source=_ld_book.get("source", "WhatsApp"),
+                old_stage="Engaged",
+                new_stage="Booked",
+                assigned_agents=_book_agents,
+                context=f"Booked {tool_input.get('appointment_type', 'studio_visit')} for {tool_input.get('slot_id', 'N/A')}",
+                extra_fields={
+                    "Email": tool_input.get("lead_email", "N/A"),
+                    "Business": tool_input.get("lead_business", "N/A"),
+                }
+            )
+
             return {"success": True, "event_id": event_id}
         else:
             return {"success": False, "error": "Could not book the appointment. Please try again."}
@@ -3985,6 +4103,17 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 conversation_snippet=incoming_msg[:300]
             )
             print(f"[ESCALATION] Flagged {sender} to Matt — phrase detected in: {incoming_msg[:50]}")
+            # ── Pipeline Event: ESCALATION ──
+            _ld_esc = lead_data.get(sender, {})
+            _post_pipeline_event(
+                "ESCALATION",
+                lead_name=_ld_esc.get("name", "Unknown"),
+                lead_phone=sender,
+                source=_ld_esc.get("source", "WhatsApp"),
+                new_stage="Escalated",
+                assigned_agents=["Matt"],
+                context=f"Lead requested human: \"{incoming_msg[:200]}\"",
+            )
 
         is_new_sender = sender not in conversation_history
         if is_new_sender:
@@ -3998,6 +4127,23 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         if sender not in lead_data:
             lead_data[sender] = {}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
+
+        # ── Pipeline Event: NEW_LEAD ──
+        if is_new_sender and not is_michael:
+            _ld = lead_data.get(sender, {})
+            _has_email = bool(_ld.get("email"))
+            _assigned = ["Maya", "Eric"]
+            if _has_email:
+                _assigned = ["Maya", "Susan", "Eric", "LARA"]
+            _post_pipeline_event(
+                "NEW_LEAD",
+                lead_name=_ld.get("name", ""),
+                lead_phone=sender,
+                source="WhatsApp",
+                new_stage="New",
+                assigned_agents=_assigned,
+                context=f"First message: {incoming_msg[:200]}"
+            )
 
         # ── Slack: new lead notification DISABLED (Session 31 — Michael: "#maya is too busy,
         #    I just want appointment book confirmations"). Keeping function for potential
@@ -4371,6 +4517,17 @@ def _cold_lead_checker():
                         notes      = f"Lead has not replied in {int(hours_silent)} hours",
                     )
                     lead_data[phone]["cold_fired"] = True
+                    # ── Pipeline Event: COLD_DETECTED ──
+                    _post_pipeline_event(
+                        "COLD_DETECTED",
+                        lead_name=name,
+                        lead_phone=phone,
+                        source=data.get("source", "WhatsApp"),
+                        old_stage="Contacted",
+                        new_stage="Cold",
+                        assigned_agents=["Maya", "Eric"],
+                        context=f"No reply in {int(hours_silent)}h. Added to re-engagement queue.",
+                    )
                     # ── Update Google Sheet: mark as cold ──
                     try:
                         update_lead_columns(f"whatsapp:+{phone}", {
@@ -4479,6 +4636,19 @@ def _post_visit_checker():
                             f"Looking forward to working together! 🎬"
                         )
                         send_whatsapp_meta(_wa_phone, body=follow_up_msg)
+
+                    # ── Pipeline Event: VISIT_COMPLETE ──
+                    _post_pipeline_event(
+                        "VISIT_COMPLETE",
+                        lead_name=_lead_name,
+                        lead_phone=_wa_phone,
+                        source="Calendar",
+                        old_stage="Booked",
+                        new_stage="Visit Completed",
+                        assigned_agents=["Maya", "Susan", "Eric"],
+                        context=f"Studio visit completed. Golden Hour 2h WhatsApp sent. Susan: send portfolio email.",
+                        extra_fields={"Visit Type": summary, "Email": _lead_email or "N/A"},
+                    )
 
                     # Post pipeline event for Susan (email follow-up with portfolio)
                     if _lead_email and _lead_email.lower() not in ("not provided", "n/a", ""):
