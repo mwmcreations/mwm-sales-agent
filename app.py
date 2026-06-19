@@ -143,7 +143,7 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
 SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
-SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0AR7NY6SHF")  # #pipeline event bus (defaults to #dev)
+SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
 
 # ─── Capacity Management ─────────────────────────────────────────────────────
 # Max bookings per day to prevent overbooking. Michael can override via env var.
