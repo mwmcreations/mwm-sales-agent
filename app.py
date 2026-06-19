@@ -144,6 +144,50 @@ SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
 SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
 SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
 
+
+# ─── Phone Normalization & Cross-Channel Lead Deduplication ───────────────────
+def _normalize_phone(raw):
+    """Strip a phone string to digits-only. 'whatsapp:+15551234567' → '15551234567'."""
+    if not raw:
+        return ""
+    return re.sub(r"\D", "", str(raw))
+
+
+def _find_lead_by_phone(phone_raw):
+    """Search lead_data for a matching phone, regardless of key format.
+    Returns (key, data_dict) or (None, None)."""
+    digits = _normalize_phone(phone_raw)
+    if not digits:
+        return None, None
+    # Check whatsapp:+digits format (runtime)
+    wa_key = f"whatsapp:+{digits}"
+    if wa_key in lead_data:
+        return wa_key, lead_data[wa_key]
+    # Check digits-only format (legacy from old sheet repopulation)
+    if digits in lead_data:
+        return digits, lead_data[digits]
+    # Check with country code variations (e.g., missing leading 1)
+    if len(digits) == 10:  # US number without country code
+        wa_key_us = f"whatsapp:+1{digits}"
+        if wa_key_us in lead_data:
+            return wa_key_us, lead_data[wa_key_us]
+        if f"1{digits}" in lead_data:
+            return f"1{digits}", lead_data[f"1{digits}"]
+    return None, None
+
+
+def _find_lead_by_email(email):
+    """Search lead_data for a matching email across all channels.
+    Returns (key, data_dict) or (None, None)."""
+    if not email:
+        return None, None
+    email_lower = email.strip().lower()
+    for key, data in lead_data.items():
+        if (data.get("email") or "").strip().lower() == email_lower:
+            return key, data
+    return None, None
+
+
 # Shadow Mode: mirror every agent's WhatsApp conversations into dedicated
 # Slack channels as threads-per-phone. Gives Michael oversight so he can
 # intervene if an agent makes a mistake. Each channel is set via Railway env
@@ -4204,11 +4248,11 @@ def _repopulate_lead_data_from_sheets():
                     if not raw_phone or len(raw_phone) < 7:
                         continue
 
-                    # Build the sender key (same format as webhook)
-                    sender_key = raw_phone
+                    # Build the sender key — MUST match webhook format (whatsapp:+digits)
+                    sender_key = f"whatsapp:+{raw_phone}"
 
-                    # Skip if already in lead_data
-                    if sender_key in lead_data:
+                    # Skip if already in lead_data (check both formats for safety)
+                    if sender_key in lead_data or raw_phone in lead_data:
                         continue
 
                     # Skip if marked as booked
@@ -4409,9 +4453,13 @@ def _post_visit_checker():
                     elif line.startswith("Email:"):
                         _lead_email = line.replace("Email:", "").strip()
 
-                # Find phone from lead_data by name match
+                # Find phone from lead_data by name or email match (uses dedup utils)
                 _wa_phone = ""
-                if _lead_name:
+                if _lead_email:
+                    _match_key, _ = _find_lead_by_email(_lead_email)
+                    if _match_key and "whatsapp" in _match_key:
+                        _wa_phone = _match_key
+                if not _wa_phone and _lead_name:
                     for ph, ld in lead_data.items():
                         if ld.get("name", "").strip().lower() == _lead_name.lower():
                             _wa_phone = ph if ph.startswith("whatsapp:") else f"whatsapp:+{ph}"
@@ -7229,16 +7277,68 @@ def _handle_web_tool_call(tool_name, tool_input):
     elif tool_name == "check_specific_slot":
         return check_specific_slot(tool_input["requested_datetime"])
     elif tool_name == "book_appointment":
+        _web_lead_name = tool_input["lead_name"]
+        _web_lead_email = tool_input["lead_email"]
+        _web_lead_biz = tool_input["lead_business"]
+        _web_lead_phone = tool_input.get("lead_phone")  # may be provided by smarter prompts
+
         event_id = book_appointment(
             slot_id=tool_input["slot_id"],
-            lead_name=tool_input["lead_name"],
-            lead_email=tool_input["lead_email"],
-            lead_business=tool_input["lead_business"],
-            lead_phone=None,
+            lead_name=_web_lead_name,
+            lead_email=_web_lead_email,
+            lead_business=_web_lead_biz,
+            lead_phone=_web_lead_phone,
             appointment_type=tool_input.get("appointment_type", "studio_visit"),
             booked_via="Website Chat"
         )
         if event_id:
+            # ── Dedup + persist: register web chat lead in lead_data ──
+            _web_key = f"web:{_web_lead_email or _web_lead_name or 'unknown'}"
+            _dedup_match = None
+            # Cross-reference with existing WhatsApp leads by name or email
+            for _ph, _ld in lead_data.items():
+                _ld_name = (_ld.get("name") or "").strip().lower()
+                _ld_email = (_ld.get("email") or "").strip().lower()
+                if (_web_lead_name and _ld_name and _web_lead_name.strip().lower() == _ld_name):
+                    _dedup_match = _ph
+                    break
+                elif (_web_lead_email and _ld_email and _web_lead_email.strip().lower() == _ld_email):
+                    _dedup_match = _ph
+                    break
+            if _dedup_match:
+                print(f"[DEDUP] Web chat lead {_web_lead_name} matches WhatsApp lead {_dedup_match}")
+                # Update existing record with web context
+                lead_data[_dedup_match]["web_conversation"] = True
+                lead_data[_dedup_match]["booked"] = True
+                lead_data[_dedup_match]["event_id"] = event_id
+                if _web_lead_email and not lead_data[_dedup_match].get("email"):
+                    lead_data[_dedup_match]["email"] = _web_lead_email
+            else:
+                # New lead from web chat — register in lead_data
+                lead_data[_web_key] = {
+                    "name": _web_lead_name,
+                    "email": _web_lead_email,
+                    "business": _web_lead_biz,
+                    "booked": True,
+                    "event_id": event_id,
+                    "source": "Website Chat",
+                    "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
+                }
+                print(f"[Web Chat] Registered new lead in lead_data: {_web_key}")
+            # Log to Google Sheets so web leads are tracked
+            try:
+                log_new_contact_to_sheets(f"web:{_web_lead_email or 'unknown'}")
+                update_lead_columns(f"web:{_web_lead_email or 'unknown'}", {
+                    "Name": _web_lead_name or "",
+                    "Email": _web_lead_email or "",
+                    "Business": _web_lead_biz or "",
+                    "WhatsApp Status": "Booked",
+                    "Appointment Booked": "Y",
+                    "Lead Temperature": "Hot",
+                })
+            except Exception as _ws_err:
+                print(f"⚠️ Web lead sheet logging error (non-fatal): {_ws_err}")
+
             return {"success": True, "event_id": event_id}
         return {"success": False, "error": "Could not book. Please try again."}
     elif tool_name == "cancel_appointment":
@@ -7252,7 +7352,7 @@ def _handle_web_tool_call(tool_name, tool_input):
 
 # In-memory conversation store for web chat
 _web_conversations = {}
-_WEB_CONVERSATION_TTL = 3600  # 1 hour
+_WEB_CONVERSATION_TTL = 86400  # 24 hours (was 1h — web leads need persistence)
 
 def _cleanup_web_conversations():
     """Remove web chat conversations older than TTL"""
