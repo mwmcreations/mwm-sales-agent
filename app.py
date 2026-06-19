@@ -74,16 +74,31 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
             payload = {"messaging_product": "whatsapp", "to": phone, "type": "image", "image": {"link": media_url}}
     else:
         payload = {"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": body or ""}}
-    try:
-        resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        print(f"\u2705 Meta API message sent to {phone}")
-        return resp.json()
-    except Exception as e:
-        print(f"\u274c Meta API send failed: {e}")
-        if hasattr(e, "response") and e.response is not None:
-            print(f"   Response: {e.response.text}")
-        return None
+    import time as _time_wa
+    last_err = None
+    for _attempt in range(3):
+        try:
+            resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            print(f"\u2705 Meta API message sent to {phone}")
+            return resp.json()
+        except Exception as e:
+            last_err = e
+            if hasattr(e, "response") and e.response is not None:
+                print(f"   Response: {e.response.text}")
+            if _attempt < 2:
+                _wait = (2 ** _attempt) * 0.5
+                print(f"\u26a0\ufe0f Meta API attempt {_attempt + 1}/3 failed: {e} \u2014 retrying in {_wait}s")
+                _time_wa.sleep(_wait)
+            else:
+                print(f"\u274c Meta API all 3 attempts failed: {e}")
+                _notify_error_to_dev(
+                    "WhatsApp Send Failed",
+                    f"Could not send message to {phone} after 3 attempts: {e}",
+                    lead_info=f"Phone: {phone}",
+                    severity="CRITICAL"
+                )
+    return None
 
 
 def download_meta_media(media_id: str):
@@ -126,6 +141,8 @@ SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
 # ── Slack Integration ─────────────────────────────────────────────────────────────
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_MAYA_CHANNEL = "C0APE5S76HH"  # #maya channel ID
+SLACK_DEV_CHANNEL = "C0AR7NY6SHF"   # #dev channel ID — error alerts
+SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
 
 # Shadow Mode: mirror every agent's WhatsApp conversations into dedicated
 # Slack channels as threads-per-phone. Gives Michael oversight so he can
@@ -183,6 +200,66 @@ def _post_to_slack_async(channel, text, blocks=None):
         daemon=True
     )
     thread.start()
+
+
+def _notify_error_to_dev(component, error_msg, lead_info=None, severity="ERROR"):
+    """Post critical error alerts to #dev so DEV agent and Michael can see failures."""
+    import traceback as _tb
+    timestamp = _get_current_time_edt()
+    _lead_display = f"\n*Lead:* {lead_info}" if lead_info else ""
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": f"🚨 {severity}: {component}", "emoji": True}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": (
+            f"*Component:* {component}\n"
+            f"*Error:* ```{str(error_msg)[:500]}```"
+            f"{_lead_display}\n"
+            f"*Time:* {timestamp}"
+        )}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"🚨 {severity} in {component}: {str(error_msg)[:200]}"
+    _post_to_slack_async(SLACK_DEV_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _notify_escalation_to_matt(lead_name, lead_phone, reason, conversation_snippet=""):
+    """Alert Matt when Maya needs human judgment on a conversation."""
+    timestamp = _get_current_time_edt()
+    _snippet = f"\n*Recent message:*\n>{conversation_snippet[:300]}" if conversation_snippet else ""
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "⚠️ Escalation: Human Judgment Needed", "emoji": True}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Lead:*\n{lead_name or 'Unknown'}"},
+            {"type": "mrkdwn", "text": f"*Phone:*\n{lead_phone or 'N/A'}"}
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn", "text": (
+            f"*Reason:* {reason}"
+            f"{_snippet}\n"
+            f"*Time:* {timestamp}"
+        )}},
+        {"type": "divider"}
+    ]
+    text_fallback = f"⚠️ Escalation needed: {lead_name} — {reason}"
+    _post_to_slack_async(SLACK_MATT_CHANNEL, text_fallback, blocks=blocks)
+
+
+def _retry_api_call(func, max_retries=3, component="API", lead_info=None):
+    """Retry an API call up to max_retries times with exponential backoff.
+    On permanent failure, alerts #dev and returns None."""
+    import time as _time
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                wait = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                print(f"⚠️ {component} attempt {attempt + 1}/{max_retries} failed: {e} — retrying in {wait}s")
+                _time.sleep(wait)
+            else:
+                print(f"❌ {component} all {max_retries} attempts failed: {e}")
+                _notify_error_to_dev(component, str(e), lead_info=lead_info)
+    return None
 
 
 def _format_phone_for_shadow(phone: str) -> str:
@@ -1891,6 +1968,37 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 ]
             }
         }
+
+        # ── Race condition guard: re-check availability right before booking ──
+        # Between get_available_slots showing the slot and the lead confirming,
+        # another lead may have booked the same time. Re-check now.
+        try:
+            buffer_start = start_dt - timedelta(minutes=15)
+            buffer_end = end_dt + timedelta(minutes=15)
+            conflict_events = service.events().list(
+                calendarId=CALENDAR_ID,
+                timeMin=buffer_start.isoformat(),
+                timeMax=buffer_end.isoformat(),
+                singleEvents=True,
+            ).execute().get("items", [])
+            # Filter to timed events only (ignore all-day events)
+            timed_conflicts = [
+                ev for ev in conflict_events
+                if "dateTime" in ev.get("start", {})
+            ]
+            if timed_conflicts:
+                conflict_names = [ev.get("summary", "Unknown") for ev in timed_conflicts]
+                print(f"[book_appointment] RACE CONDITION CAUGHT: slot {start_dt} already taken by {conflict_names}")
+                _notify_error_to_dev(
+                    "Double-Booking Prevention",
+                    f"Blocked duplicate booking at {start_dt.strftime('%B %d %I:%M %p')} — slot already taken by {conflict_names[0]}",
+                    lead_info=f"{lead_name} ({lead_phone})",
+                    severity="WARNING"
+                )
+                return None
+        except Exception as race_err:
+            # Non-fatal: if re-check fails, still attempt the booking
+            print(f"[book_appointment] Race-check failed (non-fatal): {race_err}")
 
         # Each attempt: (calendarId, include_attendees, sendUpdates, label)
         attempts = [
@@ -3811,6 +3919,28 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             elif _msg_lower == "visit the studio":
                 # Inject context so Maya handles studio visit scheduling
                 incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
+
+        # ── Human escalation detection (Session 30.14 — Sales Machine) ──
+        # If the lead explicitly asks for a human, flag to Matt immediately.
+        # Maya still replies (keeps conversation warm), but Matt gets alerted.
+        _escalation_phrases = [
+            "talk to a real person", "speak to someone", "speak to a human",
+            "talk to a human", "real person", "talk to someone real",
+            "speak to a manager", "talk to the owner", "want a human",
+            "not a bot", "are you a bot", "are you real", "you're a bot",
+            "i want to talk to michael", "can i speak to michael",
+            "this is frustrating", "this is useless", "stop messaging me",
+            "leave me alone", "unsubscribe", "stop contacting me",
+        ]
+        if not is_michael and any(phrase in _msg_lower for phrase in _escalation_phrases):
+            _ld = lead_data.get(sender, {})
+            _notify_escalation_to_matt(
+                _ld.get("name", "Unknown"),
+                sender.replace("whatsapp:", ""),
+                f"Lead used escalation phrase: \"{incoming_msg[:100]}\"",
+                conversation_snippet=incoming_msg[:300]
+            )
+            print(f"[ESCALATION] Flagged {sender} to Matt — phrase detected in: {incoming_msg[:50]}")
 
         is_new_sender = sender not in conversation_history
         if is_new_sender:
