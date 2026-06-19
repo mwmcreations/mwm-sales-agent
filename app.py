@@ -4348,6 +4348,249 @@ threading.Thread(target=_cold_lead_checker, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
+# POST-VISIT GOLDEN HOUR — Background Thread (Session 30.14)
+# Checks calendar for studio visits that just ended. Triggers:
+#   - 2h after visit: WhatsApp "Great meeting you" + pipeline event for Susan email
+#   - Next morning (9 AM): WhatsApp "Any questions from yesterday?"
+# This is the HOTTEST moment in the funnel — automated follow-up is critical.
+# ══════════════════════════════════════════════════════════════════════
+
+# Track which events we've already processed (persist within deploy)
+_golden_hour_processed = set()  # event IDs that got the 2h follow-up
+_golden_hour_morning = set()    # event IDs that got the next-morning check-in
+
+def _post_visit_checker():
+    """Background thread: check for recently completed studio visits and trigger follow-ups."""
+    import time
+    print("🌟 Post-visit Golden Hour checker started (polls every 30 min)")
+    time.sleep(1800)  # First check after 30 min
+    while True:
+        try:
+            service = get_calendar_service()
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+
+            # Look at events that ended in the last 24 hours
+            window_start = (now - timedelta(hours=24)).isoformat()
+            window_end = now.isoformat()
+
+            events_result = service.events().list(
+                calendarId=CALENDAR_ID,
+                timeMin=window_start,
+                timeMax=window_end,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+
+            for event in events_result.get("items", []):
+                event_id = event.get("id", "")
+                summary = event.get("summary", "")
+                description = event.get("description", "")
+
+                # Only process Studio Visit and Strategy Call events
+                if not any(kw in summary for kw in ["Studio Visit", "Strategy Call"]):
+                    continue
+
+                end_info = event.get("end", {})
+                if "dateTime" not in end_info:
+                    continue
+
+                event_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
+                hours_since_end = (now - event_end).total_seconds() / 3600
+
+                # Extract lead phone from description (format: "Booked via: Maya (WhatsApp)")
+                _desc_lines = description.split("\n")
+                _lead_name = ""
+                _lead_phone_raw = ""
+                _lead_email = ""
+                for line in _desc_lines:
+                    if line.startswith("Lead:"):
+                        _lead_name = line.replace("Lead:", "").strip()
+                    elif line.startswith("Email:"):
+                        _lead_email = line.replace("Email:", "").strip()
+
+                # Find phone from lead_data by name match
+                _wa_phone = ""
+                if _lead_name:
+                    for ph, ld in lead_data.items():
+                        if ld.get("name", "").strip().lower() == _lead_name.lower():
+                            _wa_phone = ph if ph.startswith("whatsapp:") else f"whatsapp:+{ph}"
+                            break
+
+                # ── 2-HOUR FOLLOW-UP ──
+                if hours_since_end >= 2 and event_id not in _golden_hour_processed:
+                    _golden_hour_processed.add(event_id)
+                    first_name = (_lead_name or "").split()[0] or "there"
+                    print(f"🌟 [Golden Hour] 2h follow-up triggered for {_lead_name} (event {event_id})")
+
+                    if _wa_phone:
+                        follow_up_msg = (
+                            f"Hey {first_name}! It was great meeting you today at MWM Creations! "
+                            f"I hope you enjoyed the tour and got a feel for what we can create together. "
+                            f"If you have any questions or want to discuss next steps, just send me a message here anytime. "
+                            f"Looking forward to working together! 🎬"
+                        )
+                        send_whatsapp_meta(_wa_phone, body=follow_up_msg)
+
+                    # Post pipeline event for Susan (email follow-up with portfolio)
+                    if _lead_email and _lead_email.lower() not in ("not provided", "n/a", ""):
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                            f"📧 *Post-Visit Email Trigger*\n"
+                            f"*Lead:* {_lead_name}\n*Email:* {_lead_email}\n"
+                            f"*Action:* Susan should send portfolio email with relevant work samples.\n"
+                            f"*Visit type:* {summary}"
+                        ))
+
+                # ── NEXT-MORNING CHECK-IN ──
+                # Only fires if the visit was yesterday and it's now between 9-10 AM
+                if (hours_since_end >= 12 and now.hour == 9
+                        and event_id not in _golden_hour_morning):
+                    _golden_hour_morning.add(event_id)
+                    first_name = (_lead_name or "").split()[0] or "there"
+                    print(f"🌟 [Golden Hour] Next-morning check-in for {_lead_name} (event {event_id})")
+
+                    if _wa_phone:
+                        morning_msg = (
+                            f"Good morning, {first_name}! I hope you had a chance to think about everything "
+                            f"we discussed yesterday. Do you have any questions? I'm here to help with anything "
+                            f"you need to get started. 😊"
+                        )
+                        send_whatsapp_meta(_wa_phone, body=morning_msg)
+
+        except Exception as e:
+            print(f"⚠️ Post-visit checker error: {e}")
+            _notify_error_to_dev("Post-Visit Checker", str(e))
+        time.sleep(1800)  # Check every 30 minutes
+
+threading.Thread(target=_post_visit_checker, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PRE-MEETING BRIEFING — Background Thread (Session 30.14)
+# 1 hour before each studio visit, sends Michael a WhatsApp summary:
+# lead name, business, interests, conversation highlights, suggested approach.
+# Michael walks into every meeting prepared. Lead feels understood from minute one.
+# ══════════════════════════════════════════════════════════════════════
+
+_briefing_sent = set()  # event IDs already briefed
+
+def _pre_meeting_briefer():
+    """Background thread: send Michael a WhatsApp briefing 1 hour before each studio visit."""
+    import time
+    print("📋 Pre-meeting briefer started (polls every 15 min)")
+    time.sleep(900)  # First check after 15 min
+    while True:
+        try:
+            michael_phone = os.getenv("MICHAEL_PHONE")
+            if not michael_phone:
+                time.sleep(900)
+                continue
+
+            service = get_calendar_service()
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+
+            # Look at events starting in the next 90 minutes
+            window_start = now.isoformat()
+            window_end = (now + timedelta(minutes=90)).isoformat()
+
+            events_result = service.events().list(
+                calendarId=CALENDAR_ID,
+                timeMin=window_start,
+                timeMax=window_end,
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+
+            for event in events_result.get("items", []):
+                event_id = event.get("id", "")
+                summary = event.get("summary", "")
+                description = event.get("description", "")
+
+                if not any(kw in summary for kw in ["Studio Visit", "Strategy Call"]):
+                    continue
+
+                if event_id in _briefing_sent:
+                    continue
+
+                start_info = event.get("start", {})
+                if "dateTime" not in start_info:
+                    continue
+
+                event_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
+                minutes_until = (event_start - now).total_seconds() / 60
+
+                # Send briefing when event is 45-75 minutes away
+                if 45 <= minutes_until <= 75:
+                    _briefing_sent.add(event_id)
+
+                    # Parse lead info from event description
+                    _lead_name = ""
+                    _lead_biz = ""
+                    _lead_email = ""
+                    _booked_via = ""
+                    for line in description.split("\n"):
+                        if line.startswith("Lead:"):
+                            _lead_name = line.replace("Lead:", "").strip()
+                        elif line.startswith("Business:"):
+                            _lead_biz = line.replace("Business:", "").strip()
+                        elif line.startswith("Email:"):
+                            _lead_email = line.replace("Email:", "").strip()
+                        elif line.startswith("Booked via:"):
+                            _booked_via = line.replace("Booked via:", "").strip()
+
+                    # Find conversation context from lead_data + conversation_history
+                    _conv_summary = ""
+                    _lead_phone_display = ""
+                    if _lead_name:
+                        for ph, ld in lead_data.items():
+                            if ld.get("name", "").strip().lower() == _lead_name.lower():
+                                _lead_phone_display = ph.replace("whatsapp:", "")
+                                # Get last few messages for context
+                                _wa_key = ph if ph.startswith("whatsapp:") else f"whatsapp:+{ph}"
+                                _hist = conversation_history.get(_wa_key, conversation_history.get(ph, []))
+                                if _hist:
+                                    _last_msgs = _hist[-6:]  # Last 3 exchanges
+                                    _conv_parts = []
+                                    for m in _last_msgs:
+                                        role = "Lead" if m["role"] == "user" else "Maya"
+                                        _conv_parts.append(f"  {role}: {m['content'][:100]}")
+                                    _conv_summary = "\n".join(_conv_parts)
+                                break
+
+                    # Build the briefing message
+                    time_str = event_start.strftime("%I:%M %p")
+                    briefing = (
+                        f"📋 MEETING BRIEFING — {int(minutes_until)} min\n\n"
+                        f"👤 {_lead_name or 'Unknown'}\n"
+                        f"🏢 {_lead_biz or 'Not specified'}\n"
+                    )
+                    if _lead_email and _lead_email.lower() not in ("not provided", "n/a"):
+                        briefing += f"📧 {_lead_email}\n"
+                    if _lead_phone_display:
+                        briefing += f"📱 {_lead_phone_display}\n"
+                    briefing += (
+                        f"🕐 {time_str} ET\n"
+                        f"📍 Source: {_booked_via or 'WhatsApp'}\n"
+                    )
+                    if _conv_summary:
+                        briefing += f"\n💬 Recent conversation:\n{_conv_summary}\n"
+
+                    briefing += "\nGood luck! 🎬"
+
+                    # Send to Michael via WhatsApp
+                    michael_wa = michael_phone if michael_phone.startswith("whatsapp:") else f"whatsapp:+{michael_phone.replace('+', '')}"
+                    send_whatsapp_meta(michael_wa, body=briefing)
+                    print(f"📋 [Pre-meeting] Briefing sent to Michael for {_lead_name} at {time_str}")
+
+        except Exception as e:
+            print(f"⚠️ Pre-meeting briefer error: {e}")
+        time.sleep(900)  # Check every 15 minutes
+
+threading.Thread(target=_pre_meeting_briefer, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # RE-ENGAGEMENT CHECKER — Background Thread (Session 30.13)
 # Processes the Re-engagement Queue Sheet tab every 30 minutes.
 # Sends templates on the 24h/4d/7d cadence. Marks leads Cold + hands
