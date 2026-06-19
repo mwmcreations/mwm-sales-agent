@@ -1812,6 +1812,59 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         start_dt = datetime.fromisoformat(slot_id).astimezone(tz)
         end_dt = start_dt + timedelta(minutes=60)
 
+        # ── Auto-cleanup: delete any existing event for this lead before creating a new one ──
+        # This prevents ghost events when a lead reschedules, even if Maya forgets to
+        # call cancel_appointment first. Belt-and-suspenders on top of the prompt rule.
+        try:
+            _cleanup_name = (lead_name or "").strip()
+            _cleanup_phone = (lead_phone or "").replace("whatsapp:", "").replace("+", "")
+            if _cleanup_name or _cleanup_phone:
+                now_iso = datetime.now(tz).isoformat()
+                future_iso = (datetime.now(tz) + timedelta(days=90)).isoformat()
+                existing_events = service.events().list(
+                    calendarId=CALENDAR_ID,
+                    timeMin=now_iso,
+                    timeMax=future_iso,
+                    singleEvents=True,
+                    orderBy="startTime"
+                ).execute().get("items", [])
+
+                for ev in existing_events:
+                    ev_summary = ev.get("summary", "")
+                    ev_description = ev.get("description", "")
+                    ev_text = f"{ev_summary} {ev_description}".lower()
+                    matched = False
+
+                    # Match by lead name in event summary/description
+                    if _cleanup_name and _cleanup_name.lower() in ev_text:
+                        matched = True
+                    # Match by phone number in event description
+                    elif _cleanup_phone and len(_cleanup_phone) >= 7 and _cleanup_phone in ev_description:
+                        matched = True
+
+                    if matched:
+                        old_event_id = ev["id"]
+                        old_start = ev.get("start", {}).get("dateTime", "unknown")
+                        print(f"[book_appointment] AUTO-CLEANUP: Found existing event for {lead_name}: "
+                              f"'{ev_summary}' at {old_start} (ID: {old_event_id}) — deleting before rebooking")
+                        try:
+                            service.events().delete(
+                                calendarId=CALENDAR_ID,
+                                eventId=old_event_id,
+                                sendUpdates="all"
+                            ).execute()
+                            print(f"[book_appointment] AUTO-CLEANUP: Deleted old event {old_event_id}")
+                            # Update lead_data if available
+                            if lead_phone and lead_phone in lead_data:
+                                lead_data[lead_phone]["event_id"] = None
+                                lead_data[lead_phone]["booked"] = False
+                        except Exception as del_err:
+                            print(f"[book_appointment] AUTO-CLEANUP WARNING: Could not delete old event {old_event_id}: {del_err}")
+                        break  # Only delete the first match — one lead, one event
+        except Exception as cleanup_err:
+            # Non-fatal: if cleanup fails, still proceed with creating the new event
+            print(f"[book_appointment] AUTO-CLEANUP ERROR (non-fatal, proceeding with booking): {cleanup_err}")
+
         if appointment_type == "strategy_call":
             event_title = f"Strategy Call — {lead_name} ({lead_business})"
             event_desc_header = "Strategy Call with Michael Moraes / MWM Creations"
