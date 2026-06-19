@@ -4134,6 +4134,7 @@ def _daily_briefing_thread():
     print("[BRIEFING] Daily briefing thread started")
     while True:
         try:
+            _heartbeat("daily_briefing")
             wait = _seconds_until_next(BRIEFING_HOUR)
             print(f"[BRIEFING] Next briefing in {wait/3600:.1f}h")
             time.sleep(wait)
@@ -5126,6 +5127,7 @@ def _post_visit_checker():
     time.sleep(1800)  # First check after 30 min
     while True:
         try:
+            _heartbeat("golden_hour_checker")
             service = get_calendar_service()
             tz = pytz.timezone(TIMEZONE)
             now = datetime.now(tz)
@@ -5258,6 +5260,7 @@ def _pre_meeting_briefer():
     time.sleep(900)  # First check after 15 min
     while True:
         try:
+            _heartbeat("pre_meeting_briefer")
             michael_phone = os.getenv("MICHAEL_PHONE")
             if not michael_phone:
                 time.sleep(900)
@@ -5387,6 +5390,7 @@ def _noshow_detector():
 
     while True:
         try:
+            _heartbeat("noshow_detector")
             tz = pytz.timezone(TIMEZONE)
             now = datetime.now(tz)
 
@@ -5501,7 +5505,7 @@ def _noshow_detector():
 
         except Exception as e:
             print(f"[No-Show] Detector error: {e}")
-        _time_ns.sleep(3600)  # Check every hour (6 PM window catches it)
+        _time_ns.sleep(1500)  # Check every 25 min (stays under watchdog 30-min threshold)
 
 
 threading.Thread(target=_noshow_detector, daemon=True).start()
@@ -5595,6 +5599,7 @@ def _reengagement_checker():
     _time.sleep(1800)  # First check after 30 min
     while True:
         try:
+            _heartbeat("reengagement_checker")
             queue = get_reengagement_queue()
             now = datetime.now(pytz.timezone(TIMEZONE))
 
