@@ -9389,6 +9389,32 @@ textarea { min-height: 70px; resize: vertical; }
 .error { color: #dc2626; font-size: 13px; text-align: center; margin-top: 8px; display: none; }
 #pinScreen, #formScreen, #successScreen { display: none; }
 #pinScreen.show, #formScreen.show, #successScreen.show { display: block; }
+.meetings-picker { margin-bottom: 16px; }
+.meetings-title { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; }
+.meetings-list { display: flex; flex-direction: column; gap: 6px; }
+.meeting-card {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  border: 2px solid #e5e7eb; border-radius: 10px; background: #fff;
+  cursor: pointer; transition: all 0.15s; }
+.meeting-card:hover { border-color: #d1d5db; background: #f9fafb; }
+.meeting-card.selected { border-color: #3b82f6; background: #eff6ff; }
+.meeting-time { font-size: 13px; font-weight: 600; color: #6366f1; white-space: nowrap; min-width: 58px; }
+.meeting-info { flex: 1; min-width: 0; }
+.meeting-name { font-size: 14px; font-weight: 600; color: #1f2937; }
+.meeting-biz { font-size: 12px; color: #6b7280; margin-top: 1px; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+.meetings-loading { text-align: center; padding: 16px; color: #9ca3af; font-size: 13px; }
+.meetings-empty { text-align: center; padding: 12px; color: #9ca3af; font-size: 13px; font-style: italic; }
+.meetings-toggle { display: flex; gap: 6px; margin-bottom: 10px; }
+.toggle-btn { flex: 1; padding: 8px; border: 1.5px solid #e5e7eb; border-radius: 8px;
+              background: #fff; font-size: 12px; font-weight: 500; color: #6b7280;
+              cursor: pointer; text-align: center; transition: all 0.15s; }
+.toggle-btn.active { border-color: #3b82f6; color: #1e40af; background: #eff6ff; }
+.or-divider { text-align: center; color: #d1d5db; font-size: 12px; margin: 12px 0;
+              display: flex; align-items: center; gap: 10px; }
+.or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: #e5e7eb; }
+.manual-toggle { text-align: center; }
+.manual-toggle a { font-size: 12px; color: #6b7280; cursor: pointer; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -9417,13 +9443,23 @@ textarea { min-height: 70px; resize: vertical; }
 <div id="formScreen">
   <h1>Meeting Report</h1>
   <p class="subtitle">Fill this out right after your meeting</p>
-  <div class="card">
+  <!-- Meetings Picker -->
+  <div class="card" id="meetingsCard">
+    <div class="meetings-picker">
+      <div class="meetings-title">Select your meeting</div>
+      <div class="meetings-toggle">
+        <div class="toggle-btn active" onclick="loadMeetings('today')">Today</div>
+        <div class="toggle-btn" onclick="loadMeetings('week')">This Week</div>
+      </div>
+      <div id="meetingsList" class="meetings-list">
+        <div class="meetings-loading">Loading your calendar...</div>
+      </div>
+    </div>
+    <div class="or-divider">or type manually</div>
     <div class="field">
-      <label>Who did you meet with?</label>
       <input type="text" id="leadName" placeholder="Lead's full name">
     </div>
     <div class="field">
-      <label>Their business?</label>
       <input type="text" id="leadBusiness" placeholder="Business name (optional)">
     </div>
     <div class="field">
@@ -9501,6 +9537,7 @@ async function verifyPin() {
       sessionStorage.setItem('mr_token', d.token);
       document.getElementById('pinScreen').classList.remove('show');
       document.getElementById('formScreen').classList.add('show');
+      loadMeetings('today');
     } else {
       document.getElementById('pinError').style.display = 'block';
       document.getElementById('pinInput').value = '';
@@ -9514,6 +9551,51 @@ async function verifyPin() {
 document.getElementById('pinInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') verifyPin();
 });
+
+// Meetings picker
+let allMeetings = [];
+let selectedMeeting = null;
+
+async function loadMeetings(range) {
+  document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  const list = document.getElementById('meetingsList');
+  list.innerHTML = '<div class="meetings-loading">Loading your calendar...</div>';
+  try {
+    const r = await fetch('/meeting-report/meetings?range=' + range, {
+      headers: {'X-MR-Token': sessionStorage.getItem('mr_token')}
+    });
+    const d = await r.json();
+    if (!d.ok) { list.innerHTML = '<div class="meetings-empty">Could not load calendar</div>'; return; }
+    allMeetings = d.meetings || [];
+    if (allMeetings.length === 0) {
+      list.innerHTML = '<div class="meetings-empty">No meetings found for ' + (range === 'today' ? 'today' : 'this week') + '</div>';
+      return;
+    }
+    list.innerHTML = '';
+    allMeetings.forEach((m, i) => {
+      const card = document.createElement('div');
+      card.className = 'meeting-card';
+      card.setAttribute('data-idx', i);
+      card.innerHTML = '<div class="meeting-time">' + m.time + '</div>'
+        + '<div class="meeting-info"><div class="meeting-name">' + m.name + '</div>'
+        + (m.business ? '<div class="meeting-biz">' + m.business + '</div>' : '')
+        + (m.date_label ? '<div class="meeting-biz">' + m.date_label + '</div>' : '') + '</div>';
+      card.onclick = function() { selectMeeting(i); };
+      list.appendChild(card);
+    });
+  } catch(e) {
+    list.innerHTML = '<div class="meetings-empty">Connection error</div>';
+  }
+}
+
+function selectMeeting(idx) {
+  selectedMeeting = allMeetings[idx];
+  document.querySelectorAll('.meeting-card').forEach(c => c.classList.remove('selected'));
+  document.querySelector('.meeting-card[data-idx="' + idx + '"]').classList.add('selected');
+  document.getElementById('leadName').value = selectedMeeting.name;
+  document.getElementById('leadBusiness').value = selectedMeeting.business || '';
+}
 
 // Toggle fields for no-show
 document.querySelectorAll('input[name="outcome"]').forEach(r => {
@@ -9575,9 +9657,11 @@ async function submitReport() {
 }
 
 function resetForm() {
+  selectedMeeting = null;
   document.getElementById('leadName').value = '';
   document.getElementById('leadBusiness').value = '';
   document.querySelectorAll('input[name="outcome"]').forEach(r => r.checked = false);
+  document.querySelectorAll('.meeting-card').forEach(c => c.classList.remove('selected'));
   document.getElementById('meetingNotes').value = '';
   document.getElementById('servicePrice').value = '';
   document.getElementById('nextSteps').value = '';
@@ -9601,6 +9685,7 @@ function resetForm() {
       if (d.ok) {
         document.getElementById('pinScreen').classList.remove('show');
         document.getElementById('formScreen').classList.add('show');
+        loadMeetings('today');
         return;
       }
     } catch(e) {}
@@ -9670,6 +9755,117 @@ def meeting_report_verify():
     if hmac.compare_digest(pin, MEETING_REPORT_PIN):
         return jsonify({"ok": True, "token": _mr_make_token()})
     return jsonify({"ok": False}), 401
+
+
+@app.route('/meeting-report/meetings', methods=['GET'])
+def meeting_report_meetings():
+    """Fetch today's or this week's calendar events for the meeting picker."""
+    token = request.headers.get('X-MR-Token', '')
+    if not _mr_verify_token(token):
+        return jsonify({"ok": False, "error": "auth"}), 401
+
+    range_param = request.args.get('range', 'today')
+    et = pytz.timezone("US/Eastern")
+    now = datetime.now(et)
+
+    try:
+        cal = get_calendar_service(impersonate=MICHAEL_EMAIL)
+    except Exception:
+        try:
+            cal = get_calendar_service()
+        except Exception as e:
+            print(f"[MEETING REPORT] Calendar auth error: {e}")
+            return jsonify({"ok": False, "message": "Calendar not available"})
+
+    meetings = []
+    mwm_cal = CALENDAR_ID  # MWM production calendar
+    personal_cal = MICHAEL_EMAIL  # Personal calendar
+
+    if range_param == 'week':
+        # Get rest of this week (today through Sunday)
+        days_until_sunday = 6 - now.weekday()
+        dates = [now.date() + timedelta(days=d) for d in range(0, days_until_sunday + 1)]
+    else:
+        dates = [now.date()]
+
+    day_names = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+
+    for d in dates:
+        start_str = d.isoformat() + "T00:00:00-04:00"
+        end_str = d.isoformat() + "T23:59:59-04:00"
+
+        for cal_id in [mwm_cal, personal_cal]:
+            try:
+                result = cal.events().list(
+                    calendarId=cal_id,
+                    timeMin=start_str,
+                    timeMax=end_str,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    timeZone="America/New_York",
+                ).execute()
+                events = result.get("items", [])
+            except Exception:
+                events = []
+
+            for ev in events:
+                summary = ev.get("summary", "")
+                if not summary:
+                    continue
+                # Skip all-day events and internal calendar items
+                start_info = ev.get("start", {})
+                if "dateTime" not in start_info:
+                    continue
+                # Skip events that look internal (no attendees, recurring meetings, etc.)
+                # Focus on events that have a person's name or "studio visit", "meeting", "consultation"
+                try:
+                    dt = datetime.fromisoformat(start_info["dateTime"].replace("Z", "+00:00"))
+                    time_str = dt.astimezone(et).strftime("%-I:%M %p")
+                except Exception:
+                    time_str = start_info["dateTime"][11:16]
+
+                # Try to extract name and business from event summary
+                # Common formats: "Name - Business", "Meeting with Name", "Studio Visit: Name"
+                name = summary.strip()
+                business = ""
+
+                # Check for common separators
+                for sep in [" - ", " | ", ": ", " — "]:
+                    if sep in name:
+                        parts = name.split(sep, 1)
+                        # Usually format is "Name - Business" or "Service: Name"
+                        name = parts[0].strip()
+                        business = parts[1].strip()
+                        break
+
+                # Remove common prefixes
+                for prefix in ["Meeting with ", "Studio Visit: ", "Consultation: ", "Visit: "]:
+                    if name.lower().startswith(prefix.lower()):
+                        name = name[len(prefix):].strip()
+                        break
+
+                date_label = ""
+                if range_param == 'week' and d != now.date():
+                    date_label = f"{day_names.get(d.weekday(), '')} {d.strftime('%-m/%-d')}"
+
+                meetings.append({
+                    "name": name,
+                    "business": business,
+                    "time": time_str,
+                    "date_label": date_label,
+                    "event_id": ev.get("id", ""),
+                })
+
+    # Deduplicate by event_id
+    seen = set()
+    unique = []
+    for m in meetings:
+        eid = m["event_id"]
+        if eid not in seen:
+            seen.add(eid)
+            unique.append(m)
+
+    return jsonify({"ok": True, "meetings": unique})
 
 
 OUTCOME_LABELS = {
