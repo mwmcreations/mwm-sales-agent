@@ -4583,7 +4583,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             except Exception as e:
                 print(f"\u26a0\ufe0f First-contact Sheets log error (non-fatal): {e}")
         if sender not in lead_data:
-            lead_data[sender] = {"source": "WhatsApp"}
+            lead_data[sender] = {"source": "WhatsApp", "first_contact_time": datetime.now(pytz.timezone(TIMEZONE))}
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
         # ═══════════════════════════════════════════════════════════════
@@ -5720,6 +5720,199 @@ threading.Thread(target=_reengagement_checker, daemon=True).start()
 threading.Thread(target=_daily_briefing_thread, daemon=True).start()
 
 
+# ── Sales Machine Daily Briefing → #matt (Session 32) ────────────────
+def _sales_machine_briefing_thread():
+    """Posts a comprehensive Sales Machine briefing to #matt every morning at 7:30 AM ET.
+
+    This is Michael's single daily view of the entire sales pipeline.
+    Covers: pipeline stats, active conversations, re-engagement status,
+    hot leads, system health, and action items.
+    """
+    import time as _time
+    import pytz as _pytz
+    from datetime import datetime, timedelta
+    import traceback
+
+    EASTERN = _pytz.timezone("America/New_York")
+    BRIEFING_HOUR = 7
+    BRIEFING_MINUTE = 30
+
+    def _seconds_until_next(hour, minute):
+        now = datetime.now(EASTERN)
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+
+    def _build_briefing():
+        now = datetime.now(EASTERN)
+        date_str = now.strftime("%A, %B %d, %Y")
+
+        # ── Pipeline Stats ──
+        stats = _get_pipeline_stats()
+        total = stats["total_leads"]
+        active = stats["active"]
+        booked = stats["booked"]
+        cold = stats["cold"]
+
+        # ── Hot leads (score >= 50) ──
+        hot_leads = []
+        for sender, data in lead_data.items():
+            score = data.get("lead_score", 0)
+            if score >= 50 and not data.get("booked") and not data.get("cold_fired"):
+                name = data.get("name", "Unknown")
+                hot_leads.append(f"• *{name}* — score {score}")
+
+        # ── Active conversations (messages in last 24h) ──
+        cutoff_24h = now - timedelta(hours=24)
+        recent_convos = []
+        for sender, data in lead_data.items():
+            last_msg = data.get("last_message_time")
+            if last_msg and last_msg > cutoff_24h:
+                name = data.get("name", "Unknown")
+                has_email = "✅" if data.get("email") else "❌"
+                is_booked = "📅" if data.get("booked") else ""
+                recent_convos.append(f"• *{name}* — email {has_email} {is_booked}")
+
+        # ── New leads (first seen in last 24h) ──
+        new_leads_24h = []
+        for sender, data in lead_data.items():
+            first_seen = data.get("first_contact_time")
+            if first_seen and first_seen > cutoff_24h:
+                name = data.get("name", "Unknown")
+                source = data.get("source", "unknown")
+                new_leads_24h.append(f"• *{name}* via {source}")
+
+        # ── Re-engagement queue ──
+        try:
+            re_queue = get_reengagement_queue()
+            re_active = sum(1 for _, r in re_queue if r.get("Status", "").lower() in ("active", "pending", ""))
+            re_replied = sum(1 for _, r in re_queue if r.get("Status", "").lower() == "replied")
+            re_opted_out = sum(1 for _, r in re_queue if r.get("Status", "").lower() == "opted_out")
+        except Exception:
+            re_active = re_replied = re_opted_out = 0
+
+        # ── Thread health ──
+        thread_health = _get_thread_health()
+        unhealthy = [name for name, info in thread_health.items() if not info.get("healthy")]
+
+        # ── Build the Slack message with blocks ──
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"📊 Sales Machine — Morning Briefing"}
+            },
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"_{date_str} • Auto-generated at {now.strftime('%I:%M %p')} ET_"}]
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Pipeline Overview*"}
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Total Leads:* {total}"},
+                    {"type": "mrkdwn", "text": f"*Active:* {active}"},
+                    {"type": "mrkdwn", "text": f"*Booked:* {booked}"},
+                    {"type": "mrkdwn", "text": f"*Cold:* {cold}"},
+                ]
+            },
+        ]
+
+        # New leads in last 24h
+        if new_leads_24h:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*🆕 New Leads (last 24h):* {len(new_leads_24h)}\n" + "\n".join(new_leads_24h[:8])}
+            })
+        else:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*🆕 New Leads (last 24h):* None"}
+            })
+
+        # Hot leads
+        if hot_leads:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*🔥 Hot Leads (score 50+):*\n" + "\n".join(hot_leads[:5])}
+            })
+
+        # Active conversations
+        if recent_convos:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*💬 Active Conversations (last 24h):* {len(recent_convos)}\n" + "\n".join(recent_convos[:8])}
+            })
+
+        # Re-engagement
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*🔄 Re-engagement Queue:*\nActive: {re_active} | Replied: {re_replied} | Opted out: {re_opted_out}"}
+        })
+
+        # System health
+        blocks.append({"type": "divider"})
+        if unhealthy:
+            health_text = f"*⚠️ System Health:* {len(unhealthy)} thread(s) need attention: " + ", ".join(unhealthy)
+        else:
+            registered = len(thread_health)
+            health_text = f"*✅ System Health:* All {registered} threads running normally"
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": health_text}
+        })
+
+        # Action items
+        action_items = []
+        if unhealthy:
+            action_items.append(f"• Check unhealthy threads: {', '.join(unhealthy)}")
+        if hot_leads:
+            action_items.append(f"• {len(hot_leads)} hot lead(s) — consider personal follow-up")
+
+        if action_items:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*📋 Action Items:*\n" + "\n".join(action_items)}
+            })
+
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "_Tip: Open the Cowork Dashboard for a deeper visual drill-down. Check #maya-shadow for full conversation details._"}]
+        })
+
+        text_fallback = f"📊 Sales Machine Morning Briefing — {date_str} | {total} leads ({active} active, {booked} booked, {cold} cold)"
+        _post_to_slack_async(SLACK_MATT_CHANNEL, text_fallback, blocks=blocks)
+        print(f"[SM BRIEFING] Posted Sales Machine briefing to #matt for {date_str}")
+
+    print("[SM BRIEFING] Sales Machine briefing thread started (7:30 AM ET daily)")
+    while True:
+        try:
+            _heartbeat("sales_machine_briefing")
+            wait = _seconds_until_next(BRIEFING_HOUR, BRIEFING_MINUTE)
+            print(f"[SM BRIEFING] Next briefing in {wait/3600:.1f}h")
+            remaining = wait
+            while remaining > 0:
+                chunk = min(remaining, 900)
+                _time.sleep(chunk)
+                remaining -= chunk
+                _heartbeat("sales_machine_briefing")
+            _build_briefing()
+        except Exception as exc:
+            print(f"[SM BRIEFING] Error: {exc}")
+            traceback.print_exc()
+            _time.sleep(600)
+
+threading.Thread(target=_sales_machine_briefing_thread, daemon=True).start()
 
 
 # ── Slack Events API: Real-Time Agent Responsiveness ─────────────────────────────
@@ -8238,6 +8431,7 @@ def _handle_web_tool_call(tool_name, tool_input):
                     "booked": True,
                     "event_id": event_id,
                     "source": "Website Chat",
+                    "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
                     "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
                 }
                 print(f"[Web Chat] Registered new lead in lead_data: {_web_key}")
