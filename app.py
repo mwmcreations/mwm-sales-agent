@@ -9017,8 +9017,8 @@ def api_send_email():
         if not html_body:
             html_body = plain_body.replace("\n", "<br>")
 
-        # Attachment handling
-        drive_file_id = data.get("attachment_drive_id", "").strip() or None
+        # Attachment handling — supports attachment_drive_id, file_id (alias), or attachment_filename (search)
+        drive_file_id = data.get("attachment_drive_id", "").strip() or data.get("file_id", "").strip() or None
         attachment_filename = data.get("attachment_filename", "").strip() or None
 
         if attachment_filename and not drive_file_id:
