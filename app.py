@@ -39,6 +39,9 @@ CORS(app, resources={r"/chat": {"origins": [CORS_ORIGIN, "https://www.mwmcreatio
 
 # ââ Meta WhatsApp Cloud API Configuration âââââââââââââââââââââââââââââââââ
 META_ACCESS_TOKEN    = os.getenv("META_ACCESS_TOKEN", "")
+# META_PAGE_ACCESS_TOKEN — Page Access Token with leads_retrieval permission.
+# Used by /meta-leads to fetch lead data from Graph API. Falls back to META_ACCESS_TOKEN if not set.
+META_PAGE_ACCESS_TOKEN = os.getenv("META_PAGE_ACCESS_TOKEN", "") or META_ACCESS_TOKEN
 # META_PHONE_NUMBER_ID — Maya's phone number ID (existing single-tenant default).
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
 # LARA_PHONE_NUMBER_ID — Phone number ID for the LARA WhatsApp sender (+1 407-537-7207).
@@ -8731,7 +8734,7 @@ def meta_leads_webhook():
                 lead_url = f"https://graph.facebook.com/v19.0/{leadgen_id}"
                 lead_resp = http_requests.get(
                     lead_url,
-                    params={"access_token": META_ACCESS_TOKEN},
+                    params={"access_token": META_PAGE_ACCESS_TOKEN},
                     timeout=15,
                 )
                 lead_resp.raise_for_status()
