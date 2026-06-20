@@ -6052,6 +6052,29 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── MAYA Gmail Send Action Check (#general) ──
+        if agent["name"] == "MAYA (Slack)":
+            handled, action_result = handle_susan_gmail_action(clean_text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[MAYA GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Maya. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── MAYA Action Check (reuse from dedicated channel) ──
         if agent["name"] == "MAYA (Slack)":
             handled, action_result, handoff_msg = handle_maya_action(clean_text)
@@ -6386,6 +6409,29 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── ROB Gmail Send Action Check (#general) ──
+        if agent["name"] == "ROB":
+            handled, action_result = handle_susan_gmail_action(clean_text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[ROB GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Rob. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── ROB Stripe Action Check (reuse from dedicated channel) ──
         if agent["name"] == "ROB":
             handled, action_result = handle_rob_action(clean_text)
@@ -6529,6 +6575,29 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                         {"role": "user", "content": clean_text},
                         {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Cris. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
+        # ── LARA Gmail Send Action Check (#general) ──
+        if agent["name"] == "LARA":
+            handled, action_result = handle_susan_gmail_action(clean_text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[LARA GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as LARA. Keep it concise."},
                     ]
                 )
                 reply = ""
@@ -6773,6 +6842,12 @@ Next step: [if applicable, or "awaiting further instructions"]
 
 REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 
+📧 *Gmail (1:1 emails — info@mwmcreations.com)*
+• Send email — "send email to name@example.com subject Hello body ..."
+• Send email with PDF attachment from Google Drive — "send email to name@example.com subject Proposal body ... attach Proposta_RBL.pdf"
+• All outgoing emails are sent from info@mwmcreations.com (NEVER michael@mwmcreations.com)
+• Attachments are auto-searched from Google Drive > _AGENTS > UPLOADS folder
+
 📊 *Pipeline & Leads (Google Sheets)*
 • Pipeline summary — "What's the pipeline status?" / "How are our leads?"
 • Look up a lead — "Look up RJ" / "What do we have on One Stop Financial?"
@@ -6963,6 +7038,12 @@ Next step: [if applicable, or "awaiting further instructions"]
         base += """
 
 REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
+
+📧 *Gmail (1:1 emails — info@mwmcreations.com)*
+• Send email — "send email to name@example.com subject Invoice body ..."
+• Send email with attachment from Google Drive — "send email to name@example.com subject Invoice body ... attach Invoice_Client.pdf"
+• All outgoing emails are sent from info@mwmcreations.com (NEVER michael@mwmcreations.com)
+• Attachments are auto-searched from Google Drive > _AGENTS > UPLOADS folder
 
 💰 *Financial Data (Stripe)*
 • Stripe balance — "What's our balance?" / "Check Stripe balance" / "How much money do we have?"
@@ -7293,6 +7374,38 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                         reply += block.text
                 if not reply:
                     reply = calendar_result if calendar_result else "I processed your calendar request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── MAYA Gmail Send Action Check ──────────────────────────
+        if agent["name"] == "MAYA (Slack)":
+            handled, action_result = handle_susan_gmail_action(text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context,
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[MAYA GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Maya. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
                 if thread_ts:
                     url = "https://slack.com/api/chat.postMessage"
                     headers = {
@@ -7708,6 +7821,38 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
                     post_to_slack(channel_id, reply)
                 return
 
+        # ── ROB Gmail Send Action Check ───────────────────────────
+        if agent["name"] == "ROB":
+            handled, action_result = handle_susan_gmail_action(text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context,
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[ROB GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Rob. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
         # ── ROB Stripe Action Check ────────────────────────────
         if agent["name"] == "ROB":
             handled, action_result = handle_rob_action(text)
@@ -7866,6 +8011,38 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[CRIS ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Cris. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── LARA Gmail Send Action Check ─────────────────────────
+        if agent["name"] == "LARA":
+            handled, action_result = handle_susan_gmail_action(text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context,
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[LARA GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as LARA. Keep it concise."},
                     ]
                 )
                 reply = ""
