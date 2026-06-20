@@ -9992,6 +9992,20 @@ def meeting_report_submit():
     except Exception as e:
         print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
 
+    # ── Post-Visit WhatsApp Template (outside 24h window) ──
+    # Look up the lead's phone from Google Sheets, then send the
+    # appropriate template. Runs in background to not delay the response.
+    template_sent = False
+    if outcome != "not_interested":
+        try:
+            lead_phone = _lookup_lead_phone(name)
+            if lead_phone:
+                template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+            else:
+                print(f"[MEETING REPORT] No phone found for '{name}' — template not sent")
+        except Exception as e:
+            print(f"[MEETING REPORT] Template send error (non-blocking): {e}")
+
     # Build actions list for success screen
     actions = [
         "✅ Posted meeting result to #pipeline",
@@ -10000,12 +10014,18 @@ def meeting_report_submit():
     if outcome == "client_won":
         actions.append("✅ LARA will set up production tracking")
         actions.append("✅ Rob will set up invoicing")
+        if template_sent:
+            actions.append("✅ Maya sent welcome message via WhatsApp")
     elif outcome == "follow_up":
         actions.append("✅ Maya will continue WhatsApp nurture")
+        if template_sent:
+            actions.append("✅ Maya sent follow-up message via WhatsApp")
         if service:
             actions.append("✅ Susan can send follow-up email with portfolio")
     elif outcome == "no_show":
         actions.append("✅ Maya will reach out to reschedule")
+        if template_sent:
+            actions.append("✅ Maya sent reschedule message via WhatsApp")
 
     actions.append("✅ CRM updated in Google Sheets")
 
@@ -10134,6 +10154,242 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
         print(f"[MEETING REPORT] Updated '{name}' in '{month_tab}' row {target_row}: status={new_status}")
     except Exception as e:
         print(f"[MEETING REPORT] Sheets update error for '{name}': {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# POST-VISIT WHATSAPP TEMPLATES — Session 31
+# Sends Meta-approved template messages after Michael submits a
+# Meeting Report. Works OUTSIDE the 24-hour WhatsApp session window.
+# ══════════════════════════════════════════════════════════════════════
+
+POST_VISIT_TEMPLATES = {
+    "follow_up":       "maya_post_visit_followup",
+    "no_show":         "maya_post_visit_noshow",
+    "client_won":      "maya_post_visit_welcome",
+    "not_interested":  None,  # No outreach for lost leads
+}
+
+POST_VISIT_WABA_ID = "1172161621528249"
+
+
+def _lookup_lead_phone(name):
+    """Look up a lead's phone number from Google Sheets by name.
+    Returns the phone number string or None if not found.
+    """
+    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    if not sheet_id:
+        return None
+
+    try:
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        if not creds_json:
+            return None
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(creds_json),
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        )
+        svc = build("sheets", "v4", credentials=creds)
+    except Exception as e:
+        print(f"[POST-VISIT] Sheets auth error for phone lookup: {e}")
+        return None
+
+    # Search current month tab first, then recent months
+    et = pytz.timezone("US/Eastern")
+    now = datetime.now(et)
+    current_tab = now.strftime("%b %Y")
+    tabs_to_search = [current_tab]
+    for months_back in range(1, 4):
+        prev = now - timedelta(days=30 * months_back)
+        tab_name = prev.strftime("%b %Y")
+        if tab_name not in tabs_to_search:
+            tabs_to_search.append(tab_name)
+
+    clean_name = name.strip().lower()
+
+    for tab_name in tabs_to_search:
+        try:
+            result = svc.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range=f"'{tab_name}'!A:T"
+            ).execute()
+            rows = result.get("values", [])
+        except Exception:
+            continue
+
+        for row in rows:
+            # Name is column C (index 2), Phone is column E (index 4)
+            if len(row) > 4 and row[2].strip().lower() == clean_name:
+                phone = row[4].strip()
+                if phone and re.sub(r"\D", "", phone):
+                    print(f"[POST-VISIT] Found phone for '{name}' in '{tab_name}': {phone[:6]}...")
+                    return phone
+
+    print(f"[POST-VISIT] Phone not found for '{name}' in any tab")
+    return None
+
+
+def _send_post_visit_template(phone, name, outcome, notes=""):
+    """Send a post-visit WhatsApp template message based on meeting outcome.
+    Uses Meta Cloud API templates — works outside the 24h session window.
+    Returns True if sent, False otherwise.
+    """
+    template_name = POST_VISIT_TEMPLATES.get(outcome)
+    if not template_name:
+        print(f"[POST-VISIT] No template for outcome '{outcome}' — skipping")
+        return False
+
+    if not phone:
+        print(f"[POST-VISIT] No phone number — cannot send template")
+        return False
+
+    meta_token = META_ACCESS_TOKEN
+    phone_number_id = META_PHONE_NUMBER_ID
+
+    if not meta_token or not phone_number_id:
+        print("[POST-VISIT] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID")
+        return False
+
+    clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+    first_name = (name or "there").split()[0]
+
+    url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {meta_token}",
+        "Content-Type": "application/json",
+    }
+
+    # All post-visit templates use a body with {{1}} = first name
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": "en_US"},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": first_name}],
+                }
+            ],
+        },
+    }
+
+    try:
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        msg_id = result.get("messages", [{}])[0].get("id", "")
+        print(f"✅ [POST-VISIT] Template '{template_name}' sent to {clean_phone[:6]}... (msg_id={msg_id})")
+
+        # Notify in #pipeline for visibility
+        _post_to_slack_async(
+            SLACK_PIPELINE_CHANNEL,
+            f"\U0001f4ac *POST-VISIT TEMPLATE SENT*\n"
+            f"*Lead:* {name}\n"
+            f"*Template:* `{template_name}`\n"
+            f"*Via:* Maya WhatsApp (outside 24h window)\n"
+            f"_Triggered by Michael's Meeting Report_"
+        )
+        return True
+    except Exception as e:
+        err_detail = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            err_detail = e.response.text
+        print(f"❌ [POST-VISIT] Template send failed: {err_detail}")
+
+        # If template not approved yet, log but don't alert
+        if "not exist" in err_detail.lower() or "not found" in err_detail.lower() or "470" in err_detail:
+            print(f"[POST-VISIT] Template '{template_name}' may not be approved yet — skipping silently")
+        else:
+            _notify_error_to_dev(
+                "Post-Visit Template Failed",
+                f"Could not send '{template_name}' to {clean_phone[:6]}...: {err_detail}",
+                lead_info=f"Name: {name}, Outcome: {outcome}",
+                severity="WARNING"
+            )
+        return False
+
+
+@app.route('/admin/submit-post-visit-templates', methods=['POST'])
+def submit_post_visit_templates():
+    """Submit post-visit WhatsApp templates to Meta for approval.
+    One-time admin endpoint. Auth: BRIEFING_TOKEN.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if not META_ACCESS_TOKEN:
+        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
+
+    url = f"https://graph.facebook.com/v20.0/{POST_VISIT_WABA_ID}/message_templates"
+    hdrs = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
+
+    templates = [
+        {
+            "name": "maya_post_visit_followup",
+            "category": "MARKETING",
+            "language": "en_US",
+            "components": [
+                {
+                    "type": "BODY",
+                    "text": "Hi {{1}}, it was great meeting you at MWM Studios! "
+                            "We're putting together your custom proposal and will "
+                            "have everything ready for you soon. Feel free to reach "
+                            "out if you have any questions in the meantime!",
+                    "example": {"body_text": [["Daniele"]]}
+                }
+            ]
+        },
+        {
+            "name": "maya_post_visit_noshow",
+            "category": "MARKETING",
+            "language": "en_US",
+            "components": [
+                {
+                    "type": "BODY",
+                    "text": "Hi {{1}}, we missed you at the studio today! No worries "
+                            "at all — I know schedules can get hectic. Would you "
+                            "like to reschedule your visit? Just let me know a time "
+                            "that works better for you.",
+                    "example": {"body_text": [["Sarah"]]}
+                }
+            ]
+        },
+        {
+            "name": "maya_post_visit_welcome",
+            "category": "MARKETING",
+            "language": "en_US",
+            "components": [
+                {
+                    "type": "BODY",
+                    "text": "Hi {{1}}, welcome to the MWM family! We're so excited to "
+                            "work with you on your project. Our production team is "
+                            "getting everything set up and we'll be in touch soon with "
+                            "next steps. Thank you for choosing MWM Creations!",
+                    "example": {"body_text": [["Carlos"]]}
+                }
+            ]
+        },
+    ]
+
+    results = []
+    for t in templates:
+        try:
+            r = http_requests.post(url, headers=hdrs, json=t, timeout=15)
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text
+            results.append({"name": t["name"], "status": r.status_code, "response": body})
+            print(f"[POST-VISIT] Template '{t['name']}' submitted: {r.status_code}")
+        except Exception as e:
+            results.append({"name": t["name"], "status": "error", "response": str(e)})
+
+    return jsonify({"ok": True, "results": results})
 
 
 if __name__ == "__main__":
