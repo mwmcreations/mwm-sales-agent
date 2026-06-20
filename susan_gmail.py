@@ -34,8 +34,10 @@ TIMEZONE = "America/New_York"
 SCOPES_GMAIL = ["https://www.googleapis.com/auth/gmail.send"]
 SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive.readonly"]
 
-# Designated proposals/attachments folder on Google Drive (optional — if set, searches this folder first)
-DRIVE_PROPOSALS_FOLDER_ID = os.getenv("SUSAN_DRIVE_PROPOSALS_FOLDER_ID", "")
+# Central agent uploads folder on Google Drive: My Drive > _AGENTS > UPLOADS
+# ALL agents save documents here; Susan (and others) grab files from here for email attachments.
+# Standing rule from Michael — this is the single source of truth for all agent document uploads.
+DRIVE_PROPOSALS_FOLDER_ID = os.getenv("SUSAN_DRIVE_PROPOSALS_FOLDER_ID", "128krn55oBdymptDD_8QD5dK_hnbp9peY")
 
 
 # ── Service Builders ────────────────────────────────────────────────
