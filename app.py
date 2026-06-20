@@ -10163,7 +10163,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
 # ══════════════════════════════════════════════════════════════════════
 
 POST_VISIT_TEMPLATES = {
-    "follow_up":       "maya_post_visit_followup",
+    "follow_up":       "maya_post_visit_followup_v2",
     "no_show":         "maya_post_visit_noshow",
     "client_won":      "maya_post_visit_welcome",
     "not_interested":  None,  # No outreach for lost leads
@@ -10330,16 +10330,17 @@ def submit_post_visit_templates():
 
     templates = [
         {
-            "name": "maya_post_visit_followup",
+            "name": "maya_post_visit_followup_v2",
             "category": "MARKETING",
             "language": "en_US",
             "components": [
                 {
                     "type": "BODY",
                     "text": "Hi {{1}}, it was great meeting you at MWM Studios! "
-                            "We're putting together your custom proposal and will "
-                            "have everything ready for you soon. Feel free to reach "
-                            "out if you have any questions in the meantime!",
+                            "Thank you for taking the time to visit. If you have "
+                            "any questions or want to discuss anything further, "
+                            "feel free to reach out anytime — we would love to "
+                            "work with you!",
                     "example": {"body_text": [["Daniele"]]}
                 }
             ]
