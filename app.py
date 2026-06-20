@@ -9324,6 +9324,592 @@ def _system_monitor():
 threading.Thread(target=_system_monitor, daemon=True).start()
 
 
+# ══════════════════════════════════════════════════════════════════════
+# POST-MEETING REPORT FORM — web-accessible from any device
+# Session 31 (2026-06-20): Added so Michael can submit meeting outcomes
+# from his studio laptop (or phone) without needing Cowork.
+# Protected by MEETING_REPORT_PIN env var.
+# ══════════════════════════════════════════════════════════════════════
+
+MEETING_REPORT_PIN = os.getenv("MEETING_REPORT_PIN", "")
+
+MEETING_REPORT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MWM Meeting Report</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: #f8fafc; color: #1f2937; min-height: 100vh; }
+.container { max-width: 500px; margin: 0 auto; padding: 20px; }
+.logo { text-align: center; margin: 20px 0 10px; }
+.logo-text { font-size: 22px; font-weight: 700; color: #1e40af; }
+.logo-sub { font-size: 12px; color: #6b7280; margin-top: 2px; }
+h1 { font-size: 20px; text-align: center; margin: 16px 0 4px; }
+.subtitle { font-size: 13px; color: #6b7280; text-align: center; margin-bottom: 20px; }
+.card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        border: 1px solid #e5e7eb; margin-bottom: 16px; }
+.field { margin-bottom: 16px; }
+.field:last-child { margin-bottom: 0; }
+label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+input[type="text"], input[type="password"], textarea {
+  width: 100%; padding: 10px 12px; border: 1.5px solid #e5e7eb; border-radius: 8px;
+  font-size: 15px; font-family: inherit; color: #1f2937; background: #fff; }
+input:focus, textarea:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+textarea { min-height: 70px; resize: vertical; }
+.outcome-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.oc-option { position: relative; cursor: pointer; }
+.oc-option input { position: absolute; opacity: 0; width: 0; height: 0; }
+.oc-card { display: flex; align-items: center; gap: 8px; padding: 12px;
+           border: 2px solid #e5e7eb; border-radius: 10px; background: #fff;
+           transition: all 0.15s; font-size: 14px; font-weight: 500; color: #374151; }
+.oc-card:hover { border-color: #d1d5db; }
+.oc-option input:checked + .oc-card { border-color: #3b82f6; background: #eff6ff; color: #1e40af; }
+.oc-icon { font-size: 20px; }
+.oc-sub { font-size: 10px; font-weight: 400; color: #6b7280; display: block; margin-top: 1px; }
+.oc-option input:checked + .oc-card .oc-sub { color: #3b82f6; }
+.btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 10px;
+       font-size: 15px; font-weight: 600; color: #fff; background: #2563eb;
+       cursor: pointer; transition: all 0.15s; }
+.btn:hover { background: #1d4ed8; }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { background: #93c5fd; cursor: not-allowed; transform: none; }
+.btn-outline { background: #fff; color: #374151; border: 1.5px solid #e5e7eb; margin-top: 12px; }
+.btn-outline:hover { background: #f9fafb; }
+.success { display: none; text-align: center; padding: 30px 20px; }
+.success.show { display: block; }
+.success-icon { font-size: 44px; margin-bottom: 10px; }
+.success-title { font-size: 18px; font-weight: 700; color: #065f46; margin-bottom: 6px; }
+.success-sub { font-size: 13px; color: #6b7280; margin-bottom: 16px; line-height: 1.5; }
+.success-detail { background: #f0fdf4; border: 1px solid #6ee7b7; border-radius: 10px;
+                  padding: 12px; text-align: left; font-size: 12px; color: #065f46; line-height: 1.6; }
+.hint { font-size: 11px; color: #9ca3af; margin-top: 3px; }
+.error { color: #dc2626; font-size: 13px; text-align: center; margin-top: 8px; display: none; }
+#pinScreen, #formScreen, #successScreen { display: none; }
+#pinScreen.show, #formScreen.show, #successScreen.show { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="logo">
+  <div class="logo-text">MWM Sales Machine</div>
+  <div class="logo-sub">Post-Meeting Report</div>
+</div>
+
+<!-- PIN Screen -->
+<div id="pinScreen" class="show">
+  <h1>Enter PIN</h1>
+  <p class="subtitle">Access code for the meeting report form</p>
+  <div class="card">
+    <div class="field">
+      <input type="password" id="pinInput" placeholder="Enter 4-digit PIN" maxlength="10"
+             inputmode="numeric" autocomplete="off" style="text-align:center;font-size:24px;letter-spacing:8px;">
+    </div>
+    <button class="btn" onclick="verifyPin()">Enter</button>
+    <div class="error" id="pinError">Incorrect PIN. Try again.</div>
+  </div>
+</div>
+
+<!-- Form Screen -->
+<div id="formScreen">
+  <h1>Meeting Report</h1>
+  <p class="subtitle">Fill this out right after your meeting</p>
+  <div class="card">
+    <div class="field">
+      <label>Who did you meet with?</label>
+      <input type="text" id="leadName" placeholder="Lead's full name">
+    </div>
+    <div class="field">
+      <label>Their business?</label>
+      <input type="text" id="leadBusiness" placeholder="Business name (optional)">
+    </div>
+    <div class="field">
+      <label>Meeting outcome</label>
+      <div class="outcome-grid">
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="client_won">
+          <div class="oc-card"><span class="oc-icon">&#x1F389;</span>
+            <div>Client won<span class="oc-sub">Signed up</span></div></div>
+        </label>
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="follow_up">
+          <div class="oc-card"><span class="oc-icon">&#x1F504;</span>
+            <div>Follow-up<span class="oc-sub">Needs time</span></div></div>
+        </label>
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="not_interested">
+          <div class="oc-card"><span class="oc-icon">&#x274C;</span>
+            <div>Not interested<span class="oc-sub">Said no</span></div></div>
+        </label>
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="no_show">
+          <div class="oc-card"><span class="oc-icon">&#x1F6AB;</span>
+            <div>No-show<span class="oc-sub">Didn't come</span></div></div>
+        </label>
+      </div>
+    </div>
+    <div class="field" id="notesField">
+      <label>Meeting notes</label>
+      <textarea id="meetingNotes" placeholder="What was discussed, your impressions..."></textarea>
+    </div>
+    <div class="field" id="serviceField">
+      <label>Service &amp; price discussed</label>
+      <input type="text" id="servicePrice" placeholder="e.g. Studio 4h/month — $2,500">
+    </div>
+    <div class="field" id="nextField">
+      <label>Next steps</label>
+      <textarea id="nextSteps" placeholder="Send proposal, schedule follow-up..."
+                style="min-height:50px;"></textarea>
+    </div>
+    <button class="btn" id="submitBtn" onclick="submitReport()">
+      <span id="btnText">Submit Report</span>
+      <span id="btnSpinner" style="display:none;">Submitting...</span>
+    </button>
+    <div class="error" id="formError"></div>
+  </div>
+</div>
+
+<!-- Success Screen -->
+<div id="successScreen">
+  <div class="success show">
+    <div class="success-icon">&#x2705;</div>
+    <div class="success-title">Report submitted!</div>
+    <div class="success-sub">The Sales Machine has been updated.</div>
+    <div class="success-detail" id="successDetail"></div>
+    <button class="btn btn-outline" onclick="resetForm()">Submit another report</button>
+  </div>
+</div>
+
+</div>
+
+<script>
+// PIN verification via server
+async function verifyPin() {
+  const pin = document.getElementById('pinInput').value.trim();
+  if (!pin) return;
+  try {
+    const r = await fetch('/meeting-report/verify', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pin: pin})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      sessionStorage.setItem('mr_token', d.token);
+      document.getElementById('pinScreen').classList.remove('show');
+      document.getElementById('formScreen').classList.add('show');
+    } else {
+      document.getElementById('pinError').style.display = 'block';
+      document.getElementById('pinInput').value = '';
+      document.getElementById('pinInput').focus();
+    }
+  } catch(e) {
+    document.getElementById('pinError').textContent = 'Connection error. Try again.';
+    document.getElementById('pinError').style.display = 'block';
+  }
+}
+document.getElementById('pinInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') verifyPin();
+});
+
+// Toggle fields for no-show
+document.querySelectorAll('input[name="outcome"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const ns = r.value === 'no_show';
+    document.getElementById('serviceField').style.display = ns ? 'none' : '';
+    document.getElementById('nextField').style.display = ns ? 'none' : '';
+  });
+});
+
+// Submit
+async function submitReport() {
+  const name = document.getElementById('leadName').value.trim();
+  const business = document.getElementById('leadBusiness').value.trim();
+  const outcomeEl = document.querySelector('input[name="outcome"]:checked');
+  const notes = document.getElementById('meetingNotes').value.trim();
+  const service = document.getElementById('servicePrice').value.trim();
+  const nextSteps = document.getElementById('nextSteps').value.trim();
+  const errEl = document.getElementById('formError');
+  errEl.style.display = 'none';
+
+  if (!name) { errEl.textContent = 'Please enter the lead name.'; errEl.style.display = 'block'; return; }
+  if (!outcomeEl) { errEl.textContent = 'Please select an outcome.'; errEl.style.display = 'block'; return; }
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  document.getElementById('btnText').style.display = 'none';
+  document.getElementById('btnSpinner').style.display = 'inline';
+
+  try {
+    const r = await fetch('/meeting-report/submit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        token: sessionStorage.getItem('mr_token'),
+        name, business,
+        outcome: outcomeEl.value,
+        notes, service, next_steps: nextSteps
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('successDetail').innerHTML = d.actions.join('<br>');
+      document.getElementById('formScreen').classList.remove('show');
+      document.getElementById('successScreen').classList.add('show');
+    } else {
+      if (d.error === 'auth') { location.reload(); return; }
+      errEl.textContent = d.message || 'Error submitting. Try again.';
+      errEl.style.display = 'block';
+    }
+  } catch(e) {
+    errEl.textContent = 'Connection error. Try again.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    document.getElementById('btnText').style.display = 'inline';
+    document.getElementById('btnSpinner').style.display = 'none';
+  }
+}
+
+function resetForm() {
+  document.getElementById('leadName').value = '';
+  document.getElementById('leadBusiness').value = '';
+  document.querySelectorAll('input[name="outcome"]').forEach(r => r.checked = false);
+  document.getElementById('meetingNotes').value = '';
+  document.getElementById('servicePrice').value = '';
+  document.getElementById('nextSteps').value = '';
+  document.getElementById('serviceField').style.display = '';
+  document.getElementById('nextField').style.display = '';
+  document.getElementById('successScreen').classList.remove('show');
+  document.getElementById('formScreen').classList.add('show');
+}
+
+// Auto-check stored token on load
+(async function() {
+  const t = sessionStorage.getItem('mr_token');
+  if (t) {
+    try {
+      const r = await fetch('/meeting-report/verify', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({token: t})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        document.getElementById('pinScreen').classList.remove('show');
+        document.getElementById('formScreen').classList.add('show');
+        return;
+      }
+    } catch(e) {}
+  }
+  document.getElementById('pinScreen').classList.add('show');
+  document.getElementById('pinInput').focus();
+})();
+</script>
+</body>
+</html>"""
+
+
+# Simple token system — PIN verified server-side, returns HMAC token valid for 24h
+def _mr_make_token():
+    """Generate an HMAC-based token valid for ~24 hours."""
+    day_key = datetime.now(pytz.timezone("US/Eastern")).strftime("%Y-%m-%d")
+    sig = hmac.new(
+        (MEETING_REPORT_PIN + "mwm-mr").encode(),
+        day_key.encode(),
+        hashlib.sha256
+    ).hexdigest()[:32]
+    return f"{day_key}:{sig}"
+
+
+def _mr_verify_token(token):
+    """Verify a meeting-report token is valid."""
+    if not token or ":" not in token:
+        return False
+    day_key, sig = token.split(":", 1)
+    expected = hmac.new(
+        (MEETING_REPORT_PIN + "mwm-mr").encode(),
+        day_key.encode(),
+        hashlib.sha256
+    ).hexdigest()[:32]
+    # Accept today's or yesterday's token (covers midnight edge)
+    if hmac.compare_digest(sig, expected):
+        return True
+    yesterday = (datetime.now(pytz.timezone("US/Eastern")) - timedelta(days=1)).strftime("%Y-%m-%d")
+    if day_key == yesterday:
+        expected_y = hmac.new(
+            (MEETING_REPORT_PIN + "mwm-mr").encode(),
+            yesterday.encode(),
+            hashlib.sha256
+        ).hexdigest()[:32]
+        return hmac.compare_digest(sig, expected_y)
+    return False
+
+
+@app.route('/meeting-report', methods=['GET'])
+def meeting_report_page():
+    """Serve the meeting report form."""
+    if not MEETING_REPORT_PIN:
+        return "<h2>Meeting Report not configured.</h2><p>Set MEETING_REPORT_PIN environment variable on Railway.</p>", 503
+    return MEETING_REPORT_HTML, 200, {'Content-Type': 'text/html'}
+
+
+@app.route('/meeting-report/verify', methods=['POST'])
+def meeting_report_verify():
+    """Verify PIN or existing token."""
+    data = request.get_json(silent=True) or {}
+    # Check existing token
+    token = data.get('token')
+    if token and _mr_verify_token(token):
+        return jsonify({"ok": True, "token": token})
+    # Check PIN
+    pin = data.get('pin', '')
+    if hmac.compare_digest(pin, MEETING_REPORT_PIN):
+        return jsonify({"ok": True, "token": _mr_make_token()})
+    return jsonify({"ok": False}), 401
+
+
+OUTCOME_LABELS = {
+    "client_won": {"emoji": "\U0001F389", "label": "CLIENT WON", "pipeline": "CLIENT_WON"},
+    "follow_up": {"emoji": "\U0001F504", "label": "FOLLOW-UP NEEDED", "pipeline": "FOLLOW_UP"},
+    "not_interested": {"emoji": "❌", "label": "NOT INTERESTED", "pipeline": "CLIENT_LOST"},
+    "no_show": {"emoji": "\U0001F6AB", "label": "NO-SHOW", "pipeline": "NO_SHOW"},
+}
+
+
+@app.route('/meeting-report/submit', methods=['POST'])
+def meeting_report_submit():
+    """Process a meeting report submission."""
+    data = request.get_json(silent=True) or {}
+
+    # Auth check
+    if not _mr_verify_token(data.get('token', '')):
+        return jsonify({"ok": False, "error": "auth"}), 401
+
+    name = data.get('name', '').strip()
+    business = data.get('business', '').strip()
+    outcome = data.get('outcome', '')
+    notes = data.get('notes', '').strip()
+    service = data.get('service', '').strip()
+    next_steps = data.get('next_steps', '').strip()
+
+    if not name or outcome not in OUTCOME_LABELS:
+        return jsonify({"ok": False, "message": "Missing required fields."}), 400
+
+    oc = OUTCOME_LABELS[outcome]
+    et = pytz.timezone("US/Eastern")
+    now = datetime.now(et)
+    date_str = now.strftime("%A, %B %d, %Y at %I:%M %p ET")
+
+    # Build #pipeline message
+    pipeline_msg = f"{oc['emoji']} *MEETING REPORT — {oc['label']}*\n\n"
+    pipeline_msg += f"*Lead:* {name}\n"
+    if business:
+        pipeline_msg += f"*Business:* {business}\n"
+    pipeline_msg += f"*Outcome:* {oc['label']}\n"
+    pipeline_msg += f"*Date:* {date_str}\n"
+    if notes:
+        pipeline_msg += f"\n*Meeting Notes:*\n{notes}\n"
+    if service:
+        pipeline_msg += f"\n*Service & Price:* {service}\n"
+    if next_steps:
+        pipeline_msg += f"\n*Next Steps:* {next_steps}\n"
+    pipeline_msg += "\n_Submitted by Michael via Post-Meeting Report_"
+
+    # Post to #pipeline
+    post_to_slack(SLACK_PIPELINE_CHANNEL, pipeline_msg)
+
+    # Build #matt summary
+    matt_msg = ""
+    if outcome == "client_won":
+        matt_msg = f"{oc['emoji']} *New client signed!* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += "\n"
+        if service:
+            matt_msg += f"*Package:* {service}\n"
+        if next_steps:
+            matt_msg += f"*Next:* {next_steps}\n"
+        matt_msg += "\n_LARA — please set up production tracking for this new client._"
+    elif outcome == "follow_up":
+        matt_msg = f"{oc['emoji']} *Follow-up needed:* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += "\n"
+        if notes:
+            matt_msg += f"*Notes:* {notes}\n"
+        if next_steps:
+            matt_msg += f"*Next:* {next_steps}\n"
+        matt_msg += "\n_Maya — please continue nurturing this lead via WhatsApp._"
+    elif outcome == "not_interested":
+        matt_msg = f"{oc['emoji']} *Lead lost:* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += "\n"
+        if notes:
+            matt_msg += f"*Reason:* {notes}\n"
+    elif outcome == "no_show":
+        matt_msg = f"{oc['emoji']} *No-show:* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += " didn't show up for their meeting.\n"
+        matt_msg += "\n_Maya — please reach out to reschedule._"
+
+    post_to_slack(SLACK_MATT_CHANNEL, matt_msg)
+
+    # Update Google Sheets — find the lead row and update status
+    try:
+        _update_lead_sheet_status(name, outcome, notes, service, next_steps)
+    except Exception as e:
+        print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
+
+    # Build actions list for success screen
+    actions = [
+        "✅ Posted meeting result to #pipeline",
+        "✅ Notified Matt in #matt",
+    ]
+    if outcome == "client_won":
+        actions.append("✅ LARA will set up production tracking")
+        actions.append("✅ Rob will set up invoicing")
+    elif outcome == "follow_up":
+        actions.append("✅ Maya will continue WhatsApp nurture")
+        if service:
+            actions.append("✅ Susan can send follow-up email with portfolio")
+    elif outcome == "no_show":
+        actions.append("✅ Maya will reach out to reschedule")
+
+    actions.append("✅ CRM updated in Google Sheets")
+
+    print(f"[MEETING REPORT] {oc['label']}: {name} ({business or 'no business'}) — submitted by Michael")
+
+    return jsonify({"ok": True, "actions": actions})
+
+
+def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
+    """Find the lead by name in Google Sheets and update their status + notes."""
+    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    if not sheet_id:
+        return
+
+    try:
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        if not creds_json:
+            return
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(creds_json),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        svc = build("sheets", "v4", credentials=creds)
+    except Exception as e:
+        print(f"[MEETING REPORT] Sheets auth error: {e}")
+        return
+
+    # Map outcome to CRM status
+    status_map = {
+        "client_won": "Client Won",
+        "follow_up": "Follow-up Needed",
+        "not_interested": "Not Interested",
+        "no_show": "No-Show — Reschedule",
+    }
+    new_status = status_map.get(outcome, outcome)
+
+    # Get current month's tab name
+    now = datetime.now(pytz.timezone("US/Eastern"))
+    month_tab = now.strftime("%b %Y")  # e.g. "Jun 2026"
+
+    try:
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=sheet_id,
+            range=f"'{month_tab}'!A:T"
+        ).execute()
+        rows = result.get("values", [])
+    except Exception:
+        # Try without quotes
+        try:
+            result = svc.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range=f"{month_tab}!A:T"
+            ).execute()
+            rows = result.get("values", [])
+        except Exception as e:
+            print(f"[MEETING REPORT] Could not read tab '{month_tab}': {e}")
+            return
+
+    if not rows:
+        return
+
+    # Find the lead by name (column C = index 2)
+    target_row = None
+    for i, row in enumerate(rows):
+        if len(row) > 2 and row[2].strip().lower() == name.strip().lower():
+            target_row = i + 1  # 1-indexed for Sheets API
+            break
+
+    if not target_row:
+        # Try all tabs
+        for tab_name in ["Jun 2026", "May 2026", "Apr 2026", "Mar 2026"]:
+            if tab_name == month_tab:
+                continue
+            try:
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range=f"'{tab_name}'!A:T"
+                ).execute()
+                rows = result.get("values", [])
+                for i, row in enumerate(rows):
+                    if len(row) > 2 and row[2].strip().lower() == name.strip().lower():
+                        target_row = i + 1
+                        month_tab = tab_name
+                        break
+                if target_row:
+                    break
+            except Exception:
+                continue
+
+    if not target_row:
+        print(f"[MEETING REPORT] Lead '{name}' not found in any sheet tab")
+        return
+
+    # Update Status (col H = index 7), Notes (col J = index 9)
+    # Build the notes update
+    meeting_note = f"[Meeting {now.strftime('%m/%d')}] {new_status}"
+    if notes:
+        meeting_note += f" — {notes}"
+    if service:
+        meeting_note += f" | Package: {service}"
+    if next_steps:
+        meeting_note += f" | Next: {next_steps}"
+
+    try:
+        # Update Status column (H)
+        svc.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"'{month_tab}'!H{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[new_status]]}
+        ).execute()
+
+        # Append to Notes column (J)
+        existing_notes = ""
+        if target_row <= len(rows) and len(rows[target_row - 1]) > 9:
+            existing_notes = rows[target_row - 1][9]
+        updated_notes = f"{existing_notes}\n{meeting_note}".strip() if existing_notes else meeting_note
+
+        svc.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"'{month_tab}'!J{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[updated_notes]]}
+        ).execute()
+
+        print(f"[MEETING REPORT] Updated '{name}' in '{month_tab}' row {target_row}: status={new_status}")
+    except Exception as e:
+        print(f"[MEETING REPORT] Sheets update error for '{name}': {e}")
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")
