@@ -34,6 +34,9 @@ TIMEZONE = "America/New_York"
 SCOPES_GMAIL = ["https://www.googleapis.com/auth/gmail.send"]
 SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive.readonly"]
 
+# Designated proposals/attachments folder on Google Drive (optional — if set, searches this folder first)
+DRIVE_PROPOSALS_FOLDER_ID = os.getenv("SUSAN_DRIVE_PROPOSALS_FOLDER_ID", "")
+
 
 # ── Service Builders ────────────────────────────────────────────────
 
@@ -66,6 +69,80 @@ def _get_drive_service():
     )
     creds = creds.with_subject("michael@mwmcreations.com")
     return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+# ── Smart File Search on Google Drive ───────────────────────────────
+
+def search_drive_file(filename_query):
+    """
+    Search Google Drive for a file by name (fuzzy match).
+
+    Tries exact name first, then contains-match. If DRIVE_PROPOSALS_FOLDER_ID
+    is set, searches that folder first before searching all of Drive.
+
+    Args:
+        filename_query: Filename or partial filename to search for
+
+    Returns:
+        dict with 'id', 'name', 'mimeType' or None if not found
+    """
+    try:
+        drive = _get_drive_service()
+
+        # Clean up the query
+        query_clean = filename_query.strip().strip('"\'')
+
+        # Build search queries (try exact first, then contains)
+        search_queries = [
+            f"name = '{query_clean}' and trashed = false",
+            f"name contains '{query_clean}' and trashed = false",
+        ]
+
+        # If we don't have an exact extension, also try with .pdf
+        if '.' not in query_clean:
+            search_queries.insert(1, f"name = '{query_clean}.pdf' and trashed = false")
+            search_queries.append(f"name contains '{query_clean}' and mimeType = 'application/pdf' and trashed = false")
+
+        for sq in search_queries:
+            # If proposals folder is set, search there first
+            if DRIVE_PROPOSALS_FOLDER_ID:
+                folder_query = f"{sq} and '{DRIVE_PROPOSALS_FOLDER_ID}' in parents"
+                results = drive.files().list(
+                    q=folder_query,
+                    fields="files(id, name, mimeType, modifiedTime)",
+                    pageSize=5,
+                    orderBy="modifiedTime desc",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                ).execute()
+                files = results.get("files", [])
+                if files:
+                    best = files[0]
+                    print(f"[SUSAN DRIVE] Found in proposals folder: {best['name']} ({best['id']})")
+                    return best
+
+            # Search all of Drive
+            results = drive.files().list(
+                q=sq,
+                fields="files(id, name, mimeType, modifiedTime)",
+                pageSize=5,
+                orderBy="modifiedTime desc",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+            files = results.get("files", [])
+            if files:
+                best = files[0]
+                print(f"[SUSAN DRIVE] Found on Drive: {best['name']} ({best['id']})")
+                return best
+
+        print(f"[SUSAN DRIVE] No file found matching: {query_clean}")
+        return None
+
+    except Exception as e:
+        print(f"[SUSAN DRIVE] Search error: {e}")
+        traceback.print_exc()
+        return None
 
 
 # ── Core: Send Email with Optional Attachment ───────────────────────
@@ -208,17 +285,46 @@ def handle_susan_gmail_action(text):
                 f"I need the email body. Tell me what to say, or ask me to draft something based on context."
             )
 
-        # Extract Drive attachment (optional)
-        drive_match = re.search(r'(?:attach|drive:)\s*(\S+)', text, re.IGNORECASE)
+        # Extract attachment reference (optional)
+        # Supports: "attach drive:<file_id>", "attach <filename>", "attach Proposta_RBL.pdf"
         drive_file_id = None
         filename = None
-        if drive_match:
-            drive_ref = drive_match.group(1).strip()
-            # Handle full Drive URLs or bare file IDs
-            id_from_url = re.search(r'/d/([a-zA-Z0-9_-]+)', drive_ref)
-            drive_file_id = id_from_url.group(1) if id_from_url else drive_ref
+        found_file_name = None
 
-        # Extract custom filename
+        attach_match = re.search(
+            r'attach(?:ment)?[:\s]+(.+?)(?:\s*$)',
+            text, re.IGNORECASE
+        )
+        if attach_match:
+            attach_ref = attach_match.group(1).strip().strip('"\'')
+
+            # Option 1: Explicit Drive file ID or URL
+            id_from_url = re.search(r'/d/([a-zA-Z0-9_-]+)', attach_ref)
+            if id_from_url:
+                drive_file_id = id_from_url.group(1)
+            elif attach_ref.startswith("drive:"):
+                drive_file_id = attach_ref.replace("drive:", "").strip()
+            elif len(attach_ref) > 20 and re.match(r'^[a-zA-Z0-9_-]+$', attach_ref):
+                # Looks like a raw file ID (long alphanumeric string)
+                drive_file_id = attach_ref
+            else:
+                # Option 2: Search Drive by filename (the smart path)
+                print(f"[SUSAN GMAIL] Searching Drive for: {attach_ref}")
+                found = search_drive_file(attach_ref)
+                if found:
+                    drive_file_id = found["id"]
+                    found_file_name = found["name"]
+                    print(f"[SUSAN GMAIL] Found file: {found_file_name} (ID: {drive_file_id})")
+                else:
+                    return True, (
+                        f"⚠️ *File not found on Google Drive*\n"
+                        f"I searched for *\"{attach_ref}\"* but couldn't find it.\n\n"
+                        f"Make sure the file is saved in your Google Drive folder "
+                        f"(it syncs automatically from your Mac). "
+                        f"Then try again — I'll find it by name."
+                    )
+
+        # Extract custom filename override
         fn_match = re.search(r'filename[:\s]+["\']?(.+?\.\w+)', text, re.IGNORECASE)
         if fn_match:
             filename = fn_match.group(1).strip()
@@ -229,7 +335,8 @@ def handle_susan_gmail_action(text):
         if result["ok"]:
             attachment_note = ""
             if drive_file_id:
-                attachment_note = f"\n• *Attachment:* {filename or 'file from Drive'} ✅"
+                display_name = filename or found_file_name or "file from Drive"
+                attachment_note = f"\n• *Attachment:* {display_name} ✅"
             return True, (
                 f"✅ *Email Sent Successfully*\n"
                 f"• *To:* {to_email}\n"
