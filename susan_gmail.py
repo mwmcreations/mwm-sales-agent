@@ -32,7 +32,7 @@ SUSAN_SEND_AS = os.getenv("SUSAN_GMAIL_SEND_AS", "info@mwmcreations.com")
 TIMEZONE = "America/New_York"
 
 SCOPES_GMAIL = ["https://www.googleapis.com/auth/gmail.send"]
-SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive.readonly"]
+SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive"]
 
 # Central agent uploads folder on Google Drive: My Drive > _AGENTS > UPLOADS
 # ALL agents save documents here; Susan (and others) grab files from here for email attachments.
