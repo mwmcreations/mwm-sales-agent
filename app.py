@@ -4225,7 +4225,8 @@ def webhook():
                 if LARA_PHONE_NUMBER_ID and recipient_pn_id == LARA_PHONE_NUMBER_ID:
                     _handle_incoming_lara(sender, incoming_msg, num_media, media_id, content_type)
                 else:
-                    _handle_incoming(sender, incoming_msg, num_media, media_id, content_type)
+                    _handle_incoming(sender, incoming_msg, num_media, media_id, content_type,
+                                     wa_value=value, wa_messages=value.get("messages", []))
 
     return "OK", 200
 
@@ -4430,8 +4431,13 @@ tell Michael you'll send a template message to initiate the conversation."""
 
 
 def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
-                     media_id: str, content_type: str):
+                     media_id: str, content_type: str,
+                     wa_value: dict = None, wa_messages: list = None):
     """Process a single incoming WhatsApp message."""
+    if wa_value is None:
+        wa_value = {}
+    if wa_messages is None:
+        wa_messages = []
     was_audio = False
 
     if num_media > 0:
@@ -4579,10 +4585,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         if sender not in lead_data:
             lead_data[sender] = {"source": "WhatsApp"}
         # ── UTM / Ad Referral tracking from WhatsApp Click-to-Message ads ──
-        _wa_referral = value.get("contacts", [{}])[0].get("referral", {}) if "contacts" in value else {}
+        _wa_referral = wa_value.get("contacts", [{}])[0].get("referral", {}) if "contacts" in wa_value else {}
         if not _wa_referral:
             # Also check messages level for referral data
-            for _msg_obj in messages:
+            for _msg_obj in wa_messages:
                 if "referral" in _msg_obj:
                     _wa_referral = _msg_obj["referral"]
                     break
