@@ -5154,11 +5154,36 @@ threading.Thread(target=_cold_lead_checker, daemon=True).start()
 # Track which events we've already processed (persist within deploy)
 _golden_hour_processed = set()  # event IDs that got the 2h follow-up
 _golden_hour_morning = set()    # event IDs that got the next-morning check-in
+_GOLDEN_HOUR_STATE_FILE = "/tmp/golden_hour_state.json"
+
+def _load_golden_hour_state():
+    """Load persisted golden hour state from disk (survives within a single deploy)."""
+    global _golden_hour_processed, _golden_hour_morning
+    try:
+        with open(_GOLDEN_HOUR_STATE_FILE, "r") as f:
+            state = json.load(f)
+        _golden_hour_processed = set(state.get("processed", []))
+        _golden_hour_morning = set(state.get("morning", []))
+        print(f"[Golden Hour] Loaded state: {len(_golden_hour_processed)} processed, {len(_golden_hour_morning)} morning")
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass  # Fresh start — empty sets
+
+def _save_golden_hour_state():
+    """Persist golden hour state to disk so it survives within a single deploy."""
+    try:
+        with open(_GOLDEN_HOUR_STATE_FILE, "w") as f:
+            json.dump({
+                "processed": list(_golden_hour_processed),
+                "morning": list(_golden_hour_morning),
+            }, f)
+    except Exception as e:
+        print(f"[Golden Hour] State save error (non-blocking): {e}")
 
 def _post_visit_checker():
     """Background thread: check for recently completed studio visits and trigger follow-ups."""
     import time
     print("🌟 Post-visit Golden Hour checker started (polls every 25 min)")
+    _load_golden_hour_state()  # Restore state from previous cycles (within same deploy)
     _heartbeat("golden_hour_checker")  # Heartbeat before initial wait
     time.sleep(1500)  # First check after 25 min (under 30-min stale threshold)
     while True:
@@ -5220,8 +5245,11 @@ def _post_visit_checker():
                             break
 
                 # ── 2-HOUR FOLLOW-UP ──
-                if hours_since_end >= 2 and event_id not in _golden_hour_processed:
+                # Time window: 2-5 hours after event ends. The upper bound prevents
+                # re-firing after Railway redeploys (which reset the in-memory set).
+                if 2 <= hours_since_end <= 5 and event_id not in _golden_hour_processed:
                     _golden_hour_processed.add(event_id)
+                    _save_golden_hour_state()
                     first_name = (_lead_name or "").split()[0] or "there"
                     print(f"🌟 [Golden Hour] 2h follow-up triggered for {_lead_name} (event {event_id})")
 
@@ -5257,10 +5285,11 @@ def _post_visit_checker():
                         ))
 
                 # ── NEXT-MORNING CHECK-IN ──
-                # Only fires if the visit was yesterday and it's now between 9-10 AM
-                if (hours_since_end >= 12 and now.hour == 9
+                # Only fires if the visit was yesterday (12-28h window) and it's 9 AM
+                if (12 <= hours_since_end <= 28 and now.hour == 9
                         and event_id not in _golden_hour_morning):
                     _golden_hour_morning.add(event_id)
+                    _save_golden_hour_state()
                     first_name = (_lead_name or "").split()[0] or "there"
                     print(f"🌟 [Golden Hour] Next-morning check-in for {_lead_name} (event {event_id})")
 
@@ -8705,7 +8734,7 @@ def health_check():
         "SLACK_BOT_TOKEN": bool(os.getenv("SLACK_BOT_TOKEN", "")),
         "META_ACCESS_TOKEN": bool(os.getenv("META_ACCESS_TOKEN", "")),
         "META_PAGE_ACCESS_TOKEN": bool(os.getenv("META_PAGE_ACCESS_TOKEN", "")),
-        "GOOGLE_SHEETS_ID": bool(os.getenv("GOOGLE_SHEETS_ID", "")),
+        # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
     }
     all_keys_ok = all(api_keys.values())
 
@@ -9296,7 +9325,8 @@ def _system_monitor():
         """Verify all critical environment variables are set."""
         critical = [
             "OPENAI_API_KEY", "SLACK_BOT_TOKEN", "META_ACCESS_TOKEN",
-            "META_PAGE_ACCESS_TOKEN", "GOOGLE_SHEETS_ID", "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "META_PAGE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON",
+            # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
         ]
         missing = [k for k in critical if not os.getenv(k, "")]
         if missing:
