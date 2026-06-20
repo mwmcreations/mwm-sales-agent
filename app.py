@@ -4140,7 +4140,13 @@ def _daily_briefing_thread():
             _heartbeat("daily_briefing")
             wait = _seconds_until_next(BRIEFING_HOUR)
             print(f"[BRIEFING] Next briefing in {wait/3600:.1f}h")
-            time.sleep(wait)
+            # Sleep in 15-min chunks so watchdog sees heartbeats
+            remaining = wait
+            while remaining > 0:
+                chunk = min(remaining, 900)  # 15 min max
+                time.sleep(chunk)
+                remaining -= chunk
+                _heartbeat("daily_briefing")
             _build_and_send()
         except Exception as exc:
             print(f"[BRIEFING] Error: {exc}")
@@ -5033,9 +5039,14 @@ threading.Thread(target=_repopulate_lead_data_from_sheets, daemon=True).start()
 def _cold_lead_checker():
     import time
     print("âï¸  Cold-lead checker started (polls every hour, fires at 48h silence)")
-    time.sleep(3600)  # First check after 1 hour so startup noise settles
+    _heartbeat("cold_lead_checker")  # Heartbeat before initial wait
+    # Sleep in 15-min chunks so watchdog sees heartbeats
+    for _ in range(4):  # 4 x 15 min = 1 hour
+        time.sleep(900)
+        _heartbeat("cold_lead_checker")
     while True:
         try:
+            _heartbeat("cold_lead_checker")
             now = datetime.now(pytz.timezone(TIMEZONE))
             for phone, data in list(lead_data.items()):
                 if data.get("booked") or data.get("cold_fired"):
@@ -5106,7 +5117,10 @@ def _cold_lead_checker():
                     #     print(f"⚠️ Slack cold lead notification failed (non-fatal): {slack_err}")
         except Exception as e:
             print(f"â ï¸  Cold-lead checker error: {e}")
-        time.sleep(3600)  # Check again in 1 hour
+        # Sleep in 15-min chunks so watchdog sees heartbeats (4 x 15 min = 1 hour)
+        for _ in range(4):
+            time.sleep(900)
+            _heartbeat("cold_lead_checker")
 
 threading.Thread(target=_cold_lead_checker, daemon=True).start()
 
@@ -5126,8 +5140,9 @@ _golden_hour_morning = set()    # event IDs that got the next-morning check-in
 def _post_visit_checker():
     """Background thread: check for recently completed studio visits and trigger follow-ups."""
     import time
-    print("🌟 Post-visit Golden Hour checker started (polls every 30 min)")
-    time.sleep(1800)  # First check after 30 min
+    print("🌟 Post-visit Golden Hour checker started (polls every 25 min)")
+    _heartbeat("golden_hour_checker")  # Heartbeat before initial wait
+    time.sleep(1500)  # First check after 25 min (under 30-min stale threshold)
     while True:
         try:
             _heartbeat("golden_hour_checker")
@@ -5242,7 +5257,7 @@ def _post_visit_checker():
         except Exception as e:
             print(f"⚠️ Post-visit checker error: {e}")
             _notify_error_to_dev("Post-Visit Checker", str(e))
-        time.sleep(1800)  # Check every 30 minutes
+        time.sleep(1500)  # Check every 25 min (under 30-min stale threshold)
 
 threading.Thread(target=_post_visit_checker, daemon=True).start()
 
@@ -5598,8 +5613,9 @@ def _reengagement_checker():
     REENGAGEMENT_COLD_DAYS with no reply, mark Cold and notify Agent Maya + Eric.
     """
     import time as _time
-    print("[Re-engagement] Checker started (polls every 30 min, 7-touch cadence over 14 days)")
-    _time.sleep(1800)  # First check after 30 min
+    print("[Re-engagement] Checker started (polls every 25 min, 7-touch cadence over 14 days)")
+    _heartbeat("reengagement_checker")  # Heartbeat before initial wait
+    _time.sleep(1500)  # First check after 25 min (under 30-min stale threshold)
     while True:
         try:
             _heartbeat("reengagement_checker")
@@ -5678,7 +5694,7 @@ def _reengagement_checker():
 
         except Exception as e:
             print(f"[Re-engagement] Checker error: {e}")
-        _time.sleep(1800)  # Check every 30 min
+        _time.sleep(1500)  # Check every 25 min (under 30-min stale threshold)
 
 threading.Thread(target=_reengagement_checker, daemon=True).start()
 
@@ -8467,17 +8483,46 @@ def record_outcome_api():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint with thread monitoring."""
+    """Comprehensive health check endpoint with thread + API monitoring."""
     thread_health = _get_thread_health()
-    all_healthy = all(s.get("healthy", False) for s in thread_health.values())
-    
+    all_threads_ok = all(s.get("healthy", False) for s in thread_health.values())
+
+    # API key presence checks (never expose values)
+    api_keys = {
+        "OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY", "")),
+        "SLACK_BOT_TOKEN": bool(os.getenv("SLACK_BOT_TOKEN", "")),
+        "META_ACCESS_TOKEN": bool(os.getenv("META_ACCESS_TOKEN", "")),
+        "META_PAGE_ACCESS_TOKEN": bool(os.getenv("META_PAGE_ACCESS_TOKEN", "")),
+        "GOOGLE_SHEETS_ID": bool(os.getenv("GOOGLE_SHEETS_ID", "")),
+    }
+    all_keys_ok = all(api_keys.values())
+
+    overall = "healthy" if (all_threads_ok and all_keys_ok) else "degraded"
+
     return jsonify({
-        "status": "healthy" if all_healthy else "degraded",
+        "status": overall,
         "threads": thread_health,
+        "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
         "lead_count": len(lead_data),
         "active_conversations": len(conversation_history),
-    }), 200 if all_healthy else 503
+        "pipeline_stats": _get_pipeline_stats(),
+    }), 200 if overall == "healthy" else 503
+
+
+def _get_pipeline_stats():
+    """Return basic pipeline metrics."""
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    booked = sum(1 for d in lead_data.values() if d.get("booked"))
+    cold = sum(1 for d in lead_data.values() if d.get("cold_fired"))
+    active = len(lead_data) - booked - cold
+    return {
+        "total_leads": len(lead_data),
+        "active": active,
+        "booked": booked,
+        "cold": cold,
+        "timestamp": now.isoformat(),
+    }
 
 
 # FORM LEAD ENDPOINT — Inbound Website Forms
@@ -8927,6 +8972,97 @@ def meta_leads_webhook():
                     print(f"[Meta Leads] WhatsApp greeting error (non-fatal): {e}")
 
     return "OK", 200
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SYSTEM MONITOR — Background Thread
+# Checks overall system health every 30 min. Alerts to #dev on:
+#   - Thread deaths (handled by watchdog, this is a backup)
+#   - Missing environment variables / API keys
+#   - META_PAGE_ACCESS_TOKEN expiry (Graph API check)
+#   - Daily summary at 8 AM Eastern
+# ══════════════════════════════════════════════════════════════════════
+
+_monitor_last_alert = {}  # track last alert time per issue to avoid spam
+
+def _system_monitor():
+    import time as _time
+    import traceback
+    EASTERN = pytz.timezone("America/New_York")
+    DEV_CHANNEL = os.getenv("DEV_SLACK_CHANNEL", "")
+
+    def _alert(issue_key, message):
+        """Send alert to #dev, but no more than once per 4 hours per issue."""
+        now = datetime.now(EASTERN)
+        last = _monitor_last_alert.get(issue_key)
+        if last and (now - last).total_seconds() < 14400:  # 4 hours
+            return
+        _monitor_last_alert[issue_key] = now
+        try:
+            if DEV_CHANNEL:
+                import requests as _req
+                _req.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN', '')}"},
+                    json={"channel": DEV_CHANNEL, "text": message},
+                    timeout=10,
+                )
+        except Exception:
+            pass
+        print(f"[MONITOR] ALERT: {message}")
+
+    def _check_meta_token():
+        """Verify META_PAGE_ACCESS_TOKEN is valid by calling Graph API debug_token."""
+        token = os.getenv("META_PAGE_ACCESS_TOKEN", "")
+        if not token:
+            _alert("meta_token_missing", "🚨 *System Monitor:* `META_PAGE_ACCESS_TOKEN` is empty! Lead Ads pipeline is broken.")
+            return
+        try:
+            import requests as _req
+            resp = _req.get(
+                "https://graph.facebook.com/v25.0/me",
+                params={"access_token": token, "fields": "id,name"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                print(f"[MONITOR] Meta token OK — {data.get('name', 'unknown')} (ID: {data.get('id', '?')})")
+            else:
+                err = resp.json().get("error", {})
+                _alert("meta_token_invalid", f"🚨 *System Monitor:* META_PAGE_ACCESS_TOKEN is INVALID!\nError: {err.get('message', 'Unknown')}\nLead Ads pipeline is broken. Regenerate token ASAP.")
+        except Exception as e:
+            print(f"[MONITOR] Meta token check failed (network): {e}")
+
+    def _check_env_vars():
+        """Verify all critical environment variables are set."""
+        critical = [
+            "OPENAI_API_KEY", "SLACK_BOT_TOKEN", "META_ACCESS_TOKEN",
+            "META_PAGE_ACCESS_TOKEN", "GOOGLE_SHEETS_ID", "GOOGLE_SERVICE_ACCOUNT_JSON",
+        ]
+        missing = [k for k in critical if not os.getenv(k, "")]
+        if missing:
+            _alert("env_missing", f"🚨 *System Monitor:* Missing environment variables: {', '.join(missing)}")
+
+    print("[MONITOR] System monitor started (checks every 25 min)")
+    _heartbeat("system_monitor")
+    _time.sleep(120)  # Wait 2 min after startup before first check
+    while True:
+        try:
+            _heartbeat("system_monitor")
+            _check_env_vars()
+            _check_meta_token()
+
+            # Log pipeline stats
+            stats = _get_pipeline_stats()
+            print(f"[MONITOR] Pipeline: {stats['total_leads']} total, {stats['active']} active, {stats['booked']} booked, {stats['cold']} cold")
+
+        except Exception as exc:
+            print(f"[MONITOR] Error: {exc}")
+            traceback.print_exc()
+
+        _time.sleep(1500)  # Check every 25 min (under 30-min stale threshold)
+
+threading.Thread(target=_system_monitor, daemon=True).start()
 
 
 if __name__ == "__main__":
