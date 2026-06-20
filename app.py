@@ -4540,38 +4540,38 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 # Inject context so Maya handles studio visit scheduling
                 incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
 
-        # ── Human escalation detection (Session 30.14 — Sales Machine) ──
-        # If the lead explicitly asks for a human, flag to Matt immediately.
-        # Maya still replies (keeps conversation warm), but Matt gets alerted.
-        _escalation_phrases = [
-            "talk to a real person", "speak to someone", "speak to a human",
-            "talk to a human", "real person", "talk to someone real",
-            "speak to a manager", "talk to the owner", "want a human",
-            "not a bot", "are you a bot", "are you real", "you're a bot",
-            "i want to talk to michael", "can i speak to michael",
-            "this is frustrating", "this is useless", "stop messaging me",
-            "leave me alone", "unsubscribe", "stop contacting me",
-        ]
-        if not is_michael and any(phrase in _msg_lower for phrase in _escalation_phrases):
-            _ld = lead_data.get(sender, {})
-            _notify_escalation_to_matt(
-                _ld.get("name", "Unknown"),
-                sender.replace("whatsapp:", ""),
-                f"Lead used escalation phrase: \"{incoming_msg[:100]}\"",
-                conversation_snippet=incoming_msg[:300]
-            )
-            print(f"[ESCALATION] Flagged {sender} to Matt — phrase detected in: {incoming_msg[:50]}")
-            # ── Pipeline Event: ESCALATION ──
-            _ld_esc = lead_data.get(sender, {})
-            _post_pipeline_event(
-                "ESCALATION",
-                lead_name=_ld_esc.get("name", "Unknown"),
-                lead_phone=sender,
-                source=_ld_esc.get("source", "WhatsApp"),
-                new_stage="Escalated",
-                assigned_agents=["Matt"],
-                context=f"Lead requested human: \"{incoming_msg[:200]}\"",
-            )
+        # ── Human escalation detection (non-critical) ──
+        try:
+            _escalation_phrases = [
+                "talk to a real person", "speak to someone", "speak to a human",
+                "talk to a human", "real person", "talk to someone real",
+                "speak to a manager", "talk to the owner", "want a human",
+                "not a bot", "are you a bot", "are you real", "you're a bot",
+                "i want to talk to michael", "can i speak to michael",
+                "this is frustrating", "this is useless", "stop messaging me",
+                "leave me alone", "unsubscribe", "stop contacting me",
+            ]
+            if not is_michael and any(phrase in _msg_lower for phrase in _escalation_phrases):
+                _ld = lead_data.get(sender, {})
+                _notify_escalation_to_matt(
+                    _ld.get("name", "Unknown"),
+                    sender.replace("whatsapp:", ""),
+                    f"Lead used escalation phrase: \"{incoming_msg[:100]}\"",
+                    conversation_snippet=incoming_msg[:300]
+                )
+                print(f"[ESCALATION] Flagged {sender} to Matt — phrase detected in: {incoming_msg[:50]}")
+                _ld_esc = lead_data.get(sender, {})
+                _post_pipeline_event(
+                    "ESCALATION",
+                    lead_name=_ld_esc.get("name", "Unknown"),
+                    lead_phone=sender,
+                    source=_ld_esc.get("source", "WhatsApp"),
+                    new_stage="Escalated",
+                    assigned_agents=["Matt"],
+                    context=f"Lead requested human: \"{incoming_msg[:200]}\"",
+                )
+        except Exception as _esc_err:
+            print(f"⚠️ Escalation detection error (non-fatal, Maya still responds): {_esc_err}")
 
         is_new_sender = sender not in conversation_history
         if is_new_sender:
@@ -4584,54 +4584,68 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"\u26a0\ufe0f First-contact Sheets log error (non-fatal): {e}")
         if sender not in lead_data:
             lead_data[sender] = {"source": "WhatsApp"}
-        # ── UTM / Ad Referral tracking from WhatsApp Click-to-Message ads ──
-        _wa_referral = wa_value.get("contacts", [{}])[0].get("referral", {}) if "contacts" in wa_value else {}
-        if not _wa_referral:
-            # Also check messages level for referral data
-            for _msg_obj in wa_messages:
-                if "referral" in _msg_obj:
-                    _wa_referral = _msg_obj["referral"]
-                    break
-        if _wa_referral:
-            lead_data[sender]["utm_source"] = _wa_referral.get("source_type", "ad")
-            lead_data[sender]["utm_medium"] = _wa_referral.get("source_url", "")
-            lead_data[sender]["utm_campaign"] = _wa_referral.get("headline", "")
-            lead_data[sender]["utm_content"] = _wa_referral.get("body", "")
-            lead_data[sender]["ad_referral"] = True
-            print(f"[UTM] WhatsApp ad referral detected for {sender}: {_wa_referral.get('headline', 'N/A')}")
         lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
 
-        # ── Pipeline Event: NEW_LEAD ──
-        if is_new_sender and not is_michael:
-            _ld = lead_data.get(sender, {})
-            _has_email = bool(_ld.get("email"))
-            _assigned = ["Maya", "Eric"]
-            if _has_email:
-                _assigned = ["Maya", "Susan", "Eric", "LARA"]
-            _post_pipeline_event(
-                "NEW_LEAD",
-                lead_name=_ld.get("name", ""),
-                lead_phone=sender,
-                source="WhatsApp",
-                new_stage="New",
-                assigned_agents=_assigned,
-                context=f"First message: {incoming_msg[:200]}"
-            )
+        # ═══════════════════════════════════════════════════════════════
+        # NON-CRITICAL ENRICHMENT — each block is wrapped so a failure
+        # in UTM tracking, scoring, pipeline events, or sheets logging
+        # can NEVER prevent Maya from responding to the lead.
+        # Master safety net: if ANYTHING here crashes, Maya still responds.
+        # ═══════════════════════════════════════════════════════════════
+        _lead_ctx = ""  # Default — Maya responds even without context
 
-        # ── Lead Scoring: update on every message ──
-        if not is_michael:
-            _new_score = _calculate_lead_score(sender, incoming_msg)
-            _temp = lead_data.get(sender, {}).get("temperature", "")
-            if is_new_sender:
-                lead_data[sender]["first_contact_time"] = datetime.now(pytz.timezone(TIMEZONE))
-            # Update Google Sheets with score + temperature (non-blocking)
-            try:
-                update_lead_columns(sender, {
-                    "Lead Temperature": _temp,
-                })
-            except Exception:
-                pass
-            print(f"[Score] {sender}: {_new_score}/100 ({_temp})")
+        # ── UTM / Ad Referral tracking ──
+        try:
+            _wa_referral = wa_value.get("contacts", [{}])[0].get("referral", {}) if "contacts" in wa_value else {}
+            if not _wa_referral:
+                for _msg_obj in wa_messages:
+                    if "referral" in _msg_obj:
+                        _wa_referral = _msg_obj["referral"]
+                        break
+            if _wa_referral:
+                lead_data[sender]["utm_source"] = _wa_referral.get("source_type", "ad")
+                lead_data[sender]["utm_medium"] = _wa_referral.get("source_url", "")
+                lead_data[sender]["utm_campaign"] = _wa_referral.get("headline", "")
+                lead_data[sender]["utm_content"] = _wa_referral.get("body", "")
+                lead_data[sender]["ad_referral"] = True
+                print(f"[UTM] WhatsApp ad referral detected for {sender}: {_wa_referral.get('headline', 'N/A')}")
+        except Exception as _utm_err:
+            print(f"⚠️ UTM tracking error (non-fatal, Maya still responds): {_utm_err}")
+
+        # ── Pipeline Event: NEW_LEAD ──
+        try:
+            if is_new_sender and not is_michael:
+                _ld = lead_data.get(sender, {})
+                _has_email = bool(_ld.get("email"))
+                _assigned = ["Maya", "Eric"]
+                if _has_email:
+                    _assigned = ["Maya", "Susan", "Eric", "LARA"]
+                _post_pipeline_event(
+                    "NEW_LEAD",
+                    lead_name=_ld.get("name", ""),
+                    lead_phone=sender,
+                    source="WhatsApp",
+                    new_stage="New",
+                    assigned_agents=_assigned,
+                    context=f"First message: {incoming_msg[:200]}"
+                )
+        except Exception as _pipe_err:
+            print(f"⚠️ Pipeline event error (non-fatal, Maya still responds): {_pipe_err}")
+
+        # ── Lead Scoring ──
+        try:
+            if not is_michael:
+                _new_score = _calculate_lead_score(sender, incoming_msg)
+                _temp = lead_data.get(sender, {}).get("temperature", "")
+                if is_new_sender:
+                    lead_data[sender]["first_contact_time"] = datetime.now(pytz.timezone(TIMEZONE))
+                try:
+                    update_lead_columns(sender, {"Lead Temperature": _temp})
+                except Exception:
+                    pass
+                print(f"[Score] {sender}: {_new_score}/100 ({_temp})")
+        except Exception as _score_err:
+            print(f"⚠️ Lead scoring error (non-fatal, Maya still responds): {_score_err}")
 
         # ── Slack: new lead notification DISABLED (Session 31 — Michael: "#maya is too busy,
         #    I just want appointment book confirmations"). Keeping function for potential
@@ -4642,21 +4656,15 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         #     except Exception as slack_err:
         #         print(f"⚠️ Slack new lead notification failed (non-fatal): {slack_err}")
 
-        # ── Slack: hot signal notification DISABLED (Session 31 — #maya bookings only) ──
-        # Sheet update kept — still useful for lead scoring without the Slack noise.
-        if _detect_hot_signal(incoming_msg) and not is_michael:
-            try:
-                # _ld = lead_data.get(sender, {})
-                # _notify_hot_signal(sender, _ld.get("name", "Unknown"), incoming_msg)
-                # -- Update Google Sheet: mark as hot (kept active) --
+        # ── Hot Signal Detection ──
+        try:
+            if _detect_hot_signal(incoming_msg) and not is_michael:
                 try:
-                    update_lead_columns(sender, {
-                        "Lead Temperature": "Hot",
-                    })
+                    update_lead_columns(sender, {"Lead Temperature": "Hot"})
                 except Exception:
                     pass
-            except Exception as slack_err:
-                print(f"⚠️ Slack hot signal notification failed (non-fatal): {slack_err}")
+        except Exception as _hot_err:
+            print(f"⚠️ Hot signal detection error (non-fatal, Maya still responds): {_hot_err}")
         if len(conversation_history[sender]) > 20:
             conversation_history[sender] = conversation_history[sender][-20:]
         # ── Context injection: look up lead in Google Sheet ──
@@ -4667,63 +4675,67 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             _lead_ctx = ""
 
 
-        # -- AI Re-engagement context injection --
-        # When a lead replies after being in the re-engagement queue,
-        # inject deep context so Maya sounds like she remembers them.
+        # ── AI Re-engagement context injection ──
         try:
-            _was_re = _was_reengagement
-        except NameError:
-            _was_re = False
-        if not is_michael and _was_re:
-            _ld_re = lead_data.get(sender, {})
-            _re_name = _ld_re.get("name", "")
-            _re_biz = _ld_re.get("business", "")
-            _re_score = _ld_re.get("lead_score", 0)
-            _re_source = _ld_re.get("source", "WhatsApp")
-            _re_ctx = []
-            _re_ctx.append(
-                "RE-ENGAGEMENT ALERT: This lead is RETURNING after going silent. "
-                "They were in the re-engagement queue and just replied to a follow-up template. "
-                "This is a critical moment - they re-engaged, meaning they still have interest. "
-                "Be warm, reference that you remember them, and move quickly toward booking."
-            )
-            if _re_name:
-                _re_ctx.append(f"Name: {_re_name}")
-            if _re_biz:
-                _re_ctx.append(f"Business: {_re_biz}")
-            if _re_score:
-                _re_ctx.append(f"Lead Score: {_re_score}/100")
-            _re_ctx.append(f"Source: {_re_source}")
-            _prev_msgs = conversation_history.get(sender, [])
-            if len(_prev_msgs) > 1:
-                _re_ctx.append("Previous conversation highlights:")
-                for _pm in _prev_msgs[-6:-1]:
-                    _role_label = "Lead" if _pm.get("role") == "user" else "Maya"
-                    _pm_text = (_pm.get("content") or "")[:150]
-                    _re_ctx.append(f"  {_role_label}: {_pm_text}")
-            _re_ctx.append(
-                "STRATEGY: Welcome them back warmly. Reference their business or interests "
-                "from the previous conversation. Pick up where you left off and guide toward booking."
-            )
-            _lead_ctx = (_lead_ctx or "") + "\n".join(_re_ctx)
-            print(f"[Re-engagement AI] Enhanced context injected for {sender} ({_re_name})")
-            _post_pipeline_event(
-                "RE_ENGAGED",
-                lead_name=_re_name,
-                lead_phone=sender,
-                source=_re_source,
-                old_stage="Cold",
-                new_stage="Re-engaged",
-                assigned_agents=["Maya", "Eric"],
-                context=f"Lead replied after re-engagement. Score: {_re_score}/100. Message: {incoming_msg[:200]}",
-            )
+            try:
+                _was_re = _was_reengagement
+            except NameError:
+                _was_re = False
+            if not is_michael and _was_re:
+                _ld_re = lead_data.get(sender, {})
+                _re_name = _ld_re.get("name", "")
+                _re_biz = _ld_re.get("business", "")
+                _re_score = _ld_re.get("lead_score", 0)
+                _re_source = _ld_re.get("source", "WhatsApp")
+                _re_ctx = []
+                _re_ctx.append(
+                    "RE-ENGAGEMENT ALERT: This lead is RETURNING after going silent. "
+                    "They were in the re-engagement queue and just replied to a follow-up template. "
+                    "This is a critical moment - they re-engaged, meaning they still have interest. "
+                    "Be warm, reference that you remember them, and move quickly toward booking."
+                )
+                if _re_name:
+                    _re_ctx.append(f"Name: {_re_name}")
+                if _re_biz:
+                    _re_ctx.append(f"Business: {_re_biz}")
+                if _re_score:
+                    _re_ctx.append(f"Lead Score: {_re_score}/100")
+                _re_ctx.append(f"Source: {_re_source}")
+                _prev_msgs = conversation_history.get(sender, [])
+                if len(_prev_msgs) > 1:
+                    _re_ctx.append("Previous conversation highlights:")
+                    for _pm in _prev_msgs[-6:-1]:
+                        _role_label = "Lead" if _pm.get("role") == "user" else "Maya"
+                        _pm_text = (_pm.get("content") or "")[:150]
+                        _re_ctx.append(f"  {_role_label}: {_pm_text}")
+                _re_ctx.append(
+                    "STRATEGY: Welcome them back warmly. Reference their business or interests "
+                    "from the previous conversation. Pick up where you left off and guide toward booking."
+                )
+                _lead_ctx = (_lead_ctx or "") + "\n".join(_re_ctx)
+                print(f"[Re-engagement AI] Enhanced context injected for {sender} ({_re_name})")
+                _post_pipeline_event(
+                    "RE_ENGAGED",
+                    lead_name=_re_name,
+                    lead_phone=sender,
+                    source=_re_source,
+                    old_stage="Cold",
+                    new_stage="Re-engaged",
+                    assigned_agents=["Maya", "Eric"],
+                    context=f"Lead replied after re-engagement. Score: {_re_score}/100. Message: {incoming_msg[:200]}",
+                )
+        except Exception as _re_err:
+            print(f"⚠️ Re-engagement context error (non-fatal, Maya still responds): {_re_err}")
 
         history_snapshot = list(conversation_history[sender])
 
-        # Shadow mode: build identity dict + mirror inbound (skips if Michael
-        # or if SLACK_MAYA_SHADOW_CHANNEL is not configured).
-        maya_identity = _build_maya_sender_identity(sender)
-        _mirror_to_maya_shadow_async(maya_identity, "inbound", incoming_msg)
+        # ── Shadow mode (non-critical) ──
+        maya_identity = None
+        try:
+            maya_identity = _build_maya_sender_identity(sender)
+            _mirror_to_maya_shadow_async(maya_identity, "inbound", incoming_msg)
+        except Exception as _shadow_err:
+            print(f"⚠️ Shadow mode error (non-fatal, Maya still responds): {_shadow_err}")
 
         def process_maya(snap, sndr, ctx="", identity=None, is_michael_ping=False):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
@@ -8529,6 +8541,53 @@ def _get_pipeline_stats():
         "cold": cold,
         "timestamp": now.isoformat(),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# WEBHOOK SMOKE TEST — verifies _handle_incoming can process a
+# message without crashing. Runs the full code path up to (but NOT
+# including) sending a WhatsApp reply. Use after every deploy.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/webhook-test', methods=['POST'])
+def webhook_smoke_test():
+    """
+    Smoke-test the webhook pipeline without sending real WhatsApp messages.
+    POST with optional JSON: {"sender": "test_000", "message": "test msg"}
+    Returns 200 if _handle_incoming runs without crashing, 500 otherwise.
+    """
+    import traceback as _tb
+    data = request.get_json(force=True, silent=True) or {}
+    test_sender = data.get("sender", "smoke_test_000")
+    test_msg = data.get("message", "Hi, I'm interested in booking a session.")
+
+    try:
+        # Run the full incoming handler — process_maya will spawn a thread
+        # but send_whatsapp_meta will no-op for invalid phone "smoke_test_000"
+        _handle_incoming(
+            sender=test_sender,
+            incoming_msg=test_msg,
+            num_media=0,
+            media_id="",
+            content_type="",
+            wa_value={},
+            wa_messages=[],
+        )
+        # Clean up test data so it doesn't pollute real leads
+        conversation_history.pop(test_sender, None)
+        lead_data.pop(test_sender, None)
+        return jsonify({
+            "status": "pass",
+            "message": "_handle_incoming executed without crash",
+            "timestamp": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "fail",
+            "error": str(e),
+            "traceback": _tb.format_exc(),
+            "timestamp": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+        }), 500
 
 
 # FORM LEAD ENDPOINT — Inbound Website Forms

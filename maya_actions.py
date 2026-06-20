@@ -677,6 +677,31 @@ REENGAGEMENT_TEMPLATES = {
     "T7": "maya_reengagement_3",        # Day 14 — CLOSE: Final friendly close (text)
 }
 
+# Header type for each template — "text" means the template has a text header
+# with a variable (e.g., "Hi {{1}}"), "video"/"image" mean media header,
+# None means the template has no header component.
+# When all templates share the same structure (text header with name variable),
+# we always send a header component with the lead's name.
+REENGAGEMENT_TEMPLATE_HEADERS = {
+    "maya_reengagement_1": "text",          # T1: text header with name
+    "maya_reengagement_2_v2": "video",      # T2: video header
+    "maya_reengagement_2": "text",          # T3: text header with name
+    "maya_reengagement_4": "video",         # T4: video header
+    "maya_reengagement_5": "image",         # T5: image header
+    "maya_reengagement_6": "image",         # T6: image header
+    "maya_reengagement_3": "text",          # T7: text header with name
+}
+
+# Media URLs for templates with video/image headers.
+# Set via env vars or override here. If empty, media templates will be
+# skipped gracefully (leads still get the text-only templates in the cadence).
+REENGAGEMENT_MEDIA_URLS = {
+    "maya_reengagement_2_v2": os.getenv("REENGAGEMENT_T2_VIDEO_URL", ""),
+    "maya_reengagement_4": os.getenv("REENGAGEMENT_T4_VIDEO_URL", ""),
+    "maya_reengagement_5": os.getenv("REENGAGEMENT_T5_IMAGE_URL", ""),
+    "maya_reengagement_6": os.getenv("REENGAGEMENT_T6_IMAGE_URL", ""),
+}
+
 # Cadence: hours since last INBOUND message from the lead
 REENGAGEMENT_CADENCE = {
     "T1": 24,    # 24 hours   (Day 1)
@@ -875,6 +900,7 @@ def update_reengagement_row(row_index, updates):
 
 def send_reengagement_template(phone, name, template_name):
     """Send a Maya re-engagement template via Meta WhatsApp Cloud API.
+    Handles text-only, video, and image header templates.
     Returns True if sent successfully, False otherwise.
     """
     meta_token = os.getenv("META_ACCESS_TOKEN", "")
@@ -887,11 +913,48 @@ def send_reengagement_template(phone, name, template_name):
     clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
     first_name = (name or "there").split()[0]
 
+    # Determine header type for this template
+    header_type = REENGAGEMENT_TEMPLATE_HEADERS.get(template_name)
+    media_url = REENGAGEMENT_MEDIA_URLS.get(template_name, "")
+
+    # For media templates without a configured URL, skip gracefully
+    if header_type in ("video", "image") and not media_url:
+        print(f"[Maya] Skipping template '{template_name}' — media URL not configured "
+              f"(set REENGAGEMENT_{template_name.upper()}_URL env var)")
+        return False
+
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {meta_token}",
         "Content-Type": "application/json",
     }
+
+    # Build components list based on template header type
+    components = [
+        {
+            "type": "body",
+            "parameters": [{"type": "text", "text": first_name}],
+        }
+    ]
+
+    if header_type == "text":
+        # Text header with variable (e.g., "Hi {{1}}!")
+        components.insert(0, {
+            "type": "header",
+            "parameters": [{"type": "text", "text": first_name}],
+        })
+    elif header_type == "video":
+        components.insert(0, {
+            "type": "header",
+            "parameters": [{"type": "video", "video": {"link": media_url}}],
+        })
+    elif header_type == "image":
+        components.insert(0, {
+            "type": "header",
+            "parameters": [{"type": "image", "image": {"link": media_url}}],
+        })
+    # header_type is None → no header component needed
+
     payload = {
         "messaging_product": "whatsapp",
         "to": clean_phone,
@@ -899,12 +962,7 @@ def send_reengagement_template(phone, name, template_name):
         "template": {
             "name": template_name,
             "language": {"code": "en_US"},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": first_name}],
-                }
-            ],
+            "components": components,
         },
     }
 
