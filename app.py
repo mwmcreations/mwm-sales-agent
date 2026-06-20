@@ -22,7 +22,7 @@ from maya_actions import (handle_maya_action, get_reengagement_queue,
                           REENGAGEMENT_CADENCE, REENGAGEMENT_TEMPLATES,
                           REENGAGEMENT_COLD_DAYS)
 from susan_mailchimp import handle_susan_action
-from susan_gmail import handle_susan_gmail_action
+from susan_gmail import handle_susan_gmail_action, send_gmail, search_drive_file, SUSAN_SEND_AS
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
@@ -8963,6 +8963,97 @@ def record_outcome_api():
     return jsonify({"success": True, "outcome": outcome, "sender": sender})
 
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UNIVERSAL EMAIL SEND ENDPOINT — for ALL agent Cowork sessions
+# Agents compose their own HTML emails (full creative control),
+# then POST here to send from info@mwmcreations.com with attachments.
+# ══════════════════════════════════════════════════════════════════════
+
+SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "mwm-agents-2026")
+
+@app.route('/api/send-email', methods=['POST'])
+def api_send_email():
+    """Universal email send endpoint for agent Cowork sessions.
+
+    Agents compose their own HTML emails with full creative freedom,
+    then call this endpoint to deliver from info@mwmcreations.com.
+
+    JSON body:
+        to: recipient email (required)
+        subject: email subject (required)
+        html_body: full HTML email content (required) — agents design this however they want
+        body: plain text fallback (optional)
+        attachment_filename: filename to search in _AGENTS > UPLOADS Drive folder (optional)
+        attachment_drive_id: explicit Drive file ID (optional, overrides filename search)
+        token: auth token (required)
+
+    Returns:
+        {"success": true, "message_id": "..."} or {"success": false, "error": "..."}
+    """
+    try:
+        data = request.get_json(force=True)
+
+        # Auth check
+        token = data.get("token", "")
+        if token != SEND_EMAIL_TOKEN:
+            return jsonify({"success": False, "error": "Invalid or missing token"}), 401
+
+        # Required fields
+        to_email = data.get("to", "").strip()
+        subject = data.get("subject", "").strip()
+        html_body = data.get("html_body", "").strip()
+        plain_body = data.get("body", "").strip()
+
+        if not to_email:
+            return jsonify({"success": False, "error": "Missing 'to' field"}), 400
+        if not subject:
+            return jsonify({"success": False, "error": "Missing 'subject' field"}), 400
+        if not html_body and not plain_body:
+            return jsonify({"success": False, "error": "Missing 'html_body' or 'body' field"}), 400
+
+        # If only plain text provided, use it as HTML too
+        if not html_body:
+            html_body = plain_body.replace("\n", "<br>")
+
+        # Attachment handling
+        drive_file_id = data.get("attachment_drive_id", "").strip() or None
+        attachment_filename = data.get("attachment_filename", "").strip() or None
+
+        if attachment_filename and not drive_file_id:
+            # Search Drive for the file by name
+            found = search_drive_file(attachment_filename)
+            if found:
+                drive_file_id = found["id"]
+                print(f"[SEND-EMAIL API] Found attachment: {found['name']} ({drive_file_id})")
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"Attachment not found on Drive: '{attachment_filename}'. Make sure it's in _AGENTS > UPLOADS folder."
+                }), 404
+
+        # Send via DWD Gmail API as info@mwmcreations.com
+        result = send_gmail(to_email, subject, html_body, drive_file_id)
+
+        if result["ok"]:
+            print(f"[SEND-EMAIL API] Sent to {to_email} — msgId: {result['message_id']}")
+            return jsonify({
+                "success": True,
+                "message_id": result["message_id"],
+                "from": SUSAN_SEND_AS,
+                "to": to_email,
+                "subject": subject,
+                "attachment": attachment_filename or (drive_file_id if drive_file_id else None),
+            })
+        else:
+            print(f"[SEND-EMAIL API] Failed: {result['error']}")
+            return jsonify({"success": False, "error": result["error"]}), 500
+
+    except Exception as e:
+        print(f"[SEND-EMAIL API] Error: {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)[:500]}), 500
 
 
 # ══════════════════════════════════════════════════════════════════════

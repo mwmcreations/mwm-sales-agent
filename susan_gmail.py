@@ -42,19 +42,20 @@ DRIVE_PROPOSALS_FOLDER_ID = os.getenv("SUSAN_DRIVE_PROPOSALS_FOLDER_ID", "128krn
 
 # ── Service Builders ────────────────────────────────────────────────
 
-def _get_google_creds(scopes):
-    """Build DWD credentials impersonating info@mwmcreations.com."""
+def _get_google_creds(scopes, subject="michael@mwmcreations.com"):
+    """Build DWD credentials. Always impersonate michael@ (the actual Workspace user).
+    info@ is a send-as alias, not a user account — cannot be impersonated directly."""
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     from google.oauth2 import service_account as _sa
     info = json.loads(creds_json)
     creds = _sa.Credentials.from_service_account_info(info, scopes=scopes)
-    return creds.with_subject(SUSAN_SEND_AS)
+    return creds.with_subject(subject)
 
 
 def _get_gmail_service():
-    """Gmail API client for Susan (info@mwmcreations.com)."""
+    """Gmail API client — impersonates michael@ (DWD), sends as info@ via MIME 'from' header."""
     return build("gmail", "v1", credentials=_get_google_creds(SCOPES_GMAIL), cache_discovery=False)
 
 
