@@ -22,6 +22,7 @@ from maya_actions import (handle_maya_action, get_reengagement_queue,
                           REENGAGEMENT_CADENCE, REENGAGEMENT_TEMPLATES,
                           REENGAGEMENT_COLD_DAYS)
 from susan_mailchimp import handle_susan_action
+from susan_gmail import handle_susan_gmail_action
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
@@ -6133,6 +6134,29 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                 _post_general_reply(channel_id, reply, agent, thread_ts)
                 return
 
+        # ── SUSAN Gmail Send Action Check (#general) ──
+        if agent["name"] == "SUSAN":
+            handled, action_result = handle_susan_gmail_action(clean_text)
+            if handled:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
+                    messages=[
+                        {"role": "user", "content": clean_text},
+                        {"role": "assistant", "content": f"[SUSAN GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Susan. Keep it concise."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result or "I processed your request but couldn't generate a response."
+                _post_general_reply(channel_id, reply, agent, thread_ts)
+                return
+
         # ── SUSAN Mailchimp Action Check (reuse from dedicated channel) ──
         if agent["name"] == "SUSAN":
             handled, action_result = handle_susan_action(clean_text)
@@ -6778,9 +6802,20 @@ Next step: [if applicable, or "awaiting further instructions"]
     if agent_info["name"] == "SUSAN":
         base += """
 
+EMAIL PLATFORM RULE (Permanent — Michael's directive):
+Susan operates across two email platforms. Use the right one for the context:
+• *Mailchimp* → Campaigns, bulk sequences, nurture drips, and blast emails going to multiple contacts at once. Use when open/click tracking, unsubscribe management, or scheduled automation is needed.
+• *Gmail (info@mwmcreations.com)* → Individual lead communication. Use for proposals, 1-on-1 follow-ups, emails with file attachments, and any situation where the email should feel personal and direct. A single lead receiving a proposal should NEVER get a Mailchimp email with an unsubscribe footer.
+*Simple rule:* One person = Gmail. Many people = Mailchimp.
+
 REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 
-📧 *Campaigns (Mailchimp)*
+📧 *Gmail (1:1 emails — info@mwmcreations.com)*
+• Send email — "send email to name@example.com subject Hello body ..."
+• Send email with PDF attachment from Google Drive — "send email to name@example.com subject Proposal body ... attach drive:<file_id>"
+• When sending proposals or 1:1 follow-ups, ALWAYS use Gmail, never Mailchimp.
+
+📧 *Campaigns (Mailchimp — bulk sends)*
 • List campaigns — "What campaigns do we have?" / "Show me all drafts" / "List sent campaigns"
 • Campaign stats — "What's the open rate on the Victory Schools email?" / "How did our last campaign perform?"
 • Pause campaign — "Pause the scheduled email" / "Cancel the next send"
@@ -6791,7 +6826,7 @@ REAL-TIME ACTION CAPABILITIES — you can execute these from Slack:
 📋 *Audiences*
 • List audiences — "What audiences do we have?" / "Show subscriber lists"
 
-When an action is detected, it executes automatically against the Mailchimp API. You will receive real data from the API and should present it naturally.
+When an action is detected, it executes automatically against the relevant API (Gmail or Mailchimp). You will receive real data and should present it naturally.
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, stats, open rates, subscriber counts, or any other Mailchimp data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Susan.
 
@@ -7350,6 +7385,39 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                         {"role": "user", "content": text},
                         {"role": "assistant", "content": f"[MAYA ACTION RESULT]\n{action_result}"},
                         {"role": "user", "content": "Present the above action result naturally as Maya. Keep it concise — the data is already formatted. Don't repeat all the data verbatim. If the result shows an error, offer to help troubleshoot."},
+                    ]
+                )
+                reply = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply += block.text
+                if not reply:
+                    reply = action_result if action_result else "I processed your request but couldn't generate a response. Could you try again?"
+                if thread_ts:
+                    url = "https://slack.com/api/chat.postMessage"
+                    headers = {
+                        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {"channel": channel_id, "text": reply, "thread_ts": thread_ts}
+                    http_requests.post(url, headers=headers, json=payload, timeout=10)
+                else:
+                    post_to_slack(channel_id, reply)
+                return
+
+        # ── SUSAN Gmail Send Action Check (with attachment support) ──
+        if agent["name"] == "SUSAN":
+            handled, action_result = handle_susan_gmail_action(text)
+            if handled:
+                # Present the result naturally through Susan
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=get_agent_system_prompt(agent) + history_context,
+                    messages=[
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": f"[SUSAN GMAIL ACTION RESULT]\n{action_result}"},
+                        {"role": "user", "content": "Present the above Gmail send result naturally as Susan. Keep it concise."},
                     ]
                 )
                 reply = ""
