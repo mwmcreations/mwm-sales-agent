@@ -3015,6 +3015,706 @@ def handle_tool_call(tool_name, tool_input, sender=None):
     return {"error": f"Unknown tool: {tool_name}"}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# MICHAEL COMMAND ROUTER — Autonomous Maya (Session 32)
+# When Michael messages Maya on WhatsApp, she enters "boss mode":
+# different system prompt, different tools, different purpose.
+# Instead of selling, she executes business commands.
+# ═══════════════════════════════════════════════════════════════════════
+
+# Separate conversation history for Michael's command sessions
+michael_command_history = []
+
+COMMAND_SYSTEM_PROMPT = """You are Maya, the autonomous sales agent for MWM Creations & Studios.
+Right now you are talking to Michael Moraes, your boss and the owner of MWM Creations.
+You are in COMMAND MODE — Michael gives you instructions and you execute them using your tools.
+
+Your personality: confident, proactive, concise. You call Michael by name.
+You are not selling to him — you are his right hand, reporting status, executing tasks, and taking action.
+
+CAPABILITIES (use your tools):
+- Look up any lead by name, phone, or business
+- Get a full pipeline summary with lead counts by status
+- Check Michael's calendar availability
+- Send personalized emails to leads (from info@mwmcreations.com)
+- Update lead status in the tracker
+- Log outreach activities
+- Post messages to Slack channels
+- Send WhatsApp re-engagement templates to leads outside the 24-hour window
+- Reply directly to leads inside the 24-hour WhatsApp window
+
+OUTBOUND RULES:
+- Email: ALWAYS available. No restrictions. Use send_email_to_lead for personalized outreach.
+- WhatsApp (inside 24h window): Use reply_to_lead_whatsapp for free-form messages.
+- WhatsApp (outside 24h window): Use send_reengagement_template — pre-approved templates only.
+- When Michael asks you to "contact" or "reach out to" a lead, first use lookup_lead to find their info.
+  If they have an email, send email. Mention whether WhatsApp free-form is available (24h window).
+
+RESPONSE STYLE:
+- Be brief and action-oriented. Report what you DID, not what you could do.
+- After executing a task, confirm with specifics: "Done — emailed John at john@example.com about the studio visit package."
+- If a tool fails, say so clearly and suggest an alternative.
+- When Michael asks a question, answer it directly using your tools. Don't ask him to check Slack or Sheets himself.
+- Use plain text, not markdown (this goes to WhatsApp which doesn't render markdown).
+
+CURRENT DATE: {current_date}
+"""
+
+COMMAND_TOOLS = [
+    {
+        "name": "get_pipeline_summary",
+        "description": (
+            "Get a full summary of the sales pipeline — lead counts grouped by status "
+            "(Hot, Warm, Cold, Booked, etc.) with names. Call this when Michael asks about "
+            "the pipeline, lead status, numbers, or how things are going."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "lookup_lead",
+        "description": (
+            "Look up a specific lead by name, business, or phone number. "
+            "Returns their status, temperature, service interest, last contact date, and notes. "
+            "Use this when Michael asks about a specific person or company."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_term": {
+                    "type": "string",
+                    "description": "The name, business name, or phone number to search for."
+                }
+            },
+            "required": ["search_term"]
+        }
+    },
+    {
+        "name": "update_lead_status",
+        "description": (
+            "Update a lead's status or temperature in the Google Sheets tracker. "
+            "Use when Michael says things like 'mark John as hot' or 'move that lead to booked'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {
+                    "type": "string",
+                    "description": "The name of the lead to update."
+                },
+                "new_status": {
+                    "type": "string",
+                    "description": "The new status: Hot, Warm, Cold, New Lead, Qualified, Booked, Closed, Lost, Follow-up."
+                }
+            },
+            "required": ["lead_name", "new_status"]
+        }
+    },
+    {
+        "name": "check_calendar_availability",
+        "description": (
+            "Check Michael's Google Calendar for available time slots. "
+            "Use when Michael asks if he's free, what his schedule looks like, or when he can meet someone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language time query, e.g. 'Thursday at 2pm', 'next week', 'tomorrow afternoon'."
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "send_email_to_lead",
+        "description": (
+            "Send a personalized email to a lead from info@mwmcreations.com. "
+            "This is the PRIMARY outbound channel — no time window restrictions. "
+            "Use when Michael tells you to reach out, follow up, contact, or email a lead. "
+            "You compose the email yourself based on Michael's instruction and the lead's context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to_email": {
+                    "type": "string",
+                    "description": "Recipient email address."
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject line."
+                },
+                "body_html": {
+                    "type": "string",
+                    "description": "Full HTML email body. Write a professional, warm email from MWM Creations."
+                },
+                "lead_name": {
+                    "type": "string",
+                    "description": "Name of the lead (for logging)."
+                }
+            },
+            "required": ["to_email", "subject", "body_html"]
+        }
+    },
+    {
+        "name": "reply_to_lead_whatsapp",
+        "description": (
+            "Send a free-form WhatsApp message to a lead. "
+            "ONLY works if the lead messaged us within the last 24 hours (inside the service window). "
+            "For leads outside the window, use send_reengagement_template instead, or use send_email_to_lead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "Lead's phone number in E.164 format (e.g. +15551234567)."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message to send. Write it as Maya speaking naturally."
+                }
+            },
+            "required": ["phone", "message"]
+        }
+    },
+    {
+        "name": "send_reengagement_template",
+        "description": (
+            "Send a pre-approved WhatsApp template to a lead who is OUTSIDE the 24-hour service window. "
+            "This re-opens the conversation — once the lead replies, you can send free-form messages. "
+            "Use this when Michael wants to nudge or re-engage a lead via WhatsApp."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "Lead's phone number in E.164 format."
+                },
+                "lead_name": {
+                    "type": "string",
+                    "description": "Lead's first name (used in the template greeting)."
+                },
+                "template_number": {
+                    "type": "integer",
+                    "description": "Which template to use: 1=warm check-in, 3=soft re-engagement, 5=free consultation offer, 7=final friendly close. Default 1."
+                }
+            },
+            "required": ["phone", "lead_name"]
+        }
+    },
+    {
+        "name": "post_to_slack",
+        "description": (
+            "Post a message to a Slack channel. Use when Michael asks you to notify a team member, "
+            "post an update, or communicate with the team. "
+            "Channel names: maya, dev, susan, matt, lara, eric, ana, cris, rob, victor, pipeline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Slack channel name (without #), e.g. 'maya', 'dev', 'susan', 'pipeline'."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message to post. Use Slack markdown formatting."
+                }
+            },
+            "required": ["channel_name", "message"]
+        }
+    },
+    {
+        "name": "log_outreach",
+        "description": (
+            "Log an outreach activity in the lead tracker (Google Sheets). "
+            "Use after sending an email or WhatsApp to record the action."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {
+                    "type": "string",
+                    "description": "Name of the lead."
+                },
+                "outreach_type": {
+                    "type": "string",
+                    "description": "Type of outreach: email, whatsapp, call, dm, meeting."
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Brief description of the outreach."
+                }
+            },
+            "required": ["lead_name", "outreach_type"]
+        }
+    },
+    {
+        "name": "get_available_meeting_slots",
+        "description": (
+            "Get the next available meeting slots on Michael's calendar. "
+            "Returns up to 5 open time slots that can be offered to leads."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "add_new_lead",
+        "description": (
+            "Add a new lead to the Google Sheets pipeline tracker. "
+            "Use when Michael tells you about a new prospect to track. "
+            "Provide at least a name; phone and service interest are optional."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Lead's full name."
+                },
+                "phone": {
+                    "type": "string",
+                    "description": "Lead's phone number (optional)."
+                },
+                "business": {
+                    "type": "string",
+                    "description": "Lead's business or company name (optional)."
+                },
+                "service_interest": {
+                    "type": "string",
+                    "description": "What service the lead is interested in (optional)."
+                },
+                "source": {
+                    "type": "string",
+                    "description": "How the lead was found: WhatsApp, Instagram, Referral, Website, Ad, Event, etc. Default: Manual."
+                }
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "handoff_to_ana",
+        "description": (
+            "Hand off a lead to ANA for scheduling/booking. "
+            "Posts a structured handoff message to the #ana Slack channel with lead details. "
+            "Use when Michael says to hand off, transfer, or pass a lead to ANA for booking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {
+                    "type": "string",
+                    "description": "Name of the lead to hand off."
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Additional context for ANA (e.g., 'ready to book a studio visit', 'wants a strategy call')."
+                }
+            },
+            "required": ["lead_name"]
+        }
+    },
+]
+
+
+# Slack channel ID map for command tool
+_SLACK_CHANNEL_MAP = {
+    "maya": SLACK_MAYA_CHANNEL,
+    "dev": SLACK_DEV_CHANNEL,
+    "pipeline": SLACK_PIPELINE_CHANNEL,
+    "matt": os.getenv("SLACK_MATT_CHANNEL", "C0APE9EJ2CT"),
+    "susan": os.getenv("SLACK_SUSAN_CHANNEL", "C0APQ4TDF7W"),
+    "lara": os.getenv("SLACK_LARA_CHANNEL", "C0ARC24S9PF"),
+    "eric": os.getenv("SLACK_ERIC_CHANNEL", "C0APZEBQ4P3"),
+    "ana": os.getenv("SLACK_ANA_CHANNEL", "C0APE5V3U2F"),
+    "cris": os.getenv("SLACK_CRIS_CHANNEL", "C0APJF77MB8"),
+    "rob": os.getenv("SLACK_ROB_CHANNEL", "C0APLH98ANN"),
+    "victor": os.getenv("SLACK_VICTOR_CHANNEL", "C0ART65SU8Y"),
+}
+
+
+def handle_command_tool_call(tool_name, tool_input):
+    """Execute a command-mode tool call. Returns a result dict."""
+    try:
+        if tool_name == "get_pipeline_summary":
+            from maya_actions import get_pipeline_summary
+            return {"result": get_pipeline_summary("")}
+
+        elif tool_name == "lookup_lead":
+            from maya_actions import lookup_lead
+            search = tool_input.get("search_term", "")
+            result = lookup_lead(f"look up {search}")
+            return {"result": result}
+
+        elif tool_name == "update_lead_status":
+            from maya_actions import update_lead_status
+            name = tool_input.get("lead_name", "")
+            status = tool_input.get("new_status", "")
+            result = update_lead_status(f"update {name} to {status}")
+            return {"result": result}
+
+        elif tool_name == "check_calendar_availability":
+            from maya_actions import check_availability
+            query = tool_input.get("query", "")
+            result = check_availability(f"check availability {query}")
+            return {"result": result}
+
+        elif tool_name == "send_email_to_lead":
+            to_email = tool_input.get("to_email", "")
+            subject = tool_input.get("subject", "")
+            body_html = tool_input.get("body_html", "")
+            lead_name = tool_input.get("lead_name", "")
+            if not to_email or not subject or not body_html:
+                return {"error": "Missing required fields: to_email, subject, body_html"}
+            try:
+                msg_id = send_gmail(
+                    to=to_email,
+                    subject=subject,
+                    body_html=body_html,
+                    send_as=SUSAN_SEND_AS
+                )
+                _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                    f"*Maya Command — Email Sent*\n"
+                    f"To: {lead_name} <{to_email}>\n"
+                    f"Subject: {subject}\n"
+                    f"Sent by: Maya (Michael's command)"
+                )
+                return {"success": True, "message_id": msg_id, "sent_to": to_email}
+            except Exception as email_err:
+                return {"error": f"Email send failed: {str(email_err)[:200]}"}
+
+        elif tool_name == "reply_to_lead_whatsapp":
+            phone = tool_input.get("phone", "").strip()
+            message = tool_input.get("message", "")
+            if not phone or not message:
+                return {"error": "Missing required fields: phone, message"}
+            # Normalize phone: strip "whatsapp:" prefix, ensure "+" prefix, then re-add "whatsapp:"
+            clean_phone = phone.replace("whatsapp:", "").strip()
+            if not clean_phone.startswith("+"):
+                clean_phone = f"+{clean_phone}"
+            wa_phone = f"whatsapp:{clean_phone}"
+            # Also try without "+" in case lead_data stores it differently
+            last_msg_time = lead_data.get(wa_phone, {}).get("last_message_time")
+            if not last_msg_time:
+                # Try alternate format
+                alt_phone = f"whatsapp:{clean_phone.lstrip('+')}"
+                last_msg_time = lead_data.get(alt_phone, {}).get("last_message_time")
+                if last_msg_time:
+                    wa_phone = alt_phone
+            if last_msg_time:
+                hours_since = (datetime.now(pytz.timezone(TIMEZONE)) - last_msg_time).total_seconds() / 3600
+                if hours_since > 24:
+                    return {
+                        "error": f"Lead is OUTSIDE the 24-hour window (last message {hours_since:.0f}h ago). "
+                                 f"Use send_reengagement_template for WhatsApp, or send_email_to_lead for email."
+                    }
+            else:
+                return {
+                    "error": "No recent WhatsApp activity found for this number. "
+                             "Lead may be outside the 24-hour window. Use send_email_to_lead or send_reengagement_template."
+                }
+            try:
+                send_whatsapp_meta(wa_phone, body=message)
+                _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                    f"*Maya Command — WhatsApp Sent*\n"
+                    f"To: {phone}\n"
+                    f"Message: {message[:200]}\n"
+                    f"Sent by: Maya (Michael's command)"
+                )
+                return {"success": True, "sent_to": phone}
+            except Exception as wa_err:
+                return {"error": f"WhatsApp send failed: {str(wa_err)[:200]}"}
+
+        elif tool_name == "send_reengagement_template":
+            phone = tool_input.get("phone", "")
+            lead_name = tool_input.get("lead_name", "")
+            template_num = tool_input.get("template_number", 1)
+            if not phone or not lead_name:
+                return {"error": "Missing required fields: phone, lead_name"}
+            from maya_actions import REENGAGEMENT_TEMPLATES, send_reengagement_template as _send_re_template
+            template_key = f"T{template_num}"
+            template_name = REENGAGEMENT_TEMPLATES.get(template_key)
+            if not template_name:
+                return {"error": f"Invalid template number {template_num}. Valid: 1, 2, 3, 4, 5, 6, 7"}
+            try:
+                _send_re_template(phone, lead_name, template_name)
+                _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                    f"*Maya Command — Re-engagement Template Sent*\n"
+                    f"To: {lead_name} ({phone})\n"
+                    f"Template: {template_name} (T{template_num})\n"
+                    f"Sent by: Maya (Michael's command)"
+                )
+                return {"success": True, "template": template_name, "sent_to": phone}
+            except Exception as tmpl_err:
+                return {"error": f"Template send failed: {str(tmpl_err)[:200]}"}
+
+        elif tool_name == "post_to_slack":
+            channel_name = tool_input.get("channel_name", "").lower().strip("#")
+            message = tool_input.get("message", "")
+            if not channel_name or not message:
+                return {"error": "Missing required fields: channel_name, message"}
+            channel_id = _SLACK_CHANNEL_MAP.get(channel_name)
+            if not channel_id:
+                return {"error": f"Unknown channel '{channel_name}'. Available: {', '.join(sorted(_SLACK_CHANNEL_MAP.keys()))}"}
+            _post_to_slack_async(channel_id, message)
+            return {"success": True, "channel": f"#{channel_name}"}
+
+        elif tool_name == "log_outreach":
+            from maya_actions import log_outreach
+            lead_name = tool_input.get("lead_name", "")
+            outreach_type = tool_input.get("outreach_type", "")
+            notes = tool_input.get("notes", "")
+            result = log_outreach(f"log {outreach_type} to {lead_name}" + (f" — {notes}" if notes else ""))
+            return {"result": result}
+
+        elif tool_name == "get_available_meeting_slots":
+            slots = get_available_slots()
+            if slots:
+                return {"slots": slots}
+            return {"error": "No available slots found or calendar check failed."}
+
+        elif tool_name == "add_new_lead":
+            from maya_actions import add_new_lead
+            name = tool_input.get("name", "")
+            phone = tool_input.get("phone", "")
+            business = tool_input.get("business", "")
+            service = tool_input.get("service_interest", "")
+            source = tool_input.get("source", "Manual")
+            if not name:
+                return {"error": "Missing required field: name"}
+            # Build a string that add_new_lead can parse
+            parts = [name]
+            if phone:
+                parts.append(phone)
+            if service:
+                parts.append(f"interested in {service}")
+            result = add_new_lead(f"add lead: {', '.join(parts)}")
+            # Log to #maya
+            _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                f"*Maya Command — Lead Added*\n"
+                f"Name: {name}\n"
+                f"Source: {source}\n"
+                f"Added by: Maya (Michael's command)"
+            )
+            return {"result": result}
+
+        elif tool_name == "handoff_to_ana":
+            from maya_actions import handoff_to_ana
+            lead_name = tool_input.get("lead_name", "")
+            notes = tool_input.get("notes", "")
+            if not lead_name:
+                return {"error": "Missing required field: lead_name"}
+            handoff_text = f"hand off {lead_name} to ana"
+            if notes:
+                handoff_text += f" — {notes}"
+            handoff_msg, matched_name = handoff_to_ana(handoff_text)
+            if matched_name:
+                # Post the handoff to #ana
+                ana_channel = _SLACK_CHANNEL_MAP.get("ana")
+                if ana_channel:
+                    _post_to_slack_async(ana_channel, handoff_msg)
+                # Also log to #maya
+                _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                    f"*Maya Command — Lead Handoff to ANA*\n"
+                    f"Lead: {matched_name}\n"
+                    f"Sent by: Maya (Michael's command)"
+                )
+                return {"success": True, "lead": matched_name, "message": f"Handoff posted to #ana for {matched_name}"}
+            else:
+                return {"error": handoff_msg}
+
+        return {"error": f"Unknown command tool: {tool_name}"}
+
+    except Exception as e:
+        print(f"Command tool error ({tool_name}): {e}")
+        return {"error": f"Tool execution failed: {str(e)[:200]}"}
+
+
+def get_command_reply(messages):
+    """Call Claude with command-mode tools for Michael's commands.
+    Same loop pattern as get_claude_reply but uses COMMAND_TOOLS and COMMAND_SYSTEM_PROMPT.
+    Max 10 tool-use rounds to prevent runaway loops.
+    """
+    _now = datetime.now(pytz.timezone(TIMEZONE)).strftime("%A, %B %d, %Y at %I:%M %p ET")
+    _sys = COMMAND_SYSTEM_PROMPT.format(current_date=_now)
+    MAX_API_RETRIES = 3
+    MAX_TOOL_ROUNDS = 10
+    _round = 0
+    while True:
+        _round += 1
+        if _round > MAX_TOOL_ROUNDS:
+            messages.append({"role": "assistant", "content": "I hit the maximum number of tool calls for this command. Here's what I accomplished so far — let me know if you need me to continue."})
+            return "I hit the maximum number of tool calls for this command. Let me know if you need me to continue.", messages
+        last_err = None
+        for _attempt in range(1, MAX_API_RETRIES + 1):
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=2048,
+                    system=_sys,
+                    tools=COMMAND_TOOLS,
+                    messages=messages
+                )
+                last_err = None
+                break
+            except Exception as api_err:
+                last_err = api_err
+                print(f"Command Claude API attempt {_attempt}/{MAX_API_RETRIES} failed: {api_err}")
+                if _attempt < MAX_API_RETRIES:
+                    import time as _time
+                    _time.sleep(2 ** _attempt)
+        if last_err is not None:
+            raise last_err
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    print(f"Command tool call: {block.name} | Input: {block.input}")
+                    result = handle_command_tool_call(block.name, block.input)
+                    print(f"Command tool result: {str(result)[:300]}")
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result)
+                    })
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            final_text = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    final_text += block.text
+            messages.append({"role": "assistant", "content": final_text})
+            return final_text, messages
+
+
+def _split_whatsapp_message(text, max_len=4000):
+    """Split a long message into chunks that fit WhatsApp's limit.
+    Tries to split at paragraph boundaries, then sentence boundaries.
+    """
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        # Try to split at a paragraph break
+        split_at = text.rfind("\n\n", 0, max_len)
+        if split_at == -1:
+            # Try a single newline
+            split_at = text.rfind("\n", 0, max_len)
+        if split_at == -1:
+            # Try a sentence end
+            split_at = text.rfind(". ", 0, max_len)
+            if split_at != -1:
+                split_at += 1  # include the period
+        if split_at == -1 or split_at < max_len // 2:
+            # Hard split
+            split_at = max_len
+        chunks.append(text[:split_at].rstrip())
+        text = text[split_at:].lstrip()
+    return chunks
+
+
+def _handle_michael_command(sender, incoming_msg, was_audio=False):
+    """Handle a command from Michael via WhatsApp.
+    Runs in a background thread. Uses command-mode Claude with autonomous tools.
+    """
+    global michael_command_history
+
+    to_wa = sender if sender.startswith("whatsapp:") else f"whatsapp:{sender}"
+
+    try:
+        # Guard: empty or None message
+        if not incoming_msg or not incoming_msg.strip():
+            send_whatsapp_meta(to_wa, body="Hey Michael, I didn't catch that. What do you need?")
+            return
+
+        # Add Michael's message to command history
+        michael_command_history.append({"role": "user", "content": incoming_msg})
+
+        # Keep history manageable (last 30 messages)
+        if len(michael_command_history) > 30:
+            michael_command_history = michael_command_history[-30:]
+
+        # Mirror inbound to #maya-shadow
+        try:
+            _mirror_to_maya_shadow_async(
+                {"name": "Michael (Command)", "phone": sender, "is_michael": True},
+                "inbound", incoming_msg
+            )
+        except Exception:
+            pass
+
+        # Call Claude in command mode
+        history_snapshot = list(michael_command_history)
+        reply, updated_history = get_command_reply(history_snapshot)
+        michael_command_history = updated_history
+
+        clean_reply = clean_response(reply)
+
+        # Send reply to Michael — split if too long for WhatsApp
+        if was_audio:
+            try:
+                audio_url = generate_audio_reply(clean_reply)
+                if audio_url:
+                    send_whatsapp_meta(to_wa, media_url=audio_url)
+                    print(f"Maya command audio reply sent to Michael")
+                else:
+                    # Audio generation failed — fall back to text
+                    for chunk in _split_whatsapp_message(clean_reply):
+                        send_whatsapp_meta(to_wa, body=chunk)
+            except Exception as tts_err:
+                print(f"Command TTS failed, falling back to text: {tts_err}")
+                for chunk in _split_whatsapp_message(clean_reply):
+                    send_whatsapp_meta(to_wa, body=chunk)
+        else:
+            for chunk in _split_whatsapp_message(clean_reply):
+                send_whatsapp_meta(to_wa, body=chunk)
+
+        print(f"Maya command reply sent to Michael")
+
+        # Mirror outbound to #maya-shadow
+        try:
+            _mirror_to_maya_shadow_async(
+                {"name": "Michael (Command)", "phone": sender, "is_michael": True},
+                "outbound", clean_reply
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"Michael command handler error: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            send_whatsapp_meta(to_wa,
+                body="Sorry Michael, I hit a technical issue processing that command. "
+                     "Try again or check #dev for the error details.")
+            _notify_error_to_dev(
+                "Michael Command Router",
+                f"Command processing failed: {e}",
+                lead_info=f"Command: {incoming_msg[:200]}",
+                severity="CRITICAL"
+            )
+        except Exception:
+            pass
+
+
+
+
 # âââââââââââââââââââââââââââââââââââââââââââââ
 # GOOGLE SHEETS — LEAD REPORT
 # âââââââââââââââââââââââââââââââââââââââââââââ
@@ -4495,20 +5195,24 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
     else:
         print(f"ð¤ Routing to MAYA (async)")
 
-        # ── Michael short-circuit (Session 30.8) ──
-        # When Michael messages MAYA from his own WhatsApp, she still replies
-        # so he can test the conversation flow, but we skip all lead-funnel
-        # side effects: no Google Sheet logging, no #maya new-lead
-        # notification, no hot signal updates, no extract_lead -> log_lead.
-        # The shadow mirror already has its own MICHAEL_PHONE gate in
-        # _build_maya_sender_identity.
+        # ── Michael Command Router (Session 32) ──
+        # When Michael messages Maya from his own WhatsApp, route to autonomous
+        # command mode instead of the customer sales flow. Maya becomes Michael's
+        # right hand — executing business commands, looking up leads, sending
+        # emails, posting to Slack, etc.
         import re as _re_maya
         _sender_digits = _re_maya.sub(r"\D", "", (sender or "").replace("whatsapp:", ""))
         _michael_env_m = os.getenv("MICHAEL_PHONE", "") or ""
         _michael_digits_m = _re_maya.sub(r"\D", "", _michael_env_m)
         is_michael = bool(_sender_digits and _michael_digits_m and _sender_digits == _michael_digits_m)
         if is_michael:
-            print(f"🧪 MAYA: sender is Michael ({sender}) — test mode, lead-funnel logging disabled")
+            print(f"🤖 MAYA COMMAND MODE: Michael ({sender}) — routing to autonomous handler")
+            threading.Thread(
+                target=_handle_michael_command,
+                args=(sender, incoming_msg, was_audio),
+                daemon=True
+            ).start()
+            return  # Skip the entire customer/lead flow below
 
         # ── Re-engagement QUICK_REPLY handling (Session 30.13) ──────────
         # Template buttons: "Schedule a call", "Visit the studio", "Not right now"
