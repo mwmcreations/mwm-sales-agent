@@ -3036,6 +3036,7 @@ CAPABILITIES (use your tools):
 - Look up any lead by name, phone, or business
 - Get a full pipeline summary with lead counts by status
 - Check Michael's calendar availability
+- Create, schedule, and book events on Michael's Google Calendar
 - Send personalized emails to leads (from info@mwmcreations.com)
 - Update lead status in the tracker
 - Log outreach activities
@@ -3049,6 +3050,14 @@ OUTBOUND RULES:
 - WhatsApp (outside 24h window): Use send_reengagement_template — pre-approved templates only.
 - When Michael asks you to "contact" or "reach out to" a lead, first use lookup_lead to find their info.
   If they have an email, send email. Mention whether WhatsApp free-form is available (24h window).
+
+ABSOLUTE RULE — NEVER FABRICATE BUSINESS INFORMATION:
+- NEVER invent, create, or assume packages, services, pricing, plans, or product details for MWM Creations.
+- If Michael asks you to send information about packages, services, pricing, studio options, or any business offering that you do not have stored in your system, you MUST ask Michael to provide the details first.
+- Say something like: "I don't have the official MWM packages on file. Can you send me the names, descriptions, and prices so I get it right?"
+- This applies to emails, WhatsApp messages, and any outbound communication. NEVER fill in business details with assumptions or generic studio information.
+- You CAN compose professional greetings, follow-ups, and general outreach — just never invent specific service offerings, pricing, or package names.
+- If Michael has previously given you specific information in this conversation, you may use it. But do not extrapolate beyond what he explicitly provided.
 
 RESPONSE STYLE:
 - Be brief and action-oriented. Report what you DID, not what you could do.
@@ -3136,7 +3145,9 @@ COMMAND_TOOLS = [
             "Send a personalized email to a lead from info@mwmcreations.com. "
             "This is the PRIMARY outbound channel — no time window restrictions. "
             "Use when Michael tells you to reach out, follow up, contact, or email a lead. "
-            "You compose the email yourself based on Michael's instruction and the lead's context."
+            "CRITICAL: NEVER invent packages, services, pricing, or product details. "
+            "If Michael asks you to send info about packages or services you don't have on file, "
+            "ASK HIM to provide the details first. Only include business specifics Michael explicitly gave you."
         ),
         "input_schema": {
             "type": "object",
@@ -3322,6 +3333,30 @@ COMMAND_TOOLS = [
                 }
             },
             "required": ["lead_name"]
+        }
+    },
+    {
+        "name": "create_calendar_event",
+        "description": (
+            "Create a new event on Michael's Google Calendar (MWM CREATIONS calendar). "
+            "Use when Michael asks you to schedule, book, create, or add an event or meeting. "
+            "Supports title, date/time, duration, location, and reminders."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description_text": {
+                    "type": "string",
+                    "description": (
+                        "Natural language description of the event to create. "
+                        "Include all details: title, date, time, duration, location if any. "
+                        "Examples: 'Meeting with John tomorrow at 2pm for 1 hour at the studio', "
+                        "'Studio shoot Friday 10am-2pm at 4868 E Colonial Dr', "
+                        "'Call with RBL Magazine next Monday at 3pm for 30 minutes'."
+                    )
+                }
+            },
+            "required": ["description_text"]
         }
     },
 ]
@@ -3533,6 +3568,27 @@ def handle_command_tool_call(tool_name, tool_input):
                 return {"success": True, "lead": matched_name, "message": f"Handoff posted to #ana for {matched_name}"}
             else:
                 return {"error": handoff_msg}
+
+        elif tool_name == "create_calendar_event":
+            from ana_calendar import handle_calendar_action
+            desc = tool_input.get("description_text", "")
+            if not desc:
+                return {"error": "Missing required field: description_text"}
+            # Prepend "schedule" so ana_calendar's create_event intent detects it
+            cal_text = f"schedule {desc}" if not any(w in desc.lower() for w in ["schedule", "create", "book", "add"]) else desc
+            try:
+                handled, result = handle_calendar_action(cal_text)
+                if handled and result:
+                    _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                        f"*Maya Command — Calendar Event Created*\n"
+                        f"Details: {desc}\n"
+                        f"Created by: Maya (Michael's command)"
+                    )
+                    return {"success": True, "result": result}
+                else:
+                    return {"error": f"Could not create event. Calendar returned: {result or 'no response'}"}
+            except Exception as cal_err:
+                return {"error": f"Calendar event creation failed: {str(cal_err)[:200]}"}
 
         return {"error": f"Unknown command tool: {tool_name}"}
 
