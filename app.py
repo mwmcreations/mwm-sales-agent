@@ -5440,12 +5440,15 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     assigned_agents=_assigned,
                     context=f"First message: {incoming_msg[:200]}"
                 )
-                # ── Auto-route to Susan when lead has email (form fill) ──
+                # ── Auto-route to Susan + send welcome email when lead has email (form fill) ──
                 if _has_email:
                     _lead_name = _ld.get("name", "Unknown")
                     _lead_email = _ld.get("email", "")
                     _lead_biz = _ld.get("business", "N/A")
                     _lead_svc = _ld.get("service_interest", "N/A")
+                    # Auto-send welcome email immediately
+                    _send_welcome_email_async(_lead_email, _lead_name, source="WhatsApp (form fill)")
+                    # Notify Susan for personalized follow-up
                     _post_to_slack_async(SLACK_SUSAN_CHANNEL,
                         f"*NEW LEAD — Email Track (WhatsApp + Form Fill)*\n"
                         f"Name: {_lead_name}\n"
@@ -5455,7 +5458,8 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                         f"Interest: {_lead_svc}\n"
                         f"First message: {incoming_msg[:200]}\n"
                         f"Source: WhatsApp (form fill detected)\n"
-                        f"Action: Send a warm welcome email via Railway endpoint"
+                        f"Welcome email: Sent automatically\n"
+                        f"Action: Send a personalized follow-up based on their form answers"
                     )
                     _post_to_slack_async(SLACK_LARA_CHANNEL,
                         f"*NEW LEAD — CRM Entry (WhatsApp + Form Fill)*\n"
@@ -5467,7 +5471,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                         f"Action: Create CRM record, begin follow-up sequence"
                     )
                     lead_data[sender]["_email_notified"] = True
-                    print(f"[Routing] Form lead {_lead_name} auto-routed to Susan + LARA")
+                    print(f"[Routing] Form lead {_lead_name} auto-routed to Susan + LARA + welcome email sent")
         except Exception as _pipe_err:
             print(f"⚠️ Pipeline event error (non-fatal, Maya still responds): {_pipe_err}")
 
@@ -5598,13 +5602,16 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                             if _new_email and not _had_email_before:
                                 lead_data[sndr]["_email_notified"] = True
                                 _lead_nm = fields.get("name") or lead_data[sndr].get("name", "Unknown")
-                                # Notify Susan
+                                # Auto-send welcome email immediately
+                                _send_welcome_email_async(_new_email, _lead_nm, source="WhatsApp (email captured)")
+                                # Notify Susan for personalized follow-up
                                 _post_to_slack_async(SLACK_SUSAN_CHANNEL,
                                     f"*EMAIL CAPTURED — Routing Upgrade*\n"
                                     f"Lead: {_lead_nm}\n"
                                     f"Email: {_new_email}\n"
                                     f"Source: {lead_data[sndr].get('source', 'WhatsApp')}\n"
-                                    f"Action: Add to nurture email sequence"
+                                    f"Welcome email: Sent automatically\n"
+                                    f"Action: Send a personalized follow-up based on their conversation"
                                 )
                                 # Notify LARA
                                 _post_to_slack_async(SLACK_LARA_CHANNEL,
@@ -9809,6 +9816,86 @@ def record_outcome_api():
 # then POST here to send from info@mwmcreations.com with attachments.
 # ══════════════════════════════════════════════════════════════════════
 
+# ── Auto Welcome Email for Form Leads ────────────────────────────────────────
+# Fires immediately when a new lead with email is detected (form fill).
+# This is the instant acknowledgment — Susan handles personalized follow-up.
+
+def _build_welcome_email_html(lead_name):
+    """Build the approved welcome email HTML template."""
+    first_name = (lead_name or "").split()[0] if lead_name else "there"
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f2f2f2;font-family:Arial,Helvetica,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f2f2f2;padding:30px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.10);">
+<tr><td style="background:#0d0d1a;padding:30px 40px;text-align:center;">
+<img src="https://mwmcreations.com/wp-content/uploads/2026/05/Logo-MWM-Creations-Studios-HQ.png" alt="MWM Creations &amp; Studios" width="220" style="display:block;margin:0 auto;max-width:220px;height:auto;">
+</td></tr>
+<tr><td style="padding:40px 40px 30px;">
+<p style="margin:0 0 22px;font-size:18px;color:#0d0d1a;font-weight:600;">Hi {first_name},</p>
+<p style="margin:0 0 18px;font-size:15px;color:#333333;line-height:1.75;">Thank you for reaching out to MWM Creations &amp; Studios! We received your message and we're excited to learn more about what you're looking for.</p>
+<p style="margin:0 0 18px;font-size:15px;color:#333333;line-height:1.75;">We specialize in strategic storytelling — from video production and brand roadmaps to professional studio sessions and enterprise branded TV. Every project starts with a conversation, and we'd love to hear more about yours.</p>
+<div style="background:#f8f8fa;border-left:4px solid #0d0d1a;padding:20px 24px;margin:28px 0;border-radius:0 6px 6px 0;">
+<p style="margin:0 0 8px;font-size:13px;font-weight:700;color:#0d0d1a;text-transform:uppercase;letter-spacing:1px;">What happens next</p>
+<p style="margin:0;font-size:14px;color:#555555;line-height:1.65;">A member of our team will review your inquiry and get back to you within 24 hours with a personalized response. If you'd like to speed things up, feel free to reply to this email with any additional details about your project.</p>
+</div>
+<p style="margin:0 0 28px;font-size:15px;color:#333333;line-height:1.75;">In the meantime, feel free to explore our services and see how we can help bring your vision to life.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 32px;">
+<tr><td style="background:#0d0d1a;border-radius:6px;text-align:center;">
+<a href="https://mwmcreations.com/book-studio/" style="display:inline-block;padding:14px 40px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;letter-spacing:0.3px;">Learn More About Our Services</a>
+</td></tr></table>
+<p style="margin:0 0 4px;font-size:15px;color:#333333;line-height:1.6;">Looking forward to connecting,</p>
+<p style="margin:0;font-size:15px;color:#0d0d1a;font-weight:700;">The MWM Creations &amp; Studios Team</p>
+</td></tr>
+<tr><td style="background:#0d0d1a;padding:30px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr><td style="font-size:12px;color:#888888;line-height:1.7;">
+<strong style="color:#cccccc;">MWM Creations &amp; Studios</strong><br>1500 Park Center Dr<br>Orlando, FL 32835<br>
+<a href="mailto:info@mwmcreations.com" style="color:#888888;text-decoration:none;">info@mwmcreations.com</a>
+</td><td align="right" valign="top" style="font-size:12px;color:#888888;line-height:1.7;">
+<a href="https://mwmcreations.com" style="color:#cccccc;text-decoration:none;font-weight:600;">Website</a><br>
+<a href="https://www.instagram.com/mwm.creations" style="color:#888888;text-decoration:none;">Instagram</a><br>
+<a href="https://wa.me/14078716473" style="color:#888888;text-decoration:none;">WhatsApp</a>
+</td></tr></table>
+</td></tr>
+</table></td></tr></table>
+</body></html>"""
+
+
+def _send_welcome_email_async(to_email, lead_name, source="form"):
+    """Send the welcome email in a background thread. Non-blocking, non-fatal."""
+    def _do_send():
+        try:
+            html = _build_welcome_email_html(lead_name)
+            result = send_gmail(
+                to=to_email,
+                subject="Thank you for reaching out — MWM Creations & Studios",
+                body_html=html
+            )
+            if result.get("ok"):
+                print(f"[Welcome Email] Sent to {to_email} ({lead_name}) via {source}")
+                _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                    f"*AUTO — Welcome Email Sent*\n"
+                    f"To: {to_email} ({lead_name})\n"
+                    f"Source: {source}\n"
+                    f"Status: Delivered\n"
+                    f"Note: This was the automated welcome. Susan — please send a personalized follow-up based on their form answers."
+                )
+            else:
+                print(f"[Welcome Email] Failed for {to_email}: {result}")
+                _post_to_slack_async(SLACK_DEV_CHANNEL,
+                    f"⚠️ Welcome email FAILED for {to_email} ({lead_name}): {str(result)[:200]}"
+                )
+        except Exception as e:
+            print(f"[Welcome Email] Error sending to {to_email}: {e}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL,
+                f"⚠️ Welcome email ERROR for {to_email}: {str(e)[:200]}"
+            )
+    threading.Thread(target=_do_send, daemon=True).start()
+
+
 SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "mwm-agents-2026")
 
 @app.route('/api/send-email', methods=['POST'])
@@ -10112,8 +10199,11 @@ def form_webhook():
         maya_msg += f"\nCampaign: {utm_campaign}"
     _post_to_slack_async(SLACK_MAYA_CHANNEL, maya_msg)
 
-    # 2. Susan — email nurture sequence
+    # 2. Susan — email nurture sequence + auto welcome email
     if email:
+        # Auto-send welcome email immediately
+        _send_welcome_email_async(email, name, source="Website Form")
+        # Notify Susan for personalized follow-up
         susan_msg = (
             f"*NEW FORM LEAD — Email Track*\n"
             f"Name: {name}\n"
@@ -10121,7 +10211,8 @@ def form_webhook():
             f"Business: {business or 'N/A'}\n"
             f"Interest: {service or 'N/A'}\n"
             f"Message: {message[:300] or 'N/A'}\n"
-            f"Action: Add to welcome email sequence"
+            f"Welcome email: Sent automatically\n"
+            f"Action: Send a personalized follow-up based on their form answers"
         )
         _post_to_slack_async(SLACK_SUSAN_CHANNEL, susan_msg)
 
@@ -10370,15 +10461,19 @@ def meta_leads_webhook():
             maya_msg += f"Source: Facebook/Instagram Lead Ad"
             _post_to_slack_async(SLACK_MAYA_CHANNEL, maya_msg)
 
-            # Susan — email nurture (if email provided)
+            # Susan — email nurture (if email provided) + auto welcome email
             if email:
+                # Auto-send welcome email immediately
+                _send_welcome_email_async(email, name, source="Meta Lead Ad")
+                # Notify Susan for personalized follow-up
                 _post_to_slack_async(SLACK_SUSAN_CHANNEL,
                     f"*NEW LEAD — Meta Ad Email Track*\n"
                     f"Name: {name}\n"
                     f"Email: {email}\n"
                     f"Business: {company or 'N/A'}\n"
                     f"Interest: {service_interest or 'N/A'}\n"
-                    f"Action: Add to welcome email sequence"
+                    f"Welcome email: Sent automatically\n"
+                    f"Action: Send a personalized follow-up based on their form answers"
                 )
 
             # LARA — CRM (if email provided)
