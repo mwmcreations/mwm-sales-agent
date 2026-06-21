@@ -3570,15 +3570,16 @@ def handle_command_tool_call(tool_name, tool_input):
                 return {"error": handoff_msg}
 
         elif tool_name == "create_calendar_event":
-            from ana_calendar import handle_calendar_action
+            # Call _create_event directly — we already KNOW the intent is create.
+            # handle_calendar_action() uses regex intent detection which fails on
+            # freeform descriptions like "Lunch today 12-2pm".
+            from ana_calendar import _create_event
             desc = tool_input.get("description_text", "")
             if not desc:
                 return {"error": "Missing required field: description_text"}
-            # Prepend "schedule" so ana_calendar's create_event intent detects it
-            cal_text = f"schedule {desc}" if not any(w in desc.lower() for w in ["schedule", "create", "book", "add"]) else desc
             try:
-                handled, result = handle_calendar_action(cal_text)
-                if handled and result:
+                result = _create_event(desc)
+                if result:
                     _post_to_slack_async(SLACK_MAYA_CHANNEL,
                         f"*Maya Command — Calendar Event Created*\n"
                         f"Details: {desc}\n"
@@ -3586,7 +3587,7 @@ def handle_command_tool_call(tool_name, tool_input):
                     )
                     return {"success": True, "result": result}
                 else:
-                    return {"error": f"Could not create event. Calendar returned: {result or 'no response'}"}
+                    return {"error": "Calendar event creation returned no response."}
             except Exception as cal_err:
                 return {"error": f"Calendar event creation failed: {str(cal_err)[:200]}"}
 
