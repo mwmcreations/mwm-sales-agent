@@ -3340,23 +3340,33 @@ COMMAND_TOOLS = [
         "description": (
             "Create a new event on Michael's Google Calendar (MWM CREATIONS calendar). "
             "Use when Michael asks you to schedule, book, create, or add an event or meeting. "
-            "Supports title, date/time, duration, location, and reminders."
+            "You MUST provide structured fields — do NOT rely on natural language parsing."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "description_text": {
+                "title": {
                     "type": "string",
-                    "description": (
-                        "Natural language description of the event to create. "
-                        "Include all details: title, date, time, duration, location if any. "
-                        "Examples: 'Meeting with John tomorrow at 2pm for 1 hour at the studio', "
-                        "'Studio shoot Friday 10am-2pm at 4868 E Colonial Dr', "
-                        "'Call with RBL Magazine next Monday at 3pm for 30 minutes'."
-                    )
+                    "description": "Event title exactly as Michael described it."
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Event date in YYYY-MM-DD format. Calculate the correct date from Michael's words (e.g., 'today', 'tomorrow', 'next Friday')."
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": "Start time in HH:MM format (24-hour). E.g., '14:00' for 2pm, '09:30' for 9:30am."
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "End time in HH:MM format (24-hour). E.g., '16:00' for 4pm. If not specified, defaults to 1 hour after start."
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Event location (optional). Address or place name."
                 }
             },
-            "required": ["description_text"]
+            "required": ["title", "date", "start_time"]
         }
     },
 ]
@@ -3570,24 +3580,60 @@ def handle_command_tool_call(tool_name, tool_input):
                 return {"error": handoff_msg}
 
         elif tool_name == "create_calendar_event":
-            # Call _create_event directly — we already KNOW the intent is create.
-            # handle_calendar_action() uses regex intent detection which fails on
-            # freeform descriptions like "Lunch today 12-2pm".
-            from ana_calendar import _create_event
-            desc = tool_input.get("description_text", "")
-            if not desc:
-                return {"error": "Missing required field: description_text"}
+            # Build the event directly from structured fields — no regex parsing.
+            # Claude provides title, date (YYYY-MM-DD), start_time (HH:MM), etc.
+            title = tool_input.get("title", "").strip()
+            date_str = tool_input.get("date", "").strip()
+            start_str = tool_input.get("start_time", "").strip()
+            end_str = tool_input.get("end_time", "").strip()
+            location = tool_input.get("location", "").strip()
+            if not title or not date_str or not start_str:
+                return {"error": "Missing required fields: title, date (YYYY-MM-DD), start_time (HH:MM)"}
             try:
-                result = _create_event(desc)
-                if result:
-                    _post_to_slack_async(SLACK_MAYA_CHANNEL,
-                        f"*Maya Command — Calendar Event Created*\n"
-                        f"Details: {desc}\n"
-                        f"Created by: Maya (Michael's command)"
-                    )
-                    return {"success": True, "result": result}
+                from ana_calendar import _get_cal_service, CALENDAR_ID
+                tz = pytz.timezone(TIMEZONE)
+                # Parse date
+                evt_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                # Parse start time
+                sh, sm = int(start_str.split(":")[0]), int(start_str.split(":")[1])
+                start_dt = tz.localize(datetime.combine(evt_date, datetime.min.time().replace(hour=sh, minute=sm)))
+                # Parse end time (default: +1 hour)
+                if end_str:
+                    eh, em = int(end_str.split(":")[0]), int(end_str.split(":")[1])
+                    end_dt = tz.localize(datetime.combine(evt_date, datetime.min.time().replace(hour=eh, minute=em)))
                 else:
-                    return {"error": "Calendar event creation returned no response."}
+                    end_dt = start_dt + timedelta(hours=1)
+                # Build event body
+                event_body = {
+                    "summary": title,
+                    "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
+                    "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
+                    "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 30}]},
+                }
+                if location:
+                    event_body["location"] = location
+                # Get calendar service with DWD
+                delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+                try:
+                    service = _get_cal_service(impersonate=delegate) if delegate else _get_cal_service()
+                    if delegate:
+                        service.calendarList().list(maxResults=1).execute()
+                except Exception:
+                    service = _get_cal_service()
+                # Create event
+                created = service.events().insert(
+                    calendarId=CALENDAR_ID, body=event_body, sendUpdates="none"
+                ).execute()
+                link = created.get("htmlLink", "")
+                _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                    f"*Maya Command — Calendar Event Created*\n"
+                    f"Title: {title}\n"
+                    f"Date: {date_str}\n"
+                    f"Time: {start_str} - {end_str or 'auto'}\n"
+                    f"Created by: Maya (Michael's command)"
+                )
+                return {"success": True, "event_link": link,
+                        "summary": f"{title} on {date_str} at {start_str}"}
             except Exception as cal_err:
                 return {"error": f"Calendar event creation failed: {str(cal_err)[:200]}"}
 
@@ -5392,6 +5438,34 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     assigned_agents=_assigned,
                     context=f"First message: {incoming_msg[:200]}"
                 )
+                # ── Auto-route to Susan when lead has email (form fill) ──
+                if _has_email:
+                    _lead_name = _ld.get("name", "Unknown")
+                    _lead_email = _ld.get("email", "")
+                    _lead_biz = _ld.get("business", "N/A")
+                    _lead_svc = _ld.get("service_interest", "N/A")
+                    _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                        f"*NEW LEAD — Email Track (WhatsApp + Form Fill)*\n"
+                        f"Name: {_lead_name}\n"
+                        f"Email: {_lead_email}\n"
+                        f"WhatsApp: {sender}\n"
+                        f"Business: {_lead_biz}\n"
+                        f"Interest: {_lead_svc}\n"
+                        f"First message: {incoming_msg[:200]}\n"
+                        f"Source: WhatsApp (form fill detected)\n"
+                        f"Action: Send a warm welcome email via Railway endpoint"
+                    )
+                    _post_to_slack_async(SLACK_LARA_CHANNEL,
+                        f"*NEW LEAD — CRM Entry (WhatsApp + Form Fill)*\n"
+                        f"Name: {_lead_name}\n"
+                        f"Email: {_lead_email}\n"
+                        f"Phone: {sender}\n"
+                        f"Business: {_lead_biz}\n"
+                        f"Source: WhatsApp (form fill)\n"
+                        f"Action: Create CRM record, begin follow-up sequence"
+                    )
+                    lead_data[sender]["_email_notified"] = True
+                    print(f"[Routing] Form lead {_lead_name} auto-routed to Susan + LARA")
         except Exception as _pipe_err:
             print(f"⚠️ Pipeline event error (non-fatal, Maya still responds): {_pipe_err}")
 
