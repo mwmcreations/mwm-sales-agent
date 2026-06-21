@@ -10000,8 +10000,9 @@ def health_check():
     all_keys_ok = all(api_keys.values())
 
     overall = "healthy" if (all_threads_ok and all_keys_ok) else "degraded"
+    status_code = 200 if overall == "healthy" else 503
 
-    return jsonify({
+    response = jsonify({
         "status": overall,
         "threads": thread_health,
         "api_keys_present": api_keys,
@@ -10009,7 +10010,12 @@ def health_check():
         "lead_count": len(lead_data),
         "active_conversations": len(conversation_history),
         "pipeline_stats": _get_pipeline_stats(),
-    }), 200 if overall == "healthy" else 503
+    })
+    # Prevent Railway/CDN/browser from caching health responses
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response, status_code
 
 
 def _get_pipeline_stats():
