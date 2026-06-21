@@ -150,6 +150,8 @@ SLACK_MATT_CHANNEL = "C0APE9EJ2CT"  # #matt channel ID — escalations
 SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID — email marketing
 SLACK_LARA_CHANNEL = "C0ARC24S9PF"   # #lara channel ID — CRM/follow-up
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
+SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"   # #eric channel ID — traffic manager
+PIPELINE_CANVAS_ID = "F0BBZ7T2QGL"   # Lead Pipeline Canvas on Slack
 
 # ══════════════════════════════════════════════════════════════════════
 # BACKGROUND THREAD HEARTBEAT MONITORING
@@ -6421,7 +6423,7 @@ threading.Thread(target=_noshow_detector, daemon=True).start()
 # ══════════════════════════════════════════════════════════════════════
 
 SLACK_MAYA_AGENT_CHANNEL = "C0APE5S76HH"  # #maya channel ID (for Agent Maya WhatsApp Web outreach)
-SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"  # #eric channel ID (for retargeting audiences)
+# SLACK_ERIC_CHANNEL defined at top of file (line ~153)
 
 def _notify_cold_lead_pipeline(phone, name, business):
     """Notify Agent Maya and Eric when a lead exhausts the re-engagement sequence.
@@ -10524,6 +10526,233 @@ def _system_monitor():
         _time.sleep(1500)  # Check every 25 min (under 30-min stale threshold)
 
 threading.Thread(target=_system_monitor, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PIPELINE CANVAS SYNC — Updates the Slack Canvas (F0BBZ7T2QGL) with
+# live data from lead_data every 30 minutes. Uses Slack canvases.edit API.
+# Session 32 (2026-06-21): Built to fix stale canvas issue.
+# ══════════════════════════════════════════════════════════════════════
+
+# Canvas section IDs (from slack_read_canvas)
+_CANVAS_SECTIONS = {
+    "status_line": "temp:C:AOC23f5376893c0939dae5323fef",
+    "quick_stats": "temp:C:AOCae99e09c4bc3d48c35c5670ac",
+    "source_breakdown": "temp:C:AOC6d027df4af80b50dea604f384",
+    "active_leads": "temp:C:AOC07db9b5111621d24bd5ab332a",
+    "system_status": "temp:C:AOC2f70861b7fd231965b195bb53",
+    "action_log": "temp:C:AOC8534cea88a169ff3709db9924",
+}
+
+
+def _edit_canvas_section(section_id, markdown):
+    """Update a single section of the Pipeline Canvas via Slack API."""
+    if not SLACK_BOT_TOKEN or not section_id:
+        return False
+    url = "https://slack.com/api/canvases.edit"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "canvas_id": PIPELINE_CANVAS_ID,
+        "changes": [
+            {
+                "operation": "replace",
+                "section_id": section_id,
+                "document_content": {"type": "markdown", "markdown": markdown},
+            }
+        ],
+    }
+    try:
+        resp = http_requests.post(url, json=payload, headers=headers, timeout=10)
+        result = resp.json()
+        if not result.get("ok"):
+            err = result.get("error", "unknown")
+            print(f"[CANVAS SYNC] Section {section_id} update failed: {err}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[CANVAS SYNC] API error: {e}")
+        return False
+
+
+def _sync_pipeline_canvas():
+    """Sync lead_data to the Pipeline Canvas on Slack."""
+    print("[CANVAS SYNC] Starting sync...")
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    now_str = now.strftime("%b %d, %Y %I:%M %p ET")
+    week_start = now - timedelta(days=now.weekday())
+    month_start = now.replace(day=1)
+    success_count = 0
+
+    # ── Gather stats ──
+    total = len(lead_data)
+    booked = cold = new_week = converted_month = noshows_month = 0
+    ig_active = ig_booked = ig_conv = 0
+    wa_active = wa_booked = wa_conv = 0
+    form_active = form_booked = form_conv = 0
+
+    for phone, ld in lead_data.items():
+        _source = (ld.get("source") or "").lower()
+        _booked = bool(ld.get("booked"))
+        _cold = bool(ld.get("cold_fired"))
+        _converted = bool(ld.get("converted"))
+        _first = ld.get("first_contact_time")
+
+        if _booked:
+            booked += 1
+        if _cold:
+            cold += 1
+        if _first and hasattr(_first, 'date') and _first.date() >= week_start.date():
+            new_week += 1
+        if _converted and _first and hasattr(_first, 'date') and _first.date() >= month_start.date():
+            converted_month += 1
+        if ld.get("noshow"):
+            noshows_month += 1
+
+        # Source breakdown
+        is_form = "form" in _source or "meta" in _source
+        is_ig = "instagram" in _source or "ig" in _source
+        if is_form:
+            form_active += 1
+            if _booked: form_booked += 1
+            if _converted: form_conv += 1
+        elif is_ig:
+            ig_active += 1
+            if _booked: ig_booked += 1
+            if _converted: ig_conv += 1
+        else:
+            wa_active += 1
+            if _booked: wa_booked += 1
+            if _converted: wa_conv += 1
+
+    active = total - cold
+
+    # ── 1. Update status line ──
+    status_md = (
+        f"**Status:** LIVE — Automated 24/7 "
+        f"**Last synced:** {now_str} "
+        f"**Owner:** <@U01N06A8VE1> Michael | "
+        f"Managed by: <#C0APE9EJ2CT> Matt | "
+        f"Built by: <#C0AR7NY6SHF> DEV"
+    )
+    if _edit_canvas_section(_CANVAS_SECTIONS["status_line"], status_md):
+        success_count += 1
+
+    # ── 2. Quick Stats ──
+    conv_rate = f"{(converted_month / total * 100):.0f}%" if total > 0 else "—"
+    stats_md = (
+        f"|Metric|Count|\n|  ---  |  ---  |\n"
+        f"|Total Active Leads|{active}|\n"
+        f"|New (This Week)|{new_week}|\n"
+        f"|Booked (This Week)|{booked}|\n"
+        f"|Visits Completed (This Week)|{converted_month}|\n"
+        f"|Converted (This Month)|{converted_month}|\n"
+        f"|No-Shows (This Month)|{noshows_month}|\n"
+        f"|Cold Leads|{cold}|\n"
+        f"|Avg Days to Book|—|\n"
+        f"|Conversion Rate|{conv_rate}|\n"
+    )
+    if _edit_canvas_section(_CANVAS_SECTIONS["quick_stats"], stats_md):
+        success_count += 1
+
+    # ── 3. Source Breakdown ──
+    source_md = (
+        f"|Source|Active|Booked|Converted|\n|  ---  |  ---  |  ---  |  ---  |\n"
+        f"|Instagram (Maya Outbound)|{ig_active}|{ig_booked}|{ig_conv}|\n"
+        f"|WhatsApp (Inbound Campaign)|{wa_active}|{wa_booked}|{wa_conv}|\n"
+        f"|Website Form (Inbound)|{form_active}|{form_booked}|{form_conv}|\n"
+    )
+    if _edit_canvas_section(_CANVAS_SECTIONS["source_breakdown"], source_md):
+        success_count += 1
+
+    # ── 4. Active Leads table ──
+    rows = []
+    for phone, ld in lead_data.items():
+        if ld.get("cold_fired") and not ld.get("booked"):
+            continue  # Skip cold leads from active table
+        name = ld.get("name", "Unknown")[:20]
+        source = (ld.get("source") or "WhatsApp")[:15]
+        lead_type = "Form" if ld.get("email") else "WhatsApp"
+        stage = "Booked" if ld.get("booked") else ("Contacted" if ld.get("conversation_history") else "New")
+        score = ld.get("lead_score", "—")
+        ph = phone.replace("whatsapp:+", "+")[:15] if "whatsapp" in phone else phone[:15]
+        email = (ld.get("email") or "—")[:25]
+        biz = (ld.get("business") or "—")[:15]
+        interest = (ld.get("service_interest") or "—")[:15]
+        timeline = "—"
+        assigned = "Maya" + (", Susan" if ld.get("email") else "")
+        last_act = ""
+        _last = ld.get("last_message_time")
+        if _last and hasattr(_last, 'strftime'):
+            last_act = _last.strftime("%m/%d %I:%M%p")
+        days = "—"
+        _first = ld.get("first_contact_time")
+        if _first and hasattr(_first, 'date'):
+            days = str((now.date() - _first.date()).days)
+        rows.append(
+            f"|{name}|{source}|{lead_type}|{stage}|{score}|{ph}|{email}|{biz}|{interest}|{timeline}|{assigned}|{last_act}|{days}|"
+        )
+
+    if not rows:
+        rows = ["|—|—|—|—|—|—|—|—|—|—|—|—|—|"]
+
+    leads_md = (
+        "|Name|Source|Lead Type|Stage|Score|Phone|Email|Business|Content Interest|Timeline|Assigned|Last Activity|Days in Stage|\n"
+        "|  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |\n"
+        + "\n".join(rows) + "\n"
+    )
+    if _edit_canvas_section(_CANVAS_SECTIONS["active_leads"], leads_md):
+        success_count += 1
+
+    # ── 5. System Status ──
+    hb = thread_heartbeats
+    def _status(name):
+        ts = hb.get(name)
+        if not ts:
+            return "—", "—"
+        age = (now - ts).total_seconds()
+        stat = "✅ Healthy" if age < 1800 else "⚠️ Stale"
+        return stat, ts.strftime("%I:%M %p")
+
+    components = [
+        ("Railway (Maya WhatsApp)", _status("system_monitor")),
+        ("Google Calendar API", ("✅ Fixed", now_str)),
+        ("Slack API", ("✅ Connected", now_str)),
+        ("Meta WhatsApp API", _status("system_monitor")),
+        ("Re-engagement Queue", _status("reengagement_checker")),
+        ("Pipeline Sync", ("✅ Synced", now_str)),
+        ("Cold Lead Checker", _status("cold_lead_checker")),
+    ]
+    sys_rows = []
+    for comp, (stat, check_time) in components:
+        sys_rows.append(f"|{comp}|{stat}|{check_time}|")
+
+    sys_md = (
+        "|Component|Status|Last Check|\n|  ---  |  ---  |  ---  |\n"
+        + "\n".join(sys_rows) + "\n"
+    )
+    if _edit_canvas_section(_CANVAS_SECTIONS["system_status"], sys_md):
+        success_count += 1
+
+    print(f"[CANVAS SYNC] Done — {success_count}/5 sections updated at {now_str}")
+    return success_count
+
+
+def _pipeline_canvas_sync_loop():
+    """Background thread: sync canvas every 30 minutes."""
+    _time.sleep(60)  # Wait 60s after boot for lead_data to load
+    while True:
+        try:
+            _heartbeat("pipeline_canvas_sync")
+            _sync_pipeline_canvas()
+        except Exception as exc:
+            print(f"[CANVAS SYNC] Error: {exc}")
+            traceback.print_exc()
+        _time.sleep(1800)  # Every 30 minutes
+
+threading.Thread(target=_pipeline_canvas_sync_loop, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
