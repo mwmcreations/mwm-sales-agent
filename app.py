@@ -3377,19 +3377,20 @@ def handle_command_tool_call(tool_name, tool_input):
             if not to_email or not subject or not body_html:
                 return {"error": "Missing required fields: to_email, subject, body_html"}
             try:
-                msg_id = send_gmail(
+                result = send_gmail(
                     to=to_email,
                     subject=subject,
-                    body_html=body_html,
-                    send_as=SUSAN_SEND_AS
+                    body_html=body_html
                 )
+                if not result.get("ok"):
+                    return {"error": f"Email send failed: {result.get('error', 'unknown error')}"}
                 _post_to_slack_async(SLACK_MAYA_CHANNEL,
                     f"*Maya Command — Email Sent*\n"
                     f"To: {lead_name} <{to_email}>\n"
                     f"Subject: {subject}\n"
                     f"Sent by: Maya (Michael's command)"
                 )
-                return {"success": True, "message_id": msg_id, "sent_to": to_email}
+                return {"success": True, "message_id": result.get("message_id", ""), "sent_to": to_email}
             except Exception as email_err:
                 return {"error": f"Email send failed: {str(email_err)[:200]}"}
 
