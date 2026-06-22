@@ -10670,8 +10670,10 @@ threading.Thread(target=_system_monitor, daemon=True).start()
 
 # ══════════════════════════════════════════════════════════════════════
 # PIPELINE CANVAS SYNC — Updates the Slack Canvas (F0BBZ7T2QGL) with
-# live data from lead_data every 30 minutes. Uses Slack canvases.edit API.
+# live data from Google Sheets every 30 minutes. Uses Slack canvases.edit API.
 # Session 32 (2026-06-21): Built to fix stale canvas issue.
+# Session 33 (2026-06-22): Rewrote to read from Google Sheets instead of
+#   volatile lead_data (which resets to {} on every Railway deploy).
 # ══════════════════════════════════════════════════════════════════════
 
 # Canvas section IDs (from slack_read_canvas)
@@ -10680,7 +10682,7 @@ _CANVAS_SECTIONS = {
     "quick_stats": "temp:C:AOCae99e09c4bc3d48c35c5670ac",
     "source_breakdown": "temp:C:AOC6d027df4af80b50dea604f384",
     "active_leads": "temp:C:AOC07db9b5111621d24bd5ab332a",
-    "system_status": "temp:C:AOC2f70861b7fd231965b195bb53",
+    "system_status": "temp:C:AOC037250265ccfd72a40aab8ef6",
     "action_log": "temp:C:AOC8534cea88a169ff3709db9924",
 }
 
@@ -10717,8 +10719,86 @@ def _edit_canvas_section(section_id, markdown):
         return False
 
 
+def _read_leads_from_sheets():
+    """Read ALL leads from Google Sheets for canvas sync.
+    Returns a list of dicts with standardized keys.
+    Unlike _repopulate_lead_data_from_sheets(), this does NOT filter out
+    booked/cold/re-engagement leads — the canvas needs to show everything.
+    """
+    if not SHEETS_LEADS_ID:
+        print("[CANVAS SYNC] SHEETS_LEADS_ID not set — cannot read leads")
+        return []
+    try:
+        svc = get_sheets_service()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        tabs = [s["properties"]["title"] for s in meta["sheets"]]
+        month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
+                       "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
+        def tab_sort_key(t):
+            parts = t.split()
+            if len(parts) == 2 and parts[0] in month_order:
+                return (int(parts[1]), month_order[parts[0]])
+            return (0, 0)
+        tabs.sort(key=tab_sort_key, reverse=True)
+        monthly_tabs = [t for t in tabs if tab_sort_key(t) != (0, 0)][:3]
+
+        leads = []
+        seen_phones = set()
+        for tab in monthly_tabs:
+            try:
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"'{tab}'!A1:T",
+                ).execute()
+                rows = result.get("values", [])
+                if len(rows) < 2:
+                    continue
+                headers = rows[0]
+
+                def _col(name):
+                    return headers.index(name) if name in headers else -1
+
+                for row in rows[1:]:
+                    phone_idx = _col("Phone")
+                    if phone_idx < 0 or len(row) <= phone_idx:
+                        continue
+                    raw_phone = re.sub(r"\D", "", row[phone_idx])
+                    if not raw_phone or len(raw_phone) < 7 or raw_phone in seen_phones:
+                        continue
+                    seen_phones.add(raw_phone)
+
+                    def _val(col_name):
+                        idx = _col(col_name)
+                        return row[idx].strip() if idx >= 0 and len(row) > idx else ""
+
+                    leads.append({
+                        "phone": raw_phone,
+                        "name": _val("Name"),
+                        "business": _val("Business"),
+                        "email": _val("Email"),
+                        "source": _val("Source") or "WhatsApp",
+                        "status": _val("Status"),
+                        "service_interest": _val("Service Interest"),
+                        "wa_status": _val("WhatsApp Status"),
+                        "appt_booked": _val("Appointment Booked").upper() in ("Y", "YES"),
+                        "temperature": _val("Lead Temperature"),
+                        "last_contact": _val("Last Contact Date"),
+                        "date": _val("Date"),
+                    })
+            except Exception as tab_err:
+                print(f"[CANVAS SYNC] Error reading tab '{tab}': {tab_err}")
+                continue
+        return leads
+    except Exception as e:
+        print(f"[CANVAS SYNC] Sheets read error: {e}")
+        return []
+
+
 def _sync_pipeline_canvas():
-    """Sync lead_data to the Pipeline Canvas on Slack."""
+    """Sync Google Sheets lead data to the Pipeline Canvas on Slack.
+    Reads directly from Sheets (source of truth) instead of lead_data
+    so the canvas survives Railway deploys.
+    """
     print("[CANVAS SYNC] Starting sync...")
     now = datetime.now(pytz.timezone(TIMEZONE))
     now_str = now.strftime("%b %d, %Y %I:%M %p ET")
@@ -10726,30 +10806,61 @@ def _sync_pipeline_canvas():
     month_start = now.replace(day=1)
     success_count = 0
 
+    # ── Read leads from Google Sheets ──
+    leads = _read_leads_from_sheets()
+    if not leads:
+        # Fall back to lead_data if Sheets read fails
+        print("[CANVAS SYNC] Sheets returned 0 leads — falling back to lead_data")
+        leads = []
+        for phone, ld in lead_data.items():
+            leads.append({
+                "phone": phone.replace("whatsapp:+", ""),
+                "name": ld.get("name", "Unknown"),
+                "business": ld.get("business", ""),
+                "email": ld.get("email", ""),
+                "source": ld.get("source", "WhatsApp"),
+                "status": "Booked" if ld.get("booked") else ("Cold" if ld.get("cold_fired") else "Active"),
+                "service_interest": ld.get("service_interest", ""),
+                "wa_status": "",
+                "appt_booked": bool(ld.get("booked")),
+                "temperature": ld.get("temperature", ""),
+                "last_contact": "",
+                "date": "",
+            })
+
+    total = len(leads)
+
     # ── Gather stats ──
-    total = len(lead_data)
     booked = cold = new_week = converted_month = noshows_month = 0
     ig_active = ig_booked = ig_conv = 0
     wa_active = wa_booked = wa_conv = 0
     form_active = form_booked = form_conv = 0
 
-    for phone, ld in lead_data.items():
+    for ld in leads:
         _source = (ld.get("source") or "").lower()
-        _booked = bool(ld.get("booked"))
-        _cold = bool(ld.get("cold_fired"))
-        _converted = bool(ld.get("converted"))
-        _first = ld.get("first_contact_time")
+        _booked = ld.get("appt_booked", False)
+        _status = (ld.get("status") or "").lower()
+        _wa_status = (ld.get("wa_status") or "").lower()
+        _cold = "cold" in _status or "cold" in _wa_status or "exhausted" in _wa_status
+        _converted = "converted" in _status or "client" in _status or "won" in _status
 
         if _booked:
             booked += 1
         if _cold:
             cold += 1
-        if _first and hasattr(_first, 'date') and _first.date() >= week_start.date():
-            new_week += 1
-        if _converted and _first and hasattr(_first, 'date') and _first.date() >= month_start.date():
-            converted_month += 1
-        if ld.get("noshow"):
-            noshows_month += 1
+
+        # Check if lead is from this week
+        date_str = ld.get("date") or ld.get("last_contact") or ""
+        if date_str:
+            try:
+                lead_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                lead_date = pytz.timezone(TIMEZONE).localize(lead_date)
+                if lead_date.date() >= week_start.date():
+                    new_week += 1
+                if _converted and lead_date.date() >= month_start.date():
+                    converted_month += 1
+            except (ValueError, IndexError):
+                pass
 
         # Source breakdown
         is_form = "form" in _source or "meta" in _source
@@ -10809,28 +10920,40 @@ def _sync_pipeline_canvas():
 
     # ── 4. Active Leads table ──
     rows = []
-    for phone, ld in lead_data.items():
-        if ld.get("cold_fired") and not ld.get("booked"):
-            continue  # Skip cold leads from active table
-        name = ld.get("name", "Unknown")[:20]
+    for ld in leads:
+        _status = (ld.get("status") or "").lower()
+        _wa_status = (ld.get("wa_status") or "").lower()
+        _cold = "cold" in _status or "cold" in _wa_status or "exhausted" in _wa_status
+        if _cold and not ld.get("appt_booked"):
+            continue  # Skip cold non-booked from active table
+
+        name = (ld.get("name") or "Unknown")[:20]
         source = (ld.get("source") or "WhatsApp")[:15]
         lead_type = "Form" if ld.get("email") else "WhatsApp"
-        stage = "Booked" if ld.get("booked") else ("Contacted" if ld.get("conversation_history") else "New")
-        score = ld.get("lead_score", "—")
-        ph = phone.replace("whatsapp:+", "+")[:15] if "whatsapp" in phone else phone[:15]
+        if ld.get("appt_booked"):
+            stage = "Booked"
+        elif "contacted" in _status or "active" in _wa_status:
+            stage = "Contacted"
+        elif ld.get("email") or "new" in _status.lower():
+            stage = "New"
+        else:
+            stage = "Contacted"
+        score = (ld.get("temperature") or "—")[:10]
+        ph = f"+{ld['phone']}"[:15]
         email = (ld.get("email") or "—")[:25]
         biz = (ld.get("business") or "—")[:15]
         interest = (ld.get("service_interest") or "—")[:15]
         timeline = "—"
         assigned = "Maya" + (", Susan" if ld.get("email") else "")
-        last_act = ""
-        _last = ld.get("last_message_time")
-        if _last and hasattr(_last, 'strftime'):
-            last_act = _last.strftime("%m/%d %I:%M%p")
+        last_act = (ld.get("last_contact") or ld.get("date") or "—")[:16]
         days = "—"
-        _first = ld.get("first_contact_time")
-        if _first and hasattr(_first, 'date'):
-            days = str((now.date() - _first.date()).days)
+        date_str = ld.get("date") or ""
+        if date_str:
+            try:
+                lead_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                days = str((now.date() - lead_date).days)
+            except (ValueError, IndexError):
+                pass
         rows.append(
             f"|{name}|{source}|{lead_type}|{stage}|{score}|{ph}|{email}|{biz}|{interest}|{timeline}|{assigned}|{last_act}|{days}|"
         )
@@ -10876,7 +10999,7 @@ def _sync_pipeline_canvas():
     if _edit_canvas_section(_CANVAS_SECTIONS["system_status"], sys_md):
         success_count += 1
 
-    print(f"[CANVAS SYNC] Done — {success_count}/5 sections updated at {now_str}")
+    print(f"[CANVAS SYNC] Done — {success_count}/5 sections updated at {now_str} ({total} leads from Sheets, {active} active)")
     return success_count
 
 
