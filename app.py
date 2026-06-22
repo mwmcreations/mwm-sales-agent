@@ -11005,6 +11005,8 @@ def _sync_pipeline_canvas():
 
 def _pipeline_canvas_sync_loop():
     """Background thread: sync canvas every 30 minutes."""
+    import time as _time
+    import traceback
     _time.sleep(60)  # Wait 60s after boot for lead_data to load
     while True:
         try:
