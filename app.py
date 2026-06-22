@@ -6129,7 +6129,8 @@ def _post_visit_checker():
                 if 2 <= hours_since_end <= 5 and event_id not in _golden_hour_processed:
                     _golden_hour_processed.add(event_id)
                     _save_golden_hour_state()
-                    first_name = (_lead_name or "").split()[0] or "there"
+                    _name_parts = (_lead_name or "").split()
+                    first_name = _name_parts[0] if _name_parts else "there"
                     print(f"🌟 [Golden Hour] 2h follow-up triggered for {_lead_name} (event {event_id})")
 
                     if _wa_phone:
@@ -6169,7 +6170,8 @@ def _post_visit_checker():
                         and event_id not in _golden_hour_morning):
                     _golden_hour_morning.add(event_id)
                     _save_golden_hour_state()
-                    first_name = (_lead_name or "").split()[0] or "there"
+                    _name_parts = (_lead_name or "").split()
+                    first_name = _name_parts[0] if _name_parts else "there"
                     print(f"🌟 [Golden Hour] Next-morning check-in for {_lead_name} (event {event_id})")
 
                     if _wa_phone:
