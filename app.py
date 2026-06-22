@@ -5486,7 +5486,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                         f"First message: {incoming_msg[:200]}\n"
                         f"Source: WhatsApp (form fill detected)\n"
                         f"Welcome email: Sent automatically\n"
-                        f"Action: Send a personalized follow-up based on their form answers"
+                        f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.* "
+                        f"The welcome email was just sent — sending another email immediately looks spammy. "
+                        f"Save your draft and send it tomorrow.\n"
+                        f"Action: Send a personalized follow-up based on their form answers (after 24hr wait)"
                     )
                     _post_to_slack_async(SLACK_LARA_CHANNEL,
                         f"*NEW LEAD — CRM Entry (WhatsApp + Form Fill)*\n"
@@ -5638,7 +5641,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                                     f"Email: {_new_email}\n"
                                     f"Source: {lead_data[sndr].get('source', 'WhatsApp')}\n"
                                     f"Welcome email: Sent automatically\n"
-                                    f"Action: Send a personalized follow-up based on their conversation"
+                                    f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.* "
+                                    f"The welcome email was just sent — sending another email immediately looks spammy. "
+                                    f"Save your draft and send it tomorrow.\n"
+                                    f"Action: Send a personalized follow-up based on their conversation (after 24hr wait)"
                                 )
                                 # Notify LARA
                                 _post_to_slack_async(SLACK_LARA_CHANNEL,
@@ -10245,7 +10251,10 @@ def form_webhook():
             f"Interest: {service or 'N/A'}\n"
             f"Message: {message[:300] or 'N/A'}\n"
             f"Welcome email: Sent automatically\n"
-            f"Action: Send a personalized follow-up based on their form answers"
+            f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.* "
+            f"The welcome email was just sent — sending another email immediately looks spammy. "
+            f"Save your draft and send it tomorrow.\n"
+            f"Action: Send a personalized follow-up based on their form answers (after 24hr wait)"
         )
         _post_to_slack_async(SLACK_SUSAN_CHANNEL, susan_msg)
 
@@ -10506,7 +10515,10 @@ def meta_leads_webhook():
                     f"Business: {company or 'N/A'}\n"
                     f"Interest: {service_interest or 'N/A'}\n"
                     f"Welcome email: Sent automatically\n"
-                    f"Action: Send a personalized follow-up based on their form answers"
+                    f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.* "
+                    f"The welcome email was just sent — sending another email immediately looks spammy. "
+                    f"Save your draft and send it tomorrow.\n"
+                    f"Action: Send a personalized follow-up based on their form answers (after 24hr wait)"
                 )
 
             # LARA — CRM (if email provided)
