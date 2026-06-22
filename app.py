@@ -5423,6 +5423,33 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         except Exception as _utm_err:
             print(f"⚠️ UTM tracking error (non-fatal, Maya still responds): {_utm_err}")
 
+        # ── Early Form-Fill Extraction ──
+        # When a lead fills out the MWM form, WhatsApp delivers the form data
+        # as plain text in the message (e.g. "Full name: ...\nEmail: ...").
+        # We MUST extract email + name NOW — before the pipeline event fires —
+        # so that Susan routing, welcome email, and LARA all trigger correctly.
+        try:
+            if is_new_sender and not lead_data.get(sender, {}).get("email"):
+                # Extract email from message text (form fill or any message)
+                _email_match = re.search(r'[Ee]mail:\s*([^\s,<>]+@[^\s,<>]+\.[^\s,<>]+)', incoming_msg)
+                if not _email_match:
+                    # Fallback: any bare email address in the message
+                    _email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', incoming_msg)
+                if _email_match:
+                    _early_email = _email_match.group(1) if _email_match.lastindex else _email_match.group(0)
+                    _early_email = _early_email.strip().rstrip('.')
+                    lead_data[sender]["email"] = _early_email
+                    print(f"[Early Extract] Email found in message text for {sender}: {_early_email}")
+                # Extract name from "Full name: ..." pattern
+                _name_match = re.search(r'[Ff]ull\s*[Nn]ame:\s*(.+)', incoming_msg)
+                if _name_match:
+                    _early_name = _name_match.group(1).strip()
+                    if _early_name:
+                        lead_data[sender]["name"] = _early_name
+                        print(f"[Early Extract] Name found in message text for {sender}: {_early_name}")
+        except Exception as _extract_err:
+            print(f"⚠️ Early form-fill extraction error (non-fatal): {_extract_err}")
+
         # ── Pipeline Event: NEW_LEAD ──
         try:
             if is_new_sender and not is_michael:
