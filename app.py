@@ -6199,6 +6199,7 @@ threading.Thread(target=_post_visit_checker, daemon=True).start()
 def _update_profile_photo_once():
     """One-shot: update Maya's WhatsApp profile photo from repo image."""
     import time as _time
+    import requests as _requests  # local import — module-level is http_requests
     _time.sleep(30)  # Let other threads boot first
     flag_file = "/tmp/profile_photo_updated"
     image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maya_profile.jpg")
@@ -6229,7 +6230,7 @@ def _update_profile_photo_once():
         _log(f"[PROFILE PHOTO] Starting upload ({file_length} bytes)...")
 
         # Step 1: Get app ID
-        app_resp = requests.get(
+        app_resp = _requests.get(
             "https://graph.facebook.com/v20.0/app",
             params={"access_token": META_ACCESS_TOKEN},
             timeout=10,
@@ -6242,7 +6243,7 @@ def _update_profile_photo_once():
         _log(f"[PROFILE PHOTO] Step 1 OK — App ID: {app_id}")
 
         # Step 2: Create upload session
-        upload_resp = requests.post(
+        upload_resp = _requests.post(
             f"https://graph.facebook.com/v20.0/{app_id}/uploads",
             params={
                 "file_length": file_length,
@@ -6259,7 +6260,7 @@ def _update_profile_photo_once():
         _log(f"[PROFILE PHOTO] Step 2 OK — Upload session: {session_id}")
 
         # Step 3: Upload image binary
-        binary_resp = requests.post(
+        binary_resp = _requests.post(
             f"https://graph.facebook.com/v20.0/{session_id}",
             headers={
                 "Authorization": f"OAuth {META_ACCESS_TOKEN}",
@@ -6277,7 +6278,7 @@ def _update_profile_photo_once():
         _log(f"[PROFILE PHOTO] Step 3 OK — Got handle: {handle[:30]}...")
 
         # Step 4: Set profile picture
-        profile_resp = requests.post(
+        profile_resp = _requests.post(
             f"https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/whatsapp_business_profile",
             headers={
                 "Authorization": f"Bearer {META_ACCESS_TOKEN}",
@@ -12235,7 +12236,7 @@ def update_whatsapp_profile_photo():
 
     try:
         # Step 1: Get app ID from token
-        app_resp = requests.get(
+        app_resp = http_requests.get(
             "https://graph.facebook.com/v20.0/app",
             params={"access_token": META_ACCESS_TOKEN},
             timeout=10,
@@ -12246,7 +12247,7 @@ def update_whatsapp_profile_photo():
         print(f"[PROFILE PHOTO] App ID: {app_id}")
 
         # Step 2: Create upload session
-        upload_resp = requests.post(
+        upload_resp = http_requests.post(
             f"https://graph.facebook.com/v20.0/{app_id}/uploads",
             params={
                 "file_length": file_length,
@@ -12261,7 +12262,7 @@ def update_whatsapp_profile_photo():
         print(f"[PROFILE PHOTO] Upload session: {session_id}")
 
         # Step 3: Upload image binary
-        binary_resp = requests.post(
+        binary_resp = http_requests.post(
             f"https://graph.facebook.com/v20.0/{session_id}",
             headers={
                 "Authorization": f"OAuth {META_ACCESS_TOKEN}",
@@ -12277,7 +12278,7 @@ def update_whatsapp_profile_photo():
         print(f"[PROFILE PHOTO] Got handle: {handle[:30]}...")
 
         # Step 4: Set profile picture
-        profile_resp = requests.post(
+        profile_resp = http_requests.post(
             f"https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/whatsapp_business_profile",
             headers={
                 "Authorization": f"Bearer {META_ACCESS_TOKEN}",
