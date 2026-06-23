@@ -10155,6 +10155,7 @@ def health_check():
         "lead_count": len(lead_data),
         "active_conversations": len(conversation_history),
         "pipeline_stats": _get_pipeline_stats(),
+        "profile_photo_updated": os.path.exists("/tmp/profile_photo_updated"),
     })
     # Prevent Railway/CDN/browser from caching health responses
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
