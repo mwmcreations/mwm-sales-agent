@@ -6202,22 +6202,31 @@ def _update_profile_photo_once():
     _time.sleep(30)  # Let other threads boot first
     flag_file = "/tmp/profile_photo_updated"
     image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maya_profile.jpg")
+    log_lines = []  # Collect all output to post to Slack at end
+
+    def _log(msg):
+        print(msg)
+        log_lines.append(msg)
 
     if os.path.exists(flag_file):
-        print("[PROFILE PHOTO] Already updated this deploy — skipping")
+        _log("[PROFILE PHOTO] Already updated this deploy — skipping")
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":information_source: *Profile Photo* — skipped (already done this deploy)")
         return
     if not os.path.exists(image_path):
-        print("[PROFILE PHOTO] maya_profile.jpg not found — skipping")
+        _log(f"[PROFILE PHOTO] maya_profile.jpg not found at {image_path}")
+        _post_to_slack_async(SLACK_DEV_CHANNEL, f":x: *Profile Photo* — `maya_profile.jpg` not found at `{image_path}`")
         return
     if not META_ACCESS_TOKEN or not META_PHONE_NUMBER_ID:
-        print("[PROFILE PHOTO] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID — skipping")
+        _log("[PROFILE PHOTO] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID")
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo* — missing env vars (TOKEN={}, PHONE_ID={})".format(
+            bool(META_ACCESS_TOKEN), bool(META_PHONE_NUMBER_ID)))
         return
 
     try:
         with open(image_path, "rb") as f:
             image_bytes = f.read()
         file_length = len(image_bytes)
-        print(f"[PROFILE PHOTO] Starting upload ({file_length} bytes)...")
+        _log(f"[PROFILE PHOTO] Starting upload ({file_length} bytes)...")
 
         # Step 1: Get app ID
         app_resp = requests.get(
@@ -6226,10 +6235,11 @@ def _update_profile_photo_once():
             timeout=10,
         )
         if app_resp.status_code != 200:
-            print(f"[PROFILE PHOTO] Failed to get app ID: {app_resp.text}")
+            _log(f"[PROFILE PHOTO] Step 1 FAIL — get app ID: {app_resp.status_code} {app_resp.text[:200]}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo Step 1* — get app ID failed: `{}`".format(app_resp.text[:200]))
             return
         app_id = app_resp.json().get("id")
-        print(f"[PROFILE PHOTO] App ID: {app_id}")
+        _log(f"[PROFILE PHOTO] Step 1 OK — App ID: {app_id}")
 
         # Step 2: Create upload session
         upload_resp = requests.post(
@@ -6242,10 +6252,11 @@ def _update_profile_photo_once():
             timeout=15,
         )
         if upload_resp.status_code != 200:
-            print(f"[PROFILE PHOTO] Upload session failed: {upload_resp.text}")
+            _log(f"[PROFILE PHOTO] Step 2 FAIL — upload session: {upload_resp.status_code} {upload_resp.text[:200]}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo Step 2* — upload session failed: `{}`".format(upload_resp.text[:200]))
             return
         session_id = upload_resp.json().get("id")
-        print(f"[PROFILE PHOTO] Upload session: {session_id}")
+        _log(f"[PROFILE PHOTO] Step 2 OK — Upload session: {session_id}")
 
         # Step 3: Upload image binary
         binary_resp = requests.post(
@@ -6259,10 +6270,11 @@ def _update_profile_photo_once():
             timeout=30,
         )
         if binary_resp.status_code != 200:
-            print(f"[PROFILE PHOTO] Binary upload failed: {binary_resp.text}")
+            _log(f"[PROFILE PHOTO] Step 3 FAIL — binary upload: {binary_resp.status_code} {binary_resp.text[:200]}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo Step 3* — binary upload failed: `{}`".format(binary_resp.text[:200]))
             return
         handle = binary_resp.json().get("h")
-        print(f"[PROFILE PHOTO] Got handle: {handle[:30]}...")
+        _log(f"[PROFILE PHOTO] Step 3 OK — Got handle: {handle[:30]}...")
 
         # Step 4: Set profile picture
         profile_resp = requests.post(
@@ -6277,25 +6289,26 @@ def _update_profile_photo_once():
             },
             timeout=15,
         )
-        print(f"[PROFILE PHOTO] Profile update: {profile_resp.status_code} — {profile_resp.text}")
+        _log(f"[PROFILE PHOTO] Step 4: {profile_resp.status_code} — {profile_resp.text[:300]}")
 
         if profile_resp.status_code == 200:
-            # Mark as done so it doesn't re-run this deploy
             with open(flag_file, "w") as f:
                 f.write("done")
-            print("✅ [PROFILE PHOTO] Maya's WhatsApp profile photo updated successfully!")
+            _log("✅ [PROFILE PHOTO] Maya's WhatsApp profile photo updated successfully!")
             _post_to_slack_async(SLACK_DEV_CHANNEL,
                 "✅ *Maya WhatsApp Profile Photo Updated*\n"
-                "New profile photo uploaded via Meta API on boot. "
+                "All 4 steps passed. New profile photo is live.\n"
                 "Remove `maya_profile.jpg` from repo in next cleanup commit."
             )
         else:
-            print(f"❌ [PROFILE PHOTO] Failed: {profile_resp.text}")
+            _log(f"❌ [PROFILE PHOTO] Step 4 FAIL: {profile_resp.text[:300]}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo Step 4* — set profile failed: `{}`".format(profile_resp.text[:300]))
 
     except Exception as e:
-        print(f"❌ [PROFILE PHOTO] Error: {e}")
         import traceback
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        _log(f"❌ [PROFILE PHOTO] Exception: {e}")
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo Exception*\n```{}```".format(tb[:500]))
 
 threading.Thread(target=_update_profile_photo_once, daemon=True).start()
 
