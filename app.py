@@ -6191,6 +6191,116 @@ threading.Thread(target=_post_visit_checker, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
+# ONE-SHOT: UPDATE MAYA WHATSAPP PROFILE PHOTO ON BOOT
+# Reads maya_profile.jpg from repo root, uploads to Meta, sets as profile.
+# Runs once per deploy — skips if already done (/tmp flag) or file missing.
+# ══════════════════════════════════════════════════════════════════════
+
+def _update_profile_photo_once():
+    """One-shot: update Maya's WhatsApp profile photo from repo image."""
+    import time as _time
+    _time.sleep(30)  # Let other threads boot first
+    flag_file = "/tmp/profile_photo_updated"
+    image_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maya_profile.jpg")
+
+    if os.path.exists(flag_file):
+        print("[PROFILE PHOTO] Already updated this deploy — skipping")
+        return
+    if not os.path.exists(image_path):
+        print("[PROFILE PHOTO] maya_profile.jpg not found — skipping")
+        return
+    if not META_ACCESS_TOKEN or not META_PHONE_NUMBER_ID:
+        print("[PROFILE PHOTO] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID — skipping")
+        return
+
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        file_length = len(image_bytes)
+        print(f"[PROFILE PHOTO] Starting upload ({file_length} bytes)...")
+
+        # Step 1: Get app ID
+        app_resp = requests.get(
+            "https://graph.facebook.com/v20.0/app",
+            params={"access_token": META_ACCESS_TOKEN},
+            timeout=10,
+        )
+        if app_resp.status_code != 200:
+            print(f"[PROFILE PHOTO] Failed to get app ID: {app_resp.text}")
+            return
+        app_id = app_resp.json().get("id")
+        print(f"[PROFILE PHOTO] App ID: {app_id}")
+
+        # Step 2: Create upload session
+        upload_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{app_id}/uploads",
+            params={
+                "file_length": file_length,
+                "file_type": "image/jpeg",
+                "access_token": META_ACCESS_TOKEN,
+            },
+            timeout=15,
+        )
+        if upload_resp.status_code != 200:
+            print(f"[PROFILE PHOTO] Upload session failed: {upload_resp.text}")
+            return
+        session_id = upload_resp.json().get("id")
+        print(f"[PROFILE PHOTO] Upload session: {session_id}")
+
+        # Step 3: Upload image binary
+        binary_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{session_id}",
+            headers={
+                "Authorization": f"OAuth {META_ACCESS_TOKEN}",
+                "Content-Type": "image/jpeg",
+                "file_offset": "0",
+            },
+            data=image_bytes,
+            timeout=30,
+        )
+        if binary_resp.status_code != 200:
+            print(f"[PROFILE PHOTO] Binary upload failed: {binary_resp.text}")
+            return
+        handle = binary_resp.json().get("h")
+        print(f"[PROFILE PHOTO] Got handle: {handle[:30]}...")
+
+        # Step 4: Set profile picture
+        profile_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/whatsapp_business_profile",
+            headers={
+                "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "profile_picture_handle": handle,
+            },
+            timeout=15,
+        )
+        print(f"[PROFILE PHOTO] Profile update: {profile_resp.status_code} — {profile_resp.text}")
+
+        if profile_resp.status_code == 200:
+            # Mark as done so it doesn't re-run this deploy
+            with open(flag_file, "w") as f:
+                f.write("done")
+            print("✅ [PROFILE PHOTO] Maya's WhatsApp profile photo updated successfully!")
+            _post_to_slack_async(SLACK_DEV_CHANNEL,
+                "✅ *Maya WhatsApp Profile Photo Updated*\n"
+                "New profile photo uploaded via Meta API on boot. "
+                "Remove `maya_profile.jpg` from repo in next cleanup commit."
+            )
+        else:
+            print(f"❌ [PROFILE PHOTO] Failed: {profile_resp.text}")
+
+    except Exception as e:
+        print(f"❌ [PROFILE PHOTO] Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+threading.Thread(target=_update_profile_photo_once, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # PRE-MEETING BRIEFING — Background Thread (Session 30.14)
 # 1 hour before each studio visit, sends Michael a WhatsApp summary:
 # lead name, business, interests, conversation highlights, suggested approach.
