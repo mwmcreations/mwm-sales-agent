@@ -12063,6 +12063,122 @@ def submit_post_visit_templates():
     return jsonify({"ok": True, "results": results})
 
 
+# ══════════════════════════════════════════════════════════════════════
+# ADMIN: UPDATE WHATSAPP BUSINESS PROFILE PHOTO
+# One-time utility. POST base64-encoded image to update Maya's profile.
+# Auth: BRIEFING_TOKEN.
+# ══════════════════════════════════════════════════════════════════════
+
+@app.route('/admin/update-whatsapp-profile-photo', methods=['POST'])
+def update_whatsapp_profile_photo():
+    """Update Maya's WhatsApp Business profile picture via Meta API.
+
+    POST JSON: {"image_base64": "<base64-encoded PNG/JPEG>", "file_type": "image/png"}
+    Auth: Bearer BRIEFING_TOKEN
+
+    Steps:
+    1. Get app ID from Meta token
+    2. Create resumable upload session
+    3. Upload image binary
+    4. Set profile picture handle on WhatsApp Business Profile
+    """
+    import base64 as _b64
+
+    # Auth check
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if not META_ACCESS_TOKEN or not META_PHONE_NUMBER_ID:
+        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN or META_PHONE_NUMBER_ID not set"}), 500
+
+    data = request.get_json(force=True, silent=True) or {}
+    image_b64 = data.get("image_base64", "")
+    file_type = data.get("file_type", "image/png")
+
+    if not image_b64:
+        return jsonify({"ok": False, "error": "image_base64 is required"}), 400
+
+    try:
+        image_bytes = _b64.b64decode(image_b64)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Invalid base64: {e}"}), 400
+
+    file_length = len(image_bytes)
+    print(f"[PROFILE PHOTO] Received {file_length} bytes ({file_type})")
+
+    try:
+        # Step 1: Get app ID from token
+        app_resp = requests.get(
+            "https://graph.facebook.com/v20.0/app",
+            params={"access_token": META_ACCESS_TOKEN},
+            timeout=10,
+        )
+        if app_resp.status_code != 200:
+            return jsonify({"ok": False, "error": f"Failed to get app ID: {app_resp.text}"}), 500
+        app_id = app_resp.json().get("id")
+        print(f"[PROFILE PHOTO] App ID: {app_id}")
+
+        # Step 2: Create upload session
+        upload_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{app_id}/uploads",
+            params={
+                "file_length": file_length,
+                "file_type": file_type,
+                "access_token": META_ACCESS_TOKEN,
+            },
+            timeout=15,
+        )
+        if upload_resp.status_code != 200:
+            return jsonify({"ok": False, "error": f"Upload session failed: {upload_resp.text}"}), 500
+        session_id = upload_resp.json().get("id")
+        print(f"[PROFILE PHOTO] Upload session: {session_id}")
+
+        # Step 3: Upload image binary
+        binary_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{session_id}",
+            headers={
+                "Authorization": f"OAuth {META_ACCESS_TOKEN}",
+                "Content-Type": file_type,
+                "file_offset": "0",
+            },
+            data=image_bytes,
+            timeout=30,
+        )
+        if binary_resp.status_code != 200:
+            return jsonify({"ok": False, "error": f"Binary upload failed: {binary_resp.text}"}), 500
+        handle = binary_resp.json().get("h")
+        print(f"[PROFILE PHOTO] Got handle: {handle[:30]}...")
+
+        # Step 4: Set profile picture
+        profile_resp = requests.post(
+            f"https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/whatsapp_business_profile",
+            headers={
+                "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "profile_picture_handle": handle,
+            },
+            timeout=15,
+        )
+        print(f"[PROFILE PHOTO] Profile update: {profile_resp.status_code} — {profile_resp.text}")
+
+        if profile_resp.status_code == 200:
+            return jsonify({"ok": True, "message": "Profile photo updated successfully"})
+        else:
+            return jsonify({"ok": False, "error": f"Profile update failed: {profile_resp.text}"}), 500
+
+    except Exception as e:
+        print(f"[PROFILE PHOTO] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")
