@@ -1420,8 +1420,8 @@ SCHEDULING — HOW TO BOOK (apply to ALL channels):
 - If the lead's suggested time IS available, book it immediately — don't present more options.
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options again.
 - Use appointment_type="studio_visit" for in-person visits, "strategy_call" for remote calls.
-- CANCELLATIONS/RESCHEDULING — TWO-STEP RULE: If a lead needs to cancel or reschedule, ALWAYS call cancel_appointment FIRST to remove the old event, THEN offer to rebook. Never book a new slot without cancelling the old one — that leaves a ghost event on Michael's calendar.
-- If a lead wants to RESCHEDULE (not just cancel), first cancel the existing appointment using cancel_appointment, then proceed with get_available_slots to book a new time. NEVER skip the cancel step.
+- CANCELLATIONS/RESCHEDULING — TWO-STEP RULE: If a lead needs to cancel or reschedule, ALWAYS call cancel_appointment FIRST to remove the old event, THEN offer to rebook. Never book a new slot without cancelling the old one — that leaves a ghost event on Michael's calendar. ALWAYS pass event_date when the lead mentions a date/time — this is the most reliable way to find the event.
+- If a lead wants to RESCHEDULE (not just cancel), first cancel the existing appointment using cancel_appointment (with event_date!), then proceed with get_available_slots to book a new time. NEVER skip the cancel step.
 """
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -1589,8 +1589,9 @@ IMPORTANT GUIDELINES
 - If the lead's suggested time is NOT available, apologize and present the 3 pre-loaded options above again
 - CANCELLATIONS AND RESCHEDULING — CRITICAL TWO-STEP RULE:
   ★ STEP 1: ALWAYS call cancel_appointment FIRST to remove the OLD event from the calendar. Do this the MOMENT a lead says they can't make it, need to reschedule, have a conflict, want a different time, or anything indicating they won't attend their existing appointment. Do NOT skip this step. Do NOT just book a new slot without cancelling the old one — that leaves a ghost event on Michael's calendar.
-  ★ STEP 2: THEN offer to rebook. If they already suggested a new time in their message, use check_specific_slot or get_available_slots and book the new time.
-  Example: Lead says "I can't make my appointment, can we do next Tuesday instead?" → FIRST call cancel_appointment (reason: "Lead requested reschedule to next Tuesday"), THEN find and book the new slot.
+  ★ IMPORTANT: When calling cancel_appointment, ALWAYS include the event_date parameter if the lead mentioned a date/time (e.g. "Thursday at 10am" → event_date="2026-06-25T10:00:00"). This is especially critical when the lead's name is unknown — the date is often the only way to find the correct event.
+  ★ STEP 2: THEN offer to rebook. If they already suggested a new time in their message, use check_specific_slot or get_available_slots and book the new time. Be PROACTIVE — if the lead suggests specific dates, immediately check those dates and offer to book. Don't just say "those dates are available" and wait — guide them to pick a time and complete the booking in the same response.
+  Example: Lead says "I can't make my appointment Thursday at 10am, can we do next Tuesday instead?" → FIRST call cancel_appointment (lead_name="Lead Name", cancel_reason="Lead requested reschedule to next Tuesday", event_date="2026-06-25T10:00:00"), THEN find and book the new slot.
   NEVER skip Step 1. Two events for the same lead = a scheduling conflict on Michael's calendar.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
 """
@@ -2250,20 +2251,25 @@ TOOLS = [
         "name": "cancel_appointment",
         "description": (
             "Cancel or remove an existing appointment from Michael's calendar. "
-            "Use this when a lead says they need to cancel, can't make it, or wants to cancel their appointment. "
-            "The system will find the appointment by the lead's name or phone number and cancel it. "
-            "Optionally provide a reason for the cancellation."
+            "Use this when a lead says they need to cancel, can't make it, or wants to cancel/reschedule their appointment. "
+            "The system will find the appointment by the lead's name, phone number, attendee email, OR event date/time and cancel it. "
+            "IMPORTANT: Always provide event_date when the lead mentions a specific date/time (e.g. 'Thursday at 10am'). "
+            "This is especially critical when the lead's name is unknown — the date is the best way to find the event."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "lead_name": {
                     "type": "string",
-                    "description": "The lead's full name (used to find the calendar event)."
+                    "description": "The lead's full name (used to find the calendar event). If unknown, pass the best name you have — even a partial name helps."
                 },
                 "cancel_reason": {
                     "type": "string",
                     "description": "The reason for cancellation provided by the lead."
+                },
+                "event_date": {
+                    "type": "string",
+                    "description": "ISO 8601 date/time of the appointment to cancel, e.g. '2026-06-25T10:00:00'. Use this when the lead mentions a specific date/time like 'Thursday at 10am'. ALWAYS provide this when available — it's the most reliable way to find the right event."
                 }
             },
             "required": ["lead_name", "cancel_reason"]
@@ -2697,14 +2703,16 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         return None
 
 
-def cancel_appointment(sender=None, lead_name="", cancel_reason=""):
+def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date=""):
     """
     Cancel an existing appointment from Michael's Google Calendar.
 
     Strategy:
       1. If lead_data has a stored event_id for this sender, delete that event directly.
-      2. Otherwise, search upcoming calendar events for the lead's name in the summary.
-      3. Delete the matching event and notify Slack + update Google Sheets.
+      2. Search upcoming calendar events for the lead's name in the summary.
+      3. Search by sender's phone number in event description.
+      4. Search by date/time if event_date is provided (handles "Unknown" leads).
+      5. Search by attendee email matching lead_data.
 
     Returns a dict with success/failure info.
     """
@@ -2712,23 +2720,23 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason=""):
         service = get_calendar_service()
         event_id = None
         event_summary = ""
+        found_event = None  # Keep full event for name backfill
 
         # Strategy 1: Use stored event_id from lead_data
         if sender and sender in lead_data and lead_data[sender].get("event_id"):
             event_id = lead_data[sender]["event_id"]
             print(f"[cancel_appointment] Found stored event_id: {event_id}")
             try:
-                event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
-                event_summary = event.get("summary", "Appointment")
+                found_event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+                event_summary = found_event.get("summary", "Appointment")
             except Exception:
                 event_summary = f"Appointment with {lead_name}"
 
-        # Strategy 2: Search calendar by lead name
-        if not event_id and lead_name:
-            print(f"[cancel_appointment] Searching calendar for events matching '{lead_name}'")
+        # Fetch upcoming events for strategies 2-5
+        events = []
+        if not event_id:
             tz = pytz.timezone(TIMEZONE)
             now = datetime.now(tz)
-            # Search upcoming events in the next 60 days
             time_max = now + timedelta(days=60)
             events_result = service.events().list(
                 calendarId=CALENDAR_ID,
@@ -2739,7 +2747,10 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason=""):
             ).execute()
             events = events_result.get("items", [])
 
-            # Find event matching lead name (case-insensitive search in summary + description)
+        # Strategy 2: Search calendar by lead name (skip if name is Unknown/empty)
+        _skip_name = not lead_name or lead_name.lower() in ("unknown", "there", "")
+        if not event_id and not _skip_name:
+            print(f"[cancel_appointment] Searching calendar for events matching '{lead_name}'")
             for ev in events:
                 summary = ev.get("summary", "")
                 description = ev.get("description", "")
@@ -2747,25 +2758,97 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason=""):
                 if lead_name.lower() in search_text:
                     event_id = ev["id"]
                     event_summary = summary
+                    found_event = ev
                     print(f"[cancel_appointment] Found matching event: {event_summary} (ID: {event_id})")
                     break
 
-            # Also try searching by phone number if available
-            if not event_id and sender:
-                clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+        # Strategy 3: Search by phone number in event description
+        if not event_id and sender:
+            clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+            for ev in events:
+                description = ev.get("description", "")
+                if clean_phone in description:
+                    event_id = ev["id"]
+                    event_summary = ev.get("summary", "Appointment")
+                    found_event = ev
+                    print(f"[cancel_appointment] Found event by phone: {event_summary} (ID: {event_id})")
+                    break
+
+        # Strategy 4: Search by attendee email (from lead_data)
+        if not event_id and sender and sender in lead_data:
+            lead_email = lead_data[sender].get("email", "")
+            if lead_email:
+                print(f"[cancel_appointment] Searching by attendee email: {lead_email}")
                 for ev in events:
-                    description = ev.get("description", "")
-                    if clean_phone in description:
-                        event_id = ev["id"]
-                        event_summary = ev.get("summary", "Appointment")
-                        print(f"[cancel_appointment] Found event by phone: {event_summary} (ID: {event_id})")
+                    attendees = ev.get("attendees", [])
+                    for att in attendees:
+                        if att.get("email", "").lower() == lead_email.lower():
+                            event_id = ev["id"]
+                            event_summary = ev.get("summary", "Appointment")
+                            found_event = ev
+                            print(f"[cancel_appointment] Found event by attendee email: {event_summary}")
+                            break
+                    if event_id:
                         break
 
+        # Strategy 5: Search by date/time (handles Unknown leads)
+        if not event_id and event_date:
+            print(f"[cancel_appointment] Searching by date/time: {event_date}")
+            try:
+                tz = pytz.timezone(TIMEZONE)
+                # Parse the date — Maya should pass ISO format e.g. "2026-06-25T10:00:00"
+                target_dt = datetime.fromisoformat(event_date)
+                if target_dt.tzinfo is None:
+                    target_dt = tz.localize(target_dt)
+                # Look for Studio Visit events within 2 hours of the target time
+                for ev in events:
+                    start = ev.get("start", {})
+                    start_str = start.get("dateTime", "")
+                    if not start_str:
+                        continue
+                    ev_start = datetime.fromisoformat(start_str)
+                    if ev_start.tzinfo is None:
+                        ev_start = tz.localize(ev_start)
+                    time_diff = abs((ev_start - target_dt).total_seconds())
+                    # Match: within 2 hours AND looks like a studio visit (not recurring tasks)
+                    summary = ev.get("summary", "")
+                    is_visit = any(kw in summary.lower() for kw in ("studio visit", "visit", "walk", "meeting", "consultation"))
+                    if time_diff <= 7200 and is_visit:
+                        event_id = ev["id"]
+                        event_summary = summary
+                        found_event = ev
+                        print(f"[cancel_appointment] Found event by date match: {event_summary} (ID: {event_id})")
+                        break
+                    # Exact time match even without visit keywords
+                    if time_diff <= 60:
+                        event_id = ev["id"]
+                        event_summary = summary
+                        found_event = ev
+                        print(f"[cancel_appointment] Found event by exact time match: {event_summary}")
+                        break
+            except Exception as date_err:
+                print(f"[cancel_appointment] Date parse error: {date_err}")
+
+        # Backfill lead name from the found event if lead is "Unknown"
+        if found_event and sender and sender in lead_data:
+            stored_name = lead_data[sender].get("name", "")
+            if not stored_name or stored_name.lower() in ("unknown", "there", ""):
+                # Extract name from event description ("Lead: Firstname Lastname")
+                desc = found_event.get("description", "")
+                import re as _re
+                name_match = _re.search(r"Lead:\s*(.+?)(?:\n|$)", desc)
+                if name_match:
+                    real_name = name_match.group(1).strip()
+                    lead_data[sender]["name"] = real_name
+                    print(f"[cancel_appointment] Backfilled lead name: '{real_name}' (was '{stored_name}')")
+                    if not lead_name or lead_name.lower() in ("unknown", "there", ""):
+                        lead_name = real_name
+
         if not event_id:
-            print(f"[cancel_appointment] No matching event found for {lead_name} / {sender}")
+            print(f"[cancel_appointment] No matching event found for {lead_name} / {sender} / date:{event_date}")
             return {
                 "success": False,
-                "error": f"Could not find an upcoming appointment for {lead_name}. The appointment may have already been cancelled or may not exist in the system."
+                "error": f"Could not find an upcoming appointment for {lead_name}. Try providing the appointment date/time (e.g. 'Thursday at 10am'). The appointment may have already been cancelled or may not exist in the system."
             }
 
         # Delete the calendar event
@@ -2965,10 +3048,22 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             try:
                 appt_type  = tool_input.get("appointment_type", "studio_visit")
                 hub_event  = "booking_confirmed_tour" if appt_type == "studio_visit" else "booking_confirmed_call"
-                # Mark lead as booked and store event_id for cancellation support
+                # Mark lead as booked and store event_id + lead details for cancellation support
                 if sender and sender in lead_data:
                     lead_data[sender]["booked"] = True
                     lead_data[sender]["event_id"] = event_id
+                    # Backfill lead name/email/business from booking — fixes "Unknown" leads
+                    _book_name = tool_input.get("lead_name", "").strip()
+                    _book_email = tool_input.get("lead_email", "").strip()
+                    _book_biz = tool_input.get("lead_business", "").strip()
+                    if _book_name and (not lead_data[sender].get("name") or lead_data[sender].get("name", "").lower() in ("unknown", "there", "")):
+                        lead_data[sender]["name"] = _book_name
+                        print(f"[book_appointment] Backfilled lead name: {_book_name}")
+                    if _book_email and not lead_data[sender].get("email"):
+                        lead_data[sender]["email"] = _book_email
+                        print(f"[book_appointment] Backfilled lead email: {_book_email}")
+                    if _book_biz and not lead_data[sender].get("business"):
+                        lead_data[sender]["business"] = _book_biz
                 fire_hub_event(
                     event_type  = hub_event,
                     lead_name   = tool_input.get("lead_name"),
@@ -3011,7 +3106,8 @@ def handle_tool_call(tool_name, tool_input, sender=None):
         return cancel_appointment(
             sender=sender,
             lead_name=tool_input.get("lead_name", ""),
-            cancel_reason=tool_input.get("cancel_reason", "No reason provided")
+            cancel_reason=tool_input.get("cancel_reason", "No reason provided"),
+            event_date=tool_input.get("event_date", "")
         )
 
     return {"error": f"Unknown tool: {tool_name}"}
@@ -9613,12 +9709,16 @@ WEB_CHAT_TOOLS = [
     },
     {
         "name": "cancel_appointment",
-        "description": "Cancel an existing appointment from Michael's calendar.",
+        "description": (
+            "Cancel an existing appointment from Michael's calendar. "
+            "IMPORTANT: Always provide event_date when the lead mentions a specific date/time."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "lead_name": {"type": "string", "description": "The lead's full name."},
-                "cancel_reason": {"type": "string", "description": "Reason for cancellation."}
+                "cancel_reason": {"type": "string", "description": "Reason for cancellation."},
+                "event_date": {"type": "string", "description": "ISO 8601 date/time of the appointment, e.g. '2026-06-25T10:00:00'. Always provide when available."}
             },
             "required": ["lead_name", "cancel_reason"]
         }
@@ -9733,7 +9833,8 @@ def _handle_web_tool_call(tool_name, tool_input):
         return cancel_appointment(
             sender=None,
             lead_name=tool_input.get("lead_name", ""),
-            cancel_reason=tool_input.get("cancel_reason", "No reason provided")
+            cancel_reason=tool_input.get("cancel_reason", "No reason provided"),
+            event_date=tool_input.get("event_date", "")
         )
     return {"error": f"Unknown tool: {tool_name}"}
 
