@@ -10050,6 +10050,8 @@ def health_check():
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    response.headers["Surrogate-Control"] = "no-store"  # Railway CDN edge proxy
+    response.headers["Vary"] = "*"  # Force proxy to treat every request as unique
     return response, status_code
 
 
