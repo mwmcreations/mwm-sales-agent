@@ -10394,11 +10394,13 @@ def health_check():
     overall = "healthy" if (all_threads_ok and all_keys_ok) else "degraded"
     status_code = 200 if overall == "healthy" else 503
 
+    import uuid as _uuid_health
     response = jsonify({
         "status": overall,
         "threads": thread_health,
         "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
+        "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
         "lead_count": len(lead_data),
         "active_conversations": len(conversation_history),
         "pipeline_stats": _get_pipeline_stats(),
@@ -11252,6 +11254,9 @@ def _sync_pipeline_canvas():
     )
     if _edit_canvas_section(_CANVAS_SECTIONS["status_line"], status_md):
         success_count += 1
+        print(f"[CANVAS SYNC] ✅ Section 1 (status_line) updated — timestamp now reads {now_str}")
+    else:
+        print(f"[CANVAS SYNC] ❌ Section 1 (status_line) FAILED — canvas may have stale timestamp")
 
     # ── 2. Quick Stats ──
     conv_rate = f"{(converted_month / total * 100):.0f}%" if total > 0 else "—"
@@ -11332,7 +11337,7 @@ def _sync_pipeline_canvas():
         success_count += 1
 
     # ── 5. System Status ──
-    hb = thread_heartbeats
+    hb = _thread_heartbeats
     def _status(name):
         ts = hb.get(name)
         if not ts:
@@ -11372,9 +11377,11 @@ def _pipeline_canvas_sync_loop():
     _time.sleep(60)  # Wait 60s after boot for lead_data to load
     while True:
         try:
-            _heartbeat("pipeline_canvas_sync")
-            _sync_pipeline_canvas()
+            result = _sync_pipeline_canvas()
+            _heartbeat("pipeline_canvas_sync")  # heartbeat AFTER sync — only marks healthy if sync completes
+            print(f"[CANVAS SYNC] Heartbeat updated — {result}/5 sections written")
         except Exception as exc:
+            print(f"[CANVAS SYNC] ❌ Sync FAILED — heartbeat NOT updated (will show stale in /health)")
             print(f"[CANVAS SYNC] Error: {exc}")
             traceback.print_exc()
         _time.sleep(1800)  # Every 30 minutes
