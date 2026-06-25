@@ -4810,14 +4810,33 @@ def clean_response(text):
 # CLAUDE API WITH TOOL USE
 # âââââââââââââââââââââââââââââââââââââââââââââ
 
-def get_claude_reply(messages, sender=None, lead_context=None, is_owner=False):
+def get_claude_reply(messages, sender=None, lead_context=None, is_owner=False, channel=None):
     """
     Call Claude (Maya) with tool use support.
     Loops until Claude returns a final text response (no more tool calls).
     Returns the final text reply and updated messages list.
+
+    channel: Optional — "instagram" for IG DM leads. Injects channel-aware prompt layer.
     """
     # —— Build system prompt with security context ——
     _sys = get_system_prompt()
+
+    # —— Channel-aware prompt layer (Session 38) ——
+    if channel == "instagram":
+        _sys += """
+
+--- CHANNEL: INSTAGRAM DM ---
+You are responding to a lead who messaged you on Instagram DM. Adjust your behavior accordingly:
+
+1. DISCOVERY SOURCE: This person found MWM Creations through Instagram. Reference their interest in your work on social media naturally (e.g., "Thanks for reaching out on Instagram! I love connecting with people who've seen our work there.").
+2. NO VOICE NOTES: Instagram DM does not support voice messages. Never suggest sending a voice note or refer to audio capabilities.
+3. LINKS: Keep links minimal. Instead of pasting long URLs, say things like "check the link in our bio" for the website, or "I can send you the booking page" when they're ready.
+4. MEDIA: You can share studio photos. Feel free to offer to show them your work when relevant.
+5. TONE: Instagram leads tend to be younger and more visual-oriented. Keep the tone friendly and warm but still professional. Use natural, conversational language.
+6. USERNAME: If you know their Instagram username, you may reference it naturally (e.g., "Hey [name]!") but don't overdo it.
+7. RESPONSE LENGTH: Keep messages concise — IG DM conversations tend to be shorter and punchier than WhatsApp. Avoid long paragraphs. Break up information into multiple short messages if needed.
+8. BOOKING: When they're ready to book, use the book_appointment tool as you normally would. The booking flow is the same regardless of channel.
+"""
     if lead_context:
         _sys += f"\n\n--- LEAD CONTEXT ---\nThis person has prior history with MWM Creations. Here is what we know about them:\n{lead_context}\nUse this context to personalize your greeting and conversation. Reference their name, interests, or prior contact naturally. Do NOT treat them as a cold stranger."
     if not is_owner:
@@ -6179,21 +6198,35 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
         ig_conversation_history[sender] = []
     ig_conversation_history[sender].append({"role": "user", "content": incoming_msg})
 
-    # ── Lead data init ──
+    # ── Lead data init + IG profile auto-lookup ──
     if sender not in lead_data:
         lead_data[sender] = {
             "source": "Instagram",
             "channel": "Instagram DM",
             "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
         }
+        # Fetch IG profile on first contact — get name + username automatically
+        try:
+            _ig_profile = _fetch_ig_profile(sender_id)
+            if _ig_profile.get("name"):
+                lead_data[sender]["name"] = _ig_profile["name"]
+                print(f"[IG DM] Auto-populated lead name: {_ig_profile['name']}")
+            if _ig_profile.get("username"):
+                lead_data[sender]["ig_username"] = _ig_profile["username"]
+                print(f"[IG DM] Auto-populated IG username: @{_ig_profile['username']}")
+        except Exception as _prof_err:
+            print(f"⚠️ IG profile auto-lookup error (non-fatal): {_prof_err}")
     lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
     lead_data[sender]["channel"] = "Instagram DM"  # ensure channel tag even for existing leads
 
     # ── Lead context lookup ──
     _lead_ctx = ""
     try:
-        # IG leads may not have a phone number in Sheets yet — lookup by IGSID
-        _lead_ctx = ""  # Sheets lookup is phone-based; IG leads use IGSID. Skip for now.
+        _ld = lead_data.get(sender, {})
+        _ig_name = _ld.get("name", "")
+        _ig_user = _ld.get("ig_username", "")
+        if _ig_name or _ig_user:
+            _lead_ctx = f"Instagram user: {_ig_name}" + (f" (@{_ig_user})" if _ig_user else "")
     except Exception:
         pass
 
@@ -6259,7 +6292,7 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
     # ── Process with Maya (Claude) and reply via IG DM ──
     def process_maya_ig(snap, sndr, ig_sender_id, ctx="", identity=None):
         try:
-            reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx, is_owner=False)
+            reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx, is_owner=False, channel="instagram")
             ig_conversation_history[sndr] = updated_history
 
             # Extract lead info from Maya's reply
@@ -6351,6 +6384,31 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
     ).start()
 
 
+def _fetch_ig_profile(igsid: str) -> dict:
+    """Fetch an Instagram user's profile via the Graph API.
+
+    Returns dict with 'name' and 'username' keys (empty strings on failure).
+    Called once per new sender to auto-populate lead_data instead of 'Unknown'.
+    """
+    token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+    if not token:
+        print("[IG Profile] No access token — skipping profile lookup")
+        return {"name": "", "username": ""}
+    try:
+        url = f"https://graph.facebook.com/v19.0/{igsid}"
+        params = {"fields": "name,username", "access_token": token}
+        resp = http_requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        _name = data.get("name", "")
+        _username = data.get("username", "")
+        print(f"[IG Profile] {igsid} → name={_name!r}, username=@{_username}")
+        return {"name": _name, "username": _username}
+    except Exception as e:
+        print(f"⚠️ IG profile lookup failed for {igsid} (non-fatal): {e}")
+        return {"name": "", "username": ""}
+
+
 def _build_ig_sender_identity(igsid: str) -> dict:
     """Construct a sender_identity dict for Instagram DM leads.
 
@@ -6360,16 +6418,20 @@ def _build_ig_sender_identity(igsid: str) -> dict:
     ld = lead_data.get(sender_key) or {}
     name = ld.get("name") or "Unknown lead"
     email = ld.get("email") or ""
+    ig_username = ld.get("ig_username", "")
 
     _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
     is_michael = bool(_michael_ig_id and igsid == _michael_ig_id)
 
+    # Build display phone — show @username if available, otherwise IG:IGSID
+    _display_id = f"@{ig_username}" if ig_username else f"IG:{igsid}"
+
     return {
         "name": name,
-        "phone": f"IG:{igsid}",  # Use IG: prefix for shadow thread display
+        "phone": _display_id,
         "role": "lead",
         "is_michael": is_michael,
-        "client_info": {"email": email} if email else {},
+        "client_info": {"email": email, "ig_username": ig_username} if (email or ig_username) else {},
         "channel": "Instagram DM",
     }
 
