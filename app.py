@@ -57,8 +57,9 @@ INSTAGRAM_PAGE_ID = os.getenv("INSTAGRAM_PAGE_ID", "")
 # IG_VERIFY_TOKEN — Webhook verification token for Instagram webhooks.
 # Can be the same as WEBHOOK_VERIFY_TOKEN or separate for security isolation.
 IG_VERIFY_TOKEN = os.getenv("IG_VERIFY_TOKEN", "") or WEBHOOK_VERIFY_TOKEN
-# META_PAGE_ACCESS_TOKEN is reused for Instagram DM API (same Graph API infrastructure).
-# The Page token must have `instagram_manage_messages` permission (requires Meta App Review).
+# INSTAGRAM_ACCESS_TOKEN — Dedicated IG token with instagram_business_manage_messages permission.
+# Falls back to META_PAGE_ACCESS_TOKEN if not set (same Graph API infrastructure).
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "") or META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
 
 # Instagram conversation history per user (in-memory).
 # Keyed by `instagram:<IGSID>`. Independent from WhatsApp's conversation_history
@@ -137,9 +138,9 @@ def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None
     if not INSTAGRAM_PAGE_ID:
         print("[IG DM] INSTAGRAM_PAGE_ID not configured — cannot send")
         return None
-    token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+    token = INSTAGRAM_ACCESS_TOKEN
     if not token:
-        print("[IG DM] No access token configured — cannot send")
+        print("[IG DM] No access token configured (INSTAGRAM_ACCESS_TOKEN) — cannot send")
         return None
 
     # Strip Slack "Sent using Claude/Cowork" suffix before sending
@@ -10883,6 +10884,7 @@ def health_check():
         "META_ACCESS_TOKEN": bool(os.getenv("META_ACCESS_TOKEN", "")),
         "META_PAGE_ACCESS_TOKEN": bool(os.getenv("META_PAGE_ACCESS_TOKEN", "")),
         "INSTAGRAM_PAGE_ID": bool(os.getenv("INSTAGRAM_PAGE_ID", "")),  # IG DM Phase 1
+        "INSTAGRAM_ACCESS_TOKEN": bool(os.getenv("INSTAGRAM_ACCESS_TOKEN", "")),  # IG DM token
         # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
     }
     all_keys_ok = all(api_keys.values())
