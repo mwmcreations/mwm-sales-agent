@@ -50,6 +50,25 @@ META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
 LARA_PHONE_NUMBER_ID = os.getenv("LARA_PHONE_NUMBER_ID", "")
 WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "mwm-maya-verify-2026")
 
+# ── Instagram DM Configuration (Session 38 — Phase 1: IG DM for US leads) ────
+# INSTAGRAM_PAGE_ID — The Facebook Page ID connected to the Instagram Business account.
+# Instagram Messaging API sends/receives via the Page. Required for sending DMs.
+INSTAGRAM_PAGE_ID = os.getenv("INSTAGRAM_PAGE_ID", "")
+# IG_VERIFY_TOKEN — Webhook verification token for Instagram webhooks.
+# Can be the same as WEBHOOK_VERIFY_TOKEN or separate for security isolation.
+IG_VERIFY_TOKEN = os.getenv("IG_VERIFY_TOKEN", "") or WEBHOOK_VERIFY_TOKEN
+# META_PAGE_ACCESS_TOKEN is reused for Instagram DM API (same Graph API infrastructure).
+# The Page token must have `instagram_manage_messages` permission (requires Meta App Review).
+
+# Instagram conversation history per user (in-memory).
+# Keyed by `instagram:<IGSID>`. Independent from WhatsApp's conversation_history
+# so the two channels don't pollute each other's context.
+ig_conversation_history = {}
+
+# Instagram shadow threads (for #maya-shadow logging).
+# Keyed by IGSID digits → Slack thread_ts
+ig_shadow_threads = {}
+
 
 def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
                        phone_number_id: str = None):
@@ -100,6 +119,78 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
                     "WhatsApp Send Failed",
                     f"Could not send message to {phone} after 3 attempts: {e}",
                     lead_info=f"Phone: {phone}",
+                    severity="CRITICAL"
+                )
+    return None
+
+
+def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None):
+    """Send an Instagram DM via Meta's Instagram Messaging API (Graph API).
+
+    Uses the same META_PAGE_ACCESS_TOKEN as WhatsApp — both go through the
+    Facebook Page linked to the Instagram Business account.
+
+    recipient_id: The Instagram-scoped User ID (IGSID) of the recipient.
+    body: Text message to send.
+    media_url: URL of image/video to attach (optional).
+    """
+    if not INSTAGRAM_PAGE_ID:
+        print("[IG DM] INSTAGRAM_PAGE_ID not configured — cannot send")
+        return None
+    token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+    if not token:
+        print("[IG DM] No access token configured — cannot send")
+        return None
+
+    # Strip Slack "Sent using Claude/Cowork" suffix before sending
+    if body:
+        body = re.sub(r"\s*\*?Sent using\s*\*?\s+\w+\s*$", "", body, flags=re.IGNORECASE).strip()
+
+    url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_PAGE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    if media_url:
+        # Image attachment
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {
+                "attachment": {
+                    "type": "image",
+                    "payload": {"url": media_url, "is_reusable": True}
+                }
+            }
+        }
+    else:
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": body or ""}
+        }
+
+    import time as _time_ig
+    last_err = None
+    for _attempt in range(3):
+        try:
+            resp = http_requests.post(url, json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            print(f"✅ Instagram DM sent to {recipient_id}")
+            return resp.json()
+        except Exception as e:
+            last_err = e
+            if hasattr(e, "response") and e.response is not None:
+                print(f"   Response: {e.response.text}")
+            if _attempt < 2:
+                _wait = (2 ** _attempt) * 0.5
+                print(f"⚠️ IG DM attempt {_attempt + 1}/3 failed: {e} — retrying in {_wait}s")
+                _time_ig.sleep(_wait)
+            else:
+                print(f"❌ IG DM all 3 attempts failed: {e}")
+                _notify_error_to_dev(
+                    "Instagram DM Send Failed",
+                    f"Could not send IG DM to {recipient_id} after 3 attempts: {e}",
+                    lead_info=f"IGSID: {recipient_id}",
                     severity="CRITICAL"
                 )
     return None
@@ -5941,6 +6032,348 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
 
         threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx, maya_identity, is_michael), daemon=True).start()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INSTAGRAM DM WEBHOOK — Session 38: Phase 1 IG DM for US leads
+# Same Maya brain, different front door. Uses Instagram Messaging API (Graph API)
+# via the Facebook Page connected to @mwmcreations Instagram Business account.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/webhook/instagram", methods=["GET", "POST"])
+def webhook_instagram():
+    """Instagram Messaging API webhook — verification + incoming DM handler."""
+
+    # ── GET: Meta webhook verification (same pattern as WhatsApp) ──
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == IG_VERIFY_TOKEN:
+            print("✅ Instagram webhook verified by Meta")
+            return challenge, 200
+        return "Forbidden", 403
+
+    # ── POST: Incoming Instagram DM ──
+    data = request.get_json(force=True, silent=True) or {}
+
+    # Instagram messaging webhooks arrive with object="instagram"
+    if data.get("object") != "instagram":
+        return "OK", 200
+
+    for entry in data.get("entry", []):
+        # Instagram DM events arrive under "messaging"
+        for messaging_event in entry.get("messaging", []):
+            sender_id = messaging_event.get("sender", {}).get("id", "")
+            recipient_id = messaging_event.get("recipient", {}).get("id", "")
+
+            # Skip echo messages (messages sent BY the page)
+            if sender_id == INSTAGRAM_PAGE_ID:
+                continue
+
+            # Skip delivery/read receipts
+            if "delivery" in messaging_event or "read" in messaging_event:
+                continue
+
+            # Extract message content
+            message = messaging_event.get("message", {})
+            if not message:
+                # Could be a postback (button click) — handle those too
+                postback = messaging_event.get("postback", {})
+                if postback:
+                    incoming_msg = postback.get("title", "") or postback.get("payload", "")
+                    print(f"[IG DM] Postback from {sender_id}: {incoming_msg!r}")
+                else:
+                    continue
+            else:
+                incoming_msg = message.get("text", "").strip()
+                # Handle attachments (images, etc.)
+                attachments = message.get("attachments", [])
+                if not incoming_msg and attachments:
+                    # Lead sent an image/file without text
+                    att_type = attachments[0].get("type", "")
+                    print(f"[IG DM] Attachment ({att_type}) from {sender_id} — no text")
+                    send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+                    continue
+
+                # Handle story replies/mentions
+                if message.get("is_echo"):
+                    continue
+
+                # Story reply — extract the story context
+                reply_to = message.get("reply_to", {})
+                if reply_to and reply_to.get("story"):
+                    incoming_msg = f"[Replied to your Instagram story] {incoming_msg}" if incoming_msg else "[Replied to your Instagram story]"
+
+            if not incoming_msg:
+                continue
+
+            print(f"[IG DM] Message from {sender_id}: {incoming_msg!r}")
+
+            # Route to Maya handler in background thread
+            threading.Thread(
+                target=_handle_incoming_instagram,
+                args=(sender_id, incoming_msg),
+                daemon=True
+            ).start()
+
+    return "OK", 200
+
+
+def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
+    """Process an incoming Instagram DM — same Maya brain, IG channel.
+
+    Mirrors _handle_incoming() for WhatsApp but adapted for IG:
+    - Uses `instagram:<IGSID>` as the sender key (parallel to `whatsapp:+<phone>`)
+    - Sends replies via send_instagram_dm() instead of send_whatsapp_meta()
+    - Logs to #maya-shadow with [IG] prefix for channel visibility
+    - Tracks channel="Instagram" in lead_data and pipeline events
+    - No voice note support (IG DM doesn't support audio messages the same way)
+    - No WhatsApp interactive lists (IG uses quick replies or plain text)
+    """
+    sender = f"instagram:{sender_id}"
+
+    # ── Michael detection (by IG user ID if configured) ──
+    _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
+    is_michael = bool(_michael_ig_id and sender_id == _michael_ig_id)
+
+    if is_michael:
+        print(f"[IG DM] Michael detected — skipping lead flow")
+        # For now, just echo back. Michael command mode for IG can be added later.
+        send_instagram_dm(sender_id, body="Hey Michael! IG DM command mode coming soon. Use WhatsApp for now. 🚀")
+        return
+
+    # ── Re-engagement QUICK_REPLY handling ──
+    _msg_lower = (incoming_msg or "").strip().lower()
+    if _msg_lower == "not right now":
+        send_instagram_dm(sender_id, body="No problem at all! We're here whenever you're ready. Feel free to message us anytime.")
+        return
+    if _msg_lower == "schedule a call":
+        incoming_msg = "I'd like to schedule a call with MWM Creations please."
+    elif _msg_lower == "visit the studio":
+        incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
+
+    # ── Human escalation detection ──
+    try:
+        _escalation_phrases = [
+            "talk to a real person", "speak to someone", "speak to a human",
+            "talk to a human", "real person", "talk to someone real",
+            "speak to a manager", "talk to the owner", "want a human",
+            "not a bot", "are you a bot", "are you real", "you're a bot",
+            "i want to talk to michael", "can i speak to michael",
+        ]
+        if any(phrase in _msg_lower for phrase in _escalation_phrases):
+            _ld = lead_data.get(sender, {})
+            _notify_escalation_to_matt(
+                _ld.get("name", "Unknown"),
+                sender_id,
+                f"[IG DM] Lead used escalation phrase: \"{incoming_msg[:100]}\"",
+                conversation_snippet=incoming_msg[:300]
+            )
+            print(f"[IG DM ESCALATION] Flagged {sender_id} to Matt")
+    except Exception as _esc_err:
+        print(f"⚠️ IG DM escalation detection error (non-fatal): {_esc_err}")
+
+    # ── Conversation history ──
+    is_new_sender = sender not in ig_conversation_history
+    if is_new_sender:
+        ig_conversation_history[sender] = []
+    ig_conversation_history[sender].append({"role": "user", "content": incoming_msg})
+
+    # ── Lead data init ──
+    if sender not in lead_data:
+        lead_data[sender] = {
+            "source": "Instagram",
+            "channel": "Instagram DM",
+            "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
+        }
+    lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
+    lead_data[sender]["channel"] = "Instagram DM"  # ensure channel tag even for existing leads
+
+    # ── Lead context lookup ──
+    _lead_ctx = ""
+    try:
+        # IG leads may not have a phone number in Sheets yet — lookup by IGSID
+        _lead_ctx = ""  # Sheets lookup is phone-based; IG leads use IGSID. Skip for now.
+    except Exception:
+        pass
+
+    # ── Pipeline event: NEW_LEAD ──
+    try:
+        if is_new_sender:
+            _ld = lead_data.get(sender, {})
+            _post_pipeline_event(
+                "NEW_LEAD",
+                lead_name=_ld.get("name", ""),
+                lead_phone=sender,
+                source="Instagram DM",
+                new_stage="New",
+                assigned_agents=["Maya", "Eric"],
+                context=f"[IG DM] First message: {incoming_msg[:200]}"
+            )
+            # Log first contact to Sheets (IG DM source)
+            try:
+                log_new_contact_to_sheets(sender)
+            except Exception as e:
+                print(f"⚠️ IG DM first-contact Sheets log error (non-fatal): {e}")
+    except Exception as _pipe_err:
+        print(f"⚠️ IG DM pipeline event error (non-fatal): {_pipe_err}")
+
+    # ── Lead scoring ──
+    try:
+        _new_score = _calculate_lead_score(sender, incoming_msg)
+        _temp = lead_data.get(sender, {}).get("temperature", "")
+        print(f"[IG DM Score] {sender}: {_new_score}/100 ({_temp})")
+    except Exception as _score_err:
+        print(f"⚠️ IG DM lead scoring error (non-fatal): {_score_err}")
+
+    # ── Email extraction from message ──
+    try:
+        if is_new_sender and not lead_data.get(sender, {}).get("email"):
+            _email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', incoming_msg)
+            if _email_match:
+                _early_email = _email_match.group(0).strip().rstrip('.')
+                lead_data[sender]["email"] = _early_email
+                print(f"[IG DM Early Extract] Email: {_early_email}")
+            _name_match = re.search(r'[Ff]ull\s*[Nn]ame:\s*(.+)', incoming_msg)
+            if _name_match:
+                _early_name = _name_match.group(1).strip()
+                if _early_name:
+                    lead_data[sender]["name"] = _early_name
+                    print(f"[IG DM Early Extract] Name: {_early_name}")
+    except Exception:
+        pass
+
+    if len(ig_conversation_history[sender]) > 20:
+        ig_conversation_history[sender] = ig_conversation_history[sender][-20:]
+
+    history_snapshot = list(ig_conversation_history[sender])
+
+    # ── Shadow mode: mirror inbound to #maya-shadow ──
+    ig_identity = None
+    try:
+        ig_identity = _build_ig_sender_identity(sender_id)
+        _mirror_to_maya_shadow_async(ig_identity, "inbound", f"[IG DM] {incoming_msg}")
+    except Exception as _shadow_err:
+        print(f"⚠️ IG DM shadow mode error (non-fatal): {_shadow_err}")
+
+    # ── Process with Maya (Claude) and reply via IG DM ──
+    def process_maya_ig(snap, sndr, ig_sender_id, ctx="", identity=None):
+        try:
+            reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx, is_owner=False)
+            ig_conversation_history[sndr] = updated_history
+
+            # Extract lead info from Maya's reply
+            try:
+                lead_info = extract_lead(reply)
+                if lead_info:
+                    log_lead(lead_info, sender=sndr, history=updated_history)
+                    try:
+                        fields = _parse_lead_fields(lead_info)
+                        if sndr not in lead_data:
+                            lead_data[sndr] = {}
+                        lead_data[sndr].update({
+                            "name": fields.get("name", lead_data[sndr].get("name", "")),
+                            "email": fields.get("email", lead_data[sndr].get("email", "")),
+                        })
+                        # Update identity for shadow thread
+                        if identity and fields.get("name"):
+                            identity["name"] = fields["name"]
+                        if identity and fields.get("email"):
+                            identity["client_info"] = {"email": fields["email"]}
+
+                        # ── Email Capture Dynamic Upgrade (same as WhatsApp flow) ──
+                        _new_email = fields.get("email", "")
+                        _had_email_before = bool(lead_data[sndr].get("_email_notified"))
+                        if _new_email and not _had_email_before:
+                            lead_data[sndr]["_email_notified"] = True
+                            _lead_nm = fields.get("name") or lead_data[sndr].get("name", "Unknown")
+                            _send_welcome_email_async(_new_email, _lead_nm, source="Instagram DM (email captured)")
+                            _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                                f"*EMAIL CAPTURED — Routing Upgrade [IG DM]*\n"
+                                f"Lead: {_lead_nm}\n"
+                                f"Email: {_new_email}\n"
+                                f"Source: Instagram DM\n"
+                                f"Welcome email: Sent automatically\n"
+                                f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.*\n"
+                                f"Action: Send a personalized follow-up based on their conversation (after 24hr wait)"
+                            )
+                            _post_to_slack_async(SLACK_LARA_CHANNEL,
+                                f"*EMAIL CAPTURED — CRM Update [IG DM]*\n"
+                                f"Lead: {_lead_nm}\n"
+                                f"Email: {_new_email}\n"
+                                f"IG ID: {ig_sender_id}\n"
+                                f"Action: Update CRM record, begin email follow-up"
+                            )
+                            _post_pipeline_event(
+                                "STAGE_CHANGE",
+                                lead_name=_lead_nm,
+                                lead_phone=sndr,
+                                source="Instagram DM",
+                                old_stage="No-Email Track",
+                                new_stage="Full Track (Email Captured)",
+                                assigned_agents=["Maya", "Susan", "Eric", "LARA"],
+                                context=f"[IG DM] Email {_new_email} captured. Full agent track now active.",
+                            )
+                    except Exception:
+                        pass
+            except Exception as lead_err:
+                print(f"⚠️ IG DM lead logging error (non-fatal): {lead_err}")
+
+            # Clean and send reply
+            send_photos = "[SEND_STUDIO_PHOTOS]" in reply
+            clean_reply = clean_response(reply)
+        except Exception as e:
+            print(f"❌ IG DM Maya error: {e}")
+            clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
+            send_photos = False
+
+        # Send reply via Instagram DM
+        send_instagram_dm(ig_sender_id, body=clean_reply)
+        print(f"✅ Maya IG DM reply sent to {ig_sender_id}")
+
+        # Shadow mode: mirror outbound reply
+        if identity is not None:
+            _mirror_to_maya_shadow_async(identity, "outbound", f"[IG DM] {clean_reply}")
+
+        # Send studio photos if requested by Maya
+        if send_photos:
+            try:
+                for photo_url in STUDIO_PHOTOS:
+                    send_instagram_dm(ig_sender_id, media_url=photo_url)
+                print(f"✅ Studio photos sent via IG DM to {ig_sender_id}")
+            except Exception as photo_err:
+                print(f"⚠️ IG DM studio photos error (non-fatal): {photo_err}")
+
+    threading.Thread(
+        target=process_maya_ig,
+        args=(history_snapshot, sender, sender_id, _lead_ctx, ig_identity),
+        daemon=True
+    ).start()
+
+
+def _build_ig_sender_identity(igsid: str) -> dict:
+    """Construct a sender_identity dict for Instagram DM leads.
+
+    Similar to _build_maya_sender_identity but uses IGSID instead of phone.
+    """
+    sender_key = f"instagram:{igsid}"
+    ld = lead_data.get(sender_key) or {}
+    name = ld.get("name") or "Unknown lead"
+    email = ld.get("email") or ""
+
+    _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
+    is_michael = bool(_michael_ig_id and igsid == _michael_ig_id)
+
+    return {
+        "name": name,
+        "phone": f"IG:{igsid}",  # Use IG: prefix for shadow thread display
+        "role": "lead",
+        "is_michael": is_michael,
+        "client_info": {"email": email} if email else {},
+        "channel": "Instagram DM",
+    }
+
+
 @app.route("/send-intro", methods=["POST"])
 def send_intro():
     """
@@ -10387,6 +10820,7 @@ def health_check():
         "SLACK_BOT_TOKEN": bool(os.getenv("SLACK_BOT_TOKEN", "")),
         "META_ACCESS_TOKEN": bool(os.getenv("META_ACCESS_TOKEN", "")),
         "META_PAGE_ACCESS_TOKEN": bool(os.getenv("META_PAGE_ACCESS_TOKEN", "")),
+        "INSTAGRAM_PAGE_ID": bool(os.getenv("INSTAGRAM_PAGE_ID", "")),  # IG DM Phase 1
         # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
     }
     all_keys_ok = all(api_keys.values())
@@ -10403,6 +10837,8 @@ def health_check():
         "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
         "lead_count": len(lead_data),
         "active_conversations": len(conversation_history),
+        "ig_dm_conversations": len(ig_conversation_history),
+        "ig_dm_enabled": bool(INSTAGRAM_PAGE_ID),
         "pipeline_stats": _get_pipeline_stats(),
         "profile_photo_updated": os.path.exists("/tmp/profile_photo_updated"),
     })
