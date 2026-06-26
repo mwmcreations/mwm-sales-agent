@@ -11576,15 +11576,73 @@ threading.Thread(target=_system_monitor, daemon=True).start()
 #   volatile lead_data (which resets to {} on every Railway deploy).
 # ══════════════════════════════════════════════════════════════════════
 
-# Canvas section IDs (from slack_read_canvas)
+# Canvas section IDs (updated Jun 26 2026 via slack_read_canvas).
+# Slack temp: section IDs can change if the canvas is edited through the
+# Slack UI.  If ALL edits fail, _refresh_canvas_sections() tries to
+# re-discover them via canvases.sections.lookup.
 _CANVAS_SECTIONS = {
-    "status_line": "temp:C:AOC23f5376893c0939dae5323fef",
-    "quick_stats": "temp:C:AOCae99e09c4bc3d48c35c5670ac",
-    "source_breakdown": "temp:C:AOC6d027df4af80b50dea604f384",
-    "active_leads": "temp:C:AOC07db9b5111621d24bd5ab332a",
-    "system_status": "temp:C:AOC037250265ccfd72a40aab8ef6",
-    "action_log": "temp:C:AOC8534cea88a169ff3709db9924",
+    "status_line":      "temp:C:AOC034d7ca6cc6ff66f2c1fe1718",
+    "quick_stats":      "temp:C:AOCfb9b731db843c8d99a7752d31",
+    "source_breakdown": "temp:C:AOCf133b62b3ef3b6c5f9595a7ef",
+    "active_leads":     "temp:C:AOC1b432986823dacb4563c6da78",
+    "system_status":    "temp:C:AOC3932e0134a786d4c5d14a133a",
+    "action_log":       "temp:C:AOC8534cea88a169ff3709db9924",
 }
+
+# Fingerprints for each section — used by _refresh_canvas_sections()
+_CANVAS_FINGERPRINTS = {
+    "status_line":      "**Status:** LIVE",
+    "quick_stats":      "|Metric|Count|",
+    "source_breakdown": "|Source|Active|Booked|Converted|",
+    "active_leads":     "|Name|Source|Lead Type|Stage|Score|",
+    "system_status":    "|Component|Status|Last Check|",
+    "action_log":       "|Timestamp|Agent|Action|Lead|Details|",
+}
+
+
+def _refresh_canvas_sections():
+    """Try to rediscover stale canvas section IDs using
+    canvases.sections.lookup (searches by text content).
+    Returns True if at least 5/6 sections were refreshed."""
+    global _CANVAS_SECTIONS
+    if not SLACK_BOT_TOKEN or not PIPELINE_CANVAS_ID:
+        return False
+    found = {}
+    for name, fingerprint in _CANVAS_FINGERPRINTS.items():
+        try:
+            resp = http_requests.post(
+                "https://slack.com/api/canvases.sections.lookup",
+                headers={
+                    "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                json={
+                    "canvas_id": PIPELINE_CANVAS_ID,
+                    "criteria": {"contains_text": fingerprint},
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("ok") and data.get("sections"):
+                # Take the first matching section
+                sec = data["sections"][0]
+                sec_id = sec.get("id") or sec.get("section_id", "")
+                if sec_id:
+                    found[name] = sec_id
+                    print(f"[CANVAS SYNC] Refreshed {name} → ...{sec_id[-12:]}")
+        except Exception as e:
+            print(f"[CANVAS SYNC] sections.lookup failed for {name}: {e}")
+
+    if len(found) >= 5:
+        _CANVAS_SECTIONS.update(found)
+        print(f"[CANVAS SYNC] ✅ Refreshed {len(found)}/6 section IDs")
+        return True
+    elif found:
+        _CANVAS_SECTIONS.update(found)
+        print(f"[CANVAS SYNC] ⚠️ Only refreshed {len(found)}/6 — some sections still stale")
+    else:
+        print("[CANVAS SYNC] ❌ sections.lookup returned nothing — IDs may need manual update")
+    return False
 
 
 def _edit_canvas_section(section_id, markdown):
@@ -11788,11 +11846,11 @@ def _sync_pipeline_canvas():
         f"Managed by: <#C0APE9EJ2CT> Matt | "
         f"Built by: <#C0AR7NY6SHF> DEV"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS["status_line"], status_md):
+    if _edit_canvas_section(_CANVAS_SECTIONS.get("status_line", ""), status_md):
         success_count += 1
         print(f"[CANVAS SYNC] ✅ Section 1 (status_line) updated — timestamp now reads {now_str}")
     else:
-        print(f"[CANVAS SYNC] ❌ Section 1 (status_line) FAILED — canvas may have stale timestamp")
+        print(f"[CANVAS SYNC] ❌ Section 1 (status_line) FAILED — canvas may have stale section ID")
 
     # ── 2. Quick Stats ──
     conv_rate = f"{(converted_month / total * 100):.0f}%" if total > 0 else "—"
@@ -11808,7 +11866,7 @@ def _sync_pipeline_canvas():
         f"|Avg Days to Book|—|\n"
         f"|Conversion Rate|{conv_rate}|\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS["quick_stats"], stats_md):
+    if _edit_canvas_section(_CANVAS_SECTIONS.get("quick_stats", ""), stats_md):
         success_count += 1
 
     # ── 3. Source Breakdown ──
@@ -11818,7 +11876,7 @@ def _sync_pipeline_canvas():
         f"|WhatsApp (Inbound Campaign)|{wa_active}|{wa_booked}|{wa_conv}|\n"
         f"|Website Form (Inbound)|{form_active}|{form_booked}|{form_conv}|\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS["source_breakdown"], source_md):
+    if _edit_canvas_section(_CANVAS_SECTIONS.get("source_breakdown", ""), source_md):
         success_count += 1
 
     # ── 4. Active Leads table ──
@@ -11869,7 +11927,7 @@ def _sync_pipeline_canvas():
         "|  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |\n"
         + "\n".join(rows) + "\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS["active_leads"], leads_md):
+    if _edit_canvas_section(_CANVAS_SECTIONS.get("active_leads", ""), leads_md):
         success_count += 1
 
     # ── 5. System Status ──
@@ -11899,7 +11957,7 @@ def _sync_pipeline_canvas():
         "|Component|Status|Last Check|\n|  ---  |  ---  |  ---  |\n"
         + "\n".join(sys_rows) + "\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS["system_status"], sys_md):
+    if _edit_canvas_section(_CANVAS_SECTIONS.get("system_status", ""), sys_md):
         success_count += 1
 
     print(f"[CANVAS SYNC] Done — {success_count}/5 sections updated at {now_str} ({total} leads from Sheets, {active} active)")
@@ -11907,13 +11965,22 @@ def _sync_pipeline_canvas():
 
 
 def _pipeline_canvas_sync_loop():
-    """Background thread: sync canvas every 30 minutes."""
+    """Background thread: sync canvas every 30 minutes.
+    If all sections fail (stale IDs), tries to refresh IDs and retry once."""
     import time as _time
     import traceback
     _time.sleep(60)  # Wait 60s after boot for lead_data to load
     while True:
         try:
             result = _sync_pipeline_canvas()
+            # Self-heal: if ALL sections failed, IDs are probably stale
+            if result == 0:
+                print("[CANVAS SYNC] 0/5 succeeded — attempting section ID refresh...")
+                if _refresh_canvas_sections():
+                    print("[CANVAS SYNC] IDs refreshed — retrying sync...")
+                    result = _sync_pipeline_canvas()
+                else:
+                    print("[CANVAS SYNC] ⚠️ Refresh failed — section IDs may need manual update via slack_read_canvas")
             _heartbeat("pipeline_canvas_sync")  # heartbeat AFTER sync — only marks healthy if sync completes
             print(f"[CANVAS SYNC] Heartbeat updated — {result}/5 sections written")
         except Exception as exc:
