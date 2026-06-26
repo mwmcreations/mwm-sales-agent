@@ -13361,6 +13361,70 @@ def admin_ig_disable_auto_replies():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ══════════════════════════════════════════════════════════════════════
+# STARTUP: AUTO-EXCHANGE IGAAX TOKEN FOR LONG-LIVED TOKEN
+# Session 39 — Runs once at import time (gunicorn worker boot).
+# If INSTAGRAM_ACCESS_TOKEN is a short-lived IGAAX token AND
+# INSTAGRAM_APP_SECRET is configured, automatically exchange it.
+# ══════════════════════════════════════════════════════════════════════
+
+def _startup_ig_token_exchange():
+    """Auto-exchange IGAAX short-lived token on startup if app secret is available."""
+    global INSTAGRAM_ACCESS_TOKEN
+    token = INSTAGRAM_ACCESS_TOKEN
+    if not token:
+        print("[IG TOKEN STARTUP] No INSTAGRAM_ACCESS_TOKEN set — skipping")
+        return
+
+    prefix = token[:8] if len(token) > 8 else token
+    print(f"[IG TOKEN STARTUP] Current token prefix: {prefix}...")
+
+    if not INSTAGRAM_APP_SECRET:
+        print("[IG TOKEN STARTUP] INSTAGRAM_APP_SECRET not set — cannot exchange/refresh")
+        return
+
+    if token.startswith("IGAA"):
+        # Short-lived IGAAX token — try to exchange for long-lived
+        print("[IG TOKEN STARTUP] Detected IGAAX prefix (short-lived) — exchanging for long-lived...")
+        result = _exchange_ig_short_token(token, INSTAGRAM_APP_SECRET)
+        if result and "access_token" in result:
+            INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+            days = result.get("expires_in", 0) // 86400
+            new_prefix = INSTAGRAM_ACCESS_TOKEN[:8] if len(INSTAGRAM_ACCESS_TOKEN) > 8 else "???"
+            print(f"[IG TOKEN STARTUP] ✅ Exchanged! New prefix: {new_prefix}..., expires in {days} days")
+            print(f"[IG TOKEN STARTUP] ⚠️  UPDATE Railway env var INSTAGRAM_ACCESS_TOKEN to persist across deploys")
+        else:
+            print("[IG TOKEN STARTUP] ❌ Exchange failed — token may already be expired or invalid")
+            # Try refresh in case it's already been exchanged
+            print("[IG TOKEN STARTUP] Trying refresh as fallback...")
+            result = _refresh_ig_long_token(token)
+            if result and "access_token" in result:
+                INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+                days = result.get("expires_in", 0) // 86400
+                print(f"[IG TOKEN STARTUP] ✅ Refreshed! Expires in {days} days")
+            else:
+                print("[IG TOKEN STARTUP] ❌ Refresh also failed — token is dead, generate a new one")
+    else:
+        # Non-IGAAX token (EAA or other) — try refresh
+        print("[IG TOKEN STARTUP] Non-IGAAX token — attempting refresh...")
+        result = _refresh_ig_long_token(token)
+        if result and "access_token" in result:
+            INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+            days = result.get("expires_in", 0) // 86400
+            print(f"[IG TOKEN STARTUP] ✅ Refreshed! Expires in {days} days")
+        else:
+            print("[IG TOKEN STARTUP] Refresh not applicable or failed — using existing token as-is")
+
+
+# Run the exchange on module load (gunicorn worker boot)
+try:
+    _startup_ig_token_exchange()
+except Exception as _e:
+    print(f"[IG TOKEN STARTUP] Unexpected error: {_e}")
+    import traceback
+    traceback.print_exc()
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")
