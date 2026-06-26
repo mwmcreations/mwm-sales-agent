@@ -10970,8 +10970,18 @@ def health_check():
     return response, status_code
 
 
+# Cached stats from the last canvas sync (reads from Google Sheets).
+# This survives Railway deploys because the sync runs every 30 min and
+# populates it from the real source of truth (Sheets), not lead_data.
+_cached_pipeline_stats = {}
+
+
 def _get_pipeline_stats():
-    """Return basic pipeline metrics."""
+    """Return pipeline metrics from the last canvas sync (Sheets-backed).
+    Falls back to in-memory lead_data if sync hasn't run yet."""
+    if _cached_pipeline_stats:
+        return _cached_pipeline_stats
+    # Fallback: count from in-memory lead_data (may be empty after deploy)
     now = datetime.now(pytz.timezone(TIMEZONE))
     booked = sum(1 for d in lead_data.values() if d.get("booked"))
     cold = sum(1 for d in lead_data.values() if d.get("cold_fired"))
@@ -10982,6 +10992,7 @@ def _get_pipeline_stats():
         "booked": booked,
         "cold": cold,
         "timestamp": now.isoformat(),
+        "source": "lead_data (in-memory)",
     }
 
 
@@ -11861,6 +11872,19 @@ def _sync_pipeline_canvas():
             if _converted: wa_conv += 1
 
     active = total - cold
+
+    # ── Cache pipeline stats for /health endpoint ──
+    global _cached_pipeline_stats
+    _cached_pipeline_stats = {
+        "total_leads": total,
+        "active": active,
+        "booked": booked,
+        "cold": cold,
+        "new_this_week": new_week,
+        "converted_this_month": converted_month,
+        "timestamp": now.isoformat(),
+        "source": "google_sheets",
+    }
 
     # ── 1. Update status line ──
     status_md = (
