@@ -11758,6 +11758,11 @@ def _sync_pipeline_canvas():
     so the canvas survives Railway deploys.
     """
     print("[CANVAS SYNC] Starting sync...")
+
+    # Refresh section IDs before editing — Slack regenerates temp: IDs
+    # on every canvases.edit call, so last cycle's IDs are always stale.
+    _refresh_canvas_sections()
+
     now = datetime.now(pytz.timezone(TIMEZONE))
     now_str = now.strftime("%b %d, %Y %I:%M %p ET")
     week_start = now - timedelta(days=now.weekday())
@@ -11973,14 +11978,6 @@ def _pipeline_canvas_sync_loop():
     while True:
         try:
             result = _sync_pipeline_canvas()
-            # Self-heal: if ALL sections failed, IDs are probably stale
-            if result == 0:
-                print("[CANVAS SYNC] 0/5 succeeded — attempting section ID refresh...")
-                if _refresh_canvas_sections():
-                    print("[CANVAS SYNC] IDs refreshed — retrying sync...")
-                    result = _sync_pipeline_canvas()
-                else:
-                    print("[CANVAS SYNC] ⚠️ Refresh failed — section IDs may need manual update via slack_read_canvas")
             _heartbeat("pipeline_canvas_sync")  # heartbeat AFTER sync — only marks healthy if sync completes
             print(f"[CANVAS SYNC] Heartbeat updated — {result}/5 sections written")
         except Exception as exc:
