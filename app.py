@@ -6957,7 +6957,11 @@ threading.Thread(target=_post_visit_checker, daemon=True).start()
 # ══════════════════════════════════════════════════════════════════════
 
 def _update_profile_photo_once():
-    """One-shot: update Maya's WhatsApp profile photo from repo image."""
+    """One-shot: update Maya's WhatsApp profile photo from repo image.
+    Idempotent: checks if a profile photo is already set on WhatsApp
+    before re-uploading (prevents Slack spam on every Railway deploy).
+    To force re-upload, use the /admin/update-whatsapp-profile-photo endpoint.
+    """
     import time as _time
     import requests as _requests  # local import — module-level is http_requests
     _time.sleep(30)  # Let other threads boot first
@@ -6971,17 +6975,33 @@ def _update_profile_photo_once():
 
     if os.path.exists(flag_file):
         _log("[PROFILE PHOTO] Already updated this deploy — skipping")
-        _post_to_slack_async(SLACK_DEV_CHANNEL, ":information_source: *Profile Photo* — skipped (already done this deploy)")
         return
     if not os.path.exists(image_path):
-        _log(f"[PROFILE PHOTO] maya_profile.jpg not found at {image_path}")
-        _post_to_slack_async(SLACK_DEV_CHANNEL, f":x: *Profile Photo* — `maya_profile.jpg` not found at `{image_path}`")
+        _log("[PROFILE PHOTO] maya_profile.jpg not found — skipping")
         return
     if not META_ACCESS_TOKEN or not META_PHONE_NUMBER_ID:
-        _log("[PROFILE PHOTO] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID")
-        _post_to_slack_async(SLACK_DEV_CHANNEL, ":x: *Profile Photo* — missing env vars (TOKEN={}, PHONE_ID={})".format(
-            bool(META_ACCESS_TOKEN), bool(META_PHONE_NUMBER_ID)))
+        _log("[PROFILE PHOTO] Missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID — skipping")
         return
+
+    # ── Idempotency: check if photo is already set ──
+    try:
+        prof_resp = _requests.get(
+            f"https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/whatsapp_business_profile",
+            params={"fields": "profile_picture_url", "access_token": META_ACCESS_TOKEN},
+            timeout=10,
+        )
+        prof_data = prof_resp.json()
+        pic_url = ""
+        if prof_data.get("data"):
+            pic_url = prof_data["data"][0].get("profile_picture_url", "")
+        if pic_url:
+            _log("[PROFILE PHOTO] Photo already set on WhatsApp — skipping upload")
+            with open(flag_file, "w") as f:
+                f.write("skipped")
+            return
+        _log("[PROFILE PHOTO] No profile photo set — will upload")
+    except Exception as e:
+        _log(f"[PROFILE PHOTO] Profile check failed ({e}) — proceeding with upload")
 
     try:
         with open(image_path, "rb") as f:
@@ -7058,8 +7078,7 @@ def _update_profile_photo_once():
             _log("✅ [PROFILE PHOTO] Maya's WhatsApp profile photo updated successfully!")
             _post_to_slack_async(SLACK_DEV_CHANNEL,
                 "✅ *Maya WhatsApp Profile Photo Updated*\n"
-                "All 4 steps passed. New profile photo is live.\n"
-                "Remove `maya_profile.jpg` from repo in next cleanup commit."
+                "All 4 steps passed. New profile photo is live."
             )
         else:
             _log(f"❌ [PROFILE PHOTO] Step 4 FAIL: {profile_resp.text[:300]}")
