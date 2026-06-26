@@ -60,6 +60,10 @@ IG_VERIFY_TOKEN = os.getenv("IG_VERIFY_TOKEN", "") or WEBHOOK_VERIFY_TOKEN
 # INSTAGRAM_ACCESS_TOKEN — Dedicated IG token with instagram_business_manage_messages permission.
 # Falls back to META_PAGE_ACCESS_TOKEN if not set (same Graph API infrastructure).
 INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "") or META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+# INSTAGRAM_APP_SECRET — Required for exchanging short-lived IGAAX tokens to
+# 60-day long-lived tokens.  Found in Meta Developer Dashboard → App → Instagram
+# → Basic → Instagram App Secret.  Session 39 — token lifecycle management.
+INSTAGRAM_APP_SECRET = os.getenv("INSTAGRAM_APP_SECRET", "")
 
 # Instagram conversation history per user (in-memory).
 # Keyed by `instagram:<IGSID>`. Independent from WhatsApp's conversation_history
@@ -13071,6 +13075,287 @@ def update_whatsapp_profile_photo():
 
     except Exception as e:
         print(f"[PROFILE PHOTO] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ADMIN: INSTAGRAM TOKEN LIFECYCLE MANAGEMENT
+# Session 39 — Exchange short-lived IGAAX token for 60-day long-lived
+# token, and refresh long-lived tokens before they expire.
+# Auth: BRIEFING_TOKEN
+# ══════════════════════════════════════════════════════════════════════
+
+def _exchange_ig_short_token(short_token: str, app_secret: str):
+    """Exchange a short-lived Instagram Login API token for a 60-day long-lived token.
+
+    Endpoint: GET https://graph.instagram.com/access_token
+        ?grant_type=ig_exchange_token
+        &client_secret={app_secret}
+        &access_token={short_token}
+
+    Returns dict with 'access_token', 'token_type', 'expires_in' on success,
+    or None on failure.
+    """
+    try:
+        resp = http_requests.get(
+            "https://graph.instagram.com/access_token",
+            params={
+                "grant_type": "ig_exchange_token",
+                "client_secret": app_secret,
+                "access_token": short_token,
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if resp.status_code == 200 and "access_token" in data:
+            expires_in = data.get("expires_in", 0)
+            days = expires_in // 86400
+            print(f"[IG TOKEN] Exchanged short-lived token for long-lived ({days} days)")
+            return data
+        else:
+            print(f"[IG TOKEN] Exchange failed: {data}")
+            return None
+    except Exception as e:
+        print(f"[IG TOKEN] Exchange error: {e}")
+        return None
+
+
+def _refresh_ig_long_token(long_token: str):
+    """Refresh a valid, non-expired long-lived Instagram token for another 60 days.
+
+    Endpoint: GET https://graph.instagram.com/refresh_access_token
+        ?grant_type=ig_refresh_token
+        &access_token={long_token}
+
+    Returns dict with new 'access_token' and 'expires_in', or None on failure.
+    NOTE: Tokens that have already expired CANNOT be refreshed.
+    """
+    try:
+        resp = http_requests.get(
+            "https://graph.instagram.com/refresh_access_token",
+            params={
+                "grant_type": "ig_refresh_token",
+                "access_token": long_token,
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if resp.status_code == 200 and "access_token" in data:
+            expires_in = data.get("expires_in", 0)
+            days = expires_in // 86400
+            print(f"[IG TOKEN] Refreshed long-lived token ({days} days)")
+            return data
+        else:
+            print(f"[IG TOKEN] Refresh failed: {data}")
+            return None
+    except Exception as e:
+        print(f"[IG TOKEN] Refresh error: {e}")
+        return None
+
+
+@app.route('/admin/ig-token-exchange', methods=['POST'])
+def admin_ig_token_exchange():
+    """Exchange the current IGAAX short-lived token for a 60-day long-lived token.
+
+    POST JSON: {"action": "exchange"} or {"action": "refresh"}
+    Auth: Bearer BRIEFING_TOKEN
+
+    - "exchange": Convert a short-lived IGAAX token to a long-lived one (requires INSTAGRAM_APP_SECRET).
+    - "refresh": Refresh an existing long-lived token for another 60 days.
+
+    On success, updates the in-memory INSTAGRAM_ACCESS_TOKEN global so the running
+    instance uses the new token immediately. The caller must ALSO update the Railway
+    env var to persist across deploys.
+    """
+    global INSTAGRAM_ACCESS_TOKEN
+
+    # Auth check
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    action = data.get("action", "exchange")
+
+    current_token = INSTAGRAM_ACCESS_TOKEN
+    if not current_token:
+        return jsonify({"ok": False, "error": "No INSTAGRAM_ACCESS_TOKEN configured"}), 400
+
+    token_prefix = current_token[:8] + "..." if len(current_token) > 8 else "???"
+
+    if action == "exchange":
+        # Exchange short-lived → long-lived
+        if not INSTAGRAM_APP_SECRET:
+            return jsonify({
+                "ok": False,
+                "error": "INSTAGRAM_APP_SECRET env var not set. Get it from Meta Developer Dashboard → App → Instagram → Basic → Instagram App Secret"
+            }), 400
+
+        result = _exchange_ig_short_token(current_token, INSTAGRAM_APP_SECRET)
+        if not result:
+            return jsonify({"ok": False, "error": "Token exchange failed — see server logs"}), 500
+
+        new_token = result["access_token"]
+        expires_in = result.get("expires_in", 0)
+        days = expires_in // 86400
+
+        # Update in-memory token
+        INSTAGRAM_ACCESS_TOKEN = new_token
+        new_prefix = new_token[:8] + "..." if len(new_token) > 8 else "???"
+
+        return jsonify({
+            "ok": True,
+            "action": "exchange",
+            "old_token_prefix": token_prefix,
+            "new_token_prefix": new_prefix,
+            "new_token": new_token,
+            "expires_in_seconds": expires_in,
+            "expires_in_days": days,
+            "message": f"Token exchanged successfully. Expires in {days} days. "
+                       f"UPDATE Railway env var INSTAGRAM_ACCESS_TOKEN with the new_token value to persist."
+        })
+
+    elif action == "refresh":
+        # Refresh existing long-lived token
+        result = _refresh_ig_long_token(current_token)
+        if not result:
+            return jsonify({"ok": False, "error": "Token refresh failed — token may be expired or invalid"}), 500
+
+        new_token = result["access_token"]
+        expires_in = result.get("expires_in", 0)
+        days = expires_in // 86400
+
+        # Update in-memory token
+        INSTAGRAM_ACCESS_TOKEN = new_token
+        new_prefix = new_token[:8] + "..." if len(new_token) > 8 else "???"
+
+        return jsonify({
+            "ok": True,
+            "action": "refresh",
+            "old_token_prefix": token_prefix,
+            "new_token_prefix": new_prefix,
+            "new_token": new_token,
+            "expires_in_seconds": expires_in,
+            "expires_in_days": days,
+            "message": f"Token refreshed. Expires in {days} days. "
+                       f"UPDATE Railway env var INSTAGRAM_ACCESS_TOKEN with the new_token value to persist."
+        })
+
+    else:
+        return jsonify({"ok": False, "error": f"Unknown action: {action}. Use 'exchange' or 'refresh'"}), 400
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ADMIN: DISABLE INSTAGRAM AUTO-REPLIES
+# Session 39 — Turn off Meta Business Suite's automated IG responses
+# that compete with Maya. Uses Graph API Page settings.
+# Auth: BRIEFING_TOKEN
+# ══════════════════════════════════════════════════════════════════════
+
+@app.route('/admin/ig-disable-auto-replies', methods=['POST'])
+def admin_ig_disable_auto_replies():
+    """Check and disable Instagram automated responses (Instant Reply, Away Message, etc.)
+    via the Facebook Graph API Page settings.
+
+    POST JSON: {} (no body needed)
+    Auth: Bearer BRIEFING_TOKEN
+
+    Uses the Page Access Token to query and disable automated response configs
+    on the Facebook Page linked to the Instagram Business account.
+    """
+    # Auth check
+    auth = request.headers.get("Authorization", "")
+    if not BRIEFING_TOKEN or not auth.startswith("Bearer "):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if auth.split("Bearer ", 1)[1].strip() != BRIEFING_TOKEN:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if not INSTAGRAM_PAGE_ID:
+        return jsonify({"ok": False, "error": "INSTAGRAM_PAGE_ID not configured"}), 400
+
+    # Use Page Access Token (not Instagram token) for Page-level settings
+    token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+    if not token:
+        return jsonify({"ok": False, "error": "No Page Access Token available"}), 400
+
+    results = {}
+
+    try:
+        # Step 1: Check current page automated response configs
+        print(f"[IG AUTO-REPLY] Checking automated responses for page {INSTAGRAM_PAGE_ID}...")
+
+        # Try to read current Messenger Profile settings (ice_breakers, greeting, etc.)
+        profile_resp = http_requests.get(
+            f"https://graph.facebook.com/v20.0/{INSTAGRAM_PAGE_ID}/messenger_profile",
+            params={
+                "fields": "greeting,ice_breakers,persistent_menu",
+                "access_token": token,
+            },
+            timeout=15,
+        )
+        results["messenger_profile"] = {
+            "status": profile_resp.status_code,
+            "data": profile_resp.json() if profile_resp.status_code == 200 else profile_resp.text
+        }
+
+        # Step 2: Try to disable Instant Reply via Page settings
+        # The Page-level setting for instant_replies_enabled
+        page_setting_resp = http_requests.get(
+            f"https://graph.facebook.com/v20.0/{INSTAGRAM_PAGE_ID}",
+            params={
+                "fields": "instant_replies_enabled",
+                "access_token": token,
+            },
+            timeout=15,
+        )
+        results["instant_replies_check"] = {
+            "status": page_setting_resp.status_code,
+            "data": page_setting_resp.json() if page_setting_resp.status_code == 200 else page_setting_resp.text
+        }
+
+        # Step 3: Attempt to disable instant replies
+        disable_resp = http_requests.post(
+            f"https://graph.facebook.com/v20.0/{INSTAGRAM_PAGE_ID}",
+            params={"access_token": token},
+            json={"instant_replies_enabled": False},
+            timeout=15,
+        )
+        results["disable_instant_reply"] = {
+            "status": disable_resp.status_code,
+            "data": disable_resp.json() if disable_resp.status_code == 200 else disable_resp.text
+        }
+
+        # Step 4: Try deleting ice_breakers and greeting from Messenger Profile
+        for field in ["ice_breakers", "greeting"]:
+            try:
+                del_resp = http_requests.delete(
+                    f"https://graph.facebook.com/v20.0/{INSTAGRAM_PAGE_ID}/messenger_profile",
+                    params={"access_token": token},
+                    json={"fields": [field]},
+                    timeout=15,
+                )
+                results[f"delete_{field}"] = {
+                    "status": del_resp.status_code,
+                    "data": del_resp.json() if del_resp.status_code == 200 else del_resp.text
+                }
+            except Exception as e:
+                results[f"delete_{field}"] = {"error": str(e)}
+
+        print(f"[IG AUTO-REPLY] Results: {json.dumps(results, indent=2)}")
+
+        return jsonify({
+            "ok": True,
+            "message": "Auto-reply disable attempted. Check results for details. "
+                       "If API methods didn't work, disable manually: Meta Business Suite → Inbox → Automations.",
+            "results": results
+        })
+
+    except Exception as e:
+        print(f"[IG AUTO-REPLY] Error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
