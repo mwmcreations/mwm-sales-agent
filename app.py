@@ -6085,9 +6085,7 @@ def webhook_instagram():
     # ── POST: Incoming Instagram DM ──
     data = request.get_json(force=True, silent=True) or {}
 
-    # Debug: log what object type we're receiving
     obj_type = data.get("object", "<missing>")
-    print(f"[IG WEBHOOK] Received POST — object={obj_type!r}, keys={list(data.keys())}")
 
     # Instagram messaging webhooks arrive with object="instagram"
     # Also accept "page" — some webhook configs send page-level events for IG
@@ -6096,31 +6094,21 @@ def webhook_instagram():
         return "OK", 200
 
     for entry in data.get("entry", []):
-        entry_keys = list(entry.keys())
-        print(f"[IG WEBHOOK] Entry keys: {entry_keys}")
         # Instagram DM events may arrive under "messaging" or "changes"
         messaging_events = entry.get("messaging", [])
         if not messaging_events:
             # Some webhook configs put IG DM events under "changes"
             changes = entry.get("changes", [])
-            if changes:
-                print(f"[IG WEBHOOK] No 'messaging' key — found 'changes': {changes}")
-            else:
-                print(f"[IG WEBHOOK] No 'messaging' or 'changes' in entry. Full entry: {entry}")
         for messaging_event in messaging_events:
-            me_keys = list(messaging_event.keys())
             sender_id = messaging_event.get("sender", {}).get("id", "")
             recipient_id = messaging_event.get("recipient", {}).get("id", "")
-            print(f"[IG WEBHOOK] Event keys: {me_keys}, sender={sender_id}, recipient={recipient_id}")
 
             # Skip echo messages (messages sent BY the page)
             if sender_id == INSTAGRAM_PAGE_ID:
-                print(f"[IG WEBHOOK] SKIP: sender_id={sender_id} matches INSTAGRAM_PAGE_ID={INSTAGRAM_PAGE_ID} (echo)")
                 continue
 
             # Skip delivery/read receipts
             if "delivery" in messaging_event or "read" in messaging_event:
-                print(f"[IG WEBHOOK] SKIP: delivery/read receipt")
                 continue
 
             # Extract message content
@@ -6130,9 +6118,7 @@ def webhook_instagram():
                 postback = messaging_event.get("postback", {})
                 if postback:
                     incoming_msg = postback.get("title", "") or postback.get("payload", "")
-                    print(f"[IG DM] Postback from {sender_id}: {incoming_msg!r}")
                 else:
-                    print(f"[IG WEBHOOK] SKIP: no message and no postback. Event: {messaging_event}")
                     continue
             else:
                 incoming_msg = message.get("text", "").strip()
@@ -6147,7 +6133,6 @@ def webhook_instagram():
 
                 # Handle story replies/mentions
                 if message.get("is_echo"):
-                    print(f"[IG WEBHOOK] SKIP: is_echo=True in message object")
                     continue
 
                 # Story reply — extract the story context
@@ -13547,38 +13532,29 @@ def _startup_ig_auto_reply_audit():
     page_id = INSTAGRAM_PAGE_ID
 
     # Check ice_breakers, greeting, persistent_menu on Instagram platform
+    issues_found = []
     for field in ["ice_breakers", "greeting", "persistent_menu"]:
         try:
-            # Try with graph.instagram.com for IGAA tokens
             if token.startswith("IGAA"):
                 url = f"https://graph.instagram.com/v21.0/{page_id}/messenger_profile"
             else:
                 url = f"https://graph.facebook.com/v20.0/{page_id}/messenger_profile"
-
             resp = http_requests.get(
                 url,
-                params={
-                    "fields": field,
-                    "platform": "instagram",
-                    "access_token": token,
-                },
+                params={"fields": field, "platform": "instagram", "access_token": token},
                 timeout=10,
             )
             data = resp.json()
-            print(f"[IG AUTO-REPLY AUDIT] {field}: {json.dumps(data)}")
-
-            # If data found, try to delete it
             if resp.status_code == 200 and data.get("data"):
-                print(f"[IG AUTO-REPLY AUDIT] Found {field} — attempting to DELETE...")
-                del_resp = http_requests.delete(
+                issues_found.append(field)
+                http_requests.delete(
                     url,
                     params={"access_token": token, "platform": "instagram"},
                     json={"fields": [field]},
                     timeout=10,
                 )
-                print(f"[IG AUTO-REPLY AUDIT] DELETE {field}: {del_resp.status_code} {del_resp.text}")
-        except Exception as e:
-            print(f"[IG AUTO-REPLY AUDIT] Error checking {field}: {e}")
+        except Exception:
+            pass
 
     # Also check Page-level instant_replies_enabled using Page token
     try:
@@ -13586,35 +13562,32 @@ def _startup_ig_auto_reply_audit():
         if page_token:
             resp = http_requests.get(
                 f"https://graph.facebook.com/v20.0/{page_id}",
-                params={
-                    "fields": "instant_replies_enabled",
-                    "access_token": page_token,
-                },
+                params={"fields": "instant_replies_enabled", "access_token": page_token},
                 timeout=10,
             )
             data = resp.json()
-            print(f"[IG AUTO-REPLY AUDIT] instant_replies_enabled: {json.dumps(data)}")
-
-            # Try to disable if enabled
             if data.get("instant_replies_enabled"):
-                print("[IG AUTO-REPLY AUDIT] Instant replies are ON — disabling...")
-                dis_resp = http_requests.post(
+                issues_found.append("instant_replies")
+                http_requests.post(
                     f"https://graph.facebook.com/v20.0/{page_id}",
                     params={"access_token": page_token},
                     json={"instant_replies_enabled": False},
                     timeout=10,
                 )
-                print(f"[IG AUTO-REPLY AUDIT] Disable result: {dis_resp.status_code} {dis_resp.text}")
-    except Exception as e:
-        print(f"[IG AUTO-REPLY AUDIT] Error checking instant_replies: {e}")
+    except Exception:
+        pass
+
+    # Single summary line
+    if issues_found:
+        print(f"[IG AUTO-REPLY AUDIT] ⚠️ Disabled: {', '.join(issues_found)}")
+    else:
+        print("[IG AUTO-REPLY AUDIT] ✅ All clean")
 
 
 try:
     _startup_ig_auto_reply_audit()
-except Exception as _e:
-    print(f"[IG AUTO-REPLY AUDIT] Unexpected error: {_e}")
-    import traceback
-    traceback.print_exc()
+except Exception:
+    pass
 
 
 if __name__ == "__main__":
