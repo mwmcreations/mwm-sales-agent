@@ -6076,13 +6076,29 @@ def webhook_instagram():
     # ── POST: Incoming Instagram DM ──
     data = request.get_json(force=True, silent=True) or {}
 
+    # Debug: log what object type we're receiving
+    obj_type = data.get("object", "<missing>")
+    print(f"[IG WEBHOOK] Received POST — object={obj_type!r}, keys={list(data.keys())}")
+
     # Instagram messaging webhooks arrive with object="instagram"
-    if data.get("object") != "instagram":
+    # Also accept "page" — some webhook configs send page-level events for IG
+    if obj_type not in ("instagram", "page"):
+        print(f"[IG WEBHOOK] Ignoring — unrecognized object type: {obj_type!r}")
         return "OK", 200
 
     for entry in data.get("entry", []):
-        # Instagram DM events arrive under "messaging"
-        for messaging_event in entry.get("messaging", []):
+        entry_keys = list(entry.keys())
+        print(f"[IG WEBHOOK] Entry keys: {entry_keys}")
+        # Instagram DM events may arrive under "messaging" or "changes"
+        messaging_events = entry.get("messaging", [])
+        if not messaging_events:
+            # Some webhook configs put IG DM events under "changes"
+            changes = entry.get("changes", [])
+            if changes:
+                print(f"[IG WEBHOOK] No 'messaging' key — found 'changes': {changes}")
+            else:
+                print(f"[IG WEBHOOK] No 'messaging' or 'changes' in entry. Full entry: {entry}")
+        for messaging_event in messaging_events:
             sender_id = messaging_event.get("sender", {}).get("id", "")
             recipient_id = messaging_event.get("recipient", {}).get("id", "")
 
