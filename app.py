@@ -147,7 +147,12 @@ def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None
     if body:
         body = re.sub(r"\s*\*?Sent using\s*\*?\s+\w+\s*$", "", body, flags=re.IGNORECASE).strip()
 
-    url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_PAGE_ID}/messages"
+    # Use graph.instagram.com for IGAAX-prefix tokens (Instagram Login API),
+    # graph.facebook.com for EAA-prefix tokens (Page Access Token)
+    if token.startswith("IGAA"):
+        url = f"https://graph.instagram.com/v21.0/{INSTAGRAM_PAGE_ID}/messages"
+    else:
+        url = f"https://graph.facebook.com/v19.0/{INSTAGRAM_PAGE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -6413,12 +6418,17 @@ def _fetch_ig_profile(igsid: str) -> dict:
     Returns dict with 'name' and 'username' keys (empty strings on failure).
     Called once per new sender to auto-populate lead_data instead of 'Unknown'.
     """
-    token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+    # Prefer the Instagram-specific token for IG profile lookups
+    token = INSTAGRAM_ACCESS_TOKEN or META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
     if not token:
         print("[IG Profile] No access token — skipping profile lookup")
         return {"name": "", "username": ""}
     try:
-        url = f"https://graph.facebook.com/v19.0/{igsid}"
+        # Use graph.instagram.com for IGAAX tokens, graph.facebook.com otherwise
+        if token.startswith("IGAA"):
+            url = f"https://graph.instagram.com/v21.0/{igsid}"
+        else:
+            url = f"https://graph.facebook.com/v19.0/{igsid}"
         params = {"fields": "name,username", "access_token": token}
         resp = http_requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
