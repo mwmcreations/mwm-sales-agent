@@ -13425,6 +13425,91 @@ except Exception as _e:
     traceback.print_exc()
 
 
+def _startup_ig_auto_reply_audit():
+    """Audit and disable all Instagram auto-reply settings on startup.
+
+    Queries the Messenger Profile API for ice_breakers, greeting, and
+    persistent_menu on the Instagram platform, then attempts to delete
+    any that are found.
+    """
+    if not INSTAGRAM_PAGE_ID or not INSTAGRAM_ACCESS_TOKEN:
+        print("[IG AUTO-REPLY AUDIT] Missing PAGE_ID or token — skipping")
+        return
+
+    token = INSTAGRAM_ACCESS_TOKEN
+    page_id = INSTAGRAM_PAGE_ID
+
+    # Check ice_breakers, greeting, persistent_menu on Instagram platform
+    for field in ["ice_breakers", "greeting", "persistent_menu"]:
+        try:
+            # Try with graph.instagram.com for IGAA tokens
+            if token.startswith("IGAA"):
+                url = f"https://graph.instagram.com/v21.0/{page_id}/messenger_profile"
+            else:
+                url = f"https://graph.facebook.com/v20.0/{page_id}/messenger_profile"
+
+            resp = http_requests.get(
+                url,
+                params={
+                    "fields": field,
+                    "platform": "instagram",
+                    "access_token": token,
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            print(f"[IG AUTO-REPLY AUDIT] {field}: {json.dumps(data)}")
+
+            # If data found, try to delete it
+            if resp.status_code == 200 and data.get("data"):
+                print(f"[IG AUTO-REPLY AUDIT] Found {field} — attempting to DELETE...")
+                del_resp = http_requests.delete(
+                    url,
+                    params={"access_token": token, "platform": "instagram"},
+                    json={"fields": [field]},
+                    timeout=10,
+                )
+                print(f"[IG AUTO-REPLY AUDIT] DELETE {field}: {del_resp.status_code} {del_resp.text}")
+        except Exception as e:
+            print(f"[IG AUTO-REPLY AUDIT] Error checking {field}: {e}")
+
+    # Also check Page-level instant_replies_enabled using Page token
+    try:
+        page_token = META_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN
+        if page_token:
+            resp = http_requests.get(
+                f"https://graph.facebook.com/v20.0/{page_id}",
+                params={
+                    "fields": "instant_replies_enabled",
+                    "access_token": page_token,
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            print(f"[IG AUTO-REPLY AUDIT] instant_replies_enabled: {json.dumps(data)}")
+
+            # Try to disable if enabled
+            if data.get("instant_replies_enabled"):
+                print("[IG AUTO-REPLY AUDIT] Instant replies are ON — disabling...")
+                dis_resp = http_requests.post(
+                    f"https://graph.facebook.com/v20.0/{page_id}",
+                    params={"access_token": page_token},
+                    json={"instant_replies_enabled": False},
+                    timeout=10,
+                )
+                print(f"[IG AUTO-REPLY AUDIT] Disable result: {dis_resp.status_code} {dis_resp.text}")
+    except Exception as e:
+        print(f"[IG AUTO-REPLY AUDIT] Error checking instant_replies: {e}")
+
+
+try:
+    _startup_ig_auto_reply_audit()
+except Exception as _e:
+    print(f"[IG AUTO-REPLY AUDIT] Unexpected error: {_e}")
+    import traceback
+    traceback.print_exc()
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")
