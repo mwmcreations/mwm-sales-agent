@@ -803,25 +803,40 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                 if msgs:
                     header_text = msgs[0].get("text", "")
                     # ── Session 41: Check for IG DM markers first ──
-                    # IG header format: "📱 *Conversation with Name* — `@username`"
-                    # or: "📱 *Conversation with Name* — `IG:7990975181157`"
-                    ig_user_match = _re.search(r"`@(\w+)`", header_text)
-                    ig_id_match = _re.search(r"`IG:(\d+)`", header_text)
-                    if ig_user_match or ig_id_match:
+                    # New format: "📱 *Conversation with Name* — `@username (IG:7990975181157)`"
+                    # Old format: "📱 *Conversation with Name* — `@username`"
+                    # Bare IGSID: "📱 *Conversation with Name* — `IG:7990975181157`"
+                    # Legacy bug: "📱 *Conversation with Name* — `+7990975181157`" (IGSID as phone)
+                    ig_id_match = _re.search(r"IG:(\d+)", header_text)
+                    ig_user_match = _re.search(r"`@(\w+)", header_text)
+                    if ig_id_match:
+                        # Best case: IGSID is in the header (new format or bare)
                         _is_ig_thread = True
-                        if ig_id_match:
-                            target_key = ig_id_match.group(1)  # raw IGSID
-                        elif ig_user_match:
-                            # Username key — need to find the IGSID from lead_data
-                            _username = ig_user_match.group(1)
-                            target_key = f"@{_username}"
-                            # Search lead_data for matching ig_username
-                            for _ld_key, _ld_val in lead_data.items():
-                                if _ld_key.startswith("instagram:") and _ld_val.get("ig_username") == _username:
-                                    target_key = _ld_key.replace("instagram:", "")
-                                    break
+                        target_key = ig_id_match.group(1)
                         maya_shadow_threads[target_key] = thread_ts
-                        print(f"[SHADOW RELAY] Recovered IG DM lead {target_key} from thread header")
+                        print(f"[SHADOW RELAY] Recovered IGSID {target_key} from thread header")
+                    elif ig_user_match and not _re.search(r"\+\d[\d\s().-]{9,}", header_text):
+                        # Old format: @username only, no phone number pattern
+                        _is_ig_thread = True
+                        _username = ig_user_match.group(1)
+                        # Try to find IGSID from lead_data
+                        _found_igsid = None
+                        for _ld_key, _ld_val in lead_data.items():
+                            if _ld_key.startswith("instagram:") and _ld_val.get("ig_username") == _username:
+                                _found_igsid = _ld_key.replace("instagram:", "")
+                                break
+                        if _found_igsid:
+                            target_key = _found_igsid
+                        else:
+                            # Last resort: check ig_conversation_history keys
+                            for _ig_key in ig_conversation_history:
+                                _ld = lead_data.get(_ig_key, {})
+                                if _ld.get("ig_username") == _username:
+                                    _found_igsid = _ig_key.replace("instagram:", "")
+                                    break
+                            target_key = _found_igsid or f"@{_username}"
+                        maya_shadow_threads[target_key] = thread_ts
+                        print(f"[SHADOW RELAY] Recovered IG DM lead {target_key} from @{_username} in header")
                     else:
                         # WhatsApp header format: "📱 *Conversation with Name* — `+1 (407) 747-2041`"
                         phone_match = _re.search(r"\+?[\d\s().-]{10,}", header_text)
@@ -862,8 +877,28 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                 if _ld_key.startswith("instagram:") and _ld_val.get("ig_username") == _igsid:
                     _found_igsid = _ld_key.replace("instagram:", "")
                     break
+            # Also check ig_conversation_history
             if not _found_igsid:
-                print(f"[SHADOW RELAY] Could not resolve @{_igsid} to an IGSID")
+                for _ig_key in ig_conversation_history:
+                    _ld = lead_data.get(_ig_key, {})
+                    if _ld.get("ig_username") == _igsid:
+                        _found_igsid = _ig_key.replace("instagram:", "")
+                        break
+            if not _found_igsid:
+                print(f"[SHADOW RELAY] Could not resolve @{_igsid} to an IGSID — lead_data may be empty after deploy")
+                try:
+                    http_requests.post(
+                        "https://slack.com/api/chat.postMessage",
+                        json={
+                            "channel": channel_id,
+                            "text": f"⚠️ Can't send IG DM to @{_igsid} — the lead needs to DM us first after the latest deploy so I can recover their Instagram ID. (This is an old thread without the IGSID in the header.)",
+                            "thread_ts": thread_ts,
+                        },
+                        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
                 return
             _igsid = _found_igsid
 
@@ -6522,15 +6557,17 @@ def _build_ig_sender_identity(igsid: str) -> dict:
     _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
     is_michael = bool(_michael_ig_id and igsid == _michael_ig_id)
 
-    # Build display phone — show @username if available, otherwise IG:IGSID
-    _display_id = f"@{ig_username}" if ig_username else f"IG:{igsid}"
+    # Build display phone — always include IGSID so the shadow relay can
+    # recover it from the thread header after a deploy (lead_data resets).
+    # Session 41: changed from @username-only to always include IG:IGSID.
+    _display_id = f"@{ig_username} (IG:{igsid})" if ig_username else f"IG:{igsid}"
 
     return {
         "name": name,
         "phone": _display_id,
         "role": "lead",
         "is_michael": is_michael,
-        "client_info": {"email": email, "ig_username": ig_username} if (email or ig_username) else {},
+        "client_info": {"email": email, "ig_username": ig_username, "igsid": igsid} if (email or ig_username) else {"igsid": igsid},
         "channel": "Instagram DM",
     }
 
