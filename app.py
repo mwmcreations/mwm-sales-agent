@@ -743,13 +743,17 @@ def _mirror_to_maya_shadow_async(sender_identity: dict, direction: str, message_
 
 
 def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: str):
-    """Relay Michael's #maya-shadow thread replies to the lead on WhatsApp.
+    """Relay Michael's #maya-shadow thread replies to the lead (WhatsApp or IG DM).
 
     When Michael replies in a shadow thread, this function:
-    1. Reverse-looks up the lead's phone from the thread_ts
-    2. Sends the message via WhatsApp as Maya
-    3. Adds the message to conversation_history so Maya stays in sync
-    4. Posts a confirmation back in the Slack thread
+    1. Reverse-looks up the lead's identity from the thread_ts
+    2. Detects channel (WhatsApp vs IG DM) from thread key or header
+    3. Sends via the correct API (WhatsApp Meta or Instagram DM)
+    4. Adds the message to conversation_history so Maya stays in sync
+    5. Posts a confirmation back in the Slack thread
+
+    Session 41: Added IG DM support — detects IG threads by @username/IG:IGSID
+    in header or instagram: prefix in lead_data. Routes through send_instagram_dm().
 
     Only processes messages from Michael (MICHAEL_SLACK_USER_ID) in
     #maya-shadow threads. All other messages are ignored.
@@ -769,18 +773,23 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
     if channel_id != SLACK_MAYA_SHADOW_CHANNEL:
         return
 
-    # Reverse lookup: find which phone number owns this thread.
-    # First try in-memory map, then fall back to parsing the thread header
-    # from Slack (works for threads created before the last deploy/restart).
-    target_phone_digits = None
-    for phone_digits, ts in maya_shadow_threads.items():
+    # ── Session 41: Channel-aware reverse lookup ──
+    # Reverse lookup: find which lead owns this thread.
+    # The thread key can be phone digits (WhatsApp) or @username / IGSID (IG DM).
+    # First try in-memory map, then fall back to parsing the thread header.
+    target_key = None
+    _is_ig_thread = False
+    for key, ts in maya_shadow_threads.items():
         if ts == thread_ts:
-            target_phone_digits = phone_digits
+            target_key = key
+            # Detect IG DM threads: key starts with @ (username) or is in lead_data as instagram:
+            if key.startswith("@") or f"instagram:{key}" in lead_data:
+                _is_ig_thread = True
             break
 
-    # Fallback: fetch the thread's parent message and extract phone from header
-    if not target_phone_digits:
-        print(f"[SHADOW RELAY] Phone not in memory for thread_ts={thread_ts}, trying Slack header fallback")
+    # Fallback: fetch the thread's parent message and extract identity from header
+    if not target_key:
+        print(f"[SHADOW RELAY] Key not in memory for thread_ts={thread_ts}, trying Slack header fallback")
         try:
             resp = http_requests.get(
                 "https://slack.com/api/conversations.history",
@@ -793,24 +802,44 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                 msgs = resp_data.get("messages", [])
                 if msgs:
                     header_text = msgs[0].get("text", "")
-                    # Header format: "📱 *Conversation with Name* — `+1 (407) 747-2041`"
-                    phone_match = _re.search(r"\+?[\d\s().-]{10,}", header_text)
-                    if phone_match:
-                        target_phone_digits = _re.sub(r"\D", "", phone_match.group())
-                        # Cache it so future messages in this thread are instant
-                        maya_shadow_threads[target_phone_digits] = thread_ts
-                        print(f"[SHADOW RELAY] Recovered phone {target_phone_digits} from thread header")
+                    # ── Session 41: Check for IG DM markers first ──
+                    # IG header format: "📱 *Conversation with Name* — `@username`"
+                    # or: "📱 *Conversation with Name* — `IG:7990975181157`"
+                    ig_user_match = _re.search(r"`@(\w+)`", header_text)
+                    ig_id_match = _re.search(r"`IG:(\d+)`", header_text)
+                    if ig_user_match or ig_id_match:
+                        _is_ig_thread = True
+                        if ig_id_match:
+                            target_key = ig_id_match.group(1)  # raw IGSID
+                        elif ig_user_match:
+                            # Username key — need to find the IGSID from lead_data
+                            _username = ig_user_match.group(1)
+                            target_key = f"@{_username}"
+                            # Search lead_data for matching ig_username
+                            for _ld_key, _ld_val in lead_data.items():
+                                if _ld_key.startswith("instagram:") and _ld_val.get("ig_username") == _username:
+                                    target_key = _ld_key.replace("instagram:", "")
+                                    break
+                        maya_shadow_threads[target_key] = thread_ts
+                        print(f"[SHADOW RELAY] Recovered IG DM lead {target_key} from thread header")
+                    else:
+                        # WhatsApp header format: "📱 *Conversation with Name* — `+1 (407) 747-2041`"
+                        phone_match = _re.search(r"\+?[\d\s().-]{10,}", header_text)
+                        if phone_match:
+                            target_key = _re.sub(r"\D", "", phone_match.group())
+                            maya_shadow_threads[target_key] = thread_ts
+                            print(f"[SHADOW RELAY] Recovered phone {target_key} from thread header")
         except Exception as e:
             print(f"[SHADOW RELAY] Header fallback failed: {e}")
 
-    if not target_phone_digits:
-        print(f"[SHADOW RELAY] No phone found for thread_ts={thread_ts}")
+    if not target_key:
+        print(f"[SHADOW RELAY] No lead found for thread_ts={thread_ts}")
         try:
             http_requests.post(
                 "https://slack.com/api/chat.postMessage",
                 json={
                     "channel": channel_id,
-                    "text": "⚠️ Could not find the lead's phone number for this thread.",
+                    "text": "⚠️ Could not find the lead's contact info for this thread.",
                     "thread_ts": thread_ts,
                 },
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
@@ -820,34 +849,81 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
             pass
         return
 
-    # Build the WhatsApp sender key (format: whatsapp:+1234567890)
-    wa_sender = f"whatsapp:+{target_phone_digits}"
+    # ── Session 41: Route based on channel ──
+    if _is_ig_thread:
+        # ── IG DM: send via Instagram API ──
+        # target_key is the IGSID (digits) or @username
+        _igsid = target_key.lstrip("@")
+        # If target_key was @username, we need the actual IGSID
+        if not _igsid.isdigit():
+            # Search lead_data for the IGSID
+            _found_igsid = None
+            for _ld_key, _ld_val in lead_data.items():
+                if _ld_key.startswith("instagram:") and _ld_val.get("ig_username") == _igsid:
+                    _found_igsid = _ld_key.replace("instagram:", "")
+                    break
+            if not _found_igsid:
+                print(f"[SHADOW RELAY] Could not resolve @{_igsid} to an IGSID")
+                return
+            _igsid = _found_igsid
 
-    # Send via WhatsApp
-    try:
-        send_whatsapp_meta(wa_sender, body=text)
-        print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_phone_digits}")
-    except Exception as e:
-        print(f"[SHADOW RELAY] ❌ WhatsApp send failed: {e}")
         try:
-            http_requests.post(
-                "https://slack.com/api/chat.postMessage",
-                json={
-                    "channel": channel_id,
-                    "text": f"❌ Failed to send message to lead: {e}",
-                    "thread_ts": thread_ts,
-                },
-                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
-                timeout=5,
-            )
-        except Exception:
-            pass
-        return
+            _result = send_instagram_dm(_igsid, body=text)
+            if _result:
+                print(f"[SHADOW RELAY] ✅ Relayed Michael's message to IG DM {_igsid}")
+            else:
+                raise Exception("send_instagram_dm returned None")
+        except Exception as e:
+            print(f"[SHADOW RELAY] ❌ IG DM send failed: {e}")
+            try:
+                http_requests.post(
+                    "https://slack.com/api/chat.postMessage",
+                    json={
+                        "channel": channel_id,
+                        "text": f"❌ Failed to send IG DM to lead: {e}",
+                        "thread_ts": thread_ts,
+                    },
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
+            return
 
-    # Add to conversation_history so Maya stays in sync
-    if wa_sender not in conversation_history:
-        conversation_history[wa_sender] = []
-    conversation_history[wa_sender].append({"role": "assistant", "content": text})
+        # Add to IG conversation_history so Maya stays in sync
+        _ig_sender = f"instagram:{_igsid}"
+        if _ig_sender not in ig_conversation_history:
+            ig_conversation_history[_ig_sender] = []
+        ig_conversation_history[_ig_sender].append({"role": "assistant", "content": text})
+        _channel_label = "[IG DM] "
+    else:
+        # ── WhatsApp: send via WhatsApp API ──
+        wa_sender = f"whatsapp:+{target_key}"
+        try:
+            send_whatsapp_meta(wa_sender, body=text)
+            print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_key}")
+        except Exception as e:
+            print(f"[SHADOW RELAY] ❌ WhatsApp send failed: {e}")
+            try:
+                http_requests.post(
+                    "https://slack.com/api/chat.postMessage",
+                    json={
+                        "channel": channel_id,
+                        "text": f"❌ Failed to send message to lead: {e}",
+                        "thread_ts": thread_ts,
+                    },
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
+            return
+
+        # Add to conversation_history so Maya stays in sync
+        if wa_sender not in conversation_history:
+            conversation_history[wa_sender] = []
+        conversation_history[wa_sender].append({"role": "assistant", "content": text})
+        _channel_label = ""
 
     # Post confirmation in the Slack thread
     try:
@@ -855,7 +931,7 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
             "https://slack.com/api/chat.postMessage",
             json={
                 "channel": channel_id,
-                "text": f"✅ *MICHAEL (via Maya):*\n{text}",
+                "text": f"✅ *MICHAEL (via Maya {_channel_label}):*\n{text}",
                 "thread_ts": thread_ts,
             },
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
