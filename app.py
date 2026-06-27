@@ -12002,8 +12002,14 @@ def _sync_pipeline_canvas():
         _booked = ld.get("appt_booked", False)
         _status = (ld.get("status") or "").lower()
         _wa_status = (ld.get("wa_status") or "").lower()
+        _temperature = (ld.get("temperature") or "").lower()
         _cold = "cold" in _status or "cold" in _wa_status or "exhausted" in _wa_status
-        _converted = "converted" in _status or "client" in _status or "won" in _status
+        # Session 42: check Status, WhatsApp Status, AND Lead Temperature columns
+        # record_client_won() writes to WhatsApp Status + Lead Temperature but not Status
+        # Meeting report writes to Status column. Must check all three.
+        _converted = ("converted" in _status or "client" in _status or "won" in _status
+                      or "converted" in _wa_status or "client" in _wa_status or "won" in _wa_status
+                      or "converted" in _temperature)
 
         if _booked:
             booked += 1
