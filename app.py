@@ -6711,7 +6711,8 @@ def _cold_lead_checker():
                         )
                         if _re_added:
                             lead_data[phone]["reengagement_enqueued"] = True
-                            print(f"[Re-engagement] Enqueued {phone} ({_re_name}) — {int(hours_silent)}h silent")
+                            _re_ch = "[IG DM] " if phone.startswith("instagram:") else ""
+                            print(f"[Re-engagement] {_re_ch}Enqueued {phone} ({_re_name}) — {int(hours_silent)}h silent")
                     except Exception as _re_err:
                         print(f"[Re-engagement] Enqueue error for {phone} (non-fatal): {_re_err}")
 
@@ -6735,11 +6736,13 @@ def _cold_lead_checker():
                     )
                     lead_data[phone]["cold_fired"] = True
                     # ── Pipeline Event: COLD_DETECTED ──
+                    # Session 41: detect IG DM leads for correct source/key
+                    _is_ig_cold = phone.startswith("instagram:")
                     _post_pipeline_event(
                         "COLD_DETECTED",
                         lead_name=name,
                         lead_phone=phone,
-                        source=data.get("source", "WhatsApp"),
+                        source="Instagram" if _is_ig_cold else data.get("source", "WhatsApp"),
                         old_stage="Contacted",
                         new_stage="Cold",
                         assigned_agents=["Maya", "Eric"],
@@ -6747,7 +6750,8 @@ def _cold_lead_checker():
                     )
                     # ── Update Google Sheet: mark as cold ──
                     try:
-                        update_lead_columns(f"whatsapp:+{phone}", {
+                        _cold_key = phone if _is_ig_cold else f"whatsapp:+{phone}"
+                        update_lead_columns(_cold_key, {
                             "WhatsApp Status": "Cold - No Reply",
                             "Lead Temperature": "Cold",
                         })
@@ -7398,18 +7402,45 @@ def _notify_cold_lead_pipeline(phone, name, business):
         print(f"Eric cold-lead notification failed (non-fatal): {e}")
 
 
-def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False):
+# ── IG DM Re-engagement Messages (Session 41) ──────────────────────────────────────
+# WhatsApp uses pre-approved templates; IG DM uses natural conversational text.
+# Instagram messaging window: 24h standard, up to 7 days with HUMAN_AGENT tag.
+# T5-T7 (days 10-14) will likely be outside the window — handled gracefully.
+IG_REENGAGEMENT_MESSAGES = {
+    "T1": "Hey {name}! Just checking in — you seemed interested in our studio. Still thinking about a project? We'd love to help! \U0001f3ac",
+    "T2": "Hi {name}! Wanted to share — we've been creating some amazing content lately, from brand videos to podcasts. Check out our work on our page! Would love to chat about what you have in mind \U0001f3a5",
+    "T3": "Hey {name}, circling back! We've got some exciting availability at the studio. If you're still exploring options for video content, I'd love to hear what you're working on \U0001f60a",
+    "T4": "Hi {name}! Quick thought — our recent clients have been seeing great results with professional video content. Would love to help you create something amazing too. Want to chat about it? \u2728",
+    "T5": "Hey {name}! Just a heads-up — we're offering free consultations right now. No pressure, just a chance to explore how video content could elevate your brand. Interested? \U0001f4c5",
+    "T6": "Hi {name}! Pro tip from our studio: short-form video is one of the best ways to build brand awareness right now. If you've been thinking about content strategy, we'd love to brainstorm with you \U0001f680",
+    "T7": "Hey {name}, last check-in from us! We'd love to work with you when the time is right. Our DMs are always open — feel free to reach out whenever you're ready. Wishing you all the best! \U0001f64c",
+}
+
+# Max IG DM window in hours (7 days) — after this, IG API rejects messages
+IG_DM_WINDOW_HOURS = 168
+
+
+def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False, is_ig=False):
     """Mirror re-engagement template sends to #maya-shadow for visibility."""
     if not SLACK_MAYA_SHADOW_CHANNEL:
         return
     try:
         first_name = (name or "there").split()[0]
+        _channel_tag = "[IG DM] " if is_ig else ""
         if is_cold:
-            msg = (f"\u2744\ufe0f *Re-engagement sequence exhausted* for {first_name}\n"
-                   f"All 3 templates sent with no reply. Lead marked *Cold* — queued for Agent Maya personalized outreach + Eric retargeting.")
+            if is_ig:
+                msg = (f"\u2744\ufe0f *{_channel_tag}Re-engagement sequence ended* for {first_name}\n"
+                       f"IG messaging window expired or all reachable touches sent. Lead marked *Cold*.")
+            else:
+                msg = (f"\u2744\ufe0f *Re-engagement sequence exhausted* for {first_name}\n"
+                       f"All 7 templates sent with no reply. Lead marked *Cold* \u2014 queued for Agent Maya personalized outreach + Eric retargeting.")
         else:
-            msg = (f"\U0001f4e4 *Re-engagement {stage} sent* to {first_name}\n"
-                   f"Template: `{template_name}`")
+            if is_ig:
+                msg = (f"\U0001f4e4 *{_channel_tag}Re-engagement {stage} sent* to {first_name}\n"
+                       f"Message: _{template_name}_")
+            else:
+                msg = (f"\U0001f4e4 *Re-engagement {stage} sent* to {first_name}\n"
+                       f"Template: `{template_name}`")
         shadow_identity = {
             "name": name or "Unknown",
             "phone": phone,
@@ -7420,7 +7451,6 @@ def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=Fa
         _mirror_to_maya_shadow_async(shadow_identity, "outbound", msg)
     except Exception as e:
         print(f"[MAYA SHADOW] Re-engagement mirror error: {e}")
-
 
 def _reengagement_checker():
     """Background thread: process re-engagement queue every 30 minutes.
@@ -7475,13 +7505,49 @@ def _reengagement_checker():
                                 next_stage = s
                         break
 
+                # ── Session 41: IG DM channel detection ──
+                _is_ig = phone.startswith("instagram:")
+
+                # ── Session 41: IG DM window expiry check ──
+                # Instagram messaging window is 7 days max. If we're past that
+                # and still have unsent stages, mark as Cold — we can't reach them.
+                if _is_ig and hours_since >= IG_DM_WINDOW_HOURS and next_stage:
+                    update_reengagement_row(row_idx, {
+                        "Status": "Cold",
+                        "Notes": f"IG DM window expired ({int(hours_since)}h silent). Last sent: {next_stage or 'none'}. Flagged cold {now.strftime('%Y-%m-%d')}",
+                    })
+                    try:
+                        update_lead_columns(phone, {
+                            "WhatsApp Status": "Cold - IG Window Expired",
+                            "Lead Temperature": "Cold",
+                        })
+                    except Exception:
+                        pass
+                    print(f"[Re-engagement] [IG DM] {phone} ({name}) — window expired at {int(hours_since)}h, marked Cold")
+                    _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
+                    continue
+
                 if next_stage:
-                    if send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES[next_stage]):
+                    if _is_ig:
+                        # ── IG DM: send natural text via Instagram API ──
+                        _igsid = phone.replace("instagram:", "")
+                        _first = (name or "there").split()[0]
+                        _ig_msg = IG_REENGAGEMENT_MESSAGES.get(next_stage, "").format(name=_first)
+                        _result = send_instagram_dm(_igsid, body=_ig_msg)
+                        _sent = _result is not None
+                        _display_msg = _ig_msg
+                    else:
+                        # ── WhatsApp: send pre-approved template ──
+                        _sent = send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES[next_stage])
+                        _display_msg = REENGAGEMENT_TEMPLATES[next_stage]
+
+                    if _sent:
                         update_reengagement_row(row_idx, {
                             f"{next_stage} Sent": now.strftime("%Y-%m-%d %H:%M"),
                         })
-                        print(f"[Re-engagement] {next_stage} sent to {phone} ({name})")
-                        _mirror_reengagement_to_shadow(phone, name, next_stage, REENGAGEMENT_TEMPLATES[next_stage])
+                        _ch = "[IG DM] " if _is_ig else ""
+                        print(f"[Re-engagement] {_ch}{next_stage} sent to {phone} ({name})")
+                        _mirror_reengagement_to_shadow(phone, name, next_stage, _display_msg, is_ig=_is_ig)
 
                 elif all(sent_flags[s] for s in stages):
                     # All 7 templates sent - check if cold threshold reached
@@ -7496,16 +7562,19 @@ def _reengagement_checker():
                             })
                             # Update lead temperature in the main pipeline Sheet
                             try:
-                                update_lead_columns(f"whatsapp:+{re.sub(r'[^0-9]', '', phone)}", {
+                                _lead_key = phone if _is_ig else f"whatsapp:+{re.sub(r'[^0-9]', '', phone)}"
+                                update_lead_columns(_lead_key, {
                                     "WhatsApp Status": "Cold - Queued for Agent Maya + Retargeting",
                                     "Lead Temperature": "Cold",
                                 })
                             except Exception:
                                 pass
                             # Hand off to Agent Maya (WhatsApp Web) + Eric (retargeting)
-                            _notify_cold_lead_pipeline(phone, name, business)
-                            print(f"[Re-engagement] {phone} ({name}) marked Cold — queued for Agent Maya outreach + Eric retargeting")
-                            _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True)
+                            if not _is_ig:
+                                _notify_cold_lead_pipeline(phone, name, business)
+                            _ch = "[IG DM] " if _is_ig else ""
+                            print(f"[Re-engagement] {_ch}{phone} ({name}) marked Cold — queued for Agent Maya outreach + Eric retargeting")
+                            _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=_is_ig)
                     except Exception:
                         pass
 
