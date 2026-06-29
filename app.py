@@ -2707,6 +2707,10 @@ def get_available_slots():
         for event in events_result.get("items", []):
             start_info = event.get("start", {})
             end_info = event.get("end", {})
+            # Skip FREE events (transparency="transparent") — they're reminders,
+            # not real blocks. Only "opaque" (busy) events block availability.
+            if event.get("transparency") == "transparent":
+                continue
             if "dateTime" in start_info and "dateTime" in end_info:
                 busy_times.append({
                     "start": start_info["dateTime"],
@@ -2904,10 +2908,12 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 timeMax=buffer_end.isoformat(),
                 singleEvents=True,
             ).execute().get("items", [])
-            # Filter to timed events only (ignore all-day events)
+            # Filter to timed BUSY events only (ignore all-day events and FREE events)
+            # transparency="transparent" means FREE — it's a reminder, not a real block
             timed_conflicts = [
                 ev for ev in conflict_events
                 if "dateTime" in ev.get("start", {})
+                and ev.get("transparency") != "transparent"
             ]
             if timed_conflicts:
                 conflict_names = [ev.get("summary", "Unknown") for ev in timed_conflicts]
