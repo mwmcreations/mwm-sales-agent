@@ -3338,9 +3338,16 @@ def check_specific_slot(requested_datetime):
             # Skip all-day events
             if "dateTime" not in start_info or "dateTime" not in end_info:
                 continue
+            # Skip FREE events (transparency="transparent") — they're reminders,
+            # not real blocks. Only "opaque" (busy) events block availability.
+            if event.get("transparency") == "transparent":
+                continue
             ev_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
             ev_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
-            if ev_start < slot_end and ev_end > candidate:
+            # Check overlap against the BUFFERED window, not the raw slot time.
+            # This must match book_appointment's race guard logic — any busy event
+            # inside the buffer window blocks the slot (prevents back-to-back meetings).
+            if ev_start < window_end and ev_end > window_start:
                 blocking_events.append(f"{event.get('summary', 'Unnamed')} ({ev_start.strftime('%H:%M')}–{ev_end.strftime('%H:%M')})")
 
         if blocking_events:
