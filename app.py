@@ -74,6 +74,10 @@ ig_conversation_history = {}
 # Keyed by IGSID digits → Slack thread_ts
 ig_shadow_threads = {}
 
+# Track IGSIDs that received 403 Forbidden (messaging window closed).
+# Prevents re-engagement system from retrying leads whose 24h window expired.
+_ig_403_blocked = set()
+
 
 def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
                        phone_number_id: str = None):
@@ -191,6 +195,17 @@ def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None
             last_err = e
             if hasattr(e, "response") and e.response is not None:
                 print(f"   Response: {e.response.text}")
+                # ── 403 = messaging window closed — do NOT retry ──
+                if e.response.status_code == 403:
+                    print(f"🚫 IG DM 403 Forbidden for {recipient_id} — messaging window closed. Not retrying.")
+                    _ig_403_blocked.add(recipient_id)
+                    _notify_error_to_dev(
+                        "Instagram DM Window Closed",
+                        f"IG DM to {recipient_id} blocked (403) — 24h messaging window expired. Lead marked window-expired; re-engagement will skip.",
+                        lead_info=f"IGSID: {recipient_id}",
+                        severity="WARNING"
+                    )
+                    return None
             if _attempt < 2:
                 _wait = (2 ** _attempt) * 0.5
                 print(f"⚠️ IG DM attempt {_attempt + 1}/3 failed: {e} — retrying in {_wait}s")
@@ -6293,6 +6308,9 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
     """
     sender = f"instagram:{sender_id}"
 
+    # ── Clear 403 block if user messages back (reopens 24h window) ──
+    _ig_403_blocked.discard(sender_id)
+
     # ── Michael detection (by IG user ID if configured) ──
     _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
     is_michael = bool(_michael_ig_id and sender_id == _michael_ig_id)
@@ -7542,8 +7560,10 @@ IG_REENGAGEMENT_MESSAGES = {
     "T7": "Hey {name}, last check-in from us! We'd love to work with you when the time is right. Our DMs are always open — feel free to reach out whenever you're ready. Wishing you all the best! \U0001f64c",
 }
 
-# Max IG DM window in hours (7 days) — after this, IG API rejects messages
-IG_DM_WINDOW_HOURS = 168
+# Max IG DM window in hours — Instagram blocks outbound messages 24h after
+# the user's last message. Previous value (168h/7d) was too generous and caused
+# repeated 403 errors from the re-engagement system.
+IG_DM_WINDOW_HOURS = 24
 
 
 def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False, is_ig=False):
@@ -7657,6 +7677,22 @@ def _reengagement_checker():
                     if _is_ig:
                         # ── IG DM: send natural text via Instagram API ──
                         _igsid = phone.replace("instagram:", "")
+                        # Skip if this IGSID already got 403'd (window closed)
+                        if _igsid in _ig_403_blocked:
+                            update_reengagement_row(row_idx, {
+                                "Status": "Cold",
+                                "Notes": f"IG DM 403 window closed. Marked cold {now.strftime('%Y-%m-%d')}",
+                            })
+                            try:
+                                update_lead_columns(phone, {
+                                    "WhatsApp Status": "Cold - IG Window Expired",
+                                    "Lead Temperature": "Cold",
+                                })
+                            except Exception:
+                                pass
+                            print(f"[Re-engagement] [IG DM] {phone} ({name}) — skipped, 403-blocked (window closed)")
+                            _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
+                            continue
                         _first = (name or "there").split()[0]
                         _ig_msg = IG_REENGAGEMENT_MESSAGES.get(next_stage, "").format(name=_first)
                         _result = send_instagram_dm(_igsid, body=_ig_msg)
