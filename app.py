@@ -12848,19 +12848,63 @@ def meeting_report_submit():
     except Exception as e:
         print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
 
-    # ── Post-Visit WhatsApp Template (outside 24h window) ──
-    # Look up the lead's phone from Google Sheets, then send the
-    # appropriate template. Runs in background to not delay the response.
+    # ── Post-Visit Follow-Up (WhatsApp template OR IG DM) ──
+    # Check lead source: if they came from Instagram, send reschedule via IG DM.
+    # Otherwise, send WhatsApp template (works outside 24h window).
     template_sent = False
+    ig_dm_sent = False
     if outcome != "not_interested":
-        try:
-            lead_phone = _lookup_lead_phone(name)
-            if lead_phone:
-                template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
-            else:
-                print(f"[MEETING REPORT] No phone found for '{name}' — template not sent")
-        except Exception as e:
-            print(f"[MEETING REPORT] Template send error (non-blocking): {e}")
+        # Determine lead source: check lead_data for instagram: key matching this name
+        _lead_source = "WhatsApp"  # default
+        _lead_igsid = None
+        clean_lead_name = (name or "").strip().lower()
+        for _ld_key, _ld_val in lead_data.items():
+            if _ld_key.startswith("instagram:") and _ld_val.get("name", "").strip().lower() == clean_lead_name:
+                _lead_source = "Instagram"
+                _lead_igsid = _ld_key.replace("instagram:", "")
+                break
+
+        if _lead_source == "Instagram" and _lead_igsid:
+            # Send reschedule/follow-up via IG DM
+            try:
+                first_name = (name or "there").split()[0]
+                if outcome == "no_show":
+                    ig_msg = (
+                        f"Hi {first_name}! We missed you today — no worries at all, things happen! "
+                        f"Would you like to reschedule? We'd love to find a time that works better for you. 😊"
+                    )
+                elif outcome == "client_won":
+                    ig_msg = (
+                        f"Thank you so much, {first_name}! We're thrilled to work with you. "
+                        f"Our team will be in touch shortly with next steps! 🎉"
+                    )
+                elif outcome == "follow_up":
+                    ig_msg = (
+                        f"Great meeting you, {first_name}! Thanks for taking the time. "
+                        f"I'll follow up with more details soon. Feel free to reach out if you have any questions! 😊"
+                    )
+                else:
+                    ig_msg = None
+
+                if ig_msg:
+                    _ig_result = send_instagram_dm(_lead_igsid, body=ig_msg)
+                    if _ig_result:
+                        ig_dm_sent = True
+                        print(f"[MEETING REPORT] IG DM follow-up sent to {first_name} (IGSID: {_lead_igsid[:6]}...)")
+                    else:
+                        print(f"[MEETING REPORT] IG DM send failed for {first_name} — may need to fall back to WhatsApp")
+            except Exception as e:
+                print(f"[MEETING REPORT] IG DM send error (non-blocking): {e}")
+        else:
+            # WhatsApp template path (original behavior)
+            try:
+                lead_phone = _lookup_lead_phone(name)
+                if lead_phone:
+                    template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                else:
+                    print(f"[MEETING REPORT] No phone found for '{name}' — template not sent")
+            except Exception as e:
+                print(f"[MEETING REPORT] Template send error (non-blocking): {e}")
 
     # Build actions list for success screen
     actions = [
@@ -12870,11 +12914,15 @@ def meeting_report_submit():
     if outcome == "client_won":
         actions.append("✅ LARA will set up production tracking")
         actions.append("✅ Rob will set up invoicing")
-        if template_sent:
+        if ig_dm_sent:
+            actions.append("✅ Maya sent welcome message via Instagram DM")
+        elif template_sent:
             actions.append("✅ Maya sent welcome message via WhatsApp")
     elif outcome == "follow_up":
-        actions.append("✅ Maya will continue WhatsApp nurture")
-        if template_sent:
+        actions.append("✅ Maya will continue nurture")
+        if ig_dm_sent:
+            actions.append("✅ Maya sent follow-up message via Instagram DM")
+        elif template_sent:
             actions.append("✅ Maya sent follow-up message via WhatsApp")
         if service:
             actions.append("✅ Susan can send follow-up email with portfolio")
@@ -12882,7 +12930,9 @@ def meeting_report_submit():
         actions.append("✅ Event marked as completed — no follow-up needed")
     elif outcome == "no_show":
         actions.append("✅ Maya will reach out to reschedule")
-        if template_sent:
+        if ig_dm_sent:
+            actions.append("✅ Maya sent reschedule message via Instagram DM")
+        elif template_sent:
             actions.append("✅ Maya sent reschedule message via WhatsApp")
         # Notify Susan to send a no-show follow-up email
         _susan_noshow_msg = (
