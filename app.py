@@ -12884,6 +12884,16 @@ def meeting_report_submit():
         actions.append("✅ Maya will reach out to reschedule")
         if template_sent:
             actions.append("✅ Maya sent reschedule message via WhatsApp")
+        # Notify Susan to send a no-show follow-up email
+        _susan_noshow_msg = (
+            f"📧 *NO-SHOW EMAIL NEEDED*\n"
+            f"*{name}*" + (f" ({business})" if business else "") + " was a no-show.\n"
+            f"Please send a friendly no-show follow-up email — express understanding, suggest rescheduling.\n"
+        )
+        if notes:
+            _susan_noshow_msg += f"*Notes from Michael:* {notes}\n"
+        _post_to_slack_async(SLACK_SUSAN_CHANNEL, _susan_noshow_msg)
+        actions.append("✅ Susan notified to send no-show email")
 
     actions.append("✅ CRM updated in Google Sheets")
 
