@@ -12865,38 +12865,67 @@ def meeting_report_submit():
                 break
 
         if _lead_source == "Instagram" and _lead_igsid:
-            # Send reschedule/follow-up via IG DM
-            try:
-                first_name = (name or "there").split()[0]
-                if outcome == "no_show":
-                    ig_msg = (
-                        f"Hi {first_name}! We missed you today — no worries at all, things happen! "
-                        f"Would you like to reschedule? We'd love to find a time that works better for you. 😊"
-                    )
-                elif outcome == "client_won":
-                    ig_msg = (
-                        f"Thank you so much, {first_name}! We're thrilled to work with you. "
-                        f"Our team will be in touch shortly with next steps! 🎉"
-                    )
-                elif outcome == "follow_up":
-                    ig_msg = (
-                        f"Great meeting you, {first_name}! Thanks for taking the time. "
-                        f"I'll follow up with more details soon. Feel free to reach out if you have any questions! 😊"
-                    )
-                else:
-                    ig_msg = None
+            # ── CASCADE: IG DM → WhatsApp template → Susan email ──
+            # Instagram leads: try IG DM first. If 24h window is closed (403),
+            # fall back to WhatsApp template (if we have their phone). If neither
+            # works, Susan's no-show email (sent separately) is the safety net.
+            first_name = (name or "there").split()[0]
+            if outcome == "no_show":
+                ig_msg = (
+                    f"Hi {first_name}! We missed you today — no worries at all, things happen! "
+                    f"Would you like to reschedule? We'd love to find a time that works better for you. 😊"
+                )
+            elif outcome == "client_won":
+                ig_msg = (
+                    f"Thank you so much, {first_name}! We're thrilled to work with you. "
+                    f"Our team will be in touch shortly with next steps! 🎉"
+                )
+            elif outcome == "follow_up":
+                ig_msg = (
+                    f"Great meeting you, {first_name}! Thanks for taking the time. "
+                    f"I'll follow up with more details soon. Feel free to reach out if you have any questions! 😊"
+                )
+            else:
+                ig_msg = None
 
-                if ig_msg:
-                    _ig_result = send_instagram_dm(_lead_igsid, body=ig_msg)
-                    if _ig_result:
-                        ig_dm_sent = True
-                        print(f"[MEETING REPORT] IG DM follow-up sent to {first_name} (IGSID: {_lead_igsid[:6]}...)")
-                    else:
-                        print(f"[MEETING REPORT] IG DM send failed for {first_name} — may need to fall back to WhatsApp")
-            except Exception as e:
-                print(f"[MEETING REPORT] IG DM send error (non-blocking): {e}")
+            if ig_msg:
+                # Step 1: Check if we already know the IG window is closed
+                if _lead_igsid in _ig_403_blocked:
+                    print(f"[MEETING REPORT] IG window closed for {first_name} (IGSID in 403 blocklist) — skipping to WhatsApp fallback")
+                else:
+                    # Step 2: Try IG DM
+                    try:
+                        _ig_result = send_instagram_dm(_lead_igsid, body=ig_msg)
+                        if _ig_result:
+                            ig_dm_sent = True
+                            print(f"[MEETING REPORT] IG DM follow-up sent to {first_name} (IGSID: {_lead_igsid[:6]}...)")
+                    except Exception as e:
+                        print(f"[MEETING REPORT] IG DM send error: {e}")
+
+                # Step 3: If IG DM failed, fall back to WhatsApp template
+                if not ig_dm_sent:
+                    print(f"[MEETING REPORT] IG DM unavailable for {first_name} — trying WhatsApp fallback")
+                    try:
+                        lead_phone = _lookup_lead_phone(name)
+                        if lead_phone:
+                            template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                            if template_sent:
+                                print(f"[MEETING REPORT] WhatsApp fallback succeeded for IG lead {first_name}")
+                        else:
+                            print(f"[MEETING REPORT] No phone found for IG lead '{name}' — Susan email is the fallback")
+                    except Exception as e:
+                        print(f"[MEETING REPORT] WhatsApp fallback error (non-blocking): {e}")
+
+                    # Step 4: If WhatsApp also failed, make sure Susan knows she's the only channel
+                    if not template_sent:
+                        _post_to_slack_async(SLACK_SUSAN_CHANNEL, (
+                            f"⚠️ *URGENT — ONLY CONTACT CHANNEL*\n"
+                            f"*{name}*" + (f" ({business})" if business else "") + f" is an Instagram lead.\n"
+                            f"IG DM window is closed and no WhatsApp available.\n"
+                            f"*Email is the only way to reach them.* Please prioritize this follow-up."
+                        ))
         else:
-            # WhatsApp template path (original behavior)
+            # WhatsApp template path (default for non-IG leads)
             try:
                 lead_phone = _lookup_lead_phone(name)
                 if lead_phone:
@@ -12911,19 +12940,28 @@ def meeting_report_submit():
         "✅ Posted event result to #pipeline",
         "✅ Notified Matt in #matt",
     ]
+    _is_ig_lead = (_lead_source == "Instagram")
     if outcome == "client_won":
         actions.append("✅ LARA will set up production tracking")
         actions.append("✅ Rob will set up invoicing")
         if ig_dm_sent:
             actions.append("✅ Maya sent welcome message via Instagram DM")
+        elif template_sent and _is_ig_lead:
+            actions.append("✅ IG window closed — Maya sent welcome via WhatsApp instead")
         elif template_sent:
             actions.append("✅ Maya sent welcome message via WhatsApp")
+        elif _is_ig_lead:
+            actions.append("⚠️ IG window closed, no WhatsApp available — Susan will email")
     elif outcome == "follow_up":
         actions.append("✅ Maya will continue nurture")
         if ig_dm_sent:
             actions.append("✅ Maya sent follow-up message via Instagram DM")
+        elif template_sent and _is_ig_lead:
+            actions.append("✅ IG window closed — Maya sent follow-up via WhatsApp instead")
         elif template_sent:
             actions.append("✅ Maya sent follow-up message via WhatsApp")
+        elif _is_ig_lead:
+            actions.append("⚠️ IG window closed, no WhatsApp available — Susan will email")
         if service:
             actions.append("✅ Susan can send follow-up email with portfolio")
     elif outcome == "completed":
@@ -12932,8 +12970,12 @@ def meeting_report_submit():
         actions.append("✅ Maya will reach out to reschedule")
         if ig_dm_sent:
             actions.append("✅ Maya sent reschedule message via Instagram DM")
+        elif template_sent and _is_ig_lead:
+            actions.append("✅ IG window closed — Maya sent reschedule via WhatsApp instead")
         elif template_sent:
             actions.append("✅ Maya sent reschedule message via WhatsApp")
+        elif _is_ig_lead:
+            actions.append("⚠️ IG window closed, no WhatsApp available — Susan email is only channel")
         # Notify Susan to send a no-show follow-up email
         _susan_noshow_msg = (
             f"📧 *NO-SHOW EMAIL NEEDED*\n"
