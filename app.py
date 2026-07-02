@@ -7017,56 +7017,34 @@ def _post_visit_checker():
                             _wa_phone = ph if ph.startswith("whatsapp:") else f"whatsapp:+{ph}"
                             break
 
-                # ── 2-HOUR FOLLOW-UP ──
+                # ── 2-HOUR FOLLOW-UP → DAILY EVENT REPORT REMINDER ──
                 # Time window: 2-5 hours after event ends. The upper bound prevents
                 # re-firing after Railway redeploys (which reset the in-memory set).
                 if 2 <= hours_since_end <= 5 and event_id not in _golden_hour_processed:
                     _golden_hour_processed.add(event_id)
                     _save_golden_hour_state()
-                    _name_parts = (_lead_name or "").split()
-                    first_name = _name_parts[0] if _name_parts else "there"
-                    print(f"🌟 [Golden Hour] 2h follow-up triggered for {_lead_name} (event {event_id})")
+                    print(f"📋 [Daily Report] Reminder triggered for {_lead_name} (event {event_id})")
 
-                    if _wa_phone:
-                        follow_up_msg = (
-                            f"Hey {first_name}! It was great meeting you today at MWM Creations! "
-                            f"I hope you enjoyed the tour and got a feel for what we can create together. "
-                            f"If you have any questions or want to discuss next steps, just send me a message here anytime. "
-                            f"Looking forward to working together! 🎬"
-                        )
-                        send_whatsapp_meta(_wa_phone, body=follow_up_msg)
-
-                    # ── Pipeline Event: VISIT_COMPLETE ──
-                    _post_pipeline_event(
-                        "VISIT_COMPLETE",
-                        lead_name=_lead_name,
-                        lead_phone=_wa_phone,
-                        source="Calendar",
-                        old_stage="Booked",
-                        new_stage="Visit Completed",
-                        assigned_agents=["Maya", "Susan", "Eric"],
-                        context=f"Studio visit completed. Golden Hour 2h WhatsApp sent. Susan: send portfolio email.",
-                        extra_fields={"Visit Type": summary, "Email": _lead_email or "N/A"},
-                    )
-
-                    # Post pipeline event for Susan (email follow-up with portfolio)
-                    if _lead_email and _lead_email.lower() not in ("not provided", "n/a", ""):
-                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
-                            f"📧 *Post-Visit Email Trigger*\n"
-                            f"*Lead:* {_lead_name}\n*Email:* {_lead_email}\n"
-                            f"*Action:* Susan should send portfolio email with relevant work samples.\n"
-                            f"*Visit type:* {summary}"
+                    # Skip if Michael already filed a report for this event
+                    if event_id not in _mr_reported_events:
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                            f"📋 *EVENT REPORT NEEDED*\n"
+                            f"*{summary}* with *{_lead_name}* has ended.\n"
+                            f"Please file your Daily Event Report:\n"
+                            f"→ mwm-sales-agent-production.up.railway.app/meeting-report"
                         ))
 
                 # ── NEXT-MORNING CHECK-IN ──
                 # Only fires if the visit was yesterday (12-28h window) and it's 9 AM
+                # AND Michael has filed a positive Daily Event Report for this event.
                 if (12 <= hours_since_end <= 28 and now.hour == 9
-                        and event_id not in _golden_hour_morning):
+                        and event_id not in _golden_hour_morning
+                        and _mr_reported_events.get(event_id) in ("client_won", "follow_up", "completed")):
                     _golden_hour_morning.add(event_id)
                     _save_golden_hour_state()
                     _name_parts = (_lead_name or "").split()
                     first_name = _name_parts[0] if _name_parts else "there"
-                    print(f"🌟 [Golden Hour] Next-morning check-in for {_lead_name} (event {event_id})")
+                    print(f"📋 [Daily Report] Next-morning check-in for {_lead_name} (event {event_id})")
 
                     if _wa_phone:
                         morning_msg = (
@@ -7360,6 +7338,7 @@ threading.Thread(target=_pre_meeting_briefer, daemon=True).start()
 # Posts NO_SHOW pipeline event, alerts Matt, updates lead status.
 # ══════════════════════════════════════════════════════════════════════
 
+_mr_reported_events = {}   # {event_id: outcome_str} — events already reported via Daily Event Report
 _noshow_processed = set()  # event IDs already flagged as no-show
 
 
@@ -7420,7 +7399,7 @@ def _noshow_detector():
                     if event_end > now:
                         continue
 
-                    # This event ended today, was NOT processed by Golden Hour = NO-SHOW
+                    # This event ended today, was NOT processed by Golden Hour
                     _noshow_processed.add(event_id)
 
                     # Extract lead info from description
@@ -7433,58 +7412,16 @@ def _noshow_detector():
                         elif line.startswith("Email:"):
                             _ns_email = line.replace("Email:", "").strip()
 
-                    # Find phone from lead_data
-                    if _ns_name:
-                        for ph, ld in lead_data.items():
-                            if ld.get("name", "").strip().lower() == _ns_name.lower():
-                                _ns_phone = ph
-                                break
+                    print(f"📋 [Daily Report] Event ended without report: {_ns_name or 'Unknown'} — {summary} (event {event_id})")
 
-                    print(f"[No-Show] DETECTED: {_ns_name} missed {summary} (event {event_id})")
-
-                    # Pipeline event
-                    _post_pipeline_event(
-                        "NO_SHOW",
-                        lead_name=_ns_name,
-                        lead_phone=_ns_phone,
-                        source=lead_data.get(_ns_phone, {}).get("source", "Unknown"),
-                        old_stage="Booked",
-                        new_stage="No-Show",
-                        assigned_agents=["Matt", "Maya"],
-                        context=f"Missed: {summary}. Maya should send a warm reschedule message.",
-                        extra_fields={"Event": summary, "Email": _ns_email or "N/A"},
-                    )
-
-                    # Alert Matt
-                    _notify_escalation_to_matt(
-                        _ns_name or "Unknown",
-                        _ns_phone.replace("whatsapp:", "") if _ns_phone else "Unknown",
-                        f"NO-SHOW: Lead missed their {summary}. Consider reaching out to reschedule.",
-                    )
-
-                    # Update lead status
-                    if _ns_phone and _ns_phone in lead_data:
-                        lead_data[_ns_phone]["booked"] = False
-                        lead_data[_ns_phone]["no_show"] = True
-                    try:
-                        if _ns_phone:
-                            update_lead_columns(_ns_phone, {
-                                "WhatsApp Status": "No-Show",
-                                "Lead Temperature": "Cool",
-                                "Appointment Booked": "No-Show",
-                            })
-                    except Exception:
-                        pass
-
-                    # Send Maya a reschedule message to the lead (if we have their phone)
-                    if _ns_phone and _ns_phone.startswith("whatsapp:"):
-                        first_name = (_ns_name or "there").split()[0]
-                        reschedule_msg = (
-                            f"Hey {first_name}! We missed you at the studio today. "
-                            f"No worries at all — things come up! Would you like to reschedule? "
-                            f"Just let me know what day works best for you."
-                        )
-                        send_whatsapp_meta(_ns_phone, body=reschedule_msg)
+                    # Skip if Michael already filed a report for this event
+                    if event_id not in _mr_reported_events:
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                            f"📋 *EVENT REPORT NEEDED*\n"
+                            f"*{summary}* with *{_ns_name or 'Unknown'}* has ended.\n"
+                            f"Please file your Daily Event Report:\n"
+                            f"→ mwm-sales-agent-production.up.railway.app/meeting-report"
+                        ))
 
         except Exception as e:
             print(f"[No-Show] Detector error: {e}")
@@ -12269,7 +12206,7 @@ MEETING_REPORT_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MWM Meeting Report</title>
+<title>MWM Daily Event Report</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -12353,13 +12290,13 @@ textarea { min-height: 70px; resize: vertical; }
 
 <div class="logo">
   <div class="logo-text">MWM Sales Machine</div>
-  <div class="logo-sub">Post-Meeting Report</div>
+  <div class="logo-sub">Daily Event Report</div>
 </div>
 
 <!-- PIN Screen -->
 <div id="pinScreen" class="show">
   <h1>Enter PIN</h1>
-  <p class="subtitle">Access code for the meeting report form</p>
+  <p class="subtitle">Access code for the event report</p>
   <div class="card">
     <div class="field">
       <input type="password" id="pinInput" placeholder="Enter 4-digit PIN" maxlength="10"
@@ -12372,8 +12309,8 @@ textarea { min-height: 70px; resize: vertical; }
 
 <!-- Form Screen -->
 <div id="formScreen">
-  <h1>Meeting Report</h1>
-  <p class="subtitle">Fill this out right after your meeting</p>
+  <h1>Daily Event Report</h1>
+  <p class="subtitle">Report outcomes for today's meetings, shoots &amp; sessions</p>
   <!-- Meetings Picker -->
   <div class="card" id="meetingsCard">
     <div class="meetings-picker">
@@ -12405,6 +12342,11 @@ textarea { min-height: 70px; resize: vertical; }
           <input type="radio" name="outcome" value="follow_up">
           <div class="oc-card"><span class="oc-icon">&#x1F504;</span>
             <div>Follow-up<span class="oc-sub">Needs time</span></div></div>
+        </label>
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="completed">
+          <div class="oc-card"><span class="oc-icon">&#x2705;</span>
+            <div>Completed<span class="oc-sub">Went as planned</span></div></div>
         </label>
         <label class="oc-option">
           <input type="radio" name="outcome" value="not_interested">
@@ -12528,11 +12470,12 @@ function selectMeeting(idx) {
   document.getElementById('leadBusiness').value = selectedMeeting.business || '';
 }
 
-// Toggle fields for no-show
+// Toggle fields for no-show / completed
 document.querySelectorAll('input[name="outcome"]').forEach(r => {
   r.addEventListener('change', () => {
     const ns = r.value === 'no_show';
-    document.getElementById('serviceField').style.display = ns ? 'none' : '';
+    const comp = r.value === 'completed';
+    document.getElementById('serviceField').style.display = (ns || comp) ? 'none' : '';
     document.getElementById('nextField').style.display = ns ? 'none' : '';
   });
 });
@@ -12564,7 +12507,8 @@ async function submitReport() {
         token: sessionStorage.getItem('mr_token'),
         name, business,
         outcome: outcomeEl.value,
-        notes, service, next_steps: nextSteps
+        notes, service, next_steps: nextSteps,
+        event_id: selectedMeeting ? selectedMeeting.event_id : ''
       })
     });
     const d = await r.json();
@@ -12802,6 +12746,7 @@ def meeting_report_meetings():
 OUTCOME_LABELS = {
     "client_won": {"emoji": "\U0001F389", "label": "CLIENT WON", "pipeline": "CLIENT_WON"},
     "follow_up": {"emoji": "\U0001F504", "label": "FOLLOW-UP NEEDED", "pipeline": "FOLLOW_UP"},
+    "completed": {"emoji": "✅", "label": "COMPLETED", "pipeline": "VISIT_COMPLETE"},
     "not_interested": {"emoji": "❌", "label": "NOT INTERESTED", "pipeline": "CLIENT_LOST"},
     "no_show": {"emoji": "\U0001F6AB", "label": "NO-SHOW", "pipeline": "NO_SHOW"},
 }
@@ -12822,6 +12767,7 @@ def meeting_report_submit():
     notes = data.get('notes', '').strip()
     service = data.get('service', '').strip()
     next_steps = data.get('next_steps', '').strip()
+    event_id = data.get('event_id', '')
 
     if not name or outcome not in OUTCOME_LABELS:
         return jsonify({"ok": False, "message": "Missing required fields."}), 400
@@ -12832,7 +12778,7 @@ def meeting_report_submit():
     date_str = now.strftime("%A, %B %d, %Y at %I:%M %p ET")
 
     # Build #pipeline message
-    pipeline_msg = f"{oc['emoji']} *MEETING REPORT — {oc['label']}*\n\n"
+    pipeline_msg = f"{oc['emoji']} *EVENT REPORT — {oc['label']}*\n\n"
     pipeline_msg += f"*Lead:* {name}\n"
     if business:
         pipeline_msg += f"*Business:* {business}\n"
@@ -12844,7 +12790,7 @@ def meeting_report_submit():
         pipeline_msg += f"\n*Service & Price:* {service}\n"
     if next_steps:
         pipeline_msg += f"\n*Next Steps:* {next_steps}\n"
-    pipeline_msg += "\n_Submitted by Michael via Post-Meeting Report_"
+    pipeline_msg += "\n_Submitted by Michael via Daily Event Report_"
 
     # Post to #pipeline
     post_to_slack(SLACK_PIPELINE_CHANNEL, pipeline_msg)
@@ -12878,6 +12824,14 @@ def meeting_report_submit():
         matt_msg += "\n"
         if notes:
             matt_msg += f"*Reason:* {notes}\n"
+    elif outcome == "completed":
+        matt_msg = f"{oc['emoji']} *Event completed:* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += "\n"
+        if notes:
+            matt_msg += f"*Notes:* {notes}\n"
+        matt_msg += "\n_No further action needed._"
     elif outcome == "no_show":
         matt_msg = f"{oc['emoji']} *No-show:* {name}"
         if business:
@@ -12909,7 +12863,7 @@ def meeting_report_submit():
 
     # Build actions list for success screen
     actions = [
-        "✅ Posted meeting result to #pipeline",
+        "✅ Posted event result to #pipeline",
         "✅ Notified Matt in #matt",
     ]
     if outcome == "client_won":
@@ -12923,12 +12877,20 @@ def meeting_report_submit():
             actions.append("✅ Maya sent follow-up message via WhatsApp")
         if service:
             actions.append("✅ Susan can send follow-up email with portfolio")
+    elif outcome == "completed":
+        actions.append("✅ Event marked as completed — no follow-up needed")
     elif outcome == "no_show":
         actions.append("✅ Maya will reach out to reschedule")
         if template_sent:
             actions.append("✅ Maya sent reschedule message via WhatsApp")
 
     actions.append("✅ CRM updated in Google Sheets")
+
+    # Track this event as reported so Golden Hour / No-Show detectors stop reminding
+    if event_id:
+        _mr_reported_events[event_id] = outcome
+        _golden_hour_processed.add(event_id)
+        _noshow_processed.add(event_id)
 
     print(f"[MEETING REPORT] {oc['label']}: {name} ({business or 'no business'}) — submitted by Michael")
 
@@ -12958,6 +12920,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
     status_map = {
         "client_won": "Client Won",
         "follow_up": "Follow-up Needed",
+        "completed": "Completed",
         "not_interested": "Not Interested",
         "no_show": "No-Show — Reschedule",
     }
