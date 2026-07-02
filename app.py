@@ -12321,6 +12321,7 @@ textarea { min-height: 70px; resize: vertical; }
     <div class="meetings-picker">
       <div class="meetings-title">Select your meeting</div>
       <div class="meetings-toggle">
+        <div class="toggle-btn" onclick="loadMeetings('yesterday')">Yesterday</div>
         <div class="toggle-btn active" onclick="loadMeetings('today')">Today</div>
         <div class="toggle-btn" onclick="loadMeetings('week')">This Week</div>
       </div>
@@ -12447,7 +12448,7 @@ async function loadMeetings(range) {
     if (!d.ok) { list.innerHTML = '<div class="meetings-empty">Could not load calendar</div>'; return; }
     allMeetings = d.meetings || [];
     if (allMeetings.length === 0) {
-      list.innerHTML = '<div class="meetings-empty">No meetings found for ' + (range === 'today' ? 'today' : 'this week') + '</div>';
+      list.innerHTML = '<div class="meetings-empty">No meetings found for ' + (range === 'today' ? 'today' : range === 'yesterday' ? 'yesterday' : 'this week') + '</div>';
       return;
     }
     list.innerHTML = '';
@@ -12693,6 +12694,8 @@ def meeting_report_meetings():
         # Get rest of this week (today through Sunday)
         days_until_sunday = 6 - now.weekday()
         dates = [now.date() + timedelta(days=d) for d in range(0, days_until_sunday + 1)]
+    elif range_param == 'yesterday':
+        dates = [now.date() - timedelta(days=1)]
     else:
         dates = [now.date()]
 
@@ -12753,7 +12756,9 @@ def meeting_report_meetings():
                         break
 
                 date_label = ""
-                if range_param == 'week' and d != now.date():
+                if range_param == 'yesterday':
+                    date_label = f"Yesterday — {day_names.get(d.weekday(), '')} {d.strftime('%-m/%-d')}"
+                elif range_param == 'week' and d != now.date():
                     date_label = f"{day_names.get(d.weekday(), '')} {d.strftime('%-m/%-d')}"
 
                 meetings.append({
