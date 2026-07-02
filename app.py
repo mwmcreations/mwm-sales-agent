@@ -12289,6 +12289,10 @@ textarea { min-height: 70px; resize: vertical; }
 <body>
 <div class="container">
 
+<div id="testBanner" style="display:none;background:#FFA500;color:#000;text-align:center;padding:10px;font-weight:bold;border-radius:8px;margin-bottom:12px;">
+  TEST MODE — No real messages will be sent
+</div>
+
 <div class="logo">
   <div class="logo-text">MWM Sales Machine</div>
   <div class="logo-sub">Daily Event Report</div>
@@ -12504,17 +12508,40 @@ async function submitReport() {
     const r = await fetch('/meeting-report/submit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
+      body: JSON.stringify(Object.assign({
         token: sessionStorage.getItem('mr_token'),
         name, business,
         outcome: outcomeEl.value,
         notes, service, next_steps: nextSteps,
         event_id: selectedMeeting ? selectedMeeting.event_id : ''
-      })
+      }, new URLSearchParams(window.location.search).get('test') === '1' ? {test_mode: true} : {}))
     });
     const d = await r.json();
     if (d.ok) {
-      document.getElementById('successDetail').innerHTML = d.actions.join('<br>');
+      if (d.test_mode) {
+        var testHtml = '<div style="background:#FFF3CD;border:2px solid #FFA500;border-radius:8px;padding:16px;margin-bottom:16px;">';
+        testHtml += '<h3 style="color:#856404;margin:0 0 8px;">TEST RESULTS — Nothing was sent</h3>';
+        testHtml += '<p style="color:#856404;margin:0 0 12px;"><strong>Source detected:</strong> ' + (d.source_detected || 'N/A') + '</p>';
+        testHtml += '<p style="color:#856404;margin:0 0 12px;"><strong>Cascade result:</strong> ' + (d.cascade_result || 'N/A') + '</p>';
+        testHtml += '</div>';
+        if (d.test_log && d.test_log.length) {
+          testHtml += '<h4 style="margin:12px 0 8px;">Actions that WOULD execute:</h4>';
+          d.test_log.forEach(function(l) {
+            testHtml += '<div style="background:#f8f9fa;border-radius:6px;padding:10px;margin:6px 0;font-size:13px;">';
+            testHtml += '<strong>' + l.action + '</strong>';
+            if (l.to) testHtml += ' &rarr; ' + l.to;
+            if (l.message_preview) testHtml += '<br><span style="color:#666;">' + l.message_preview.substring(0, 150) + '...</span>';
+            testHtml += '</div>';
+          });
+        }
+        testHtml += '<div style="margin-top:12px;">';
+        testHtml += '<h4 style="margin:0 0 8px;">Normal success actions:</h4>';
+        testHtml += d.actions.join('<br>');
+        testHtml += '</div>';
+        document.getElementById('successDetail').innerHTML = testHtml;
+      } else {
+        document.getElementById('successDetail').innerHTML = d.actions.join('<br>');
+      }
       document.getElementById('formScreen').classList.remove('show');
       document.getElementById('successScreen').classList.add('show');
     } else {
@@ -12545,6 +12572,11 @@ function resetForm() {
   document.getElementById('nextField').style.display = '';
   document.getElementById('successScreen').classList.remove('show');
   document.getElementById('formScreen').classList.add('show');
+}
+
+// Test mode banner
+if (new URLSearchParams(window.location.search).get('test') === '1') {
+  document.getElementById('testBanner').style.display = 'block';
 }
 
 // Auto-check stored token on load
@@ -12762,6 +12794,9 @@ def meeting_report_submit():
     if not _mr_verify_token(data.get('token', '')):
         return jsonify({"ok": False, "error": "auth"}), 401
 
+    test_mode = data.get('test_mode', False)
+    test_log = []
+
     name = data.get('name', '').strip()
     business = data.get('business', '').strip()
     outcome = data.get('outcome', '')
@@ -12794,7 +12829,10 @@ def meeting_report_submit():
     pipeline_msg += "\n_Submitted by Michael via Daily Event Report_"
 
     # Post to #pipeline
-    post_to_slack(SLACK_PIPELINE_CHANNEL, pipeline_msg)
+    if not test_mode:
+        post_to_slack(SLACK_PIPELINE_CHANNEL, pipeline_msg)
+    else:
+        test_log.append({"action": "Post to #pipeline", "channel": "SLACK_PIPELINE_CHANNEL", "message_preview": pipeline_msg[:200]})
 
     # Build #matt summary
     matt_msg = ""
@@ -12840,19 +12878,26 @@ def meeting_report_submit():
         matt_msg += " didn't show up for their meeting.\n"
         matt_msg += "\n_Maya — please reach out to reschedule._"
 
-    post_to_slack(SLACK_MATT_CHANNEL, matt_msg)
+    if not test_mode:
+        post_to_slack(SLACK_MATT_CHANNEL, matt_msg)
+    else:
+        test_log.append({"action": "Post to #matt", "channel": "SLACK_MATT_CHANNEL", "message_preview": matt_msg[:200]})
 
     # Update Google Sheets — find the lead row and update status
-    try:
-        _update_lead_sheet_status(name, outcome, notes, service, next_steps)
-    except Exception as e:
-        print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
+    if not test_mode:
+        try:
+            _update_lead_sheet_status(name, outcome, notes, service, next_steps)
+        except Exception as e:
+            print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
+    else:
+        test_log.append({"action": "Update Google Sheets CRM", "to": name, "message_preview": f"outcome={outcome}, notes={notes[:80] if notes else 'none'}"})
 
     # ── Post-Visit Follow-Up (WhatsApp template OR IG DM) ──
     # Check lead source: if they came from Instagram, send reschedule via IG DM.
     # Otherwise, send WhatsApp template (works outside 24h window).
     template_sent = False
     ig_dm_sent = False
+    _lead_source = "N/A"
     if outcome != "not_interested":
         # Determine lead source: check lead_data for instagram: key matching this name
         _lead_source = "WhatsApp"  # default
@@ -12894,13 +12939,20 @@ def meeting_report_submit():
                     print(f"[MEETING REPORT] IG window closed for {first_name} (IGSID in 403 blocklist) — skipping to WhatsApp fallback")
                 else:
                     # Step 2: Try IG DM
-                    try:
-                        _ig_result = send_instagram_dm(_lead_igsid, body=ig_msg)
+                    if not test_mode:
+                        try:
+                            _ig_result = send_instagram_dm(_lead_igsid, body=ig_msg)
+                            if _ig_result:
+                                ig_dm_sent = True
+                                print(f"[MEETING REPORT] IG DM follow-up sent to {first_name} (IGSID: {_lead_igsid[:6]}...)")
+                        except Exception as e:
+                            print(f"[MEETING REPORT] IG DM send error: {e}")
+                    else:
+                        # Simulate: check if window is blocked
+                        _ig_result = None if _lead_igsid in _ig_403_blocked else "TEST_SIMULATED"
                         if _ig_result:
                             ig_dm_sent = True
-                            print(f"[MEETING REPORT] IG DM follow-up sent to {first_name} (IGSID: {_lead_igsid[:6]}...)")
-                    except Exception as e:
-                        print(f"[MEETING REPORT] IG DM send error: {e}")
+                        test_log.append({"action": "IG DM" + (" (BLOCKED - 403)" if not _ig_result else ""), "to": f"IGSID:{_lead_igsid[:8]}...", "message_preview": ig_msg[:100]})
 
                 # Step 3: If IG DM failed, fall back to WhatsApp template
                 if not ig_dm_sent:
@@ -12908,7 +12960,11 @@ def meeting_report_submit():
                     try:
                         lead_phone = _lookup_lead_phone(name)
                         if lead_phone:
-                            template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                            if not test_mode:
+                                template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                            else:
+                                template_sent = True  # Simulate success
+                                test_log.append({"action": "WhatsApp Template (IG fallback)", "to": lead_phone[:8] + "...", "message_preview": f"template={POST_VISIT_TEMPLATES.get(outcome, 'N/A')}"})
                             if template_sent:
                                 print(f"[MEETING REPORT] WhatsApp fallback succeeded for IG lead {first_name}")
                         else:
@@ -12918,18 +12974,26 @@ def meeting_report_submit():
 
                     # Step 4: If WhatsApp also failed, make sure Susan knows she's the only channel
                     if not template_sent:
-                        _post_to_slack_async(SLACK_SUSAN_CHANNEL, (
+                        _susan_urgent_msg = (
                             f"⚠️ *URGENT — ONLY CONTACT CHANNEL*\n"
                             f"*{name}*" + (f" ({business})" if business else "") + f" is an Instagram lead.\n"
                             f"IG DM window is closed and no WhatsApp available.\n"
                             f"*Email is the only way to reach them.* Please prioritize this follow-up."
-                        ))
+                        )
+                        if not test_mode:
+                            _post_to_slack_async(SLACK_SUSAN_CHANNEL, _susan_urgent_msg)
+                        else:
+                            test_log.append({"action": "Slack DM to Susan (URGENT - only channel)", "to": "SLACK_SUSAN_CHANNEL", "message_preview": _susan_urgent_msg[:200]})
         else:
             # WhatsApp template path (default for non-IG leads)
             try:
                 lead_phone = _lookup_lead_phone(name)
                 if lead_phone:
-                    template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                    if not test_mode:
+                        template_sent = _send_post_visit_template(lead_phone, name, outcome, notes)
+                    else:
+                        template_sent = True  # Simulate success
+                        test_log.append({"action": "WhatsApp Template", "to": lead_phone[:8] + "...", "message_preview": f"template={POST_VISIT_TEMPLATES.get(outcome, 'N/A')}"})
                 else:
                     print(f"[MEETING REPORT] No phone found for '{name}' — template not sent")
             except Exception as e:
@@ -12984,18 +13048,43 @@ def meeting_report_submit():
         )
         if notes:
             _susan_noshow_msg += f"*Notes from Michael:* {notes}\n"
-        _post_to_slack_async(SLACK_SUSAN_CHANNEL, _susan_noshow_msg)
+        if not test_mode:
+            _post_to_slack_async(SLACK_SUSAN_CHANNEL, _susan_noshow_msg)
+        else:
+            test_log.append({"action": "Slack DM to Susan (no-show email)", "to": "SLACK_SUSAN_CHANNEL", "message_preview": _susan_noshow_msg[:200]})
         actions.append("✅ Susan notified to send no-show email")
 
     actions.append("✅ CRM updated in Google Sheets")
 
     # Track this event as reported so Golden Hour / No-Show detectors stop reminding
     if event_id:
-        _mr_reported_events[event_id] = outcome
-        _golden_hour_processed.add(event_id)
-        _noshow_processed.add(event_id)
+        if not test_mode:
+            _mr_reported_events[event_id] = outcome
+            _golden_hour_processed.add(event_id)
+            _noshow_processed.add(event_id)
+        else:
+            test_log.append({"action": "Track event as reported", "to": f"event_id={event_id}", "message_preview": f"Would mark as {outcome} in _mr_reported_events, _golden_hour_processed, _noshow_processed"})
 
-    print(f"[MEETING REPORT] {oc['label']}: {name} ({business or 'no business'}) — submitted by Michael")
+    print(f"[MEETING REPORT{'—TEST' if test_mode else ''}] {oc['label']}: {name} ({business or 'no business'}) — submitted by Michael")
+
+    if test_mode:
+        # Determine cascade info for test report
+        _test_cascade = "N/A"
+        if outcome != "not_interested":
+            if ig_dm_sent:
+                _test_cascade = "IG DM sent"
+            elif template_sent:
+                _test_cascade = "WhatsApp fallback" if (_lead_source == "Instagram") else "WhatsApp template sent"
+            else:
+                _test_cascade = "Email only (Susan)" if (_lead_source == "Instagram") else "No follow-up sent"
+        return jsonify({
+            "ok": True,
+            "test_mode": True,
+            "actions": actions,
+            "test_log": test_log,
+            "source_detected": _lead_source,
+            "cascade_result": _test_cascade,
+        })
 
     return jsonify({"ok": True, "actions": actions})
 
