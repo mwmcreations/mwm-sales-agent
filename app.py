@@ -7036,10 +7036,11 @@ def _post_visit_checker():
 
                 # ── NEXT-MORNING CHECK-IN ──
                 # Only fires if the visit was yesterday (12-28h window) and it's 9 AM
-                # AND Michael has filed a positive Daily Event Report for this event.
+                # AND Michael filed a lead-positive Daily Event Report (not "completed" —
+                # completed events are existing clients where Lara handles follow-through).
                 if (12 <= hours_since_end <= 28 and now.hour == 9
                         and event_id not in _golden_hour_morning
-                        and _mr_reported_events.get(event_id) in ("client_won", "follow_up", "completed")):
+                        and _mr_reported_events.get(event_id) in ("client_won", "follow_up")):
                     _golden_hour_morning.add(event_id)
                     _save_golden_hour_state()
                     _name_parts = (_lead_name or "").split()
