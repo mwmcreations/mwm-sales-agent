@@ -10767,7 +10767,7 @@ def web_chat_endpoint():
         max_tool_rounds = 5
         for _ in range(max_tool_rounds):
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=600,
                 system=system_prompt,
                 messages=api_messages,
