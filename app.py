@@ -972,6 +972,7 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
         try:
             send_whatsapp_meta(wa_sender, body=text)
             print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_key}")
+            _manual_mode[re.sub(r"\D", "", str(target_key))] = time.time() + 3600  # S2.5: mute Maya 60 min
         except Exception as e:
             print(f"[SHADOW RELAY] ❌ WhatsApp send failed: {e}")
             try:
@@ -6133,6 +6134,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
 
         def process_maya(snap, sndr, ctx="", identity=None, is_michael_ping=False):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
+            # S2.5: manual mode — Michael is driving this conversation via shadow relay
+            if not is_michael_ping and time.time() < _manual_mode.get(re.sub(r"\D", "", sndr), 0):
+                print(f"[MANUAL MODE] Auto-reply suppressed for {sndr} — Michael is driving")
+                return
             try:
                 reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx, is_owner=is_michael_ping)
                 conversation_history[sndr] = updated_history
@@ -7373,6 +7378,9 @@ threading.Thread(target=_pre_meeting_briefer, daemon=True).start()
 # ══════════════════════════════════════════════════════════════════════
 
 _mr_reported_events = {}   # {event_id: outcome_str} — events already reported via Daily Event Report
+_manual_mode = {}          # S2.5: {phone_digits: epoch_expiry} — Michael driving via shadow relay
+_cold_email_count = {}     # S2.2: {'date': 'YYYY-MM-DD', 'n': int} — daily cap on auto cold emails
+_lead_reminder_sent = set()  # S2.3: {'eventid:24h' / 'eventid:2h'}
 _noshow_processed = set()  # event IDs already flagged as no-show
 
 
@@ -7457,12 +7465,139 @@ def _noshow_detector():
                             f"→ mwm-sales-agent-production.up.railway.app/meeting-report"
                         ))
 
+                # ── S2.1: AUTO-OUTCOME FALLBACK ──
+                # Events that ended >24h ago with no Daily Event Report: default to
+                # 'follow_up' so the lead never freezes at 'booked'. Michael's report
+                # remains the override. client_won is NEVER set automatically.
+                y_start = day_start - timedelta(days=1)
+                y_events = service.events().list(
+                    calendarId=CALENDAR_ID,
+                    timeMin=y_start.isoformat(),
+                    timeMax=day_start.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime"
+                ).execute()
+                for event in y_events.get("items", []):
+                    event_id = event.get("id", "")
+                    summary = event.get("summary", "")
+                    if not any(kw in summary for kw in ["Studio Visit", "Strategy Call", "MWM", "Consultation"]):
+                        continue
+                    if event_id in _mr_reported_events:
+                        continue
+                    end_info = event.get("end", {})
+                    if "dateTime" not in end_info:
+                        continue
+                    _ao_name = ""
+                    for line in event.get("description", "").split("\n"):
+                        if line.startswith("Lead:"):
+                            _ao_name = line.replace("Lead:", "").strip()
+                    _mr_reported_events[event_id] = "follow_up_auto"
+                    print(f"[AUTO-OUTCOME] {_ao_name or 'Unknown'} ({summary}) -> follow_up (no report in 24h)")
+                    try:
+                        _update_lead_sheet_status(_ao_name, "follow_up",
+                            "AUTO: no Daily Event Report within 24h — defaulted to follow-up (S2.1)",
+                            "", "Maya continues nurture; Michael can override via the report form")
+                    except Exception as _ao_err:
+                        _report_error("Auto-outcome sheet update", _ao_err, f"lead={_ao_name}")
+                    _post_to_slack_async(SLACK_PIPELINE_CHANNEL, (
+                        f"\U0001f916 *AUTO OUTCOME — FOLLOW-UP*\n"
+                        f"*Lead:* {_ao_name or 'Unknown'}\n*Event:* {summary}\n"
+                        f"No Daily Event Report within 24h — defaulted to follow-up so the pipeline keeps moving."
+                    ))
+                    _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                        f"\U0001f916 Auto-outcome: *{_ao_name or 'Unknown'}* ({summary}) marked *follow-up* — no report in 24h. "
+                        f"Override anytime: mwm-sales-agent-production.up.railway.app/meeting-report"
+                    ))
+
         except Exception as e:
             print(f"[No-Show] Detector error: {e}")
         _time_ns.sleep(1500)  # Check every 25 min (stays under watchdog 30-min threshold)
 
 
 threading.Thread(target=_noshow_detector, daemon=True).start()
+
+
+def _lead_reminder_thread():
+    """S2.3: WhatsApp reminders to LEADS at T-24h and T-2h before Studio Visit / Strategy Call.
+    Free-form send works when the lead has an open 24h session; otherwise we alert #matt
+    for a manual touch (until an approved reminder template exists)."""
+    import time as _t
+    print("[REMINDERS] Lead reminder thread started (polls every 15 min)")
+    _t.sleep(720)
+    while True:
+        try:
+            _heartbeat("lead_reminder")
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+            service = get_calendar_service()
+            events_result = service.events().list(
+                calendarId=CALENDAR_ID,
+                timeMin=now.isoformat(),
+                timeMax=(now + timedelta(hours=26)).isoformat(),
+                singleEvents=True,
+                orderBy="startTime"
+            ).execute()
+            for event in events_result.get("items", []):
+                event_id = event.get("id", "")
+                summary = event.get("summary", "")
+                if not any(kw in summary for kw in ["Studio Visit", "Strategy Call"]):
+                    continue
+                start_info = event.get("start", {})
+                if "dateTime" not in start_info:
+                    continue
+                event_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
+                hours_until = (event_start - now).total_seconds() / 3600
+                stage = None
+                if 23.0 <= hours_until <= 25.0:
+                    stage = "24h"
+                elif 1.5 <= hours_until <= 2.5:
+                    stage = "2h"
+                if not stage:
+                    continue
+                mark = f"{event_id}:{stage}"
+                if mark in _lead_reminder_sent:
+                    continue
+                _lead_reminder_sent.add(mark)
+                _ln, _lp = "", ""
+                for line in event.get("description", "").split("\n"):
+                    if line.startswith("Lead:"):
+                        _ln = line.replace("Lead:", "").strip()
+                    elif line.startswith("Phone:"):
+                        _lp = re.sub(r"\D", "", line.replace("Phone:", ""))
+                if not _lp and _ln:
+                    for _k, _v in list(lead_data.items()):
+                        if _k.startswith("whatsapp:") and _v.get("name", "").strip().lower() == _ln.strip().lower():
+                            _lp = re.sub(r"\D", "", _k)
+                            break
+                when = event_start.strftime("%A at %I:%M %p")
+                if not _lp:
+                    _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                        f"\u23f0 Reminder due ({stage} before): *{_ln or 'Unknown'}* — {summary}, {when}. "
+                        f"No phone on file — manual reminder required."
+                    ))
+                    continue
+                _fn = (_ln or "there").split()[0]
+                if stage == "24h":
+                    msg = (f"Hi {_fn}! Maya from MWM Creations here \U0001f60a Just a friendly reminder about your "
+                           f"session tomorrow — {when}. We're excited to see you! Reply here if you need "
+                           f"anything or need to reschedule.")
+                else:
+                    msg = (f"Hi {_fn}! See you soon — your session with Michael starts at "
+                           f"{event_start.strftime('%I:%M %p')} today. Reply here if you need anything!")
+                result = send_whatsapp_meta(f"whatsapp:+{_lp}", body=msg)
+                if result:
+                    _post_to_slack_async(SLACK_PIPELINE_CHANNEL, f"\u23f0 \U0001f916 {stage} reminder sent to *{_ln}* — {summary}, {when}.")
+                else:
+                    _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                        f"\u26a0\ufe0f {stage} reminder to *{_ln}* FAILED (no open WhatsApp session). "
+                        f"Please remind them manually — {summary}, {when}."
+                    ))
+        except Exception as e:
+            _report_error("Lead reminder thread (S2.3)", e)
+        _t.sleep(900)
+
+
+threading.Thread(target=_lead_reminder_thread, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -7515,6 +7650,41 @@ def _notify_cold_lead_pipeline(phone, name, business):
         _post_to_slack_async(SLACK_ERIC_CHANNEL, eric_msg)
     except Exception as e:
         print(f"Eric cold-lead notification failed (non-fatal): {e}")
+
+    # ── S2.2: EXECUTE, don't just ask — automated farewell/value email ──
+    # Guardrails: only if we have the lead's email; max 5/day; failures alerted.
+    try:
+        global _cold_email_count
+        _email = ""
+        for _k, _v in list(lead_data.items()):
+            if _v.get("name", "").strip().lower() == (name or "").strip().lower() and _v.get("email"):
+                _email = _v["email"]
+                break
+        _today = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+        if _cold_email_count.get("date") != _today:
+            _cold_email_count.clear()
+            _cold_email_count.update({"date": _today, "n": 0})
+        if _email and _cold_email_count["n"] < 5:
+            from susan_gmail import send_gmail
+            _fn = (name or "there").split()[0]
+            _subj = f"{_fn}, the studio door stays open"
+            _body = (
+                f"<p>Hi {_fn},</p>"
+                f"<p>Maya here from MWM Creations &amp; Studios in Orlando. I reached out a few times "
+                f"about your video project and don't want to crowd your inbox — so this is my last note for now.</p>"
+                f"<p>When the timing is right, we'd love to help you create content that makes your brand "
+                f"impossible to ignore: brand videos, podcasts, and social content, all filmed in our professional studio.</p>"
+                f"<p>Just reply to this email or message us anytime — the door stays open.</p>"
+                f"<p>Warmly,<br>Maya — MWM Creations &amp; Studios</p>"
+            )
+            send_gmail(_email, _subj, _body)
+            _cold_email_count["n"] += 1
+            _post_to_slack_async(SLACK_SUSAN_CHANNEL, (
+                f"\U0001f916 S2.2 AUTO: farewell email sent to {name} <{_email}> "
+                f"(cold-lead exhaustion). {_cold_email_count['n']}/5 today. No action needed."
+            ))
+    except Exception as e:
+        _report_error("Cold-lead auto email (S2.2)", e, f"lead={name}")
 
 
 # ── IG DM Re-engagement Messages (Session 41) ──────────────────────────────────────
@@ -11433,7 +11603,10 @@ def form_webhook():
         greeting += "What's the best time for a quick chat about your vision?"
 
         try:
-            send_whatsapp_meta(wa_target, body=greeting)
+            _greet_result = send_whatsapp_meta(wa_target, body=greeting)  # S2.4
+            if not _greet_result:
+                _post_to_slack_async(SLACK_MATT_CHANNEL, f"\u26a0\ufe0f *Lead not reached on WhatsApp:* {name} ({wa_target}) — first-touch greeting failed (no open session; Meta blocks business-initiated free-form). Manual first touch needed until an approved template exists.")
+                _report_error("Lead first-touch WhatsApp (S2.4)", Exception("send returned None"), f"lead={name}")
             # Add to conversation history
             if wa_target not in conversation_history:
                 conversation_history[wa_target] = []
@@ -11700,7 +11873,10 @@ def meta_leads_webhook():
                 greeting += "What's the best time for a quick chat about your vision?"
 
                 try:
-                    send_whatsapp_meta(wa_target, body=greeting)
+                    _greet_result = send_whatsapp_meta(wa_target, body=greeting)  # S2.4
+                    if not _greet_result:
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, f"\u26a0\ufe0f *Lead not reached on WhatsApp:* {name} ({wa_target}) — first-touch greeting failed (no open session; Meta blocks business-initiated free-form). Manual first touch needed until an approved template exists.")
+                        _report_error("Lead first-touch WhatsApp (S2.4)", Exception("send returned None"), f"lead={name}")
                     if wa_target not in conversation_history:
                         conversation_history[wa_target] = []
                     conversation_history[wa_target].append({"role": "assistant", "content": greeting})
