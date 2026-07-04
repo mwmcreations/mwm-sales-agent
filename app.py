@@ -232,6 +232,12 @@ def download_meta_media(media_id: str):
     return resp2.content, resp2.headers.get("Content-Type", "")
 
 # Initialize Anthropic client
+# ── S1.1: Central model config — change models via Railway env, no code edit ──
+MODEL_MAIN = os.getenv("MODEL_MAIN", "claude-sonnet-4-6")
+MODEL_FAST = os.getenv("MODEL_FAST", "claude-haiku-4-5-20251001")
+MODEL_CANARY = os.getenv("MODEL_CANARY", "claude-fable-5")  # web chat canary
+_canary_failed = False
+
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Store conversation history per user (in-memory)
@@ -540,6 +546,20 @@ def post_to_slack(channel, text, blocks=None):
     except Exception as e:
         print(f"⚠️ Slack posting error (non-fatal): {e}")
         return None
+
+
+_error_bus_last = {}
+def _report_error(context, exc, detail=""):
+    """S1.3: central error reporter — print + rate-limited #dev alert (max 1/hr per context)."""
+    import time as _t
+    print(f"[ERROR] {context}: {exc} {detail}")
+    now_ts = _t.time()
+    if now_ts - _error_bus_last.get(context, 0) > 3600:
+        _error_bus_last[context] = now_ts
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f"\U0001f6a8 *{context}* failed: `{exc}` {detail}")
+        except Exception:
+            pass
 
 
 def _post_to_slack_async(channel, text, blocks=None):
@@ -2242,7 +2262,7 @@ def clean_gabriela_response(text: str) -> str:
 def get_gabriela_reply(messages: list) -> tuple:
     """Call Claude as Gabriela — no tools, Portuguese, Expo Brazil only."""
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=MODEL_FAST,
         max_tokens=600,
         system=GABRIELA_SYSTEM_PROMPT,
         messages=messages
@@ -4137,7 +4157,7 @@ def get_command_reply(messages):
         for _attempt in range(1, MAX_API_RETRIES + 1):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=2048,
                     system=_sys,
                     tools=COMMAND_TOOLS,
@@ -4642,21 +4662,30 @@ def update_lead_columns(sender: str, updates: dict):
     try:
         clean_phone = sender.replace("whatsapp:", "").replace("+", "")
         now = datetime.now(pytz.timezone(TIMEZONE))
-        tab_name = now.strftime("%b %Y")
         svc = get_sheets_service()
-        result = svc.spreadsheets().values().get(
-            spreadsheetId=SHEETS_LEADS_ID,
-            range=f"'{tab_name}'!A1:T",
-        ).execute()
-        rows = result.get("values", [])
-        if not rows:
-            return
-        headers = rows[0]
-        phone_col = headers.index("Phone") if "Phone" in headers else 4
+        # S1.3: a lead created last month has no row in this month's tab — search current then previous tab
+        prev_month = now.replace(day=1) - timedelta(days=1)
         target_row = None
-        for i, row in enumerate(rows[1:], start=2):
-            if len(row) > phone_col and re.sub(r"\D", "", row[phone_col]) == clean_phone:
-                target_row = i
+        headers = []
+        tab_name = None
+        for tab_name in [now.strftime("%b %Y"), prev_month.strftime("%b %Y")]:
+            try:
+                result = svc.spreadsheets().values().get(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"'{tab_name}'!A1:T",
+                ).execute()
+            except Exception:
+                continue  # tab may not exist
+            rows = result.get("values", [])
+            if not rows:
+                continue
+            headers = rows[0]
+            phone_col = headers.index("Phone") if "Phone" in headers else 4
+            for i, row in enumerate(rows[1:], start=2):
+                if len(row) > phone_col and re.sub(r"\D", "", row[phone_col]) == clean_phone:
+                    target_row = i
+            if target_row is not None:
+                break
         if target_row is None:
             return
         data = []
@@ -4672,7 +4701,7 @@ def update_lead_columns(sender: str, updates: dict):
             ).execute()
             print(f"[Sheets] Updated {list(updates.keys())} for {clean_phone}")
     except Exception as e:
-        print(f"\u26a0\ufe0f update_lead_columns failed (non-fatal): {e}")
+        _report_error("Sheets CRM write (update_lead_columns)", e, f"lead={sender}")  # S1.3
 
 
 def lookup_lead_in_sheets(sender: str) -> str:
@@ -5002,7 +5031,7 @@ You are responding to a lead who messaged you on Instagram DM. Adjust your behav
         for _attempt in range(1, MAX_API_RETRIES + 1):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=_sys,
                     tools=TOOLS,
@@ -5579,7 +5608,7 @@ def _handle_incoming_lara(sender: str, incoming_msg: str, num_media: int,
         if not handled:
             try:
                 cls_response = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
+                    model=MODEL_FAST,
                     max_tokens=300,
                     system="""You classify whether a message is a Lara production/client management action request. Lara handles:
 1. Production overview (all client statuses)
@@ -5686,7 +5715,7 @@ tell Michael you'll send a template message to initiate the conversation."""
         for _lara_attempt in range(1, 4):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=system_prompt,
                     messages=messages,
@@ -7976,7 +8005,7 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
             handled, calendar_result = handle_calendar_action(clean_text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -7999,7 +8028,7 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
             handled, action_result = handle_susan_gmail_action(clean_text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8025,7 +8054,7 @@ def _handle_general_agent_message(channel_id, text, user_id, agent_channel_id, t
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Maya sales action request. Maya handles:
 1. Pipeline/lead status summary
@@ -8081,7 +8110,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
                     except Exception as e:
                         print(f"[MAYA] Handoff posting error from #general: {e}")
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8104,7 +8133,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(clean_text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8130,7 +8159,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Susan email marketing action request. Susan handles:
 1. List campaigns (drafts, scheduled, sent, or all)
@@ -8182,7 +8211,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8208,7 +8237,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Victor screen management action request. Victor handles:
 1. Screen status (list all screens with online/offline status)
@@ -8258,7 +8287,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8284,7 +8313,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is an Eric Meta Ads action request. Eric handles:
 1. Get active campaigns (list running/active campaigns)
@@ -8333,7 +8362,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8356,7 +8385,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(clean_text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8382,7 +8411,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Rob Stripe action request. Rob handles:
 1. Get Stripe balance (available and pending balance)
@@ -8433,7 +8462,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8459,7 +8488,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Cris Wix action request. Cris handles:
 1. List Wix sites (all sites in account)
@@ -8510,7 +8539,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8533,7 +8562,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(clean_text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8559,7 +8588,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Lara production/client management action request. Lara handles:
 1. Production overview (all client statuses)
@@ -8618,7 +8647,7 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
 
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context + "\nYou are responding in #general because you were @mentioned. Keep your response focused and relevant.",
                     messages=[
@@ -8671,7 +8700,7 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
 
         conversation = [{"role": "user", "content": clean_text}]
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=MODEL_MAIN,
             max_tokens=1024,
             system=get_agent_system_prompt(agent) + history_context + general_suffix,
             messages=conversation,
@@ -9206,7 +9235,7 @@ def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
                     try:
                         print(f"[ANA] Confirmation fast-path triggered for: {text}")
                         confirm_resp = client.messages.create(
-                            model="claude-haiku-4-5-20251001",
+                            model=MODEL_FAST,
                             max_tokens=400,
                             system="""You are extracting calendar event details from a conversation where the user just CONFIRMED they want to proceed with a suggested calendar action.
 
@@ -9242,7 +9271,7 @@ Output ONLY the command string, nothing else.""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a calendar/scheduling action request. The message may be in ANY language (Portuguese, English, Spanish, etc.).
 You will also receive recent conversation history for context.
@@ -9301,7 +9330,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                     print(f"[ANA] Calendar classification fallback error: {e}")
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9333,7 +9362,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9369,7 +9398,7 @@ If it is NOT a calendar action, respond with: {"action": "none"}""",
                 try:
                     conversation_history = _get_slack_history(channel_id, limit=10)
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Maya sales action request. Maya handles:
 1. Pipeline/lead status summary
@@ -9433,7 +9462,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
 
                 # Present the result naturally through Maya
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9466,7 +9495,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Susan
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9501,7 +9530,7 @@ If it is NOT a Maya action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Susan email marketing action request. Susan handles:
 1. List campaigns (drafts, scheduled, sent, or all)
@@ -9558,7 +9587,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Susan
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9593,7 +9622,7 @@ If it is NOT a Susan action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Victor screen management action request. Victor handles:
 1. Screen status (list all screens with online/offline status)
@@ -9647,7 +9676,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Victor
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9682,7 +9711,7 @@ If it is NOT a Victor action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is an Eric Meta Ads action request. Eric handles:
 1. Get active campaigns (list running/active campaigns)
@@ -9736,7 +9765,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Eric
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9768,7 +9797,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9803,7 +9832,7 @@ If it is NOT an Eric action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Rob Stripe action request. Rob handles:
 1. Get Stripe balance (available and pending balance)
@@ -9857,7 +9886,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Rob
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9892,7 +9921,7 @@ If it is NOT a Rob action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Cris Wix action request. Cris handles:
 1. List Wix sites (all sites in account)
@@ -9946,7 +9975,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Cris
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -9978,7 +10007,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
             handled, action_result = handle_susan_gmail_action(text)
             if handled:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -10013,7 +10042,7 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
             if not handled:
                 try:
                     cls_response = client.messages.create(
-                        model="claude-haiku-4-5-20251001",
+                        model=MODEL_FAST,
                         max_tokens=300,
                         system="""You classify whether a message is a Lara production/client management action request. Lara handles:
 1. Production overview (all client statuses)
@@ -10084,7 +10113,7 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
             if handled:
                 # Present the result naturally through Lara
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MODEL_MAIN,
                     max_tokens=1024,
                     system=get_agent_system_prompt(agent) + history_context,
                     messages=[
@@ -10118,7 +10147,7 @@ If it is NOT a Lara action, respond with: {"action": "none"}""",
             # Ensure current message is included at the end
             conversation.append({"role": "user", "content": text})
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=MODEL_MAIN,
             max_tokens=1024,
             system=get_agent_system_prompt(agent) + history_context,
             messages=conversation if conversation else [{"role": "user", "content": text}]
@@ -10500,6 +10529,22 @@ IMPORTANT — WEBSITE-SPECIFIC RULES:
 """
 
 # Calendar tools available to web chat Maya (subset of WhatsApp tools)
+def _canary_messages_create(_client, **kwargs):
+    """S1.1: try MODEL_CANARY (Fable 5) on web chat; auto-fallback to MODEL_MAIN + one #dev alert."""
+    global _canary_failed
+    if not _canary_failed:
+        try:
+            return _client.messages.create(model=MODEL_CANARY, **kwargs)
+        except Exception as e:
+            _canary_failed = True
+            print(f"[MODEL] Canary {MODEL_CANARY} failed: {e} — falling back to {MODEL_MAIN}")
+            try:
+                _post_to_slack_async(SLACK_DEV_CHANNEL, f"⚠️ *Model canary* `{MODEL_CANARY}` failed on web chat — fell back to `{MODEL_MAIN}` until next deploy. Error: `{e}`")
+            except Exception:
+                pass
+    return _client.messages.create(model=MODEL_MAIN, **kwargs)
+
+
 WEB_CHAT_TOOLS = [
     {
         "name": "get_available_slots",
@@ -10770,13 +10815,13 @@ def web_chat_endpoint():
         # Tool loop — keep calling until we get a final text response
         max_tool_rounds = 5
         for _ in range(max_tool_rounds):
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
+            response = _canary_messages_create(
+                client,
                 max_tokens=600,
                 system=system_prompt,
                 messages=api_messages,
                 tools=WEB_CHAT_TOOLS
-            )
+            )  # S1.1: Fable 5 canary
 
             if response.stop_reason == "tool_use":
                 # Process tool calls
@@ -11823,8 +11868,10 @@ def _refresh_canvas_sections():
                     found[name] = sec_id
                     print(f"[CANVAS SYNC] Refreshed {name} \u2192 ...{sec_id[-12:]}")
             elif not data.get("ok"):  # S0.2: surface the real Slack error
+                globals()["_canvas_last_lookup_error"] = str(data.get("error", "unknown"))  # S1.2
                 print(f"[CANVAS SYNC] sections.lookup error for {name}: {data.get('error', 'unknown')}")
         except Exception as e:
+            globals()["_canvas_last_lookup_error"] = str(e)  # S1.2
             print(f"[CANVAS SYNC] sections.lookup failed for {name}: {e}")
 
     if len(found) >= 5:
@@ -11942,7 +11989,7 @@ def _read_leads_from_sheets():
                 continue
         return leads
     except Exception as e:
-        print(f"[CANVAS SYNC] Sheets read error: {e}")
+        _report_error("Sheets pipeline read (_read_leads_from_sheets)", e)  # S1.3
         return []
 
 
@@ -12199,7 +12246,7 @@ def _pipeline_canvas_sync_loop():
                 print("[CANVAS SYNC] \u26a0\ufe0f 0/5 sections written \u2014 heartbeat withheld (stale in /health)")
                 if not globals().get("_canvas_fail_alerted"):
                     globals()["_canvas_fail_alerted"] = True
-                    _post_to_slack_async(SLACK_DEV_CHANNEL, "\u26a0\ufe0f *Canvas sync wrote 0/5 sections* \u2014 section IDs likely stale. Heartbeat withheld so /health flags it.")
+                    _post_to_slack_async(SLACK_DEV_CHANNEL, f"\u26a0\ufe0f *Canvas sync wrote 0/5 sections* \u2014 heartbeat withheld so /health flags it. Last sections.lookup error: `{globals().get('_canvas_last_lookup_error', 'none captured')}`")  # S1.2
         except Exception as exc:
             print(f"[CANVAS SYNC] ❌ Sync FAILED — heartbeat NOT updated (will show stale in /health)")
             print(f"[CANVAS SYNC] Error: {exc}")
