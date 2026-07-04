@@ -4651,7 +4651,7 @@ def log_new_contact_to_sheets(sender: str):
         ).execute()
         print(f"â First-contact row logged for {clean_phone}")
     except Exception as e:
-        print(f"â ï¸ Could not log first contact to Sheets (non-fatal): {e}")
+        _report_error("Sheets CRM create (log_new_contact_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
 
 
 def update_lead_columns(sender: str, updates: dict):
@@ -4858,7 +4858,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
             ).execute()
             print(f"â Lead appended to Sheets (no existing row found): {clean_phone}")
     except Exception as e:
-        print(f"â ï¸ Could not log lead to Sheets (non-fatal): {e}")
+        _report_error("Sheets CRM log (log_lead_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
 
 
 def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
@@ -4918,7 +4918,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
             ).execute()
             print(f"â Booking row appended to Sheets (lead not found by phone)")
     except Exception as e:
-        print(f"â ï¸ Could not update booking in Sheets (non-fatal): {e}")
+        _report_error("Sheets booking update (update_booking_in_sheets)", e, f"lead={sender}")  # S3b.2 sweep
 
 
 # âââââââââââââââââââââââââââââââââââââââââââââ
@@ -7685,6 +7685,18 @@ def _notify_cold_lead_pipeline(phone, name, business):
             ))
     except Exception as e:
         _report_error("Cold-lead auto email (S2.2)", e, f"lead={name}")
+
+    # ── S3b.2: Meta Custom Audience add (activates when META_COLD_AUDIENCE_ID is set) ──
+    try:
+        from eric_meta import add_to_custom_audience
+        _aud_result = add_to_custom_audience(phone)
+        if _aud_result is True:
+            _post_to_slack_async(SLACK_ERIC_CHANNEL, f"\U0001f916 S3b AUTO: {name or phone} added to Meta cold-lead retargeting audience.")
+        elif _aud_result is False:
+            _report_error("Meta Custom Audience add (S3b.2)", Exception("API returned failure"), f"lead={name}")
+        # None = not configured — silent no-op
+    except Exception as e:
+        _report_error("Meta Custom Audience add (S3b.2)", e, f"lead={name}")
 
 
 # ── IG DM Re-engagement Messages (Session 41) ──────────────────────────────────────
@@ -11201,7 +11213,7 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
                     f"Note: This was the automated welcome. Susan — please send a personalized follow-up based on their form answers."
                 )
             else:
-                print(f"[Welcome Email] Failed for {to_email}: {result}")
+                _report_error("Welcome email send", Exception(str(result)[:200]), f"to={to_email}")  # S3b.2
                 _post_to_slack_async(SLACK_DEV_CHANNEL,
                     f"⚠️ Welcome email FAILED for {to_email} ({lead_name}): {str(result)[:200]}"
                 )
@@ -12003,13 +12015,17 @@ _CANVAS_SECTIONS = {
 }
 
 # Fingerprints for each section — used by _refresh_canvas_sections()
+# S3b.3: canvases.sections.lookup matches PLAIN TEXT (markdown stripped) —
+# the old fingerprints contained markdown syntax (**, |) and NEVER matched,
+# which is why section IDs had to be hand-captured on Jun 26. These markers
+# are plain text present in every synced version of each section.
 _CANVAS_FINGERPRINTS = {
-    "status_line":      "**Status:** LIVE",
-    "quick_stats":      "|Metric|Count|",
-    "source_breakdown": "|Source|Active|Booked|Converted|",
-    "active_leads":     "|Name|Source|Lead Type|Stage|Score|",
-    "system_status":    "|Component|Status|Last Check|",
-    "action_log":       "|Timestamp|Agent|Action|Lead|Details|",
+    "status_line":      "Automated 24/7",
+    "quick_stats":      "Total Active Leads",
+    "source_breakdown": "Instagram (Maya Outbound)",
+    "active_leads":     "Days in Stage",
+    "system_status":    "Last Check",
+    "action_log":       "Timestamp",
 }
 
 

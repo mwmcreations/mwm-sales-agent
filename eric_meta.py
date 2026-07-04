@@ -512,3 +512,40 @@ def handle_eric_action(text):
         return True, result
 
     return False, None
+
+
+# ── S3b.2: Cold-lead retargeting audience (Sales Machine automation) ──
+def add_to_custom_audience(phone, audience_id=None):
+    """Add a phone number to the Meta cold-lead retargeting Custom Audience.
+
+    Returns True on success, False on API failure, None when not configured
+    (no META_COLD_AUDIENCE_ID env var) — callers treat None as a silent no-op.
+    Phone is SHA256-hashed per Meta's user-data spec (normalized to digits
+    with country code, no plus).
+    """
+    import hashlib
+    import re as _re
+    audience_id = audience_id or os.getenv("META_COLD_AUDIENCE_ID", "")
+    if not audience_id:
+        return None
+    digits = _re.sub(r"\D", "", str(phone))
+    if not digits:
+        return False
+    hashed = hashlib.sha256(digits.encode("utf-8")).hexdigest()
+    try:
+        result = _meta_post(
+            f"{audience_id}/users",
+            {
+                "payload": {
+                    "schema": ["PHONE_SHA256"],
+                    "data": [[hashed]],
+                }
+            },
+        )
+        ok = bool(result) and not result.get("error")
+        if not ok:
+            print(f"[Eric] Custom audience add failed: {result}")
+        return ok
+    except Exception as e:
+        print(f"[Eric] Custom audience add error: {e}")
+        return False
