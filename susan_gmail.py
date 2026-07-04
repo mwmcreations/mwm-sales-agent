@@ -45,7 +45,7 @@ DRIVE_PROPOSALS_FOLDER_ID = os.getenv("SUSAN_DRIVE_PROPOSALS_FOLDER_ID", "128krn
 def _get_google_creds(scopes, subject="michael@mwmcreations.com"):
     """Build DWD credentials. Always impersonate michael@ (the actual Workspace user).
     info@ is a send-as alias, not a user account — cannot be impersonated directly."""
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")  # S0.1
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     from google.oauth2 import service_account as _sa
@@ -62,7 +62,7 @@ def _get_gmail_service():
 def _get_drive_service():
     """Drive API client for reading attachments."""
     # Drive uses michael@mwmcreations.com impersonation (file owner)
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")  # S0.1
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     from google.oauth2 import service_account as _sa

@@ -2655,7 +2655,7 @@ def get_calendar_service(impersonate=None):
     # When impersonating via DWD, only request calendar scope (DWD config doesn't include spreadsheets)
     cal_only_scopes = ["https://www.googleapis.com/auth/calendar"]
     scopes = cal_only_scopes if impersonate else SCOPES
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    creds_json = (os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))  # S0.1: accept either env name
     if creds_json:
         creds_dict = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(
@@ -2680,7 +2680,7 @@ def get_calendar_service(impersonate=None):
 def get_gmail_service(impersonate=None):
     """Gmail API client via Domain-Wide Delegation."""
     import json
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")  # S0.1
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON not set")
     info = json.loads(creds_json)
@@ -3065,6 +3065,10 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
     except Exception as e:
         print(f"Error booking appointment: {e}")
+        try:  # S0.4: booking failures must never be silent
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f"\U0001f6a8 *BOOKING FAILED* \u2014 book_appointment raised: `{e}`. Lead may believe they are booked \u2014 verify calendar + GOOGLE_CREDENTIALS_JSON.")
+        except Exception:
+            pass
         return None
 
 
@@ -4303,7 +4307,7 @@ SHEET_HEADERS = [
 
 def get_sheets_service():
     """Return an authenticated Google Sheets API service client."""
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    creds_json = (os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))  # S0.1: accept either env name
     if creds_json:
         creds_dict = json.loads(creds_json)
         creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
@@ -11095,6 +11099,7 @@ def health_check():
         "META_PAGE_ACCESS_TOKEN": bool(os.getenv("META_PAGE_ACCESS_TOKEN", "")),
         "INSTAGRAM_PAGE_ID": bool(os.getenv("INSTAGRAM_PAGE_ID", "")),  # IG DM Phase 1
         "INSTAGRAM_ACCESS_TOKEN": bool(os.getenv("INSTAGRAM_ACCESS_TOKEN", "")),  # IG DM token
+        "GOOGLE_CREDENTIALS_JSON": bool(os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")),  # S0.1: calendar/gmail/sheets auth
         # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
     }
     all_keys_ok = all(api_keys.values())
@@ -11724,10 +11729,12 @@ def _system_monitor():
         """Verify all critical environment variables are set."""
         critical = [
             "OPENAI_API_KEY", "SLACK_BOT_TOKEN", "META_ACCESS_TOKEN",
-            "META_PAGE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "META_PAGE_ACCESS_TOKEN",
             # GOOGLE_SHEETS_ID deprecated Session 31 — Pipeline Canvas is source of truth
         ]
         missing = [k for k in critical if not os.getenv(k, "")]
+        if not (os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")):
+            missing.append("GOOGLE_CREDENTIALS_JSON (or GOOGLE_SERVICE_ACCOUNT_JSON)")  # S0.5: check the var auth actually uses
         if missing:
             _alert("env_missing", f"🚨 *System Monitor:* Missing environment variables: {', '.join(missing)}")
 
@@ -11814,7 +11821,9 @@ def _refresh_canvas_sections():
                 sec_id = sec.get("id") or sec.get("section_id", "")
                 if sec_id:
                     found[name] = sec_id
-                    print(f"[CANVAS SYNC] Refreshed {name} → ...{sec_id[-12:]}")
+                    print(f"[CANVAS SYNC] Refreshed {name} \u2192 ...{sec_id[-12:]}")
+            elif not data.get("ok"):  # S0.2: surface the real Slack error
+                print(f"[CANVAS SYNC] sections.lookup error for {name}: {data.get('error', 'unknown')}")
         except Exception as e:
             print(f"[CANVAS SYNC] sections.lookup failed for {name}: {e}")
 
@@ -12151,11 +12160,11 @@ def _sync_pipeline_canvas():
 
     components = [
         ("Railway (Maya WhatsApp)", _status("system_monitor")),
-        ("Google Calendar API", ("✅ Fixed", now_str)),
+        ("Google Calendar API", (("\u2705 Creds present" if (os.getenv("GOOGLE_CREDENTIALS_JSON", "") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")) else "\U0001f534 No credential"), now_str)),  # S0.6
         ("Slack API", ("✅ Connected", now_str)),
         ("Meta WhatsApp API", _status("system_monitor")),
         ("Re-engagement Queue", _status("reengagement_checker")),
-        ("Pipeline Sync", ("✅ Synced", now_str)),
+        ("Pipeline Sync", _status("pipeline_canvas_sync")),  # S0.6: real heartbeat, not hardcoded
         ("Cold Lead Checker", _status("cold_lead_checker")),
     ]
     sys_rows = []
@@ -12182,8 +12191,15 @@ def _pipeline_canvas_sync_loop():
     while True:
         try:
             result = _sync_pipeline_canvas()
-            _heartbeat("pipeline_canvas_sync")  # heartbeat AFTER sync — only marks healthy if sync completes
-            print(f"[CANVAS SYNC] Heartbeat updated — {result}/5 sections written")
+            if result and result > 0:  # S0.2: heartbeat only on actual write success
+                _heartbeat("pipeline_canvas_sync")
+                print(f"[CANVAS SYNC] Heartbeat updated \u2014 {result}/5 sections written")
+                globals()["_canvas_fail_alerted"] = False
+            else:
+                print("[CANVAS SYNC] \u26a0\ufe0f 0/5 sections written \u2014 heartbeat withheld (stale in /health)")
+                if not globals().get("_canvas_fail_alerted"):
+                    globals()["_canvas_fail_alerted"] = True
+                    _post_to_slack_async(SLACK_DEV_CHANNEL, "\u26a0\ufe0f *Canvas sync wrote 0/5 sections* \u2014 section IDs likely stale. Heartbeat withheld so /health flags it.")
         except Exception as exc:
             print(f"[CANVAS SYNC] ❌ Sync FAILED — heartbeat NOT updated (will show stale in /health)")
             print(f"[CANVAS SYNC] Error: {exc}")
@@ -13101,7 +13117,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
         return
 
     try:
-        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or os.getenv("GOOGLE_CREDENTIALS_JSON", "")  # S0.1
         if not creds_json:
             return
         creds = service_account.Credentials.from_service_account_info(
@@ -13242,7 +13258,7 @@ def _lookup_lead_phone(name):
         return None
 
     try:
-        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "") or os.getenv("GOOGLE_CREDENTIALS_JSON", "")  # S0.1
         if not creds_json:
             return None
         creds = service_account.Credentials.from_service_account_info(

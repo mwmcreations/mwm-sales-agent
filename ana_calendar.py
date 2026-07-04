@@ -126,7 +126,7 @@ def _get_cal_service(impersonate=None):
     Workspace external sharing restrictions on group calendars.
     """
     import json
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    creds_json = (os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))  # S0.1: accept either env name
     if creds_json:
         creds_dict = json.loads(creds_json)
         # When impersonating via DWD, only request scopes authorized in Workspace Admin.
