@@ -12427,9 +12427,79 @@ def _pipeline_canvas_sync_loop():
             print(f"[CANVAS SYNC] ❌ Sync FAILED — heartbeat NOT updated (will show stale in /health)")
             print(f"[CANVAS SYNC] Error: {exc}")
             traceback.print_exc()
+            _report_error("Canvas sync exception (S3.2)", exc)  # exceptions were the last silent path
         _time.sleep(1800)  # Every 30 minutes
 
 threading.Thread(target=_pipeline_canvas_sync_loop, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S3.1 — POSTGRES STATE PERSISTENCE (kills deploy amnesia)
+# Restore runs once at import (threads are still in initial sleeps).
+# Saver thread snapshots state every 5 min. No-ops without DATABASE_URL.
+# ══════════════════════════════════════════════════════════════════════
+import pg_store as _pg
+
+def _restore_state_from_pg():
+    if not _pg.enabled():
+        print("[PG] DATABASE_URL not set — state persistence disabled (app runs normally)")
+        return
+    _pg.init_schema()
+    try:
+        for _k, _v in (_pg.load_state("lead_data", {}) or {}).items():
+            lead_data.setdefault(_k, _v)
+        for _k, _v in (_pg.load_state("conversation_history", {}) or {}).items():
+            conversation_history.setdefault(_k, _v)
+        for _k, _v in (_pg.load_state("ig_conversation_history", {}) or {}).items():
+            ig_conversation_history.setdefault(_k, _v)
+        for _k, _v in (_pg.load_state("lara_history", {}) or {}).items():
+            lara_history.setdefault(_k, _v)
+        for _k, _v in (_pg.load_state("maya_shadow_threads", {}) or {}).items():
+            maya_shadow_threads.setdefault(_k, _v)
+        for _k, _v in (_pg.load_state("lara_shadow_threads", {}) or {}).items():
+            lara_shadow_threads.setdefault(_k, _v)
+        _golden_hour_processed.update(_pg.load_state("golden_hour_processed", []) or [])
+        _golden_hour_morning.update(_pg.load_state("golden_hour_morning", []) or [])
+        _briefing_sent.update(_pg.load_state("briefing_sent", []) or [])
+        _noshow_processed.update(_pg.load_state("noshow_processed", []) or [])
+        _lead_reminder_sent.update(_pg.load_state("lead_reminder_sent", []) or [])
+        _mr_reported_events.update(_pg.load_state("mr_reported_events", {}) or {})
+        _manual_mode.update(_pg.load_state("manual_mode", {}) or {})
+        print(f"[PG] State restored — {len(lead_data)} leads, {len(conversation_history)} WA convos, "
+              f"{len(_mr_reported_events)} reported events, {len(_briefing_sent)} briefings")
+    except Exception as _e:
+        print(f"[PG] restore failed (non-fatal): {_e}")
+
+_restore_state_from_pg()
+
+
+def _state_saver_thread():
+    """S3.1: snapshot in-memory state to Postgres every 5 min."""
+    import time as _t
+    if not _pg.enabled():
+        return  # never registers a heartbeat — invisible to watchdog when disabled
+    _t.sleep(120)
+    while True:
+        try:
+            _heartbeat("state_saver")
+            _pg.save_state("lead_data", lead_data)
+            _pg.save_state("conversation_history", conversation_history)
+            _pg.save_state("ig_conversation_history", ig_conversation_history)
+            _pg.save_state("lara_history", lara_history)
+            _pg.save_state("maya_shadow_threads", maya_shadow_threads)
+            _pg.save_state("lara_shadow_threads", lara_shadow_threads)
+            _pg.save_state("golden_hour_processed", list(_golden_hour_processed))
+            _pg.save_state("golden_hour_morning", list(_golden_hour_morning))
+            _pg.save_state("briefing_sent", list(_briefing_sent))
+            _pg.save_state("noshow_processed", list(_noshow_processed))
+            _pg.save_state("lead_reminder_sent", list(_lead_reminder_sent))
+            _pg.save_state("mr_reported_events", _mr_reported_events)
+            _pg.save_state("manual_mode", _manual_mode)
+        except Exception as e:
+            _report_error("State saver (S3.1)", e)
+        _t.sleep(300)
+
+threading.Thread(target=_state_saver_thread, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
