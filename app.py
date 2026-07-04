@@ -48,7 +48,12 @@ META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
 # LARA_PHONE_NUMBER_ID — Phone number ID for the LARA WhatsApp sender (+1 407-537-7207).
 # Added Session 29 (2026-04-08) when LARA's WABA registration completed via Voice OTP.
 LARA_PHONE_NUMBER_ID = os.getenv("LARA_PHONE_NUMBER_ID", "")
-WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "mwm-maya-verify-2026")
+# S4.2: default removed — the old token was committed to the repo and is
+# considered exposed. The env var is now REQUIRED for webhook verification;
+# an empty value safely fails all hub.verify requests.
+WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN", "")
+if not WEBHOOK_VERIFY_TOKEN:
+    print("[CONFIG] WARNING: WEBHOOK_VERIFY_TOKEN not set — Meta webhook verification will fail until it is set in Railway")
 
 # ── Instagram DM Configuration (Session 38 — Phase 1: IG DM for US leads) ────
 # INSTAGRAM_PAGE_ID — The Facebook Page ID connected to the Instagram Business account.
@@ -250,7 +255,11 @@ lara_history = {}
 
 # ââ Lead tracking for cold-lead detection âââââââââââââââââââââââââââââââââââ
 # {sender: {"name": str, "email": str, "last_message_time": datetime, "booked": bool, "cold_fired": bool, "event_id": str|None}}
-lead_data = {}
+# S4.1: lead_data is now a write-through cache of the relational `leads`
+# table (leads_db.py) — every mutation is persisted within ~15s. Without
+# DATABASE_URL it behaves exactly like the plain dict it replaced.
+import leads_db as _leads_db
+lead_data = _leads_db.LeadData()
 
 # Google Calendar config
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
@@ -12110,6 +12119,50 @@ def _edit_canvas_section(section_id, markdown):
         return False
 
 
+_canvas_orphan_cleaned = False
+
+def _delete_canvas_orphan_header():
+    """S4.4: one-shot removal of the leftover "MWM Lead Pipeline — Sales Machine HQ"
+    H1 at the top of the canvas (orphan from the pre-S3b manual rebuild).
+    Idempotent: if lookup finds nothing, there is nothing to delete."""
+    global _canvas_orphan_cleaned
+    if _canvas_orphan_cleaned or not SLACK_BOT_TOKEN or not PIPELINE_CANVAS_ID:
+        return
+    _canvas_orphan_cleaned = True  # only ever try once per boot
+    try:
+        resp = http_requests.post(
+            "https://slack.com/api/canvases.sections.lookup",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                     "Content-Type": "application/json; charset=utf-8"},
+            json={"canvas_id": PIPELINE_CANVAS_ID,
+                  "criteria": {"contains_text": "MWM Lead Pipeline"}},
+            timeout=10,
+        )
+        data = resp.json()
+        sections = data.get("sections", []) if data.get("ok") else []
+        if not sections:
+            print("[CANVAS SYNC] Orphan header not found — already clean")
+            return
+        sec_id = sections[0].get("id") or sections[0].get("section_id", "")
+        if not sec_id:
+            return
+        resp = http_requests.post(
+            "https://slack.com/api/canvases.edit",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                     "Content-Type": "application/json"},
+            json={"canvas_id": PIPELINE_CANVAS_ID,
+                  "changes": [{"operation": "delete", "section_id": sec_id}]},
+            timeout=10,
+        )
+        result = resp.json()
+        if result.get("ok"):
+            print("[CANVAS SYNC] ✅ Orphan header deleted (S4.4)")
+        else:
+            print(f"[CANVAS SYNC] Orphan header delete failed: {result.get('error', 'unknown')}")
+    except Exception as e:
+        print(f"[CANVAS SYNC] Orphan cleanup error (non-fatal): {e}")
+
+
 def _read_leads_from_sheets():
     """Read ALL leads from Google Sheets for canvas sync.
     Returns a list of dicts with standardized keys.
@@ -12427,6 +12480,7 @@ def _pipeline_canvas_sync_loop():
     import time as _time
     import traceback
     _time.sleep(60)  # Wait 60s after boot for lead_data to load
+    _delete_canvas_orphan_header()  # S4.4: one-shot cosmetic cleanup
     while True:
         try:
             result = _sync_pipeline_canvas()
@@ -12461,8 +12515,24 @@ def _restore_state_from_pg():
         print("[PG] DATABASE_URL not set — state persistence disabled (app runs normally)")
         return
     _pg.init_schema()
+    # S4.1: relational leads table is the single source of truth for leads.
+    # Restore from it FIRST; if it's empty, migrate the legacy pg_store
+    # snapshot into it (one-time). The legacy setdefault below then only
+    # fills anything still missing.
     try:
+        _leads_db.set_error_reporter(_report_error)
+        if _leads_db.enabled() and _leads_db.init_schema():
+            _legacy_snap = _pg.load_state("lead_data", {}) or {}
+            _restored, _migrated = _leads_db.restore_into(lead_data, legacy_snapshot=_legacy_snap)
+            _mig_note = f" ({_migrated} migrated from legacy snapshot)" if _migrated else ""
+            print(f"[LEADS] {_restored} leads restored from relational table{_mig_note}")
+    except Exception as _e:
+        _report_error("Leads table restore (S4.1)", _e)
+    try:
+        _app_tz = pytz.timezone(TIMEZONE)
         for _k, _v in (_pg.load_state("lead_data", {}) or {}).items():
+            if isinstance(_v, dict):
+                _leads_db.revive_datetimes(_v, _app_tz)  # S4.1: ISO strings -> datetime (fixes silent cold-lead breakage post-restore)
             lead_data.setdefault(_k, _v)
         for _k, _v in (_pg.load_state("conversation_history", {}) or {}).items():
             conversation_history.setdefault(_k, _v)
@@ -12487,6 +12557,11 @@ def _restore_state_from_pg():
         print(f"[PG] restore failed (non-fatal): {_e}")
 
 _restore_state_from_pg()
+
+# S4.1: write-through flusher — dirty leads upserted every 15s, full sweep
+# every 5 min (catches deeply-nested mutations). New heartbeat: leads_flush
+# (monitors: expected-thread list grows by one when DATABASE_URL is set).
+_leads_db.start_flusher(lead_data, heartbeat=_heartbeat)
 
 
 def _state_saver_thread():
