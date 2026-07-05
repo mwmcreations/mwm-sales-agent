@@ -7940,6 +7940,20 @@ def _reengagement_checker():
                         _display_msg = _ig_msg
                     else:
                         # ── WhatsApp: send pre-approved template ──
+                        # S6.6: quarantine non-sendable phones BEFORE the send —
+                        # Status 'Phone Invalid' exits re-engagement eligibility,
+                        # so each bad lead alerts ONCE instead of every cycle.
+                        if _maya_actions_mod.normalize_wa_phone(phone) is None:
+                            update_reengagement_row(row_idx, {
+                                "Status": "Phone Invalid",
+                                "Notes": f"Quarantined S6.6 — phone not E.164-sendable "
+                                         f"(raw='{str(phone)[:24]}') {now.strftime('%Y-%m-%d %H:%M')}",
+                            })
+                            _report_error("reengagement_quarantine",
+                                          "invalid phone quarantined (131009 class)",
+                                          f"lead=...{re.sub(r'[^0-9]', '', phone)[-4:] or '????'} name={str(name)[:20]}")
+                            print(f"[Re-engagement] QUARANTINED {phone} ({name}) — invalid phone, removed from queue eligibility")
+                            continue
                         _tmpl = REENGAGEMENT_TEMPLATES[next_stage]
                         # S6.1: media template with no configured URL — skip AND
                         # advance (send_reengagement_template returns False for

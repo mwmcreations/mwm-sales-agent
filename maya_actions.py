@@ -900,6 +900,19 @@ def update_reengagement_row(row_index, updates):
         print(f"[Maya] Error updating re-engagement row {row_index}: {e}")
 
 
+def normalize_wa_phone(phone):
+    """S6.6: normalize to sendable WhatsApp digits (E.164 minus the '+').
+    Strips formatting, prepends '1' to bare 10-digit US numbers.
+    Returns the digit string, or None if the value can never be a valid
+    send target (IG-scoped ids, short/garbage values, leading-zero codes)."""
+    digits = re.sub(r"\D", "", str(phone).replace("whatsapp:", ""))
+    if len(digits) == 10:          # bare US number
+        digits = "1" + digits
+    if 11 <= len(digits) <= 14 and not digits.startswith("0"):
+        return digits
+    return None
+
+
 # S6.2: error-bus hook — app.py injects its _report_error here at boot so
 # template-send failures alert #dev instead of dying as silent prints.
 ERROR_REPORTER = None
@@ -917,19 +930,19 @@ def send_reengagement_template(phone, name, template_name):
         print("[Maya] Cannot send template: missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID")
         return False
 
-    clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
-
-    # S6.4: IG-scoped IDs stored in the phone field (>=15 digits) can never be
-    # valid E.164 WhatsApp targets — Meta rejects them with 131009. Refuse
-    # locally instead of burning an API call, and surface via error bus.
-    if len(clean_phone) >= 15:
-        print(f"[Maya] REFUSED template send — '...{clean_phone[-4:]}' ({len(clean_phone)} digits) "
-              f"is an IG-scoped id in the phone field, not a phone number")
+    # S6.6 (widens S6.4): full normalize→validate — the ≥15-digit guard only
+    # caught IG-scoped ids; lead ...0420 proved other malformations reach Meta
+    # as 131009. Now ANY non-E.164-sendable value is refused locally.
+    clean_phone = normalize_wa_phone(phone)
+    if clean_phone is None:
+        _raw_tail = re.sub(r"\D", "", str(phone))[-4:] or "????"
+        print(f"[Maya] REFUSED template send — '...{_raw_tail}' is not an "
+              f"E.164-sendable number (131009 class)")
         if ERROR_REPORTER:
             try:
                 ERROR_REPORTER("reengagement_template_send",
-                               "IG-scoped id in phone field (131009 class)",
-                               f"...{clean_phone[-4:]} len={len(clean_phone)} template={template_name}")
+                               "phone not E.164-sendable (131009 class)",
+                               f"...{_raw_tail} template={template_name}")
             except Exception:
                 pass
         return False
