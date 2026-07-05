@@ -12197,21 +12197,26 @@ def _canvas_single_edit(change):
 
 
 def _replace_table_section(name, markdown):
-    """Delete the old table (if present) and insert a fresh one under its
-    header. Self-heals when the table is missing (insert only)."""
+    """S5.6: synced sections are FENCED CODE BLOCKS, not markdown tables.
+    Why: sections.lookup returns fine-grained text-node ids for table content
+    (verified Jul 5) — 'replace' on such a node MERGES into the table and
+    'delete' strips only the text node, stranding a fingerprint-less remnant
+    every cycle. Code blocks are single nodes: delete removes the whole block,
+    replace is clean. Cycle = delete ALL fingerprint matches, then insert a
+    fresh block under the header. Self-heals when the block is missing."""
     header_id = _canvas_header_id(name)
     if not header_id:
         print(f"[CANVAS SYNC] {name}: header not found — cannot insert")
         return False
-    table_id = _canvas_lookup_ids(_CANVAS_FINGERPRINTS[name])
-    if table_id:
-        _canvas_single_edit({"operation": "delete", "section_id": table_id[0]})
+    for sid in _canvas_lookup_ids(_CANVAS_FINGERPRINTS[name]):
+        if sid != header_id:
+            _canvas_single_edit({"operation": "delete", "section_id": sid})
     ok = _canvas_single_edit({
         "operation": "insert_after",
         "section_id": header_id,
         "document_content": {"type": "markdown", "markdown": markdown},
     })
-    print(f"[CANVAS SYNC] {name}: {'fresh table inserted' if ok else 'INSERT FAILED'} (S5.5 delete+insert)")
+    print(f"[CANVAS SYNC] {name}: {'fresh block inserted' if ok else 'INSERT FAILED'} (S5.6 code-block cycle)")
     return ok
 
 
@@ -12492,28 +12497,31 @@ def _sync_pipeline_canvas():
 
     # ── 2. Quick Stats ──
     conv_rate = f"{(converted_month / total * 100):.0f}%" if total > 0 else "—"
-    stats_md = (
-        f"|Metric|Count|\n|  ---  |  ---  |\n"
-        f"|Total Active Leads|{active}|\n"
-        f"|New (This Week)|{new_week}|\n"
-        f"|Booked (This Week)|{booked}|\n"
-        f"|Visits Completed (This Week)|{converted_month}|\n"
-        f"|Converted (This Month)|{converted_month}|\n"
-        f"|No-Shows (This Month)|{noshows_month}|\n"
-        f"|Cold Leads|{cold}|\n"
-        f"|Avg Days to Book|—|\n"
-        f"|Conversion Rate|{conv_rate}|\n"
-    )
+    def _kv(label, value, w=30):
+        return f"{label:<{w}} {value}"
+    stats_md = "```\n" + "\n".join([
+        _kv("Total Active Leads", active),
+        _kv("New (This Week)", new_week),
+        _kv("Booked (This Week)", booked),
+        _kv("Visits Completed (This Week)", converted_month),
+        _kv("Converted (This Month)", converted_month),
+        _kv("No-Shows (This Month)", noshows_month),
+        _kv("Cold Leads", cold),
+        _kv("Avg Days to Book", "—"),
+        _kv("Conversion Rate", conv_rate),
+    ]) + "\n```"
     if _replace_table_section("quick_stats", stats_md):  # S5.5
         success_count += 1
 
     # ── 3. Source Breakdown ──
-    source_md = (
-        f"|Source|Active|Booked|Converted|\n|  ---  |  ---  |  ---  |  ---  |\n"
-        f"|Instagram (Maya Outbound)|{ig_active}|{ig_booked}|{ig_conv}|\n"
-        f"|WhatsApp (Inbound Campaign)|{wa_active}|{wa_booked}|{wa_conv}|\n"
-        f"|Website Form (Inbound)|{form_active}|{form_booked}|{form_conv}|\n"
-    )
+    def _srow(src_name, a, b, c):
+        return f"{src_name:<28} {a:>6} {b:>6} {c:>9}"
+    source_md = "```\n" + "\n".join([
+        _srow("Source", "Active", "Booked", "Converted"),
+        _srow("Instagram (Maya Outbound)", ig_active, ig_booked, ig_conv),
+        _srow("WhatsApp (Inbound Campaign)", wa_active, wa_booked, wa_conv),
+        _srow("Website Form (Inbound)", form_active, form_booked, form_conv),
+    ]) + "\n```"
     if _replace_table_section("source_breakdown", source_md):  # S5.5
         success_count += 1
 
@@ -12556,7 +12564,7 @@ def _sync_pipeline_canvas():
         _sort_date = (ld.get("last_contact") or ld.get("date") or "")[:10] or "0000-00-00"
         rows.append((
             _sort_date,
-            f"|{name}|{source}|{lead_type}|{stage}|{score}|{ph}|{email}|{biz}|{interest}|{timeline}|{assigned}|{last_act}|{days}|",
+            f"{name:<20} {stage:<9} {score:<6} {ph:<16} {email:<25} {biz:<15} {last_act:<10} {days:>4}",
         ))
 
     # S5.4: newest first, capped — keeps the canvas bounded as the pipeline grows
@@ -12565,15 +12573,13 @@ def _sync_pipeline_canvas():
     row_strs = [r[1] for r in rows[:CANVAS_MAX_LEAD_ROWS]]
 
     if not row_strs:
-        row_strs = ["|—|—|—|—|—|—|—|—|—|—|—|—|—|"]
+        row_strs = ["(no active leads)"]
 
-    leads_md = (
-        "|Name|Source|Lead Type|Stage|Score|Phone|Email|Business|Content Interest|Timeline|Assigned|Last Activity|Days in Stage|\n"
-        "|  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |\n"
-        + "\n".join(row_strs) + "\n"
-    )
+    _lhdr = f"{'Name':<20} {'Stage':<9} {'Score':<6} {'Phone':<16} {'Email':<25} {'Business':<15} {'Last Act':<10} {'Days in Stage':>4}"
+    leads_md = "```\n" + _lhdr + "\n" + "-" * len(_lhdr) + "\n" + "\n".join(row_strs)
     if hidden_count:
-        leads_md += f"\n_{hidden_count} older leads not shown (showing newest {CANVAS_MAX_LEAD_ROWS}) — full list in Google Sheets._\n"
+        leads_md += f"\n\n{hidden_count} older leads not shown (newest {CANVAS_MAX_LEAD_ROWS}) — full list in Google Sheets."
+    leads_md += "\n```"
     
     if _replace_table_section("active_leads", leads_md):  # S5.5
         success_count += 1
@@ -12597,14 +12603,11 @@ def _sync_pipeline_canvas():
         ("Pipeline Sync", _status("pipeline_canvas_sync")),  # S0.6: real heartbeat, not hardcoded
         ("Cold Lead Checker", _status("cold_lead_checker")),
     ]
-    sys_rows = []
+    sys_rows = [f"{'Component':<26} {'Status':<18} Last Check"]
     for comp, (stat, check_time) in components:
-        sys_rows.append(f"|{comp}|{stat}|{check_time}|")
+        sys_rows.append(f"{comp:<26} {stat:<18} {check_time}")
 
-    sys_md = (
-        "|Component|Status|Last Check|\n|  ---  |  ---  |  ---  |\n"
-        + "\n".join(sys_rows) + "\n"
-    )
+    sys_md = "```\n" + "\n".join(sys_rows) + "\n```"
     if _replace_table_section("system_status", sys_md):  # S5.5
         success_count += 1
 
