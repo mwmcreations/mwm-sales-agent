@@ -602,6 +602,11 @@ def _report_error(context, exc, detail=""):
             pass
 
 
+# S6.2: wire the error bus into maya_actions so template-send failures alert #dev
+import maya_actions as _maya_actions_mod
+_maya_actions_mod.ERROR_REPORTER = _report_error
+
+
 def _post_to_slack_async(channel, text, blocks=None):
     """Post to Slack asynchronously in a background thread."""
     thread = threading.Thread(
@@ -7876,6 +7881,25 @@ def _reengagement_checker():
                     _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
                     continue
 
+                # S6.1: catch-up throttle — after the 15-day outage, overdue leads
+                # have every stage past cadence; without a gap they'd get up to 7
+                # templates 25 min apart. Max ONE template per lead per 24h.
+                # (Normal cadence unaffected: tightest stage gap is 48h.)
+                if next_stage:
+                    _last_sent = None
+                    for _s in stages:
+                        _v = sent_flags[_s]
+                        if _v:
+                            try:
+                                _t = pytz.timezone(TIMEZONE).localize(
+                                    datetime.strptime(_v, "%Y-%m-%d %H:%M"))
+                                if _last_sent is None or _t > _last_sent:
+                                    _last_sent = _t
+                            except Exception:
+                                pass
+                    if _last_sent and (now - _last_sent).total_seconds() < 24 * 3600:
+                        next_stage = None
+
                 if next_stage:
                     if _is_ig:
                         # ── IG DM: send natural text via Instagram API ──
@@ -7903,8 +7927,20 @@ def _reengagement_checker():
                         _display_msg = _ig_msg
                     else:
                         # ── WhatsApp: send pre-approved template ──
-                        _sent = send_reengagement_template(phone, name, REENGAGEMENT_TEMPLATES[next_stage])
-                        _display_msg = REENGAGEMENT_TEMPLATES[next_stage]
+                        _tmpl = REENGAGEMENT_TEMPLATES[next_stage]
+                        # S6.1: media template with no configured URL — skip AND
+                        # advance (send_reengagement_template returns False for
+                        # these, which used to stall the whole chain here forever;
+                        # design intent = lead still gets the text-only touches)
+                        _htype = _maya_actions_mod.REENGAGEMENT_TEMPLATE_HEADERS.get(_tmpl)
+                        if _htype in ("video", "image") and not _maya_actions_mod.REENGAGEMENT_MEDIA_URLS.get(_tmpl, ""):
+                            update_reengagement_row(row_idx, {
+                                f"{next_stage} Sent": f"SKIPPED no-media {now.strftime('%Y-%m-%d %H:%M')}",
+                            })
+                            print(f"[Re-engagement] {next_stage} SKIPPED for {phone} — no media URL for '{_tmpl}', advancing cadence")
+                            continue
+                        _sent = send_reengagement_template(phone, name, _tmpl)
+                        _display_msg = _tmpl
 
                     if _sent:
                         update_reengagement_row(row_idx, {
@@ -7913,6 +7949,11 @@ def _reengagement_checker():
                         _ch = "[IG DM] " if _is_ig else ""
                         print(f"[Re-engagement] {_ch}{next_stage} sent to {phone} ({name})")
                         _mirror_reengagement_to_shadow(phone, name, next_stage, _display_msg, is_ig=_is_ig)
+                    else:
+                        # S6.2: failed sends hit the error bus (rate-limited 1/hr/context)
+                        _report_error("reengagement_send",
+                                      f"{next_stage} send returned False",
+                                      f"channel={'ig' if _is_ig else 'wa'} lead=...{re.sub(r'[^0-9]', '', phone)[-4:]}")
 
                 elif all(sent_flags[s] for s in stages):
                     # All 7 templates sent - check if cold threshold reached

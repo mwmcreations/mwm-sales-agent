@@ -680,16 +680,18 @@ REENGAGEMENT_TEMPLATES = {
 # Header type for each template — "text" means the template has a text header
 # with a variable (e.g., "Hi {{1}}"), "video"/"image" mean media header,
 # None means the template has no header component.
-# When all templates share the same structure (text header with name variable),
-# we always send a header component with the lead's name.
+# S6.1 FIX (Meta 132018): the approved TEXT templates have NO header component —
+# sending a header parameter made Meta reject every send since Jun 20 (f10c250).
+# Body-only ({{1}} = first name) is the correct payload for T1/T3/T7 (verified:
+# pre-f10c250 body-only sends succeeded against these same approved templates).
 REENGAGEMENT_TEMPLATE_HEADERS = {
-    "maya_reengagement_1": "text",          # T1: text header with name
+    "maya_reengagement_1": None,            # T1: body-only (no header in approved template)
     "maya_reengagement_2_v2": "video",      # T2: video header
-    "maya_reengagement_2": "text",          # T3: text header with name
+    "maya_reengagement_2": None,            # T3: body-only (no header in approved template)
     "maya_reengagement_4": "video",         # T4: video header
     "maya_reengagement_5": "image",         # T5: image header
     "maya_reengagement_6": "image",         # T6: image header
-    "maya_reengagement_3": "text",          # T7: text header with name
+    "maya_reengagement_3": None,            # T7: body-only (no header in approved template)
 }
 
 # Media URLs for templates with video/image headers.
@@ -898,6 +900,11 @@ def update_reengagement_row(row_index, updates):
         print(f"[Maya] Error updating re-engagement row {row_index}: {e}")
 
 
+# S6.2: error-bus hook — app.py injects its _report_error here at boot so
+# template-send failures alert #dev instead of dying as silent prints.
+ERROR_REPORTER = None
+
+
 def send_reengagement_template(phone, name, template_name):
     """Send a Maya re-engagement template via Meta WhatsApp Cloud API.
     Handles text-only, video, and image header templates.
@@ -974,8 +981,16 @@ def send_reengagement_template(phone, name, template_name):
         return True
     except Exception as e:
         print(f"[Maya] Re-engagement template send FAILED for {clean_phone}: {e}")
+        _detail = ""
         if hasattr(e, "response") and e.response is not None:
-            print(f"   Response: {e.response.text}")
+            _detail = str(e.response.text)[:300]
+            print(f"   Response: {_detail}")
+        if ERROR_REPORTER:
+            try:
+                ERROR_REPORTER("reengagement_template_send", e,
+                               f"template={template_name} to=...{clean_phone[-4:]} {_detail}")
+            except Exception:
+                pass
         return False
 
 
