@@ -12002,6 +12002,77 @@ def meta_leads_webhook():
 
 _monitor_last_alert = {}  # track last alert time per issue to avoid spam
 
+# ══════════════════════════════════════════════════════════════════════
+# S6.3 — IG token persistence (pg_store) — IG DMs are the #1 lead source
+# ══════════════════════════════════════════════════════════════════════
+IG_TOKEN_PG_KEY = "ig_access_token"
+
+
+def _persist_ig_token(token, expires_in):
+    """S6.3: persist the freshly minted IG token so boots stop depending on the
+    revoked env var + refresh-fallback accident."""
+    try:
+        if _pg.enabled():
+            _pg.save_state(IG_TOKEN_PG_KEY, {
+                "token": token,
+                "minted": datetime.now(pytz.UTC).isoformat(),
+                "expires_in": expires_in,
+            })
+            print("[IG TOKEN] Persisted refreshed token to pg_store")
+    except Exception as e:
+        print(f"[IG TOKEN] Persist failed (non-fatal): {e}")
+
+
+def _ig_token_valid(token):
+    """Cheap liveness probe — catches out-of-band revocation of a persisted token."""
+    try:
+        resp = http_requests.get(
+            "https://graph.instagram.com/v21.0/me",
+            params={"fields": "id", "access_token": token},
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _ig_stored_token_age_days(stored):
+    try:
+        minted = datetime.fromisoformat(stored.get("minted", ""))
+        if minted.tzinfo is None:
+            minted = pytz.UTC.localize(minted)
+        return (datetime.now(pytz.UTC) - minted).days
+    except Exception:
+        return 999
+
+
+def _check_ig_token_age():
+    """S6.3: mid-cycle refresh — runs from the system monitor every 25 min, acts
+    only when the persisted token is >=45 days old (60-day expiry, 15-day buffer).
+    Kills the reboot-within-59-days dependency. Failures hit the error bus."""
+    global INSTAGRAM_ACCESS_TOKEN
+    try:
+        if not _pg.enabled():
+            return
+        stored = _pg.load_state(IG_TOKEN_PG_KEY, None)
+        if not stored or not stored.get("token"):
+            return
+        age_days = _ig_stored_token_age_days(stored)
+        if age_days < 45:
+            return
+        result = _refresh_ig_long_token(INSTAGRAM_ACCESS_TOKEN)
+        if result and "access_token" in result:
+            INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+            _persist_ig_token(result["access_token"], result.get("expires_in", 0))
+            print(f"[IG TOKEN] Mid-cycle refresh OK (token was {age_days}d old)")
+        else:
+            _report_error("ig_token_refresh",
+                          f"mid-cycle refresh FAILED (token {age_days}d old)",
+                          "IG DMs (#1 lead source) go dark when this token hits 60d")
+    except Exception as e:
+        _report_error("ig_token_refresh", e)
+
+
 def _system_monitor():
     import time as _time
     import traceback
@@ -12071,6 +12142,7 @@ def _system_monitor():
             _heartbeat("system_monitor")
             _check_env_vars()
             _check_meta_token()
+            _check_ig_token_age()  # S6.3
 
             # Log pipeline stats
             stats = _get_pipeline_stats()
@@ -14361,6 +14433,7 @@ def admin_ig_token_exchange():
 
         # Update in-memory token
         INSTAGRAM_ACCESS_TOKEN = new_token
+        _persist_ig_token(new_token, result.get("expires_in", 0))  # S6.3
         new_prefix = new_token[:8] + "..." if len(new_token) > 8 else "???"
 
         return jsonify({
@@ -14387,6 +14460,7 @@ def admin_ig_token_exchange():
 
         # Update in-memory token
         INSTAGRAM_ACCESS_TOKEN = new_token
+        _persist_ig_token(new_token, result.get("expires_in", 0))  # S6.3
         new_prefix = new_token[:8] + "..." if len(new_token) > 8 else "???"
 
         return jsonify({
@@ -14525,51 +14599,70 @@ def admin_ig_disable_auto_replies():
 # ══════════════════════════════════════════════════════════════════════
 
 def _startup_ig_token_exchange():
-    """Auto-exchange IGAAX short-lived token on startup if app secret is available."""
+    """S6.3 rewrite: pg_store-first, refresh-first.
+
+    Old flow assumed IGAA prefix = short-lived and hit the exchange endpoint
+    first — but the env token is an ancient revoked-session token, so exchange
+    failed code 452 at EVERY boot (pure noise) and only the refresh fallback
+    kept IG alive. New flow:
+      1. pg_store token, <45d old and probe-valid  -> use as-is
+      2. pg_store token, older/invalid             -> refresh it, persist
+      3. env token fallback                        -> REFRESH first (long-lived
+         IGAA tokens refresh fine); exchange only as last resort
+    Any refreshed token is persisted, so the machine no longer depends on
+    frequent reboots to stay under the 59-day expiry.
+    Total mint failure -> error bus (was: silent print).
+    """
     global INSTAGRAM_ACCESS_TOKEN
+
+    # 1) persisted token from pg_store
+    try:
+        stored = _pg.load_state(IG_TOKEN_PG_KEY, None) if _pg.enabled() else None
+    except Exception:
+        stored = None
+    if stored and stored.get("token"):
+        age_days = _ig_stored_token_age_days(stored)
+        if age_days < 45 and _ig_token_valid(stored["token"]):
+            INSTAGRAM_ACCESS_TOKEN = stored["token"]
+            print(f"[IG TOKEN STARTUP] ✅ Using persisted pg_store token ({age_days}d old, probe OK) — no refresh needed")
+            return
+        print(f"[IG TOKEN STARTUP] Persisted token {age_days}d old (or probe failed) — refreshing...")
+        result = _refresh_ig_long_token(stored["token"])
+        if result and "access_token" in result:
+            INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+            _persist_ig_token(result["access_token"], result.get("expires_in", 0))
+            print("[IG TOKEN STARTUP] ✅ Refreshed persisted token")
+            return
+        print("[IG TOKEN STARTUP] Persisted-token refresh failed — falling back to env token")
+
+    # 2) env token fallback — refresh FIRST (no more doomed 452 exchange attempts)
     token = INSTAGRAM_ACCESS_TOKEN
     if not token:
         print("[IG TOKEN STARTUP] No INSTAGRAM_ACCESS_TOKEN set — skipping")
         return
-
     prefix = token[:8] if len(token) > 8 else token
-    print(f"[IG TOKEN STARTUP] Current token prefix: {prefix}...")
-
-    if not INSTAGRAM_APP_SECRET:
-        print("[IG TOKEN STARTUP] INSTAGRAM_APP_SECRET not set — cannot exchange/refresh")
+    print(f"[IG TOKEN STARTUP] Env token prefix: {prefix}... — attempting refresh")
+    result = _refresh_ig_long_token(token)
+    if result and "access_token" in result:
+        INSTAGRAM_ACCESS_TOKEN = result["access_token"]
+        _persist_ig_token(result["access_token"], result.get("expires_in", 0))
+        days = result.get("expires_in", 0) // 86400
+        print(f"[IG TOKEN STARTUP] ✅ Refreshed env token ({days} days) + persisted to pg_store")
         return
 
-    if token.startswith("IGAA"):
-        # Short-lived IGAAX token — try to exchange for long-lived
-        print("[IG TOKEN STARTUP] Detected IGAAX prefix (short-lived) — exchanging for long-lived...")
+    # 3) last resort — short-lived exchange
+    if INSTAGRAM_APP_SECRET and token.startswith("IGAA"):
+        print("[IG TOKEN STARTUP] Refresh failed — trying short-lived exchange as last resort...")
         result = _exchange_ig_short_token(token, INSTAGRAM_APP_SECRET)
         if result and "access_token" in result:
             INSTAGRAM_ACCESS_TOKEN = result["access_token"]
-            days = result.get("expires_in", 0) // 86400
-            new_prefix = INSTAGRAM_ACCESS_TOKEN[:8] if len(INSTAGRAM_ACCESS_TOKEN) > 8 else "???"
-            print(f"[IG TOKEN STARTUP] ✅ Exchanged! New prefix: {new_prefix}..., expires in {days} days")
-            print(f"[IG TOKEN STARTUP] ⚠️  UPDATE Railway env var INSTAGRAM_ACCESS_TOKEN to persist across deploys")
-        else:
-            print("[IG TOKEN STARTUP] ❌ Exchange failed — token may already be expired or invalid")
-            # Try refresh in case it's already been exchanged
-            print("[IG TOKEN STARTUP] Trying refresh as fallback...")
-            result = _refresh_ig_long_token(token)
-            if result and "access_token" in result:
-                INSTAGRAM_ACCESS_TOKEN = result["access_token"]
-                days = result.get("expires_in", 0) // 86400
-                print(f"[IG TOKEN STARTUP] ✅ Refreshed! Expires in {days} days")
-            else:
-                print("[IG TOKEN STARTUP] ❌ Refresh also failed — token is dead, generate a new one")
-    else:
-        # Non-IGAAX token (EAA or other) — try refresh
-        print("[IG TOKEN STARTUP] Non-IGAAX token — attempting refresh...")
-        result = _refresh_ig_long_token(token)
-        if result and "access_token" in result:
-            INSTAGRAM_ACCESS_TOKEN = result["access_token"]
-            days = result.get("expires_in", 0) // 86400
-            print(f"[IG TOKEN STARTUP] ✅ Refreshed! Expires in {days} days")
-        else:
-            print("[IG TOKEN STARTUP] Refresh not applicable or failed — using existing token as-is")
+            _persist_ig_token(result["access_token"], result.get("expires_in", 0))
+            print("[IG TOKEN STARTUP] ✅ Exchanged short-lived token + persisted")
+            return
+
+    _report_error("ig_token_startup",
+                  "could not mint a valid IG token (persisted + env refresh + exchange all failed)",
+                  "IG DMs (#1 lead source) may be running on a dead token")
 
 
 # Run the exchange on module load (gunicorn worker boot)
