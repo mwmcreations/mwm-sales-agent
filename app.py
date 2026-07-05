@@ -940,8 +940,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
                 timeout=5,
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_handle_shadow_relay:L944", _sx)  # S6.5 silent-except sweep
         return
 
     # ── Session 41: Route based on channel ──
@@ -977,8 +977,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                         headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
                         timeout=5,
                     )
-                except Exception:
-                    pass
+                except Exception as _sx:
+                    _report_error("_handle_shadow_relay:L981", _sx)  # S6.5 silent-except sweep
                 return
             _igsid = _found_igsid
 
@@ -1001,8 +1001,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                     headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
                     timeout=5,
                 )
-            except Exception:
-                pass
+            except Exception as _sx:
+                _report_error("_handle_shadow_relay:L1005", _sx)  # S6.5 silent-except sweep
             return
 
         # Add to IG conversation_history so Maya stays in sync
@@ -1031,8 +1031,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
                     headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
                     timeout=5,
                 )
-            except Exception:
-                pass
+            except Exception as _sx:
+                _report_error("_handle_shadow_relay:L1035", _sx)  # S6.5 silent-except sweep
             return
 
         # Add to conversation_history so Maya stays in sync
@@ -1377,8 +1377,8 @@ def _record_proposal(sender, service="", proposal_type="Standard"):
 
     try:
         update_lead_columns(sender, {"WhatsApp Status": "Proposal Sent"})
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_record_proposal:L1381", _sx)  # S6.5 silent-except sweep
 
 
 # In-memory conversion stats (reset on deploy — persistent copy in Sheets)
@@ -1438,8 +1438,8 @@ def _record_win(sender, deal_value=0, service="", notes=""):
             "WhatsApp Status": "Client - Won",
             "Lead Temperature": "Converted",
         })
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_record_win:L1442", _sx)  # S6.5 silent-except sweep
 
     print(f"🎉 [WIN] {lead_name} converted via {source} — ${deal_value:,.0f} ({service})")
 
@@ -1490,8 +1490,8 @@ def _record_loss(sender, reason="Unknown", stage_lost=""):
             "WhatsApp Status": f"Lost - {reason[:30]}",
             "Lead Temperature": "Lost",
         })
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_record_loss:L1494", _sx)  # S6.5 silent-except sweep
 
     print(f"💔 [LOSS] {lead_name} lost at {stage_lost or 'unknown stage'} via {source} — {reason}")
 
@@ -3143,8 +3143,8 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         print(f"Error booking appointment: {e}")
         try:  # S0.4: booking failures must never be silent
             _post_to_slack_async(SLACK_DEV_CHANNEL, f"\U0001f6a8 *BOOKING FAILED* \u2014 book_appointment raised: `{e}`. Lead may believe they are booked \u2014 verify calendar + GOOGLE_CREDENTIALS_JSON.")
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("book_appointment:L3147", _sx)  # S6.5 silent-except sweep
         return None
 
 
@@ -4309,8 +4309,8 @@ def _handle_michael_command(sender, incoming_msg, was_audio=False):
                 {"name": "Michael (Command)", "phone": sender, "is_michael": True},
                 "inbound", incoming_msg
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_handle_michael_command:L4313", _sx)  # S6.5 silent-except sweep
 
         # Call Claude in command mode
         history_snapshot = list(michael_command_history)
@@ -4346,8 +4346,8 @@ def _handle_michael_command(sender, incoming_msg, was_audio=False):
                 {"name": "Michael (Command)", "phone": sender, "is_michael": True},
                 "outbound", clean_reply
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_handle_michael_command:L4350", _sx)  # S6.5 silent-except sweep
 
     except Exception as e:
         print(f"Michael command handler error: {e}")
@@ -4363,8 +4363,8 @@ def _handle_michael_command(sender, incoming_msg, was_audio=False):
                 lead_info=f"Command: {incoming_msg[:200]}",
                 severity="CRITICAL"
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_handle_michael_command:L4367", _sx)  # S6.5 silent-except sweep
 
 
 
@@ -5308,8 +5308,8 @@ def _process_gabriela_audio_async(sender: str, media_url: str):
                 sender,
                 body="Desculpe, estou com uma instabilidade técnica. Por favor, tente novamente. ð"
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_process_gabriela_audio_async:L5312", _sx)  # S6.5 silent-except sweep
 
 
 @app.route("/send-briefing", methods=["POST"])
@@ -5823,8 +5823,8 @@ tell Michael you'll send a template message to initiate the conversation."""
                 body="Sorry, I'm having a technical issue right now. Please try again in a moment.",
                 phone_number_id=LARA_PHONE_NUMBER_ID,
             )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_handle_incoming_lara:L5827", _sx)  # S6.5 silent-except sweep
 
 
 def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
@@ -5921,15 +5921,15 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 _was_reengagement = mark_reengagement_replied(sender)
                 if _was_reengagement:
                     print(f"[Re-engagement] {sender} replied — sequence stopped")
-            except Exception:
-                pass
+            except Exception as _sx:
+                _report_error("_handle_incoming:L5925", _sx)  # S6.5 silent-except sweep
 
             if _msg_lower == "not right now":
                 # Terminal opt-out — acknowledge and return without entering Maya conversation
                 try:
                     mark_reengagement_opted_out(sender)
-                except Exception:
-                    pass
+                except Exception as _sx:
+                    _report_error("_handle_incoming:L5932", _sx)  # S6.5 silent-except sweep
                 send_whatsapp_meta(sender, body="No problem at all! We're here whenever you're ready. Feel free to message us anytime.")
                 return
 
@@ -6104,8 +6104,8 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     lead_data[sender]["first_contact_time"] = datetime.now(pytz.timezone(TIMEZONE))
                 try:
                     update_lead_columns(sender, {"Lead Temperature": _temp})
-                except Exception:
-                    pass
+                except Exception as _sx:
+                    _report_error("_handle_incoming:L6108", _sx)  # S6.5 silent-except sweep
                 print(f"[Score] {sender}: {_new_score}/100 ({_temp})")
         except Exception as _score_err:
             print(f"⚠️ Lead scoring error (non-fatal, Maya still responds): {_score_err}")
@@ -6124,8 +6124,8 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             if _detect_hot_signal(incoming_msg) and not is_michael:
                 try:
                     update_lead_columns(sender, {"Lead Temperature": "Hot"})
-                except Exception:
-                    pass
+                except Exception as _sx:
+                    _report_error("_handle_incoming:L6128", _sx)  # S6.5 silent-except sweep
         except Exception as _hot_err:
             print(f"⚠️ Hot signal detection error (non-fatal, Maya still responds): {_hot_err}")
         if len(conversation_history[sender]) > 20:
@@ -6267,8 +6267,8 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                                     identity["name"] = fields["name"]
                                 if fields.get("email"):
                                     identity["client_info"] = {"email": fields["email"]}
-                        except Exception:
-                            pass
+                        except Exception as _sx:
+                            _report_error("process_maya:L6271", _sx)  # S6.5 silent-except sweep
                 except Exception as lead_err:
                     print(f"\u26a0\ufe0f Lead logging error (non-fatal): {lead_err}")
                 send_photos = "[SEND_STUDIO_PHOTOS]" in reply
@@ -6493,8 +6493,8 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
         _ig_user = _ld.get("ig_username", "")
         if _ig_name or _ig_user:
             _lead_ctx = f"Instagram user: {_ig_name}" + (f" (@{_ig_user})" if _ig_user else "")
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_handle_incoming_instagram:L6497", _sx)  # S6.5 silent-except sweep
 
     # ── Pipeline event: NEW_LEAD ──
     try:
@@ -6539,8 +6539,8 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
                 if _early_name:
                     lead_data[sender]["name"] = _early_name
                     print(f"[IG DM Early Extract] Name: {_early_name}")
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_handle_incoming_instagram:L6543", _sx)  # S6.5 silent-except sweep
 
     if len(ig_conversation_history[sender]) > 20:
         ig_conversation_history[sender] = ig_conversation_history[sender][-20:]
@@ -6613,8 +6613,8 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
                                 assigned_agents=["Maya", "Susan", "Eric", "LARA"],
                                 context=f"[IG DM] Email {_new_email} captured. Full agent track now active.",
                             )
-                    except Exception:
-                        pass
+                    except Exception as _sx:
+                        _report_error("process_maya_ig:L6617", _sx)  # S6.5 silent-except sweep
             except Exception as lead_err:
                 print(f"⚠️ IG DM lead logging error (non-fatal): {lead_err}")
 
@@ -6971,8 +6971,8 @@ def _cold_lead_checker():
                     try:
                         if is_in_active_reengagement(phone):
                             continue
-                    except Exception:
-                        pass
+                    except Exception as _sx:
+                        _report_error("_cold_lead_checker:L6975", _sx)  # S6.5 silent-except sweep
                     name  = data.get("name") or ""
                     email = data.get("email") or ""
                     print(f"âï¸  Cold lead detected: {phone} ({int(hours_silent)}h silent) — firing Hub event")
@@ -7005,8 +7005,8 @@ def _cold_lead_checker():
                             "WhatsApp Status": "Cold - No Reply",
                             "Lead Temperature": "Cold",
                         })
-                    except Exception:
-                        pass
+                    except Exception as _sx:
+                        _report_error("_cold_lead_checker:L7009", _sx)  # S6.5 silent-except sweep
                     # Slack cold lead notification DISABLED (Session 31 — #maya bookings only)
                     # try:
                     #     _notify_cold_lead(phone, name, last_msg, int(hours_silent))
@@ -7888,8 +7888,8 @@ def _reengagement_checker():
                             "WhatsApp Status": "Cold - IG Window Expired",
                             "Lead Temperature": "Cold",
                         })
-                    except Exception:
-                        pass
+                    except Exception as _sx:
+                        _report_error("_reengagement_checker:L7892", _sx)  # S6.5 silent-except sweep
                     print(f"[Re-engagement] [IG DM] {phone} ({name}) — window expired at {int(hours_since)}h, marked Cold")
                     _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
                     continue
@@ -7908,8 +7908,8 @@ def _reengagement_checker():
                                     datetime.strptime(_v, "%Y-%m-%d %H:%M"))
                                 if _last_sent is None or _t > _last_sent:
                                     _last_sent = _t
-                            except Exception:
-                                pass
+                            except Exception as _sx:
+                                _report_error("_reengagement_checker:L7912", _sx)  # S6.5 silent-except sweep
                     if _last_sent and (now - _last_sent).total_seconds() < 24 * 3600:
                         next_stage = None
 
@@ -7928,8 +7928,8 @@ def _reengagement_checker():
                                     "WhatsApp Status": "Cold - IG Window Expired",
                                     "Lead Temperature": "Cold",
                                 })
-                            except Exception:
-                                pass
+                            except Exception as _sx:
+                                _report_error("_reengagement_checker:L7932", _sx)  # S6.5 silent-except sweep
                             print(f"[Re-engagement] [IG DM] {phone} ({name}) — skipped, 403-blocked (window closed)")
                             _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
                             continue
@@ -7986,16 +7986,16 @@ def _reengagement_checker():
                                     "WhatsApp Status": "Cold - Queued for Agent Maya + Retargeting",
                                     "Lead Temperature": "Cold",
                                 })
-                            except Exception:
-                                pass
+                            except Exception as _sx:
+                                _report_error("_reengagement_checker:L7990", _sx)  # S6.5 silent-except sweep
                             # Hand off to Agent Maya (WhatsApp Web) + Eric (retargeting)
                             if not _is_ig:
                                 _notify_cold_lead_pipeline(phone, name, business)
                             _ch = "[IG DM] " if _is_ig else ""
                             print(f"[Re-engagement] {_ch}{phone} ({name}) marked Cold — queued for Agent Maya outreach + Eric retargeting")
                             _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=_is_ig)
-                    except Exception:
-                        pass
+                    except Exception as _sx:
+                        _report_error("_reengagement_checker:L7998", _sx)  # S6.5 silent-except sweep
 
         except Exception as e:
             print(f"[Re-engagement] Checker error: {e}")
@@ -10826,8 +10826,8 @@ def _canary_messages_create(_client, **kwargs):
             print(f"[MODEL] Canary {MODEL_CANARY} failed: {e} — falling back to {MODEL_MAIN}")
             try:
                 _post_to_slack_async(SLACK_DEV_CHANNEL, f"⚠️ *Model canary* `{MODEL_CANARY}` failed on web chat — fell back to `{MODEL_MAIN}` until next deploy. Error: `{e}`")
-            except Exception:
-                pass
+            except Exception as _sx:
+                _report_error("_canary_messages_create:L10830", _sx)  # S6.5 silent-except sweep
     return _client.messages.create(model=MODEL_MAIN, **kwargs)
 
 
@@ -11624,8 +11624,8 @@ def form_webhook():
     # Calculate lead score (form leads start higher)
     try:
         _calculate_lead_score(sender_key, message)
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("form_webhook:L11628", _sx)  # S6.5 silent-except sweep
 
     # Pipeline event
     _post_pipeline_event(
@@ -11891,8 +11891,8 @@ def meta_leads_webhook():
             # Calculate lead score
             try:
                 _calculate_lead_score(sender_key, service_interest or company)
-            except Exception:
-                pass
+            except Exception as _sx:
+                _report_error("meta_leads_webhook:L11895", _sx)  # S6.5 silent-except sweep
 
             # Pipeline event
             _post_pipeline_event(
@@ -12108,8 +12108,8 @@ def _system_monitor():
                     json={"channel": DEV_CHANNEL, "text": message},
                     timeout=10,
                 )
-        except Exception:
-            pass
+        except Exception as _sx:
+            print(f"[MONITOR] _alert Slack post failed: {_sx}")  # S6.5 sweep
         print(f"[MONITOR] ALERT: {message}")
 
     def _check_meta_token():
@@ -14790,8 +14790,8 @@ def _startup_ig_auto_reply_audit():
                     json={"fields": [field]},
                     timeout=10,
                 )
-        except Exception:
-            pass
+        except Exception as _sx:
+            _report_error("_startup_ig_auto_reply_audit:L14794", _sx)  # S6.5 silent-except sweep
 
     # Also check Page-level instant_replies_enabled using Page token
     try:
@@ -14811,8 +14811,8 @@ def _startup_ig_auto_reply_audit():
                     json={"instant_replies_enabled": False},
                     timeout=10,
                 )
-    except Exception:
-        pass
+    except Exception as _sx:
+        _report_error("_startup_ig_auto_reply_audit:L14815", _sx)  # S6.5 silent-except sweep
 
     # Single summary line
     if issues_found:
@@ -14823,8 +14823,8 @@ def _startup_ig_auto_reply_audit():
 
 try:
     _startup_ig_auto_reply_audit()
-except Exception:
-    pass
+except Exception as _sx:
+    _report_error("_startup_ig_auto_reply_audit:L14827", _sx)  # S6.5 silent-except sweep
 
 
 if __name__ == "__main__":
