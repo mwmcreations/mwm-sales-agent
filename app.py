@@ -12129,6 +12129,92 @@ def _refresh_canvas_sections():
     return False
 
 
+# ═══ S5.5: TABLE REPLACE MERGES — root cause of canvas bloat ═══
+# Slack's canvases.edit 'replace' on a TABLE section MERGES the new table
+# into the existing one (verified Jul 5: every 30-min sync stacked one more
+# snapshot into a single row until canvas_too_large killed ALL writes).
+# Paragraphs replace cleanly; tables must be DELETED + re-INSERTED fresh.
+# API constraint: canvases.edit accepts EXACTLY ONE change per call.
+_CANVAS_HEADER_FINGERPRINTS = {
+    "quick_stats": "Quick Stats",
+    "source_breakdown": "Source Breakdown",
+    "active_leads": "Active Leads",   # ambiguous ("Total Active Leads") — see _canvas_header_id
+    "system_status": "System Status",
+}
+
+
+def _canvas_lookup_ids(contains_text):
+    """All section ids whose markdown-stripped text contains the string (doc order)."""
+    try:
+        resp = http_requests.post(
+            "https://slack.com/api/canvases.sections.lookup",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                     "Content-Type": "application/json; charset=utf-8"},
+            json={"canvas_id": PIPELINE_CANVAS_ID,
+                  "criteria": {"contains_text": contains_text}},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("ok"):
+            return [s.get("id") or s.get("section_id", "")
+                    for s in data.get("sections", []) if s.get("id") or s.get("section_id")]
+        globals()["_canvas_last_lookup_error"] = str(data.get("error", "unknown"))
+    except Exception as e:
+        globals()["_canvas_last_lookup_error"] = str(e)
+    return []
+
+
+def _canvas_header_id(name):
+    """Header section id for a synced table. active_leads header text is a
+    substring of the quick_stats row 'Total Active Leads' — exclude those ids."""
+    if name != "active_leads":
+        ids = _canvas_lookup_ids(_CANVAS_HEADER_FINGERPRINTS[name])
+        return ids[0] if ids else ""
+    stats_ids = set(_canvas_lookup_ids("Total Active Leads"))
+    for i in _canvas_lookup_ids("Active Leads"):
+        if i not in stats_ids:
+            return i
+    return ""
+
+
+def _canvas_single_edit(change):
+    """One canvases.edit call with exactly one change (hard API limit)."""
+    try:
+        resp = http_requests.post(
+            "https://slack.com/api/canvases.edit",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                     "Content-Type": "application/json"},
+            json={"canvas_id": PIPELINE_CANVAS_ID, "changes": [change]},
+            timeout=10,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            print(f"[CANVAS SYNC] edit {change.get('operation')} failed: {data.get('error', 'unknown')}")
+        return bool(data.get("ok"))
+    except Exception as e:
+        print(f"[CANVAS SYNC] edit {change.get('operation')} exception: {e}")
+        return False
+
+
+def _replace_table_section(name, markdown):
+    """Delete the old table (if present) and insert a fresh one under its
+    header. Self-heals when the table is missing (insert only)."""
+    header_id = _canvas_header_id(name)
+    if not header_id:
+        print(f"[CANVAS SYNC] {name}: header not found — cannot insert")
+        return False
+    table_id = _canvas_lookup_ids(_CANVAS_FINGERPRINTS[name])
+    if table_id:
+        _canvas_single_edit({"operation": "delete", "section_id": table_id[0]})
+    ok = _canvas_single_edit({
+        "operation": "insert_after",
+        "section_id": header_id,
+        "document_content": {"type": "markdown", "markdown": markdown},
+    })
+    print(f"[CANVAS SYNC] {name}: {'fresh table inserted' if ok else 'INSERT FAILED'} (S5.5 delete+insert)")
+    return ok
+
+
 def _edit_canvas_section(section_id, markdown):
     """Update a single section of the Pipeline Canvas via Slack API."""
     if not SLACK_BOT_TOKEN or not section_id:
@@ -12418,7 +12504,7 @@ def _sync_pipeline_canvas():
         f"|Avg Days to Book|—|\n"
         f"|Conversion Rate|{conv_rate}|\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS.get("quick_stats", ""), stats_md):
+    if _replace_table_section("quick_stats", stats_md):  # S5.5
         success_count += 1
 
     # ── 3. Source Breakdown ──
@@ -12428,7 +12514,7 @@ def _sync_pipeline_canvas():
         f"|WhatsApp (Inbound Campaign)|{wa_active}|{wa_booked}|{wa_conv}|\n"
         f"|Website Form (Inbound)|{form_active}|{form_booked}|{form_conv}|\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS.get("source_breakdown", ""), source_md):
+    if _replace_table_section("source_breakdown", source_md):  # S5.5
         success_count += 1
 
     # ── 4. Active Leads table ──
@@ -12489,7 +12575,7 @@ def _sync_pipeline_canvas():
     if hidden_count:
         leads_md += f"\n_{hidden_count} older leads not shown (showing newest {CANVAS_MAX_LEAD_ROWS}) — full list in Google Sheets._\n"
     
-    if _edit_canvas_section(_CANVAS_SECTIONS.get("active_leads", ""), leads_md):
+    if _replace_table_section("active_leads", leads_md):  # S5.5
         success_count += 1
 
     # ── 5. System Status ──
@@ -12519,7 +12605,7 @@ def _sync_pipeline_canvas():
         "|Component|Status|Last Check|\n|  ---  |  ---  |  ---  |\n"
         + "\n".join(sys_rows) + "\n"
     )
-    if _edit_canvas_section(_CANVAS_SECTIONS.get("system_status", ""), sys_md):
+    if _replace_table_section("system_status", sys_md):  # S5.5
         success_count += 1
 
     print(f"[CANVAS SYNC] Done — {success_count}/5 sections updated at {now_str} ({total} leads from Sheets, {active} active)")
