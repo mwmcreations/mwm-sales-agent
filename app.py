@@ -283,6 +283,9 @@ SLACK_LARA_CHANNEL = "C0ARC24S9PF"   # #lara channel ID — CRM/follow-up
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
 SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"   # #eric channel ID — traffic manager
 PIPELINE_CANVAS_ID = "F0BBZ7T2QGL"   # Lead Pipeline Canvas on Slack
+# S5.4: cap the canvas Active Leads table — canvas was ~115K chars and growing
+# with every lead. Newest N rows shown; the full list lives in Google Sheets.
+CANVAS_MAX_LEAD_ROWS = int(os.getenv("CANVAS_MAX_LEAD_ROWS", "100"))
 
 # ══════════════════════════════════════════════════════════════════════
 # BACKGROUND THREAD HEARTBEAT MONITORING
@@ -293,7 +296,19 @@ PIPELINE_CANVAS_ID = "F0BBZ7T2QGL"   # Lead Pipeline Canvas on Slack
 import threading as _threading_hb
 
 _thread_heartbeats = {}  # thread_name -> last_heartbeat_datetime
-_HEARTBEAT_STALE_MINUTES = 30  # If no heartbeat for 30 min, consider dead
+_HEARTBEAT_STALE_MINUTES = 30  # Default: no heartbeat for 30 min = dead
+# S5.3: per-thread overrides — threshold must be ~2x the thread's cycle so
+# normal jitter (long canvas API writes, GIL) can't fire false THREAD DEAD.
+# pipeline_canvas_sync cycles every 30 min + write time -> 75 min threshold.
+_THREAD_STALE_OVERRIDES = {
+    "pipeline_canvas_sync": 75,
+    "push_heartbeat": 75,
+}
+
+
+def _stale_threshold(thread_name):
+    """Staleness threshold (minutes) for a thread — 2x cycle, not 1x (S5.3)."""
+    return _THREAD_STALE_OVERRIDES.get(thread_name, _HEARTBEAT_STALE_MINUTES)
 
 
 def _heartbeat(thread_name):
@@ -310,27 +325,43 @@ def _get_thread_health():
         statuses[name] = {
             "last_heartbeat": last_beat.isoformat(),
             "age_minutes": round(age_minutes, 1),
-            "healthy": age_minutes < _HEARTBEAT_STALE_MINUTES,
+            "healthy": age_minutes < _stale_threshold(name),  # S5.3
+            "stale_threshold_min": _stale_threshold(name),
         }
     return statuses
 
 
+_watchdog_alerted = set()  # S5.3: threads already alerted as dead — no re-alert spam
+
+
 def _thread_watchdog():
-    """Background watchdog: checks heartbeats every 15 min, alerts if a thread dies."""
+    """Watchdog: checks heartbeats every 15 min. S5.3: per-thread thresholds
+    (2x cycle) + alert-once semantics + recovery notice."""
     import time as _tw
     _tw.sleep(600)  # Wait 10 min after startup for threads to register
     while True:
         try:
             now = datetime.now(pytz.timezone(TIMEZONE))
-            for name, last_beat in _thread_heartbeats.items():
+            for name, last_beat in list(_thread_heartbeats.items()):
                 age_minutes = (now - last_beat).total_seconds() / 60
-                if age_minutes > _HEARTBEAT_STALE_MINUTES:
-                    alert_msg = (
-                        f"THREAD DEAD: `{name}` last heartbeat {int(age_minutes)} min ago. "
-                        f"This thread may have crashed silently. Investigate immediately."
+                threshold = _stale_threshold(name)
+                if age_minutes > threshold:
+                    if name not in _watchdog_alerted:
+                        _watchdog_alerted.add(name)
+                        alert_msg = (
+                            f"THREAD DEAD: `{name}` last heartbeat {int(age_minutes)} min ago "
+                            f"(threshold {threshold}m). May have crashed silently. Investigate. "
+                            f"(One alert per death — recovery will be announced.)"
+                        )
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, alert_msg)
+                        print(f"[Watchdog] ALERT: {name} appears dead ({int(age_minutes)}m > {threshold}m)")
+                elif name in _watchdog_alerted:
+                    _watchdog_alerted.discard(name)
+                    _post_to_slack_async(
+                        SLACK_DEV_CHANNEL,
+                        f"\u2705 THREAD RECOVERED: `{name}` heartbeat resumed ({int(age_minutes)} min old).",
                     )
-                    _post_to_slack_async(SLACK_DEV_CHANNEL, alert_msg)
-                    print(f"[Watchdog] ALERT: {name} appears dead (last heartbeat {int(age_minutes)} min ago)")
+                    print(f"[Watchdog] RECOVERED: {name}")
         except Exception as e:
             print(f"[Watchdog] Error: {e}")
         _tw.sleep(900)  # Check every 15 min
@@ -2705,6 +2736,16 @@ def get_calendar_service(impersonate=None):
         print(f"[calendar] DWD as: {impersonate}")
 
     return build("calendar", "v3", credentials=creds)
+
+
+def _get_calendar_sa_email():
+    """S5.2: service-account email from creds env — safe to expose (not a secret);
+    needed so a human can grant it calendar ACL."""
+    try:
+        cj = os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        return json.loads(cj).get("client_email", "unknown") if cj else None
+    except Exception:
+        return "parse-error"
 
 
 def get_gmail_service(impersonate=None):
@@ -11356,6 +11397,7 @@ def health_check():
         "ig_dm_enabled": bool(INSTAGRAM_PAGE_ID),
         "pipeline_stats": _get_pipeline_stats(),
         "profile_photo_updated": os.path.exists("/tmp/profile_photo_updated"),
+        "calendar_sa_email": _get_calendar_sa_email(),  # S5.2: for ACL grant
     })
     # Prevent Railway/CDN/browser from caching health responses
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -12425,18 +12467,28 @@ def _sync_pipeline_canvas():
                 days = str((now.date() - lead_date).days)
             except (ValueError, IndexError):
                 pass
-        rows.append(
-            f"|{name}|{source}|{lead_type}|{stage}|{score}|{ph}|{email}|{biz}|{interest}|{timeline}|{assigned}|{last_act}|{days}|"
-        )
+        _sort_date = (ld.get("last_contact") or ld.get("date") or "")[:10] or "0000-00-00"
+        rows.append((
+            _sort_date,
+            f"|{name}|{source}|{lead_type}|{stage}|{score}|{ph}|{email}|{biz}|{interest}|{timeline}|{assigned}|{last_act}|{days}|",
+        ))
 
-    if not rows:
-        rows = ["|—|—|—|—|—|—|—|—|—|—|—|—|—|"]
+    # S5.4: newest first, capped — keeps the canvas bounded as the pipeline grows
+    rows.sort(key=lambda r: r[0], reverse=True)
+    hidden_count = max(0, len(rows) - CANVAS_MAX_LEAD_ROWS)
+    row_strs = [r[1] for r in rows[:CANVAS_MAX_LEAD_ROWS]]
+
+    if not row_strs:
+        row_strs = ["|—|—|—|—|—|—|—|—|—|—|—|—|—|"]
 
     leads_md = (
         "|Name|Source|Lead Type|Stage|Score|Phone|Email|Business|Content Interest|Timeline|Assigned|Last Activity|Days in Stage|\n"
         "|  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |  ---  |\n"
-        + "\n".join(rows) + "\n"
+        + "\n".join(row_strs) + "\n"
     )
+    if hidden_count:
+        leads_md += f"\n_{hidden_count} older leads not shown (showing newest {CANVAS_MAX_LEAD_ROWS}) — full list in Google Sheets._\n"
+    
     if _edit_canvas_section(_CANVAS_SECTIONS.get("active_leads", ""), leads_md):
         success_count += 1
 
@@ -12447,7 +12499,7 @@ def _sync_pipeline_canvas():
         if not ts:
             return "—", "—"
         age = (now - ts).total_seconds()
-        stat = "✅ Healthy" if age < 1800 else "⚠️ Stale"
+        stat = "✅ Healthy" if age < _stale_threshold(name) * 60 else "⚠️ Stale"  # S5.3
         return stat, ts.strftime("%I:%M %p")
 
     components = [
@@ -12591,6 +12643,90 @@ def _state_saver_thread():
         _t.sleep(300)
 
 threading.Thread(target=_state_saver_thread, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# S5.1 PUSH HEARTBEAT (Sprint 5 P-top) — the machine DELIVERS fresh
+# health instead of relying on /health pulls that edge-caching breaks.
+# Posts a compact line to SLACK_HEARTBEAT_CHANNEL every 30 min:
+# nonce · boot time · thread health · lead totals. Doubles as an audit
+# trail (uptime resets = silent redeploys become visible).
+# ═══════════════════════════════════════════════════════════════════
+SLACK_HEARTBEAT_CHANNEL = os.getenv("SLACK_HEARTBEAT_CHANNEL", "")
+_BOOT_TIME_HB = datetime.now(pytz.timezone(TIMEZONE))
+
+
+def _push_heartbeat_thread():
+    import time as _t
+    import uuid as _u
+    _t.sleep(120)  # let other threads register first
+    if not SLACK_HEARTBEAT_CHANNEL:
+        print("[PUSH-HB] SLACK_HEARTBEAT_CHANNEL not set — heartbeat thread idle (still stamps /health)")
+    while True:
+        try:
+            th = _get_thread_health()
+            stale = sorted(n for n, s in th.items() if not s.get("healthy"))
+            stats = _get_pipeline_stats()
+            line = (
+                f"\U0001f493 `{_u.uuid4().hex[:8]}` | boot {_BOOT_TIME_HB.strftime('%b %d %I:%M %p')} ET | "
+                f"threads {len(th) - len(stale)}/{len(th)}"
+                + (" \u2705" if not stale else f" \u26a0\ufe0f stale: {', '.join(stale)}")
+                + f" | leads {stats.get('total_leads', '?')} "
+                f"({stats.get('active', '?')} active \u00b7 {stats.get('booked', '?')} booked \u00b7 {stats.get('cold', '?')} cold)"
+            )
+            if SLACK_HEARTBEAT_CHANNEL:
+                _post_to_slack_async(SLACK_HEARTBEAT_CHANNEL, line)
+            _heartbeat("push_heartbeat")
+        except Exception as e:
+            print(f"[PUSH-HB] error: {e}")
+        _t.sleep(1800)  # every 30 min
+
+
+threading.Thread(target=_push_heartbeat_thread, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# S5.2 CALENDAR WRITE SELF-TEST (Sprint 5 P1) — one-shot at boot.
+# Creates + deletes a tiny event on the MWM CREATIONS shared calendar.
+# PASS => write path healthy. FAIL => posts the exact error + the
+# service-account email + the ACL remediation steps to #dev.
+# ═══════════════════════════════════════════════════════════════════
+def _calendar_write_selftest():
+    import time as _t
+    _t.sleep(300)  # after boot settles
+    sa = _get_calendar_sa_email() or "no-credential-env"
+    try:
+        service = get_calendar_service()
+        tz = pytz.timezone(TIMEZONE)
+        start = (datetime.now(tz) + timedelta(days=1)).replace(hour=3, minute=0, second=0, microsecond=0)
+        body = {
+            "summary": "SM write self-test (auto-deleted)",
+            "description": "Sales Machine S5.2 calendar write self-test. Deletes itself immediately.",
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": (start + timedelta(minutes=5)).isoformat()},
+        }
+        ev = service.events().insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none").execute()
+        service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"], sendUpdates="none").execute()
+        print(f"[CAL-SELFTEST] PASS — SA {sa} has write access to {CALENDAR_ID}")
+        _post_to_slack_async(
+            SLACK_DEV_CHANNEL,
+            f"\u2705 *CALENDAR WRITE SELF-TEST PASSED (S5.2)* \u2014 service account `{sa}` "
+            f"created + deleted a test event on the MWM CREATIONS calendar. Write path HEALTHY. "
+            f"P1 calendar item: root cause resolved; close after next real booking succeeds.",
+        )
+    except Exception as e:
+        print(f"[CAL-SELFTEST] FAIL — {e}")
+        _post_to_slack_async(
+            SLACK_DEV_CHANNEL,
+            f"\U0001f6a8 *CALENDAR WRITE SELF-TEST FAILED (S5.2)* \u2014 `{e}`\n"
+            f"Service account: `{sa}`\n"
+            f"Likely fix (Michael): Google Calendar \u2192 MWM CREATIONS calendar \u2192 Settings & sharing "
+            f"\u2192 Share with specific people \u2192 add `{sa}` with *Make changes to events*. "
+            f"Self-test reruns on every deploy.",
+        )
+
+
+threading.Thread(target=_calendar_write_selftest, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
