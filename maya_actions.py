@@ -918,6 +918,22 @@ def send_reengagement_template(phone, name, template_name):
         return False
 
     clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
+
+    # S6.4: IG-scoped IDs stored in the phone field (>=15 digits) can never be
+    # valid E.164 WhatsApp targets — Meta rejects them with 131009. Refuse
+    # locally instead of burning an API call, and surface via error bus.
+    if len(clean_phone) >= 15:
+        print(f"[Maya] REFUSED template send — '...{clean_phone[-4:]}' ({len(clean_phone)} digits) "
+              f"is an IG-scoped id in the phone field, not a phone number")
+        if ERROR_REPORTER:
+            try:
+                ERROR_REPORTER("reengagement_template_send",
+                               "IG-scoped id in phone field (131009 class)",
+                               f"...{clean_phone[-4:]} len={len(clean_phone)} template={template_name}")
+            except Exception:
+                pass
+        return False
+
     first_name = (name or "there").split()[0]
 
     # Determine header type for this template

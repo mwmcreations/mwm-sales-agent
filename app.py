@@ -4659,6 +4659,13 @@ def format_transcript(history: list) -> str:
 
 
 
+def _lead_source_for(sender: str) -> str:
+    """S6.4: Source = ENTRY CHANNEL, not messaging transport. IG DM leads were
+    being hardcoded 'WhatsApp' at ingest — the root of the IG-0-vs-WA-203
+    attribution bug on the #1 lead source."""
+    return "Instagram DM" if str(sender).startswith("instagram:") else "WhatsApp"
+
+
 def log_new_contact_to_sheets(sender: str):
     """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
     This ensures every person who messages Maya is captured, even if they never share their info.
@@ -4696,6 +4703,8 @@ def log_new_contact_to_sheets(sender: str):
             "",                          # Notes
             "",                          # Follow-up â
             "",                          # Transcript (updated later)
+            _lead_source_for(sender),    # M: Source (S6.4 — entry channel)
+            now.strftime("%Y-%m-%d"),    # N: Last Contact Date
         ]
         svc.spreadsheets().values().append(
             spreadsheetId=SHEETS_LEADS_ID,
@@ -4868,9 +4877,13 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
 
         if target_row_index is not None:
             row_number = target_row_index + 1  # 1-based
+            _extra = []
+            if str(sender).startswith("instagram:"):
+                # S6.4: retro-correct mis-tagged IG rows on every update
+                _extra.append({"range": f"'{tab_name}'!M{row_number}", "values": [["Instagram DM"]]})
             svc.spreadsheets().values().batchUpdate(
                 spreadsheetId=SHEETS_LEADS_ID,
-                body={"valueInputOption": "RAW", "data": [
+                body={"valueInputOption": "RAW", "data": _extra + [
                     {"range": f"'{tab_name}'!C{row_number}", "values": [[fields.get("name", "")]]},
                     {"range": f"'{tab_name}'!D{row_number}", "values": [[fields.get("business", "")]]},
                     {"range": f"'{tab_name}'!F{row_number}", "values": [[fields.get("email", "")]]},
@@ -4896,7 +4909,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 "Interested — No Booking Yet",
                 "", "", "",
                 transcript,
-                "WhatsApp",              # M: Source
+                _lead_source_for(sender),  # M: Source (S6.4 — entry channel)
                 now.strftime("%Y-%m-%d"), # N: Last Contact Date
                 "", "",                   # O: Outreach Channel, P: Outreach Message Sent
                 "New Lead",               # Q: WhatsApp Status
@@ -14672,6 +14685,73 @@ except Exception as _e:
     print(f"[IG TOKEN STARTUP] Unexpected error: {_e}")
     import traceback
     traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S6.4 — ONE-SHOT: retro-tag IG DM leads mis-attributed as 'WhatsApp'
+# Marker: Phone column holds an IG-scoped id ('instagram:' prefix, or a
+# bare >=15-digit number — the same rows that caused the 131009 class).
+# Runs 90s after boot; pg_store flag makes it once-ever.
+# ══════════════════════════════════════════════════════════════════════
+
+def _migrate_ig_source_backfill():
+    if not SHEETS_LEADS_ID:
+        return
+    try:
+        if _pg.enabled() and _pg.load_state("s64_ig_backfill_done", False):
+            return
+        svc = get_sheets_service()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        fixed = 0
+        for sheet in meta.get("sheets", []):
+            title = sheet["properties"]["title"]
+            try:
+                datetime.strptime(title, "%b %Y")  # monthly lead tabs only
+            except ValueError:
+                continue
+            result = svc.spreadsheets().values().get(
+                spreadsheetId=SHEETS_LEADS_ID,
+                range=f"'{title}'!A:M",
+            ).execute()
+            rows = result.get("values", [])
+            data = []
+            for i, row in enumerate(rows[1:], start=2):
+                phone = (row[4] if len(row) > 4 else "").strip()
+                digits = re.sub(r"\D", "", phone)
+                is_ig = phone.startswith("instagram:") or (phone.isdigit() and len(digits) >= 15)
+                if not is_ig:
+                    continue
+                current_src = (row[12] if len(row) > 12 else "").strip()
+                if current_src == "Instagram DM":
+                    continue
+                data.append({"range": f"'{title}'!M{i}", "values": [["Instagram DM"]]})
+            if data:
+                svc.spreadsheets().values().batchUpdate(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    body={"valueInputOption": "RAW", "data": data},
+                ).execute()
+                fixed += len(data)
+        print(f"[S6.4] IG source backfill complete — retro-tagged {fixed} rows as 'Instagram DM'")
+        if _pg.enabled():
+            _pg.save_state("s64_ig_backfill_done", True)
+        if fixed:
+            _post_to_slack_async(
+                SLACK_DEV_CHANNEL,
+                f"✅ *S6.4 attribution backfill:* retro-tagged *{fixed}* mis-attributed IG DM leads "
+                f"(Source → 'Instagram DM') across monthly tabs. Canvas source breakdown will be "
+                f"correct at the next 30-min sync.",
+            )
+    except Exception as e:
+        _report_error("s64_ig_backfill", e)
+
+
+def _s64_backfill_once():
+    import time as _time
+    _time.sleep(90)  # let boot settle
+    _migrate_ig_source_backfill()
+
+
+threading.Thread(target=_s64_backfill_once, daemon=True).start()
 
 
 def _startup_ig_auto_reply_audit():
