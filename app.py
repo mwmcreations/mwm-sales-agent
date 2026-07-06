@@ -7833,6 +7833,16 @@ def _reengagement_checker():
     while True:
         try:
             _heartbeat("reengagement_checker")
+            # S6.7: WABA billing kill switch — while the Meta payment method is
+            # broken (Twilio credit-line orphan, Jul 5), every "successful" API
+            # send fails at delivery but still stamps T{n} Sent, silently
+            # corrupting cadence state. Set REENGAGEMENT_PAUSED=1 in Railway to
+            # hold all outbound re-engagement; heartbeat keeps beating so the
+            # watchdog stays quiet. Remove the env var to resume.
+            if os.getenv("REENGAGEMENT_PAUSED", ""):
+                print("[Re-engagement] PAUSED via REENGAGEMENT_PAUSED env — skipping cycle")
+                _time.sleep(1500)
+                continue
             queue = get_reengagement_queue()
             now = datetime.now(pytz.timezone(TIMEZONE))
 
