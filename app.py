@@ -12195,6 +12195,116 @@ def _check_ig_token_age():
         _report_error("ig_token_refresh", e)
 
 
+# S8.2 — 7-day WP reinfection watch (post Jul-6 malware cleanup).
+# Hourly, piggybacked on the system monitor (no new thread). All checks are
+# PUBLIC endpoints — no WP credentials involved. Auto-expires 7 days after
+# first run with a closing summary. State in pg_store 'wp_reinfection_watch'.
+_WP_WATCH_PG_KEY = "wp_reinfection_watch"
+_WP_WATCH_BASE = "https://mwmcreations.com"
+_WP_WATCH_UA = {"User-Agent": "MWM-SalesMachine/1.0 (+https://mwmcreations.com)"}
+_WP_WATCH_BAD_PATHS = [  # attacker's plugin dirs, quarantined Jul 6 — should stay 404
+    "/wp-content/plugins/wp-plugins/",
+    "/wp-content/plugins/theme-for/",
+    "/wp-content/plugins/post-posts-info/",
+    "/wp-content/plugins/translatepress-the-fonts/",
+    "/wp-content/plugins/wp-security-helper/",
+]
+
+def _check_wp_reinfection(_alert):
+    try:
+        import requests as _req
+        if not _pg.enabled():
+            return
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        st = _pg.load_state(_WP_WATCH_PG_KEY, None) or {}
+        if st.get("done"):
+            return
+        if st.get("last_run"):
+            try:
+                _lr = datetime.fromisoformat(st["last_run"])
+                if (now - _lr).total_seconds() < 3600:
+                    return  # hourly gate
+            except Exception:
+                pass
+        first_run = not st.get("started")
+        if first_run:
+            st["started"] = now.isoformat()
+        else:
+            _started = datetime.fromisoformat(st["started"])
+            if (now - _started).total_seconds() > 7 * 86400:
+                _alert("wp_watch_done",
+                       "🛡️ *WP reinfection watch COMPLETE* — 7-day window closed with no "
+                       "unresolved alerts. Site stayed clean since the Jul 6 cleanup.")
+                st["done"] = True
+                _pg.save_state(_WP_WATCH_PG_KEY, st)
+                return
+
+        # 1) Rogue admin check — public REST users list must contain ONLY id 1
+        try:
+            r = _req.get(f"{_WP_WATCH_BASE}/wp-json/wp/v2/users?per_page=100",
+                         headers=_WP_WATCH_UA, timeout=15)
+            if r.status_code == 200:
+                _extra = [u for u in r.json() if u.get("id") != 1]
+                if _extra:
+                    _alert("wp_watch_users",
+                           "🚨 *WP REINFECTION WATCH:* unexpected user(s) in public REST /users: "
+                           + ", ".join(f"id {u.get('id')} '{u.get('slug')}'" for u in _extra[:5])
+                           + " — rogue admin pattern (Jul 6 attacker used id 2 'admo1q7f1'). Investigate NOW.")
+            else:
+                print(f"[WP WATCH] /users HTTP {r.status_code}")
+        except Exception as _sx:
+            print(f"[WP WATCH] /users check failed: {_sx}")
+
+        # 2) Published post-count delta (was 0 after cleanup; spam run = posts reappearing)
+        try:
+            r = _req.get(f"{_WP_WATCH_BASE}/wp-json/wp/v2/posts?per_page=1",
+                         headers=_WP_WATCH_UA, timeout=15)
+            if r.status_code in (200, 400):  # 400 = valid response when total pages 0 edge
+                total = int(r.headers.get("X-WP-Total", "-1"))
+                base = st.get("baseline_posts")
+                if base is None and total >= 0:
+                    st["baseline_posts"] = total
+                elif total > (base if base is not None else -1) and total >= 0:
+                    _alert("wp_watch_posts",
+                           f"🚨 *WP REINFECTION WATCH:* published post count rose {base} → {total}. "
+                           f"If Michael published legit content, ignore — baseline auto-updates. "
+                           f"Otherwise this is the spam-injection pattern returning.")
+                    st["baseline_posts"] = total  # re-alert only on further growth
+        except Exception as _sx:
+            print(f"[WP WATCH] post-count check failed: {_sx}")
+
+        # 3) Known-bad plugin paths — quarantined Jul 6, must NOT come back.
+        #    Baseline HTTP codes on first run; alert on any change toward 'exists'.
+        try:
+            codes = {}
+            for p in _WP_WATCH_BAD_PATHS:
+                try:
+                    codes[p] = _req.get(_WP_WATCH_BASE + p, headers=_WP_WATCH_UA,
+                                        timeout=15, allow_redirects=False).status_code
+                except Exception:
+                    codes[p] = -1
+            base_codes = st.get("baseline_paths")
+            if base_codes is None:
+                st["baseline_paths"] = codes
+            else:
+                changed = {p: c for p, c in codes.items()
+                           if c not in (-1, base_codes.get(p)) }
+                if changed:
+                    _alert("wp_watch_paths",
+                           "🚨 *WP REINFECTION WATCH:* quarantined plugin path(s) changed state: "
+                           + ", ".join(f"{p} {base_codes.get(p)}→{c}" for p, c in changed.items())
+                           + " — backdoor dirs may be back. Investigate NOW.")
+                    st["baseline_paths"] = codes
+        except Exception as _sx:
+            print(f"[WP WATCH] path probe failed: {_sx}")
+
+        st["last_run"] = now.isoformat()
+        _pg.save_state(_WP_WATCH_PG_KEY, st)
+        print(f"[WP WATCH] hourly sweep OK (started {st.get('started','?')[:16]})")
+    except Exception as e:
+        _report_error("wp_reinfection_watch", e)
+
+
 def _system_monitor():
     import time as _time
     import traceback
@@ -12265,6 +12375,7 @@ def _system_monitor():
             _check_env_vars()
             _check_meta_token()
             _check_ig_token_age()  # S6.3
+            _check_wp_reinfection(_alert)  # S8.2 — hourly-gated inside
 
             # Log pipeline stats
             stats = _get_pipeline_stats()
