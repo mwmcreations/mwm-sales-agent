@@ -39,6 +39,7 @@ WP_PORTAL_PROVISION_URL = os.getenv(
     "WP_PORTAL_PROVISION_URL", "https://mwmcreations.com/wp-admin/admin-ajax.php")
 WP_PORTAL_SECRET = os.getenv("WP_PORTAL_SECRET", "")
 PORTAL_URL = "https://mwmcreations.com/studio-portal/"
+WP_UA = "MWM-SalesMachine/1.0 (+https://mwmcreations.com)"  # host mod_security rejects python-requests default UA
 PACKAGE_LP_URL = "https://mwmcreations.com/studio-package/"
 CALENDLY_URL = "https://calendly.com/mwmcreations/studio-package-session"
 PACKAGE_NAME = "Studio Package"
@@ -172,7 +173,7 @@ def provision_portal_client(name: str, email: str, dry_run: bool = False) -> dic
     try:
         r = http_requests.post(
             WP_PORTAL_PROVISION_URL, data=payload,
-            headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET}, timeout=20)
+            headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET, "User-Agent": WP_UA}, timeout=20)
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         data = body.get("data") or body  # WP wp_send_json_success wraps in {success, data}
         return {"ok": bool(body.get("success", r.status_code == 200)),
@@ -433,10 +434,27 @@ def sequence_loop():
         time.sleep(3600)
 
 
+# ── WP portal ledger (S7.5 — read-only client+hours list) ──────────────
+def wp_list_clients():
+    """Fetch clients + hours from the WP portal ledger. Returns list or None."""
+    if not WP_PORTAL_SECRET:
+        return None
+    try:
+        r = http_requests.post(
+            WP_PORTAL_PROVISION_URL, data={"action": "mwm_studio_list_clients"},
+            headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET, "User-Agent": WP_UA}, timeout=15)
+        body = r.json()
+        if body.get("success"):
+            return (body.get("data") or {}).get("clients") or []
+    except Exception as e:
+        _report("studio.wp_list_clients", e)
+    return None
+
+
 # ── Canvas stats block ──────────────────────────────────────────────────
 def canvas_block(now_str: str) -> str:
-    """Studio Package code-block for the pipeline canvas. Utilization carries
-    a ~ qualifier until Phase 2 Calendly reconciliation ships."""
+    """Studio Package code-block for the pipeline canvas — per-client hours
+    read live from the WP portal ledger (S7.5); falls back to lead_data."""
     lead_data = _deps.get("lead_data") or {}
     contracts = pitched = closed = expiring = 0
     et = pytz.timezone(TIMEZONE)
@@ -458,9 +476,45 @@ def canvas_block(now_str: str) -> str:
         except Exception:
             pass
     conv = f"{closed}/{pitched} ({closed * 100 // pitched}%)" if pitched else "0/0 (—)"
+
+    # S7.5: live portal ledger — authoritative for contracts + hours
+    wp = wp_list_clients()
+    if wp is not None:
+        act = [c for c in wp if str(c.get("active", "1")) == "1"]
+        contracts = len(act)
+        expiring = 0
+        lines = []
+        used_t = tot_t = 0.0
+        for c in act:
+            try:
+                used = float(c.get("hours_used") or 0)
+                tot = float(c.get("contract_hours") or 0)
+                used_t += used
+                tot_t += tot
+                end = str(c.get("contract_end_date") or "")[:10]
+                try:
+                    days = (datetime.strptime(end, "%Y-%m-%d") - datetime.utcnow()).days
+                    if 0 <= days <= 30:
+                        expiring += 1
+                    end_note = f"ends {end}"
+                except Exception:
+                    end_note = ""
+                lines.append(f"  {(c.get('name') or '?')[:22]:<24}{used:>5.1f}/{tot:.0f}h   {end_note}")
+            except Exception:
+                pass
+        util = f"{used_t:.1f}/{tot_t:.0f}h ({used_t * 100 / tot_t:.0f}%)" if tot_t else "0/0h"
+        return (
+            f"Studio Contracts: {contracts} active | MRR: ${contracts * PACKAGE_MRR:,}\n"
+            f"Hours (portal ledger): {util}\n"
+            + ("\n".join(lines) + "\n" if lines else "")
+            + f"Expiring <=30d: {expiring}\n"
+            f"Pitch->Close: {conv}\n"
+            f"Updated: {now_str} · source: portal ledger"
+        )
+
     return (
         f"Studio Contracts: {contracts} active | MRR: ${contracts * PACKAGE_MRR:,}\n"
-        f"Hours utilization: ~see portal ledger (Phase 2 reconciliation pending)\n"
+        f"Hours utilization: ~portal ledger unreachable (fallback: lead_data)\n"
         f"Expiring <=30d: {expiring}\n"
         f"Pitch->Close: {conv}\n"
         f"Updated: {now_str}"
