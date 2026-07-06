@@ -303,6 +303,7 @@ _HEARTBEAT_STALE_MINUTES = 30  # Default: no heartbeat for 30 min = dead
 _THREAD_STALE_OVERRIDES = {
     "pipeline_canvas_sync": 75,
     "push_heartbeat": 75,
+    "studio_followup": 130,  # S7: hourly cycle -> 2x + slack
 }
 
 
@@ -428,6 +429,8 @@ _PIPELINE_EVENT_TYPES = {
     "PROPOSAL_SENT":   "📄",
     "CLIENT_WON":      "🎉",
     "CLIENT_LOST":     "💔",
+    "PACKAGE_PITCHED": "📦",   # S7: Studio Package pitched at studio visit
+    "PACKAGE_PURCHASED": "💳", # S7: Stripe purchase confirmed
 }
 
 
@@ -11237,8 +11240,8 @@ def record_outcome_api():
     sender = data.get("sender", "")
     outcome = data.get("outcome", "").lower()
 
-    if not sender or outcome not in ("won", "lost"):
-        return jsonify({"error": "Required: sender, outcome (won/lost)"}), 400
+    if not sender or outcome not in ("won", "lost", "pitched", "studio_package_pitched"):
+        return jsonify({"error": "Required: sender, outcome (won/lost/studio_package_pitched)"}), 400
 
     # Find lead in lead_data (try both formats)
     if sender not in lead_data:
@@ -11247,6 +11250,17 @@ def record_outcome_api():
             sender = _match_key
         else:
             return jsonify({"error": f"Lead not found: {sender}"}), 404
+
+    if outcome in ("pitched", "studio_package_pitched"):
+        # S7: MATT/Michael can arm the Studio Package pitch sequence via API
+        _studio.start_pitch_sequence(sender, lead_data[sender])
+        try:
+            _update_lead_sheet_status(lead_data[sender].get("name", ""),
+                                      "studio_package_pitched",
+                                      data.get("notes", ""), "", "")
+        except Exception as _sp_e:
+            _report_error("record_outcome.pitched_sheet", _sp_e, f"lead={sender}")
+        return jsonify({"success": True, "outcome": "studio_package_pitched", "sender": sender})
 
     if outcome == "won":
         _record_win(
@@ -11439,6 +11453,38 @@ def api_send_email():
 
 
 # ══════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════
+# S7.1 — STRIPE WEBHOOK: Studio Package purchase -> portal account +
+# welcome email + PACKAGE_PURCHASED + LARA/#matt alerts (studio_package.py)
+# Fast-ACK: verify signature, then process in a background thread so
+# Stripe never times out and retries stack idempotently on event.id.
+# ══════════════════════════════════════════════════════════════════════
+@app.route('/webhook/stripe', methods=['POST'])
+def stripe_webhook():
+    payload = request.get_data()
+    sig = request.headers.get("Stripe-Signature", "")
+    if not _studio.STRIPE_WEBHOOK_SECRET:
+        _report_error("stripe_webhook", "STRIPE_WEBHOOK_SECRET not set")
+        return jsonify({"error": "not configured"}), 503
+    if not _studio.verify_stripe_signature(payload, sig):
+        print("[STRIPE] Webhook rejected — bad signature")
+        return jsonify({"error": "invalid signature"}), 400
+    try:
+        _sw_event = json.loads(payload)
+    except Exception:
+        return jsonify({"error": "bad payload"}), 400
+
+    def _sw_process(ev):
+        try:
+            _sw_res = _studio.handle_stripe_event(ev)
+            print(f"[STRIPE] {ev.get('type')} ({ev.get('id')}) -> {_sw_res}")
+        except Exception as _sw_e:
+            _report_error("stripe_webhook.process", _sw_e, f"event={ev.get('id')}")
+
+    threading.Thread(target=_sw_process, args=(_sw_event,), daemon=True).start()
+    return jsonify({"received": True}), 200
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -12224,6 +12270,7 @@ _CANVAS_FINGERPRINTS = {
     "status_line":      "Automated 24/7",
     "quick_stats":      "Total Active Leads",
     "source_breakdown": "Instagram (Maya Outbound)",
+    "studio_package":   "Studio Contracts",
     "active_leads":     "Days in Stage",
     "system_status":    "Last Check",
     "action_log":       "Timestamp",
@@ -12288,6 +12335,7 @@ def _refresh_canvas_sections():
 _CANVAS_HEADER_FINGERPRINTS = {
     "quick_stats": "Quick Stats",
     "source_breakdown": "Source Breakdown",
+    "studio_package": "Studio Package",
     "active_leads": "Active Leads",   # ambiguous ("Total Active Leads") — see _canvas_header_id
     "system_status": "System Status",
 }
@@ -12675,6 +12723,14 @@ def _sync_pipeline_canvas():
     if _replace_table_section("source_breakdown", source_md):  # S5.5
         success_count += 1
 
+    # ── 3b. Studio Package block (S7) ──
+    try:
+        studio_md = "```\n" + _studio.canvas_block(now_str) + "\n```"
+        if _replace_table_section("studio_package", studio_md):
+            success_count += 1
+    except Exception as _st_e:
+        _report_error("Canvas studio_package block (S7)", _st_e)
+
     # ── 4. Active Leads table ──
     rows = []
     for ld in leads:
@@ -12777,7 +12833,7 @@ def _pipeline_canvas_sync_loop():
             result = _sync_pipeline_canvas()
             if result and result > 0:  # S0.2: heartbeat only on actual write success
                 _heartbeat("pipeline_canvas_sync")
-                print(f"[CANVAS SYNC] Heartbeat updated \u2014 {result}/5 sections written")
+                print(f"[CANVAS SYNC] Heartbeat updated \u2014 {result}/6 sections written")
                 globals()["_canvas_fail_alerted"] = False
             else:
                 print("[CANVAS SYNC] \u26a0\ufe0f 0/5 sections written \u2014 heartbeat withheld (stale in /health)")
@@ -12853,6 +12909,46 @@ _restore_state_from_pg()
 # every 5 min (catches deeply-nested mutations). New heartbeat: leads_flush
 # (monitors: expected-thread list grows by one when DATABASE_URL is set).
 _leads_db.start_flusher(lead_data, heartbeat=_heartbeat)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S7 — STUDIO PACKAGE AUTOMATION WIRING (studio_package.py)
+# Purchase loop: Stripe webhook -> WP portal provision -> welcome email
+# Pitch loop: studio_package_pitched outcome -> email sequence thread
+# NEW THREAD: studio_followup (hourly; monitors expected-list +1)
+# ══════════════════════════════════════════════════════════════════════
+import studio_package as _studio
+import rob_stripe as _rob_stripe
+
+
+def _find_lead_by_email(email):
+    """Scan lead_data for a record matching this email (case-insensitive)."""
+    _e = (email or "").strip().lower()
+    if not _e:
+        return None, None
+    for _k, _r in lead_data.items():
+        if (_r.get("email") or "").strip().lower() == _e:
+            return _k, _r
+    return None, None
+
+
+_studio.configure(
+    report_error=_report_error,
+    post_slack=_post_to_slack_async,
+    pipeline_event=_post_pipeline_event,
+    send_email=lambda to, subject, html: send_gmail(to, subject, html),
+    stripe_get=_rob_stripe._stripe_get,
+    pg_load=_pg.load_state,
+    pg_save=_pg.save_state,
+    lead_lookup_by_email=_find_lead_by_email,
+    update_sheet_status=lambda name, status: _update_lead_sheet_status(name, status, "", "", ""),
+    heartbeat=_heartbeat,
+    matt_channel=SLACK_MATT_CHANNEL,
+    lara_channel=SLACK_LARA_CHANNEL,
+    dev_channel=SLACK_DEV_CHANNEL,
+    lead_data=lead_data,
+)
+threading.Thread(target=_studio.sequence_loop, daemon=True, name="studio_followup").start()
 
 
 def _state_saver_thread():
@@ -13123,6 +13219,11 @@ textarea { min-height: 70px; resize: vertical; }
           <input type="radio" name="outcome" value="follow_up">
           <div class="oc-card"><span class="oc-icon">&#x1F504;</span>
             <div>Follow-up<span class="oc-sub">Needs time</span></div></div>
+        </label>
+        <label class="oc-option">
+          <input type="radio" name="outcome" value="studio_package_pitched">
+          <div class="oc-card"><span class="oc-icon">&#x1F4E6;</span>
+            <div>Package pitched<span class="oc-sub">Studio Package offered</span></div></div>
         </label>
         <label class="oc-option">
           <input type="radio" name="outcome" value="completed">
@@ -13559,6 +13660,7 @@ def meeting_report_meetings():
 OUTCOME_LABELS = {
     "client_won": {"emoji": "\U0001F389", "label": "CLIENT WON", "pipeline": "CLIENT_WON"},
     "follow_up": {"emoji": "\U0001F504", "label": "FOLLOW-UP NEEDED", "pipeline": "FOLLOW_UP"},
+    "studio_package_pitched": {"emoji": "\U0001F4E6", "label": "STUDIO PACKAGE PITCHED", "pipeline": "PACKAGE_PITCHED"},
     "completed": {"emoji": "✅", "label": "COMPLETED", "pipeline": "VISIT_COMPLETE"},
     "not_interested": {"emoji": "❌", "label": "NOT INTERESTED", "pipeline": "CLIENT_LOST"},
     "no_show": {"emoji": "\U0001F6AB", "label": "NO-SHOW", "pipeline": "NO_SHOW"},
@@ -13636,6 +13738,15 @@ def meeting_report_submit():
         if next_steps:
             matt_msg += f"*Next:* {next_steps}\n"
         matt_msg += "\n_Maya — please continue nurturing this lead via WhatsApp._"
+    elif outcome == "studio_package_pitched":
+        matt_msg = f"{oc['emoji']} *Studio Package pitched:* {name}"
+        if business:
+            matt_msg += f" ({business})"
+        matt_msg += "\n"
+        if notes:
+            matt_msg += f"*Notes:* {notes}\n"
+        matt_msg += ("\n_Email follow-up sequence armed (T+1h recap · T+2d value · T+6d nudge) — "
+                     "sent via Susan's Gmail. Maya picks up any WhatsApp replies._")
     elif outcome == "not_interested":
         matt_msg = f"{oc['emoji']} *Lead lost:* {name}"
         if business:
@@ -13671,6 +13782,24 @@ def meeting_report_submit():
             print(f"[MEETING REPORT] Sheets update error (non-blocking): {e}")
     else:
         test_log.append({"action": "Update Google Sheets CRM", "to": name, "message_preview": f"outcome={outcome}, notes={notes[:80] if notes else 'none'}"})
+
+    # ── S7: Studio Package pitched -> arm the email-first follow-up sequence ──
+    if outcome == "studio_package_pitched":
+        _sp_clean = name.strip().lower()
+        _sp_found = None
+        for _sp_k, _sp_r in lead_data.items():
+            if (_sp_r.get("name") or "").strip().lower() == _sp_clean:
+                _sp_found = _sp_k
+                if not test_mode:
+                    _studio.start_pitch_sequence(_sp_k, _sp_r)
+                else:
+                    test_log.append({"action": "Arm studio pitch sequence", "lead": _sp_k})
+                break
+        if not _sp_found and not test_mode:
+            post_to_slack(SLACK_MATT_CHANNEL,
+                f"\U0001F4E6 Studio Package pitched to *{name}* but no matching lead record found — "
+                f"follow-up sequence NOT armed. Add their email to the CRM and re-report, or "
+                f"Susan follows up manually.")
 
     # ── Post-Visit Follow-Up (WhatsApp template OR IG DM) ──
     # Check lead source: if they came from Instagram, send reschedule via IG DM.
@@ -13895,6 +14024,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
         "completed": "Completed",
         "not_interested": "Not Interested",
         "no_show": "No-Show — Reschedule",
+        "studio_package_pitched": "Studio Package — Pitched",
     }
     new_status = status_map.get(outcome, outcome)
 
@@ -14003,6 +14133,7 @@ POST_VISIT_TEMPLATES = {
     "no_show":         "maya_post_visit_noshow",
     "client_won":      "maya_post_visit_welcome",
     "not_interested":  None,  # No outreach for lost leads
+    "studio_package_pitched": None,  # S7: email sequence owns post-pitch touches
 }
 
 POST_VISIT_WABA_ID = "1172161621528249"

@@ -78,6 +78,12 @@ def init_schema():
                        updated_at TIMESTAMPTZ DEFAULT now()
                    )"""
             )
+            # S7 migration (paired with Victory Ocoee multi-tenant prep):
+            # product  — which MWM product this lead/client bought (e.g. 'Studio Package')
+            # tenant_id — multi-tenant partition key, DEFAULT 'MWM'
+            cur.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS product TEXT")
+            cur.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS tenant_id TEXT DEFAULT 'MWM'")
+            cur.execute("CREATE INDEX IF NOT EXISTS leads_tenant_idx ON leads (tenant_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS leads_phone_idx  ON leads (phone)")
             cur.execute("CREATE INDEX IF NOT EXISTS leads_email_idx  ON leads (lower(email))")
             cur.execute("CREATE INDEX IF NOT EXISTS leads_status_idx ON leads (status)")
@@ -127,6 +133,8 @@ def _promote(lead_key, rec):
         "cold_fired": bool(rec.get("cold_fired")) if "cold_fired" in rec else None,
         "event_id": _s("event_id"),
         "last_message_time": lmt_val,
+        "product": _s("product"),
+        "tenant_id": _s("tenant_id") or "MWM",
     }
 
 
@@ -141,11 +149,13 @@ def upsert_lead(lead_key, rec):
             cur.execute(
                 """INSERT INTO leads (lead_key, phone, channel, name, email, business,
                                       status, temperature, lead_score, booked, cold_fired,
-                                      event_id, last_message_time, data, updated_at)
+                                      event_id, last_message_time, product, tenant_id,
+                                      data, updated_at)
                    VALUES (%(lead_key)s, %(phone)s, %(channel)s, %(name)s, %(email)s,
                            %(business)s, %(status)s, %(temperature)s, %(lead_score)s,
                            %(booked)s, %(cold_fired)s, %(event_id)s,
-                           %(last_message_time)s, %(data)s::jsonb, now())
+                           %(last_message_time)s, %(product)s, %(tenant_id)s,
+                           %(data)s::jsonb, now())
                    ON CONFLICT (lead_key) DO UPDATE SET
                        phone = EXCLUDED.phone, channel = EXCLUDED.channel,
                        name = EXCLUDED.name, email = EXCLUDED.email,
@@ -154,6 +164,7 @@ def upsert_lead(lead_key, rec):
                        booked = EXCLUDED.booked, cold_fired = EXCLUDED.cold_fired,
                        event_id = EXCLUDED.event_id,
                        last_message_time = EXCLUDED.last_message_time,
+                       product = EXCLUDED.product, tenant_id = EXCLUDED.tenant_id,
                        data = EXCLUDED.data, updated_at = now()""",
                 dict(cols, lead_key=lead_key, data=payload),
             )
