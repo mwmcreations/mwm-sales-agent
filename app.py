@@ -1537,6 +1537,14 @@ def _get_conversion_report():
 # ══════════════════════════════════════════════════════════════════════════════════
 
 MAYA_SHARED_KNOWLEDGE = """
+
+STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). Purchase page: mwmcreations.com/studio-package/
+- Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
+- ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
+- CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
+- Lost access code → it cannot be recovered (stored securely), but Michael/DEV can issue a new one. Portal shows hours used/remaining, upcoming sessions, and contract dates.
+- If the portal shows an error, tell the client to refresh the page once and try again; if it persists, escalate to Michael/DEV.
 ABOUT MWM CREATIONS
 
 MWM Creations & Studios is located at:
@@ -9380,6 +9388,14 @@ Next step: [if applicable, or "awaiting further instructions"]
         base += """
 
 You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
+
+STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). Purchase page: mwmcreations.com/studio-package/
+- Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
+- ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
+- CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
+- Lost access code → it cannot be recovered (stored securely), but Michael/DEV can issue a new one. Portal shows hours used/remaining, upcoming sessions, and contract dates.
+- If the portal shows an error, tell the client to refresh the page once and try again; if it persists, escalate to Michael/DEV.
 
 YOUR ONE SOURCE OF TRUTH FOR CLIENTS:
 MWM Clients tab inside the MWM Leads Pipeline Google Sheet. 10 columns:
