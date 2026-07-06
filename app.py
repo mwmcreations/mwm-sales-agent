@@ -7830,6 +7830,25 @@ def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=Fa
     except Exception as e:
         print(f"[MAYA SHADOW] Re-engagement mirror error: {e}")
 
+# S8.1 (L7912 fix): 'T{n} Sent' cells normally hold '%Y-%m-%d %H:%M', but
+# S6.1 skip-and-advance writes 'SKIPPED no-media <ts>' into the SAME column
+# (it doubles as sent-flag + annotation). Extract the embedded timestamp
+# wherever it sits; return None (never raise) on anything unparseable.
+_STAGE_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})")
+
+def _parse_stage_stamp(value):
+    if not value:
+        return None
+    m = _STAGE_TS_RE.search(str(value))
+    if not m:
+        return None
+    try:
+        return pytz.timezone(TIMEZONE).localize(
+            datetime.strptime(m.group(1), "%Y-%m-%d %H:%M"))
+    except Exception:
+        return None
+
+
 def _reengagement_checker():
     """Background thread: process re-engagement queue every 30 minutes.
 
@@ -7920,17 +7939,18 @@ def _reengagement_checker():
                 # templates 25 min apart. Max ONE template per lead per 24h.
                 # (Normal cadence unaffected: tightest stage gap is 48h.)
                 if next_stage:
+                    # S8.1: throttle counts REAL sends only — 'SKIPPED no-media'
+                    # stages sent nothing, so they must not delay the next real
+                    # touch. Tolerant parse (was L7912 crash: strptime choked on
+                    # the SKIPPED stamp every cycle -> error-bus spam).
                     _last_sent = None
                     for _s in stages:
                         _v = sent_flags[_s]
-                        if _v:
-                            try:
-                                _t = pytz.timezone(TIMEZONE).localize(
-                                    datetime.strptime(_v, "%Y-%m-%d %H:%M"))
-                                if _last_sent is None or _t > _last_sent:
-                                    _last_sent = _t
-                            except Exception as _sx:
-                                _report_error("_reengagement_checker:L7912", _sx)  # S6.5 silent-except sweep
+                        if not _v or "SKIPPED" in _v:
+                            continue
+                        _t = _parse_stage_stamp(_v)
+                        if _t is not None and (_last_sent is None or _t > _last_sent):
+                            _last_sent = _t
                     if _last_sent and (now - _last_sent).total_seconds() < 24 * 3600:
                         next_stage = None
 
@@ -8006,8 +8026,11 @@ def _reengagement_checker():
                 elif all(sent_flags[s] for s in stages):
                     # All 7 templates sent - check if cold threshold reached
                     try:
-                        t7_time = datetime.strptime(sent_flags["T7"], "%Y-%m-%d %H:%M")
-                        t7_time = pytz.timezone(TIMEZONE).localize(t7_time)
+                        # S8.1: tolerant parse — a SKIPPED-stamped T7 still
+                        # carries its timestamp and still ends the sequence clock
+                        t7_time = _parse_stage_stamp(sent_flags["T7"])
+                        if t7_time is None:
+                            continue
                         days_since_t7 = (now - t7_time).total_seconds() / 86400
                         if days_since_t7 >= REENGAGEMENT_COLD_DAYS:
                             update_reengagement_row(row_idx, {
