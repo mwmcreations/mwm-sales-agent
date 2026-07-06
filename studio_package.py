@@ -209,13 +209,14 @@ def _welcome_email_html(first_name: str, access_code: str) -> str:
     <p style="font-size:15px;">Log in with this email address and your access code:</p>
     <p style="text-align:center;margin:18px 0;">{code_block}</p>
     <h3 style="margin-bottom:6px;">2 · Book your first session</h3>
-    <p style="font-size:15px;line-height:1.6;">Pick any time that works for you:<br>
-    <a href="{CALENDLY_URL}">{CALENDLY_URL}</a><br>
-    (You can also book straight from the portal — hours are tracked automatically.)</p>
+    <p style="font-size:15px;line-height:1.6;">All booking happens right in your portal —
+    log in, pick a time on the booking calendar, done. Your hours are tracked automatically.</p>
     <h3 style="margin-bottom:6px;">3 · How it works</h3>
     <ul style="font-size:15px;line-height:1.7;">
       <li>{CONTRACT_HOURS} hours total, use them across {CONTRACT_MONTHS} months (≈4h/month pace)</li>
-      <li>Cancel or reschedule from the portal up to 24h before a session</li>
+      <li>Book, reschedule, and cancel — all in your portal</li>
+      <li><strong>Cancellations need at least 24 hours' notice.</strong> Sessions cancelled
+          with less than 24h remaining are charged to your hours.</li>
       <li>Questions any time — just reply to this email or WhatsApp us</li>
     </ul>
     <p style="font-size:15px;line-height:1.6;">We can't wait to create with you.</p>
@@ -300,7 +301,7 @@ def _on_package_purchased(name: str, email: str, event_id: str):
     _deps["post_slack"](_deps["matt_channel"],
         f"💳 *STUDIO PACKAGE PURCHASED* — {lead_name} ({email})\n"
         f"{prov_note} · {mail_note}\n"
-        f"_LARA — please set up production tracking; first session booking via {CALENDLY_URL}_")
+        f"_LARA — please set up production tracking; client books sessions in the portal ({PORTAL_URL})_")
     _deps["post_slack"](_deps["lara_channel"],
         f"💳 New Studio Package client: *{lead_name}* ({email}) — {CONTRACT_HOURS}h over "
         f"{CONTRACT_MONTHS} months. Portal: {PORTAL_URL} · {prov_note}")
