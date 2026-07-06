@@ -11464,8 +11464,8 @@ def api_send_email():
 def stripe_webhook():
     payload = request.get_data()
     sig = request.headers.get("Stripe-Signature", "")
-    if not _studio.STRIPE_WEBHOOK_SECRET:
-        _report_error("stripe_webhook", "STRIPE_WEBHOOK_SECRET not set")
+    if not _studio.webhook_secret_configured():
+        _report_error("stripe_webhook", "Stripe webhook secret not set (env or pg_store)")
         return jsonify({"error": "not configured"}), 503
     if not _studio.verify_stripe_signature(payload, sig):
         print("[STRIPE] Webhook rejected — bad signature")

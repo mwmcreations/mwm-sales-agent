@@ -73,10 +73,26 @@ def _report(ctx, exc, detail=""):
 
 
 # ── Stripe signature verification (no SDK — raw HMAC per Stripe docs) ──
+def webhook_secret() -> str:
+    """STRIPE_WEBHOOK_SECRET env, falling back to pg_store key
+    'stripe_webhook_secret' (written at provision time so the signing
+    secret never has to transit chat/screens/env UIs)."""
+    if STRIPE_WEBHOOK_SECRET:
+        return STRIPE_WEBHOOK_SECRET
+    try:
+        return (_deps["pg_load"]("stripe_webhook_secret", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def webhook_secret_configured() -> bool:
+    return bool(webhook_secret())
+
+
 def verify_stripe_signature(payload: bytes, sig_header: str,
                             secret: str = None, tolerance: int = 300) -> bool:
     """Verify Stripe-Signature header. payload MUST be the raw request body."""
-    secret = secret if secret is not None else STRIPE_WEBHOOK_SECRET
+    secret = secret if secret is not None else webhook_secret()
     if not secret or not sig_header:
         return False
     try:
