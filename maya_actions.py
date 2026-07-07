@@ -870,11 +870,19 @@ def add_to_reengagement_queue(phone, name="", business="", last_inbound=None):
         return False
 
 
-def update_reengagement_row(row_index, updates):
+def update_reengagement_row(row_index, updates, raise_on_failure=False):
     """Update specific columns in a re-engagement queue row.
     updates: dict of {column_name: value}
+
+    S8.3: raise_on_failure=True makes a failed write RAISE instead of
+    print-and-continue. The Jul 6 duplicate wave happened because a
+    silently-failed stamp write left a sent lead looking un-sent — callers
+    whose correctness depends on the write landing (the pre-send stamp)
+    must pass raise_on_failure=True.
     """
     if not SHEETS_LEADS_ID:
+        if raise_on_failure:
+            raise RuntimeError("SHEETS_LEADS_ID not configured — stamp write cannot land")
         return
     try:
         svc = _get_sheets_service()
@@ -898,6 +906,8 @@ def update_reengagement_row(row_index, updates):
             ).execute()
     except Exception as e:
         print(f"[Maya] Error updating re-engagement row {row_index}: {e}")
+        if raise_on_failure:
+            raise
 
 
 def normalize_wa_phone(phone):
@@ -923,6 +933,15 @@ def send_reengagement_template(phone, name, template_name):
     Handles text-only, video, and image header templates.
     Returns True if sent successfully, False otherwise.
     """
+    # S8.3: defense-in-depth pause gate — Jul 6 incident: the scheduler's
+    # cycle-top REENGAGEMENT_PAUSED check was correct, but the env var itself
+    # had been (accidentally) deleted from Railway, and nothing else stood
+    # between the queue and Meta. The send primitive now refuses on its own,
+    # so ANY caller (checker, agent tool-call, future code) is gated too.
+    if os.getenv("REENGAGEMENT_PAUSED", ""):
+        print(f"[Maya] REFUSED re-engagement template '{template_name}' — REENGAGEMENT_PAUSED is set")
+        return False
+
     meta_token = os.getenv("META_ACCESS_TOKEN", "")
     phone_number_id = os.getenv("META_PHONE_NUMBER_ID", "")
 

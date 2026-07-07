@@ -21,6 +21,7 @@ from maya_actions import (handle_maya_action, get_reengagement_queue,
                           mark_reengagement_opted_out, is_in_active_reengagement,
                           REENGAGEMENT_CADENCE, REENGAGEMENT_TEMPLATES,
                           REENGAGEMENT_COLD_DAYS)
+from reengagement_guard import ReengagementGuard, guarded_send  # S8.3
 from susan_mailchimp import handle_susan_action
 from susan_gmail import handle_susan_gmail_action, send_gmail, search_drive_file, SUSAN_SEND_AS
 from victor_yodeck import handle_victor_action
@@ -7849,6 +7850,11 @@ def _parse_stage_stamp(value):
         return None
 
 
+# S8.3: in-process idempotency claims per (lead digits, stage) — second
+# layer under the sheet stamp; kills same-cycle / same-process races.
+_REENGAGE_GUARD = ReengagementGuard()
+
+
 def _reengagement_checker():
     """Background thread: process re-engagement queue every 30 minutes.
 
@@ -7976,8 +7982,8 @@ def _reengagement_checker():
                             continue
                         _first = (name or "there").split()[0]
                         _ig_msg = IG_REENGAGEMENT_MESSAGES.get(next_stage, "").format(name=_first)
-                        _result = send_instagram_dm(_igsid, body=_ig_msg)
-                        _sent = _result is not None
+                        _do_send = (lambda _sid=_igsid, _msg=_ig_msg:
+                                    send_instagram_dm(_sid, body=_msg) is not None)
                         _display_msg = _ig_msg
                     else:
                         # ── WhatsApp: send pre-approved template ──
@@ -8007,21 +8013,52 @@ def _reengagement_checker():
                             })
                             print(f"[Re-engagement] {next_stage} SKIPPED for {phone} — no media URL for '{_tmpl}', advancing cadence")
                             continue
-                        _sent = send_reengagement_template(phone, name, _tmpl)
+                        _do_send = (lambda _p=phone, _n=name, _t=_tmpl:
+                                    send_reengagement_template(_p, _n, _t))
                         _display_msg = _tmpl
 
-                    if _sent:
-                        update_reengagement_row(row_idx, {
-                            f"{next_stage} Sent": now.strftime("%Y-%m-%d %H:%M"),
-                        })
+                    # S8.3: touch-level pause re-check — env/config can drift
+                    # mid-cycle (Jul 6: REENGAGEMENT_PAUSED vanished from Railway).
+                    if os.getenv("REENGAGEMENT_PAUSED", ""):
+                        print(f"[Re-engagement] PAUSED — skipping {next_stage} for {phone}")
+                        continue
+
+                    # S8.3: stamp-BEFORE-send (Jul 6 duplicate-wave fix).
+                    # Order: idempotency claim -> PENDING stamp (must land or the
+                    # send is BLOCKED) -> send -> finalize; rollback only on a
+                    # confirmed send failure. Every failure mode is fail-safe:
+                    # worst case is a missed touch, never a duplicate send.
+                    _lock_key = (re.sub(r"\D", "", phone) or phone, next_stage)
+                    if not _REENGAGE_GUARD.claim(_lock_key, now.timestamp()):
+                        print(f"[Re-engagement] {next_stage} for {phone} SKIPPED — idempotency claim held (<24h)")
+                        continue
+                    _stamp = now.strftime("%Y-%m-%d %H:%M")
+                    _col = f"{next_stage} Sent"
+                    _outcome = guarded_send(
+                        write_pending=lambda: update_reengagement_row(
+                            row_idx, {_col: f"{_stamp} PENDING"}, raise_on_failure=True),
+                        send=_do_send,
+                        finalize=lambda: update_reengagement_row(
+                            row_idx, {_col: _stamp}, raise_on_failure=True),
+                        rollback=lambda: update_reengagement_row(
+                            row_idx, {_col: ""}, raise_on_failure=True),
+                        report=lambda _m, _e: _report_error(
+                            "reengagement_guard",
+                            f"{next_stage} {_m}",
+                            f"channel={'ig' if _is_ig else 'wa'} lead=...{re.sub(r'[^0-9]', '', phone)[-4:]} err={_e}"),
+                    )
+                    if _outcome == "sent":
                         _ch = "[IG DM] " if _is_ig else ""
                         print(f"[Re-engagement] {_ch}{next_stage} sent to {phone} ({name})")
                         _mirror_reengagement_to_shadow(phone, name, next_stage, _display_msg, is_ig=_is_ig)
                     else:
-                        # S6.2: failed sends hit the error bus (rate-limited 1/hr/context)
-                        _report_error("reengagement_send",
-                                      f"{next_stage} send returned False",
-                                      f"channel={'ig' if _is_ig else 'wa'} lead=...{re.sub(r'[^0-9]', '', phone)[-4:]}")
+                        if _outcome in ("blocked", "failed"):
+                            _REENGAGE_GUARD.release(_lock_key)  # retryable next cycle
+                        if _outcome != "blocked":
+                            # S6.2: failed sends hit the error bus (rate-limited 1/hr/context)
+                            _report_error("reengagement_send",
+                                          f"{next_stage} send returned False ({_outcome})",
+                                          f"channel={'ig' if _is_ig else 'wa'} lead=...{re.sub(r'[^0-9]', '', phone)[-4:]}")
 
                 elif all(sent_flags[s] for s in stages):
                     # All 7 templates sent - check if cold threshold reached
