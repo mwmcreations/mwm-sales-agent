@@ -67,7 +67,7 @@ class MWM_Studio_Booking {
 			'mwm_studio_cancel_booking',
 			'mwm_studio_get_history',
 			'mwm_studio_logout',
-			'mwm_studio_record_calendly_booking',
+			// S8.5 (Jul 8 2026): 'mwm_studio_record_calendly_booking' de-registered — portal-only booking; legacy Calendly path had no contract/date/hours checks.
 		);
 		foreach ( $ajax_actions as $action ) {
 			add_action( 'wp_ajax_' . $action, array( $this, $action ) );
@@ -669,6 +669,10 @@ class MWM_Studio_Booking {
 
 		$today = current_time( 'Y-m-d' );
 		$max_date = date( 'Y-m-d', strtotime( $today . ' +' . (int) $settings['max_advance_days'] . ' days' ) );
+		// S8.5 (Michael, Jul 8 2026): bookings may not be dated past the contract end date (= grace deadline).
+		if ( ! empty( $client->contract_end_date ) && $max_date > $client->contract_end_date ) {
+			$max_date = $client->contract_end_date;
+		}
 
 		if ( $date < $today || $date > $max_date ) {
 			wp_send_json_success( array( 'slots' => array(), 'reason' => 'out_of_range' ) );
@@ -745,6 +749,10 @@ class MWM_Studio_Booking {
 
 		$today    = current_time( 'Y-m-d' );
 		$max_date = date( 'Y-m-d', strtotime( $today . ' +' . (int) $settings['max_advance_days'] . ' days' ) );
+		// S8.5 (Michael, Jul 8 2026): bookings may not be dated past the contract end date (= grace deadline).
+		if ( ! empty( $client->contract_end_date ) && $max_date > $client->contract_end_date ) {
+			$max_date = $client->contract_end_date;
+		}
 		if ( $date < $today || $date > $max_date ) {
 			wp_send_json_error( array( 'message' => __( 'That date is outside the allowed booking window.', 'mwm-studio' ) ) );
 		}
