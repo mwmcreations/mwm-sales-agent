@@ -4,10 +4,18 @@ The portal backend is the **`mwm-studio-booking` plugin** (single ~115KB file at
 `wp-content/plugins/mwm-studio-booking/mwm-studio-booking.php`) plus two Code
 Snippets (IDs 15, 16) — snapshots of the snippets are in this directory.
 
-## ⚠️ Plugin is NOT yet in this repo
-`mwm-studio-booking.php` could not be exported tonight (Jul 6) — export path
-needs Michael's approval. **FIRST TASK next session:** download it via
-HostGator file manager (or approved export) and commit it here.
+## ✅ Plugin IS in this repo (since Jul 8 2026)
+`mwm-studio-booking.php` exported from the live site Jul 8 2026 (baseline
+commit = pre-S8.5 live state incl. the S7.6 late-cancel patch). Live edits
+must be mirrored here from now on.
+
+### S8.5 — booking-window enforcement (Jul 8 2026, applied live, Michael approved)
+1. `$max_date` capped at `$client->contract_end_date` in BOTH
+   `mwm_studio_get_available_slots` and `mwm_studio_create_booking` —
+   bookings can no longer be dated past the contract end (= 30-day grace deadline).
+2. `mwm_studio_record_calendly_booking` removed from the `$ajax_actions`
+   registration array (endpoint had zero contract/date/hours checks; portal-only
+   policy). Function body + frontend `onCalendlyBooked` JS left in place, dormant.
 
 ## Live edits made to the plugin OUTSIDE version control (via wp-admin editor)
 ### S7.6 — 24h cancellation policy (Jul 6 2026, ~12:50 AM, Michael approved)
