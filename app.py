@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from meeting_report_utils import parse_event_summary, extract_emails, booking_status_for
 import threading
 import hmac
 import hashlib
@@ -13798,25 +13799,9 @@ def meeting_report_meetings():
                 except Exception:
                     time_str = start_info["dateTime"][11:16]
 
-                # Try to extract name and business from event summary
-                # Common formats: "Name - Business", "Meeting with Name", "Studio Visit: Name"
-                name = summary.strip()
-                business = ""
-
-                # Check for common separators
-                for sep in [" - ", " | ", ": ", " — "]:
-                    if sep in name:
-                        parts = name.split(sep, 1)
-                        # Usually format is "Name - Business" or "Service: Name"
-                        name = parts[0].strip()
-                        business = parts[1].strip()
-                        break
-
-                # Remove common prefixes
-                for prefix in ["Meeting with ", "Studio Visit: ", "Consultation: ", "Visit: "]:
-                    if name.lower().startswith(prefix.lower()):
-                        name = name[len(prefix):].strip()
-                        break
+                # Extract name/business from the event title (Jul 8 2026 matcher fix:
+                # "Studio Visit — Dr. Scott Robinson (...)" must yield the PERSON, not "Studio Visit")
+                name, business = parse_event_summary(summary)
 
                 date_label = ""
                 if range_param == 'yesterday':
@@ -13973,9 +13958,13 @@ def meeting_report_submit():
     # ── S7: Studio Package pitched -> arm the email-first follow-up sequence ──
     if outcome == "studio_package_pitched":
         _sp_clean = name.strip().lower()
+        # Jul 8 2026 fix: also match by any email present in the report notes (case-insensitive)
+        _sp_emails = extract_emails(notes)
         _sp_found = None
         for _sp_k, _sp_r in lead_data.items():
-            if (_sp_r.get("name") or "").strip().lower() == _sp_clean:
+            _sp_rec_email = (_sp_r.get("email") or "").strip().lower()
+            if ((_sp_r.get("name") or "").strip().lower() == _sp_clean
+                    or (_sp_rec_email and _sp_rec_email in _sp_emails)):
                 _sp_found = _sp_k
                 if not test_mode:
                     _studio.start_pitch_sequence(_sp_k, _sp_r)
@@ -14240,10 +14229,15 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
     if not rows:
         return
 
-    # Find the lead by name (column C = index 2)
+    # Find the lead by name (col C = index 2) OR by email from notes (col F = index 5) — Jul 8 2026 fix
+    _mr_emails = extract_emails(notes)
+    def _mr_row_match(row):
+        if len(row) > 2 and row[2].strip().lower() == name.strip().lower():
+            return True
+        return bool(_mr_emails and len(row) > 5 and row[5].strip().lower() in _mr_emails)
     target_row = None
     for i, row in enumerate(rows):
-        if len(row) > 2 and row[2].strip().lower() == name.strip().lower():
+        if _mr_row_match(row):
             target_row = i + 1  # 1-indexed for Sheets API
             break
 
@@ -14259,7 +14253,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
                 ).execute()
                 rows = result.get("values", [])
                 for i, row in enumerate(rows):
-                    if len(row) > 2 and row[2].strip().lower() == name.strip().lower():
+                    if _mr_row_match(row):
                         target_row = i + 1
                         month_tab = tab_name
                         break
