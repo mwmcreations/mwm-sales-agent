@@ -377,6 +377,17 @@ def start_pitch_sequence(lead_key: str, rec: dict):
         _report("studio.start_pitch_sequence", e, f"lead={lead_key}")
 
 
+_HONORIFICS = {"dr", "dr.", "mr", "mr.", "mrs", "mrs.", "ms", "ms.", "prof", "prof.", "rev", "rev.", "pastor", "coach"}
+
+
+def _first_name(name) -> str:
+    """First usable name word, skipping honorifics ('Dr. Scott Robinson' -> 'Scott')."""
+    for w in (name or "").split():
+        if w.lower() not in _HONORIFICS:
+            return w
+    return "there"
+
+
 def _sequence_pass():
     """One scan over lead_data: send any due sequence touches."""
     lead_data = _deps.get("lead_data") or {}
@@ -406,7 +417,7 @@ def _sequence_pass():
             delay, stage_name = _SEQ[stage_i]
             if now - pitched < delay:
                 continue
-            first = (rec.get("name") or "there").split()[0]
+            first = _first_name(rec.get("name"))
             subject, html = _seq_email(stage_name, first)
             if _deps["send_email"](email, subject, html):
                 sp["next_stage"] = stage_i + 1

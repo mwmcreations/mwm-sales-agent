@@ -13919,8 +13919,8 @@ def meeting_report_submit():
         matt_msg += "\n"
         if notes:
             matt_msg += f"*Notes:* {notes}\n"
-        matt_msg += ("\n_Email follow-up sequence armed (T+1h recap · T+2d value · T+6d nudge) — "
-                     "sent via Susan's Gmail. Maya picks up any WhatsApp replies._")
+        matt_msg += ("\n_Arming email follow-up sequence (T+1h recap · T+2d value · T+6d nudge) via "
+                     "Susan's Gmail — confirmation follows. Maya picks up any WhatsApp replies._")
     elif outcome == "not_interested":
         matt_msg = f"{oc['emoji']} *Lead lost:* {name}"
         if business:
@@ -13970,6 +13970,9 @@ def meeting_report_submit():
                 _sp_found = _sp_k
                 if not test_mode:
                     _studio.start_pitch_sequence(_sp_k, _sp_r)
+                    post_to_slack(SLACK_MATT_CHANNEL,
+                        f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
+                        f"(lead record: {_sp_k}) — T+1h recap · T+2d value · T+6d nudge.")
                 else:
                     test_log.append({"action": "Arm studio pitch sequence", "lead": _sp_k})
                 break
