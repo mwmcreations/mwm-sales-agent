@@ -46,6 +46,7 @@ PACKAGE_NAME = "Studio Package"
 PACKAGE_MRR = 1200          # $/month
 CONTRACT_HOURS = 12         # per 3-month contract
 CONTRACT_MONTHS = 3
+GRACE_DAYS = 30             # S8.6: unused hours usable 30d past term end, then expire (Michael, Jul 8) — contract_end field = grace deadline
 TIMEZONE = os.getenv("TIMEZONE", "US/Eastern")
 
 # ── Injected dependencies (set by app.py at boot) ──────────────────────
@@ -158,7 +159,10 @@ def provision_portal_client(name: str, email: str, dry_run: bool = False) -> dic
     Returns {'ok': bool, 'access_code': str|None, 'existing': bool, 'raw': ...}."""
     et = pytz.timezone(TIMEZONE)
     start = datetime.now(et)
-    end = start + timedelta(days=CONTRACT_MONTHS * 30)
+    term_end = start + timedelta(days=CONTRACT_MONTHS * 30)
+    # S8.6: contract_end = grace deadline (term end + 30d). WP enforces this
+    # field as the booking hard stop (S8.5), so grace is automatic per client.
+    end = term_end + timedelta(days=GRACE_DAYS)
     payload = {
         "action": "mwm_studio_provision_client",
         "name": name,
@@ -214,6 +218,7 @@ def _welcome_email_html(first_name: str, access_code: str) -> str:
     <h3 style="margin-bottom:6px;">3 · How it works</h3>
     <ul style="font-size:15px;line-height:1.7;">
       <li>{CONTRACT_HOURS} hours total, use them across {CONTRACT_MONTHS} months (≈4h/month pace)</li>
+      <li>Unused hours stay bookable for {GRACE_DAYS} days after your contract ends, then expire</li>
       <li>Book, reschedule, and cancel — all in your portal</li>
       <li><strong>Cancellations need at least 24 hours' notice.</strong> Sessions cancelled
           with less than 24h remaining are charged to your hours.</li>
