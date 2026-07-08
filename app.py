@@ -12684,18 +12684,48 @@ def _delete_canvas_orphan_header():
         print(f"[CANVAS SYNC] Orphan cleanup error (non-fatal): {e}")
 
 
+# ── S8.6: Sheets read resilience ─────────────────────────────────
+# Last-known-good lead snapshot. A partial or failed Sheets read must
+# NEVER replace a healthy lead set — a single timeout degraded the
+# pipeline stats twice (Jul 5: 204→1, Jul 8: 209→27→209).
+_last_good_leads = []
+_last_good_leads_at = None
+
+
+def _sheets_execute_with_retry(request_fn, what, attempts=3, base_delay=2):
+    """Execute a Sheets API call with retry + exponential backoff (2s, 4s).
+    request_fn: zero-arg callable that performs the request and returns
+    the response. Raises the last error if all attempts fail."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return request_fn()
+        except Exception as e:
+            last_err = e
+            if attempt < attempts:
+                delay = base_delay * (2 ** (attempt - 1))
+                print(f"[CANVAS SYNC] {what} failed (attempt {attempt}/{attempts}): {e} — retry in {delay}s")
+                time.sleep(delay)
+    raise last_err
+
+
 def _read_leads_from_sheets():
     """Read ALL leads from Google Sheets for canvas sync.
     Returns a list of dicts with standardized keys.
     Unlike _repopulate_lead_data_from_sheets(), this does NOT filter out
     booked/cold/re-engagement leads — the canvas needs to show everything.
+    S8.6: per-call retry w/ backoff; on partial/failed read returns the
+    last-known-good snapshot instead of a shrunken/empty set.
     """
+    global _last_good_leads, _last_good_leads_at
     if not SHEETS_LEADS_ID:
         print("[CANVAS SYNC] SHEETS_LEADS_ID not set — cannot read leads")
         return []
     try:
         svc = get_sheets_service()
-        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        meta = _sheets_execute_with_retry(
+            lambda: svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(),
+            "spreadsheet metadata read")
         tabs = [s["properties"]["title"] for s in meta["sheets"]]
         month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
                        "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
@@ -12709,12 +12739,15 @@ def _read_leads_from_sheets():
 
         leads = []
         seen_phones = set()
+        partial = False  # S8.6: any tab that fails after retries taints the read
         for tab in monthly_tabs:
             try:
-                result = svc.spreadsheets().values().get(
-                    spreadsheetId=SHEETS_LEADS_ID,
-                    range=f"'{tab}'!A1:T",
-                ).execute()
+                result = _sheets_execute_with_retry(
+                    lambda t=tab: svc.spreadsheets().values().get(
+                        spreadsheetId=SHEETS_LEADS_ID,
+                        range=f"'{t}'!A1:T",
+                    ).execute(),
+                    f"tab '{tab}' read")
                 rows = result.get("values", [])
                 if len(rows) < 2:
                     continue
@@ -12751,11 +12784,27 @@ def _read_leads_from_sheets():
                         "date": _val("Date"),
                     })
             except Exception as tab_err:
-                print(f"[CANVAS SYNC] Error reading tab '{tab}': {tab_err}")
+                print(f"[CANVAS SYNC] Error reading tab '{tab}' (after retries): {tab_err}")
+                partial = True
                 continue
+
+        # S8.6: keep-last-known-good — never let a degraded read shrink the set
+        if partial and _last_good_leads and len(leads) < len(_last_good_leads):
+            _report_error(
+                "Sheets pipeline read DEGRADED (_read_leads_from_sheets)",
+                Exception(f"partial read {len(leads)} leads < last-good "
+                          f"{len(_last_good_leads)} ({_last_good_leads_at}) — using last-good"))
+            return list(_last_good_leads)
+        if not partial and leads:
+            _last_good_leads = list(leads)
+            _last_good_leads_at = datetime.now(pytz.timezone(TIMEZONE)).strftime("%b %d %I:%M %p")
         return leads
     except Exception as e:
         _report_error("Sheets pipeline read (_read_leads_from_sheets)", e)  # S1.3
+        if _last_good_leads:
+            print(f"[CANVAS SYNC] Read failed — using last-known-good "
+                  f"({len(_last_good_leads)} leads from {_last_good_leads_at})")
+            return list(_last_good_leads)
         return []
 
 
