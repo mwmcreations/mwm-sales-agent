@@ -3109,6 +3109,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 try:
                     if lead_phone:
                         update_lead_columns(lead_phone, {
+                            "Status": booking_status_for(appointment_type),  # Jul 8 2026 stage-sync fix
                             "WhatsApp Status": "Booked",
                             "Appointment Booked": "Y",
                             "Lead Temperature": "Hot",
@@ -11097,6 +11098,7 @@ def _handle_web_tool_call(tool_name, tool_input):
                     "Name": _web_lead_name or "",
                     "Email": _web_lead_email or "",
                     "Business": _web_lead_biz or "",
+                    "Status": booking_status_for(tool_input.get("appointment_type", "studio_visit")),  # Jul 8 2026 stage-sync fix
                     "WhatsApp Status": "Booked",
                     "Appointment Booked": "Y",
                     "Lead Temperature": "Hot",
