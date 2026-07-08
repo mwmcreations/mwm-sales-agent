@@ -60,7 +60,7 @@ function mwm_s7_provision_client() {
 	$code  = mwm_s7_gen_access_code();
 	$hours = isset( $_POST['contract_hours'] ) ? max( 1, intval( $_POST['contract_hours'] ) ) : 12;
 	$start = isset( $_POST['contract_start'] ) ? sanitize_text_field( wp_unslash( $_POST['contract_start'] ) ) : current_time( 'Y-m-d' );
-	$end   = isset( $_POST['contract_end'] ) ? sanitize_text_field( wp_unslash( $_POST['contract_end'] ) ) : date( 'Y-m-d', strtotime( $start . ' +90 days' ) );
+	$end   = isset( $_POST['contract_end'] ) ? sanitize_text_field( wp_unslash( $_POST['contract_end'] ) ) : date( 'Y-m-d', strtotime( $start . ' +120 days' ) ) /* S8.6: 90d term + 30d grace — matches studio_package.py; machine normally sends contract_end */;
 
 	$ok = $wpdb->insert( $table, array(
 		'name'                => $name ? $name : $email,

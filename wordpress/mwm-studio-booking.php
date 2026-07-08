@@ -2052,6 +2052,7 @@ class MWM_Studio_Booking {
 						</div>
 						<div class="mwm-hours-remaining"><span id="mwm-hours-remaining-num">0</span> <?php esc_html_e( 'hours remaining', 'mwm-studio' ); ?></div>
 						<div id="mwm-contract-dates" class="mwm-contract-dates" style="font-size:12px;color:#b8b3d9;margin-top:6px;"></div>
+						<div id="mwm-use-by-note" style="display:none;font-size:12px;margin-top:4px;font-weight:600;"></div>
 						<div id="mwm-contract-expired" style="display:none;color:#e94560;font-weight:700;margin-top:8px;font-size:14px;"><?php esc_html_e( 'Your contract has expired. Please contact us to renew.', 'mwm-studio' ); ?></div>
 					</div>
 					<button class="mwm-btn mwm-btn-accent mwm-quick-book-btn" id="mwm-quick-book-btn"><?php esc_html_e( 'Book a Session', 'mwm-studio' ); ?></button>
@@ -2273,6 +2274,16 @@ class MWM_Studio_Booking {
 						var startStr = months[startDate.getMonth()] + ' ' + startDate.getDate() + ', ' + startDate.getFullYear();
 						var endStr = months[endDate.getMonth()] + ' ' + endDate.getDate() + ', ' + endDate.getFullYear();
 						$('#mwm-contract-dates').text('Contract: ' + startStr + ' – ' + endStr).show();
+						// S8.6: use-by date — unused hours expire on contract_end (30-day grace policy)
+						var todayUB = new Date(); todayUB.setHours(0,0,0,0);
+						if (status !== 'expired' && endDate >= todayUB) {
+							var daysLeftUB = Math.round((endDate - todayUB) / 86400000);
+							var useByTxt = 'Hours must be used by ' + endStr + ' — unused hours expire.';
+							if (daysLeftUB <= 30) {
+								useByTxt = '\u26A0 ' + daysLeftUB + ' day' + (daysLeftUB === 1 ? '' : 's') + ' left — hours expire ' + endStr + '.';
+							}
+							$('#mwm-use-by-note').text(useByTxt).css('color', daysLeftUB <= 30 ? '#e94560' : '#b8b3d9').show();
+						}
 					}
 
 					// Show expired warning
