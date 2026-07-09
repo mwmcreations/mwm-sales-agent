@@ -1615,6 +1615,8 @@ function btg_render_email_blast() {
                     <option value="<?php echo $g['group_id']; ?>"><?php echo esc_html($g['group_name']); ?> (<?php echo $g['group_type']; ?>)</option>
                     <?php endforeach; ?>
                     <option value="all">All Residents (owners + renters with email)</option>
+                <option value="owners">Owners Only</option>
+                <option value="renters">Renters Only</option>
                 </select></div>
                 <div style="margin-bottom:12px"><label style="font-weight:600;display:block;margin-bottom:4px">Subject*</label>
                 <input type="text" name="subject" id="eb-subject" required class="regular-text" style="width:100%" placeholder="e.g. Important Community Notice"></div>
@@ -2520,7 +2522,10 @@ add_action("wp_ajax_btg_send_email_blast", function(){
 
     // Gather emails
     $emails=array();
-    if($group_id==="all"){
+    if($group_id==="owners"||$group_id==="renters"){
+        $tbl=($group_id==="owners")?"owners":"renters";
+        $emails=$wpdb->get_col("SELECT DISTINCT email FROM {$p}{$tbl} WHERE is_active=1 AND email!='' AND email IS NOT NULL");
+    } elseif($group_id==="all"){
         $owners=$wpdb->get_col("SELECT DISTINCT email FROM {$p}owners WHERE is_active=1 AND email!='' AND email IS NOT NULL");
         $renters=$wpdb->get_col("SELECT DISTINCT email FROM {$p}renters WHERE is_active=1 AND email!='' AND email IS NOT NULL");
         $emails=array_unique(array_merge($owners,$renters));
