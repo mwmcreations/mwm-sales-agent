@@ -2067,10 +2067,35 @@ class MWM_Studio_Booking {
 
 				<section class="mwm-section mwm-book-section" id="mwm-book-section">
 					<h2><?php esc_html_e( 'Book a Session', 'mwm-studio' ); ?></h2>
-					<p class="mwm-calendly-intro"><?php esc_html_e( "Select your preferred date and time below. You'll receive a confirmation email and SMS reminder automatically.", 'mwm-studio' ); ?></p>
-					<div id="mwm-calendly-container" class="mwm-calendly-container">
-						<div id="mwm-calendly-widget" style="min-width:320px;height:1400px;"></div>
+					<p class="mwm-calendly-intro">Pick a date to see available times. Hours come out of your package automatically, and your booking appears under Upcoming Bookings right away.</p>
+				<style>
+				.mwm-slots{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+				.mwm-slot-btn{min-width:90px}
+				.mwm-slot-selected{outline:2px solid #7c3aed;background:rgba(124,58,237,.25)!important}
+				.mwm-book-field{margin:12px 0}
+				.mwm-book-field label{display:block;margin-bottom:6px;color:rgba(255,255,255,.7);font-size:13px}
+				.mwm-book-field input,.mwm-book-field select{width:100%;max-width:320px;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:#12122a;color:#fff}
+				.mwm-book-error{color:#f87171;margin-top:10px}
+				</style>
+				<div id="mwm-native-booking">
+					<div class="mwm-book-field">
+						<label for="mwm-book-date">Session date</label>
+						<input type="date" id="mwm-book-date">
 					</div>
+					<div id="mwm-slots" class="mwm-slots"></div>
+					<div id="mwm-book-details" style="display:none">
+						<div class="mwm-book-field">
+							<label for="mwm-book-duration">Duration</label>
+							<select id="mwm-book-duration"></select>
+						</div>
+						<div class="mwm-book-field">
+							<label for="mwm-book-notes">Notes (optional)</label>
+							<input type="text" id="mwm-book-notes" maxlength="200" placeholder="Anything we should prepare?">
+						</div>
+						<button type="button" id="mwm-book-confirm" class="mwm-btn mwm-btn-primary mwm-btn-block">Confirm booking</button>
+						<div id="mwm-book-error" class="mwm-book-error" style="display:none"></div>
+					</div>
+				</div>
 				</section>
 
 				<section class="mwm-section">
@@ -2101,7 +2126,7 @@ class MWM_Studio_Booking {
 				client: null,
 				settings: null,
 				todayStr: '',
-				calendlyListenerBound: false,
+				selectedSlot: null,
 
 				init: function(){
 					this.root = $('#mwm-studio-app');
@@ -2232,7 +2257,7 @@ class MWM_Studio_Booking {
 						self.renderClientHeader();
 						self.renderHours();
 						self.renderUpcoming(data.upcoming);
-						self.initCalendly();
+						self.initBooking();
 					}, function(msg){
 						self.showToastError(msg);
 					});
@@ -2361,67 +2386,72 @@ class MWM_Studio_Booking {
 
 				/* Calendly Integration */
 
-				initCalendly: function() {
+				initBooking: function() {
 					var self = this;
 					if (!this.client) return;
-
-					// Load Calendly widget script if not already loaded
-					if (!window.Calendly) {
-						var script = document.createElement('script');
-						script.src = 'https://assets.calendly.com/assets/external/widget.js';
-						script.async = true;
-						script.onload = function() { self.renderCalendlyWidget(); };
-						document.head.appendChild(script);
-
-						// Also load Calendly CSS
-						var link = document.createElement('link');
-						link.rel = 'stylesheet';
-						link.href = 'https://assets.calendly.com/assets/external/widget.css';
-						document.head.appendChild(link);
-					} else {
-						this.renderCalendlyWidget();
-					}
-
-					// Listen for Calendly events (only bind once)
-					if (!this.calendlyListenerBound) {
-						this.calendlyListenerBound = true;
-						window.addEventListener('message', function(e) {
-							if (e.origin === 'https://calendly.com' && e.data && e.data.event === 'calendly.event_scheduled') {
-								self.onCalendlyBooked(e.data.payload);
-							}
-						});
-					}
+					var d = document.getElementById('mwm-book-date');
+					if (!d || d.dataset.mwmBound) return;
+					d.dataset.mwmBound = '1';
+					var t = new Date();
+					d.min = t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2);
+					d.addEventListener('change', function(){ if (d.value) self.loadSlots(d.value); });
+					$('#mwm-book-confirm').on('click', function(){ self.confirmBooking(); });
 				},
 
-				renderCalendlyWidget: function() {
-					var container = document.getElementById('mwm-calendly-widget');
-					if (!container || !window.Calendly) return;
-
-					var url = 'https://calendly.com/mwmcreations/studio-package-session-client-portal';
-					url += '?hide_gdpr_banner=1';
-					url += '&background_color=1a1a2e';
-					url += '&text_color=ffffff';
-					url += '&primary_color=7c3aed';
-					url += '&name=' + encodeURIComponent(this.client.name);
-					url += '&email=' + encodeURIComponent(this.client.email);
-
-					Calendly.initInlineWidget({
-						url: url,
-						parentElement: container
+				loadSlots: function(date) {
+					var self = this;
+					this.selectedSlot = null;
+					$('#mwm-book-details').hide();
+					$('#mwm-book-error').hide();
+					$('#mwm-slots').html('<div class="mwm-empty">Checking availability…</div>');
+					this.ajax('mwm_studio_get_available_slots', { date: date }, function(data){
+						var slots = (data && data.slots) || [];
+						if (!slots.length) {
+							$('#mwm-slots').html('<div class="mwm-empty">No available times on this date — try another day.</div>');
+							return;
+						}
+						var html = '';
+						for (var i = 0; i < slots.length; i++) {
+							html += '<button type="button" class="mwm-btn mwm-btn-ghost mwm-slot-btn" data-start="' + self.escHtml(String(slots[i].start)) + '" data-max="' + (parseInt(slots[i].max_duration, 10) || 1) + '">' + self.escHtml(String(slots[i].start)) + '</button>';
+						}
+						$('#mwm-slots').html(html);
+						$('#mwm-slots .mwm-slot-btn').on('click', function(){
+							$('#mwm-slots .mwm-slot-btn').removeClass('mwm-slot-selected');
+							$(this).addClass('mwm-slot-selected');
+							self.selectedSlot = { start: String($(this).data('start')), max: parseInt($(this).data('max'), 10) || 1 };
+							var sel = $('#mwm-book-duration').empty();
+							for (var d2 = 1; d2 <= self.selectedSlot.max; d2++) {
+								sel.append($('<option>').val(d2).text(d2 + (d2 === 1 ? ' hour' : ' hours')));
+							}
+							$('#mwm-book-details').show();
+						});
+					}, function(msg){
+						$('#mwm-slots').html('<div class="mwm-empty">' + self.escHtml(msg) + '</div>');
 					});
 				},
 
-				onCalendlyBooked: function(payload) {
+				confirmBooking: function() {
 					var self = this;
-					// Record the booking in WordPress for hours tracking
-					this.ajax('mwm_studio_record_calendly_booking', {
-						event_uri: payload && payload.event ? payload.event.uri : '',
-						invitee_uri: payload && payload.invitee ? payload.invitee.uri : ''
-					}, function(data) {
-						// Refresh dashboard to update hours
+					if (!this.selectedSlot) return;
+					$('#mwm-book-error').hide();
+					var btn = $('#mwm-book-confirm').prop('disabled', true).text('Booking…');
+					this.ajax('mwm_studio_create_booking', {
+						date: $('#mwm-book-date').val(),
+						start_time: this.selectedSlot.start,
+						duration: $('#mwm-book-duration').val(),
+						notes: $('#mwm-book-notes').val()
+					}, function(data){
+						btn.prop('disabled', false).text('Confirm booking');
+						$('#mwm-book-details').hide();
+						$('#mwm-slots').empty();
+						$('#mwm-book-date').val('');
+						$('#mwm-book-notes').val('');
+						self.selectedSlot = null;
 						self.loadDashboardData();
-						// Show a brief success message
-						self.showToast('<?php echo esc_js( __( 'Session booked! Check your email for confirmation.', 'mwm-studio' ) ); ?>');
+						self.showToast((data && data.message) ? data.message : 'Session booked! It now appears under Upcoming Bookings.');
+					}, function(msg){
+						btn.prop('disabled', false).text('Confirm booking');
+						$('#mwm-book-error').text(msg).show();
 					});
 				},
 
