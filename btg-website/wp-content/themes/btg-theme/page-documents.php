@@ -54,45 +54,54 @@
     </div>
 </section>
 
-<!-- Documents List -->
+<!-- Documents List (dynamic: wp_btg_documents, public docs only) -->
 <section class="btg-section btg-section-alt">
     <div class="btg-container">
         <h2 class="btg-section-title">Available Documents</h2>
-
         <?php
-        // Query for document attachments or a custom document CPT
-        $docs = new WP_Query( array(
-            'post_type'      => 'attachment',
-            'post_status'    => 'inherit',
-            'posts_per_page' => 20,
-            'post_mime_type' => array( 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ),
-            'orderby'        => 'date',
-            'order'          => 'DESC',
-        ) );
-
-        if ( $docs->have_posts() ) :
-            while ( $docs->have_posts() ) : $docs->the_post();
-                $file_url  = wp_get_attachment_url( get_the_ID() );
-                $file_type = pathinfo( $file_url, PATHINFO_EXTENSION );
-                $file_size = size_format( filesize( get_attached_file( get_the_ID() ) ), 1 );
-                $icon = ( $file_type === 'pdf' ) ? '&#x1F4D5;' : '&#x1F4C4;';
-        ?>
-            <div class="btg-doc-item">
-                <div class="doc-file-icon"><?php echo $icon; ?></div>
-                <div class="doc-info">
-                    <h4><?php the_title(); ?></h4>
-                    <span><?php echo strtoupper( $file_type ) . ' &bull; ' . $file_size; ?></span>
-                </div>
-                <a href="<?php echo esc_url( $file_url ); ?>" class="doc-download" target="_blank" rel="noopener">Download</a>
-            </div>
-        <?php
-            endwhile;
-            wp_reset_postdata();
-        else :
-        ?>
-            <div class="no-events-message" style="margin-top: 24px;">
-                <p>Community documents will be uploaded here soon. Please check back or contact the management office for specific document requests.</p>
-            </div>
+        global $wpdb;
+        $btg_docs_table = $wpdb->prefix . 'btg_documents';
+        $btg_docs = $wpdb->get_results( "SELECT title, category, description, file_path, file_size, created_at FROM {$btg_docs_table} WHERE is_active = 1 AND requires_auth = 0 ORDER BY category ASC, created_at DESC" );
+        if ( $btg_docs ) :
+            $btg_cat_labels = array(
+                'governing_docs' => 'Governing Documents', 'rules' => 'Rules & Regulations',
+                'meeting_minutes' => 'Meeting Minutes', 'minutes' => 'Meeting Minutes',
+                'forms' => 'Forms & Applications', 'form' => 'Forms & Applications',
+                'financials' => 'Financial Reports', 'financial' => 'Financial Reports',
+                'budget' => 'Budget', 'insurance' => 'Insurance & Safety',
+                'contracts' => 'Contracts', 'inspection_reports' => 'Inspection Reports',
+                'director_disclosures' => 'Director Disclosures', 'notices' => 'Notices',
+                'template' => 'Templates', 'other' => 'General',
+            );
+            $btg_upload = wp_upload_dir();
+            $btg_base = trailingslashit( $btg_upload['baseurl'] ) . 'btg-documents/';
+            $btg_grouped = array();
+            foreach ( $btg_docs as $btg_doc ) {
+                $btg_label = ( isset( $btg_doc->category ) && isset( $btg_cat_labels[ $btg_doc->category ] ) ) ? $btg_cat_labels[ $btg_doc->category ] : 'General';
+                $btg_grouped[ $btg_label ][] = $btg_doc;
+            }
+            ksort( $btg_grouped );
+            foreach ( $btg_grouped as $btg_label => $btg_items ) : ?>
+                <h3 class="btg-doc-group-title"><?php echo esc_html( $btg_label ); ?></h3>
+                <?php foreach ( $btg_items as $btg_doc ) :
+                    $btg_file = basename( $btg_doc->file_path );
+                    $btg_ext  = strtoupper( pathinfo( $btg_file, PATHINFO_EXTENSION ) );
+                    $btg_size = ! empty( $btg_doc->file_size ) ? size_format( (int) $btg_doc->file_size ) : '';
+                    $btg_date = ! empty( $btg_doc->created_at ) ? mysql2date( 'M j, Y', $btg_doc->created_at ) : '';
+                    ?>
+                    <div class="btg-doc-item">
+                        <div class="doc-file-icon"><?php echo esc_html( $btg_ext ? $btg_ext : 'DOC' ); ?></div>
+                        <div class="doc-info">
+                            <strong><?php echo esc_html( $btg_doc->title ); ?></strong>
+                            <?php if ( ! empty( $btg_doc->description ) ) : ?><p><?php echo esc_html( $btg_doc->description ); ?></p><?php endif; ?>
+                            <span class="doc-meta"><?php echo esc_html( trim( $btg_size . ( $btg_size && $btg_date ? ' · ' : '' ) . $btg_date ) ); ?></span>
+                        </div>
+                        <a class="doc-download" href="<?php echo esc_url( $btg_base . rawurlencode( $btg_file ) ); ?>" target="_blank" rel="noopener">Download</a>
+                    </div>
+                <?php endforeach;
+            endforeach;
+        else : ?>
+            <p class="no-events-message">Documents will be uploaded soon. Please check back, or contact the office if you need a specific document.</p>
         <?php endif; ?>
     </div>
 </section>
