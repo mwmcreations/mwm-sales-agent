@@ -489,6 +489,30 @@ class MWM_Studio_Booking {
 	 * AJAX: LOGIN
 	 * ========================================================================= */
 
+	private function notify_client( $email, $subject, $message ) {
+		if ( ! $email || ! is_email( $email ) ) {
+			return;
+		}
+		wp_mail( $email, $subject, $message );
+	}
+
+	private function push_booking_event( $event, $payload ) {
+		$url    = get_option( 'mwm_studio_webhook_url', 'https://mwm-sales-agent-production.up.railway.app/webhook/studio-booking' );
+		$secret = get_option( 'mwm_portal_provision_secret' );
+		if ( ! $url || ! $secret ) {
+			return;
+		}
+		wp_remote_post( $url, array(
+			'timeout'  => 2,
+			'blocking' => false,
+			'headers'  => array(
+				'Content-Type'        => 'application/json',
+				'X-MWM-Portal-Secret' => $secret,
+			),
+			'body'     => wp_json_encode( array_merge( array( 'event' => $event, 'sent_at' => gmdate( 'c' ) ), $payload ) ),
+		) );
+	}
+
 	public function mwm_studio_login() {
 		$this->require_valid_nonce();
 
@@ -814,6 +838,26 @@ class MWM_Studio_Booking {
 		);
 		$this->notify_admin( $subject, $message );
 
+		// S12: client confirmation email + machine push
+		$mwm_client_subject = sprintf( 'Booking confirmed — %s at %s | %s', $date, $start_time, $settings['studio_name'] );
+		$mwm_client_message = sprintf(
+			"Hi %s,\n\nYour studio session is confirmed.\n\nDate: %s\nTime: %s – %s\nDuration: %s hour(s)\nLocation: %s, %s\n\nYour booking appears under Upcoming Bookings in your client portal. Plans changed? You can cancel from the portal free of charge up to %d hours before your session; cancellations within %d hours forfeit the booked hours per your agreement.\n\nSee you at the studio!\nMWM Creations & Studios",
+			$client->name, $date, $start_time, $end_time, $duration,
+			$settings['studio_name'], $settings['studio_address'],
+			intval( $settings['cancellation_hours'] ), intval( $settings['cancellation_hours'] )
+		);
+		$this->notify_client( $client->email, $mwm_client_subject, $mwm_client_message );
+		$this->push_booking_event( 'booking_created', array(
+			'booking_id'   => $booking_id,
+			'client_name'  => $client->name,
+			'client_email' => $client->email,
+			'date'         => $date,
+			'start_time'   => $start_time,
+			'end_time'     => $end_time,
+			'duration'     => $duration,
+			'notes'        => $notes,
+		) );
+
 		wp_send_json_success(
 			array(
 				'message' => __( 'Booking confirmed!', 'mwm-studio' ),
@@ -897,6 +941,27 @@ class MWM_Studio_Booking {
 			substr( $booking->end_time, 0, 5 )
 		);
 		$this->notify_admin( $subject, $message );
+
+		// S12: client cancellation email + machine push
+		$mwm_client_subject = sprintf( 'Booking cancelled — %s at %s | %s', $booking->booking_date, $booking->start_time, $settings['studio_name'] );
+		if ( $mwm_late_cancel ) {
+			$mwm_policy_line = sprintf( 'Because this cancellation was within %d hours of the session, the booked hours were deducted from your package per your agreement.', intval( $settings['cancellation_hours'] ) );
+		} else {
+			$mwm_policy_line = 'Your hours were returned to your package.';
+		}
+		$mwm_client_message = sprintf(
+			"Hi %s,\n\nYour studio session on %s (%s – %s) has been cancelled.\n\n%s\n\nYou can book a new session any time from your client portal.\n\nMWM Creations & Studios",
+			$client->name, $booking->booking_date, $booking->start_time, $booking->end_time, $mwm_policy_line
+		);
+		$this->notify_client( $client->email, $mwm_client_subject, $mwm_client_message );
+		$this->push_booking_event( $mwm_late_cancel ? 'booking_cancelled_late' : 'booking_cancelled', array(
+			'booking_id'   => $booking_id,
+			'client_name'  => $client->name,
+			'client_email' => $client->email,
+			'date'         => $booking->booking_date,
+			'start_time'   => $booking->start_time,
+			'end_time'     => $booking->end_time,
+		) );
 
 		wp_send_json_success( array( 'message' => ( $mwm_late_cancel ? __( 'Session cancelled. Because this was within 24 hours of your session, the booked hours remain charged per our cancellation policy.', 'mwm-studio' ) : __( 'Booking cancelled.', 'mwm-studio' ) ) ) );
 	}
