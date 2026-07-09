@@ -16,8 +16,6 @@
         <span>
             <?php if ( is_user_logged_in() ) : ?>
                 <a href="<?php echo esc_url( wp_logout_url( home_url() ) ); ?>">Log Out</a>
-            <?php else : ?>
-                <a href="<?php echo esc_url( wp_login_url( home_url( '/resident-portal/' ) ) ); ?>">Login</a>
             <?php endif; ?>
         </span>
     </div>
@@ -44,7 +42,7 @@
             <!-- Navigation -->
             <nav class="btg-nav btg-nav--integrated" role="navigation" aria-label="Primary Navigation">
                 <div class="btg-container">
-                    <button class="btg-nav-toggle" aria-label="Toggle navigation" onclick="document.querySelector('.btg-nav ul').classList.toggle('active')">
+                    <button class="btg-nav-toggle" aria-label="Toggle navigation">
                         &#9776; Menu
                     </button>
                     <?php
