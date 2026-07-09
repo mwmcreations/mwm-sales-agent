@@ -11565,6 +11565,92 @@ def stripe_webhook():
     return jsonify({"received": True}), 200
 
 
+@app.route('/webhook/studio-booking', methods=['POST'])
+def studio_booking_webhook():
+    """S12: WP portal pushes booking events here (booking_created / booking_cancelled /
+    booking_cancelled_late). Auth = X-MWM-Portal-Secret shared secret (same as provisioning).
+    Fast-ACK + background processing (Stripe-webhook pattern). Idempotent per booking_id+event."""
+    _sb_secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not _sb_secret:
+        _report_error("studio_booking_webhook", "WP_PORTAL_SECRET not set")
+        return jsonify({"error": "not configured"}), 503
+    if request.headers.get("X-MWM-Portal-Secret", "") != _sb_secret:
+        print("[STUDIO-BOOKING] Webhook rejected — bad secret")
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        _sb_evt = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "bad payload"}), 400
+    if _sb_evt.get("event") not in ("booking_created", "booking_cancelled", "booking_cancelled_late"):
+        return jsonify({"error": "unknown event"}), 400
+
+    def _sb_process(evt):
+        import pg_store as _sbpg
+        try:
+            event = evt.get("event")
+            bid = str(evt.get("booking_id") or "")
+            if not bid:
+                return
+            idem_key = f"studio_booking_evt:{bid}:{event}"
+            if _sbpg.load_state(idem_key):
+                print(f"[STUDIO-BOOKING] duplicate {idem_key} — skipped")
+                return
+            name = evt.get("client_name") or "Client"
+            date = evt.get("date") or ""
+            start = evt.get("start_time") or ""
+            end = evt.get("end_time") or ""
+            if event == "booking_created":
+                gcal_note = "calendar ⚠️ failed"
+                try:
+                    _sb_svc = get_calendar_service()
+                    _sb_body = {
+                        "summary": f"🎬 Studio: {name} ({evt.get('duration')}h)",
+                        "description": (
+                            f"Studio Package portal booking #{bid}\n"
+                            f"Client: {name} ({evt.get('client_email','')})\n"
+                            f"Notes: {evt.get('notes') or '—'}\n"
+                            f"Source: portal (auto-synced by machine S12)"
+                        ),
+                        "start": {"dateTime": f"{date}T{start}:00", "timeZone": TIMEZONE},
+                        "end": {"dateTime": f"{date}T{end}:00", "timeZone": TIMEZONE},
+                    }
+                    _sb_created = _sb_svc.events().insert(calendarId=CALENDAR_ID, body=_sb_body).execute()
+                    _sbpg.save_state(f"studio_booking_gcal:{bid}", {"event_id": _sb_created.get("id", "")})
+                    gcal_note = "calendar ✅"
+                except Exception as _sb_e:
+                    _report_error("studio_booking.gcal_insert", _sb_e, f"booking={bid}")
+                _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                    f"📅 *STUDIO BOOKING* — {name}: {date} {start}–{end} "
+                    f"({evt.get('duration')}h) · portal booking #{bid} · {gcal_note} · "
+                    f"confirmation email sent by WP. No action needed."
+                ))
+            else:
+                late = event == "booking_cancelled_late"
+                gcal_note = ""
+                try:
+                    _sb_rec = _sbpg.load_state(f"studio_booking_gcal:{bid}") or {}
+                    _sb_gid = _sb_rec.get("event_id") if isinstance(_sb_rec, dict) else _sb_rec
+                    if _sb_gid:
+                        get_calendar_service().events().delete(calendarId=CALENDAR_ID, eventId=_sb_gid).execute()
+                        gcal_note = "calendar event removed ✅"
+                    else:
+                        gcal_note = "no calendar event on file (booked pre-S12?)"
+                except Exception as _sb_e:
+                    _report_error("studio_booking.gcal_delete", _sb_e, f"booking={bid}")
+                    gcal_note = "calendar removal ⚠️ failed"
+                _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                    f"🚫 *STUDIO CANCELLATION* — {name}: {date} {start}–{end} · booking #{bid} · "
+                    f"{'<24h — hours FORFEITED per policy' if late else 'hours returned to package'} · "
+                    f"{gcal_note} · cancellation email sent by WP."
+                ))
+            _sbpg.save_state(idem_key, {"processed_at": datetime.now().isoformat()})
+        except Exception as _sb_e:
+            _report_error("studio_booking_webhook.process", _sb_e, f"event={evt.get('event')} id={evt.get('booking_id')}")
+
+    threading.Thread(target=_sb_process, args=(_sb_evt,), daemon=True).start()
+    return jsonify({"received": True}), 200
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Comprehensive health check endpoint with thread + API monitoring."""
