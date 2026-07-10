@@ -11597,8 +11597,8 @@ def studio_booking_webhook():
                 return
             name = evt.get("client_name") or "Client"
             date = evt.get("date") or ""
-            start = evt.get("start_time") or ""
-            end = evt.get("end_time") or ""
+            start = str(evt.get("start_time") or "")[:5]  # HH:MM — WP sends HH:MM:SS
+            end = str(evt.get("end_time") or "")[:5]
             if event == "booking_created":
                 gcal_note = "calendar ⚠️ failed"
                 try:
