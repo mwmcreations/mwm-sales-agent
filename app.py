@@ -47,6 +47,8 @@ META_ACCESS_TOKEN    = os.getenv("META_ACCESS_TOKEN", "")
 META_PAGE_ACCESS_TOKEN = os.getenv("META_PAGE_ACCESS_TOKEN", "") or META_ACCESS_TOKEN
 # META_PHONE_NUMBER_ID — Maya's phone number ID (existing single-tenant default).
 META_PHONE_NUMBER_ID = os.getenv("META_PHONE_NUMBER_ID", "")
+# META_WABA_ID — WhatsApp Business Account id (S13-migrated destination WABA). Template-listing paths.
+META_WABA_ID         = os.getenv("META_WABA_ID", "4362688314003117")
 # LARA_PHONE_NUMBER_ID — Phone number ID for the LARA WhatsApp sender (+1 407-537-7207).
 # Added Session 29 (2026-04-08) when LARA's WABA registration completed via Voice OTP.
 LARA_PHONE_NUMBER_ID = os.getenv("LARA_PHONE_NUMBER_ID", "")
@@ -5373,7 +5375,7 @@ def _submit_lara_templates_REMOVED():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         if not META_ACCESS_TOKEN:
             return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
-        WABA_ID = "1172161621528249"
+        WABA_ID = META_WABA_ID
         url = f"https://graph.facebook.com/v19.0/{WABA_ID}/message_templates"
         hdrs = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
         templates = [
@@ -10827,7 +10829,7 @@ def upload_template_media():
         print(f"  Handle: {handle[:50]}...")
 
         # Step 3: Get template info
-        waba_id = "1172161621528249"
+        waba_id = META_WABA_ID
         templates_url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
         tpl_resp = http_requests.get(templates_url, params={
             "name": template_name,
@@ -14581,7 +14583,7 @@ POST_VISIT_TEMPLATES = {
     "studio_package_pitched": None,  # S7: email sequence owns post-pitch touches
 }
 
-POST_VISIT_WABA_ID = "1172161621528249"
+POST_VISIT_WABA_ID = META_WABA_ID
 
 
 def _lookup_lead_phone(name):
