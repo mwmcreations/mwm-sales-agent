@@ -11856,6 +11856,204 @@ def api_send_email():
 # ══════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# S17 — CALENDLY PHASE A: on-demand studio rental checkout (Stripe)
+# Prices are CANONICAL AND SERVER-SIDE. The browser never supplies an amount —
+# it sends (hours, editing) and the machine computes the price. Anything else
+# lets a customer book 5 hours for $1.
+# Mirrors /book-studio's published pricing (studio $249/hr, +$100/hr editing).
+# ═══════════════════════════════════════════════════════════════════════════════
+STUDIO_RENTAL_PRICING = {
+    "studio":  {1: 24900, 2: 49800, 3: 74700, 4: 99600, 5: 124500},   # cents
+    "editing": {1: 34900, 2: 69800, 3: 104700, 4: 139600, 5: 174500},
+}
+STUDIO_RENTAL_HOLD_MIN = int(os.getenv("STUDIO_RENTAL_HOLD_MIN", "15"))
+SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://mwmcreations.com")
+
+
+def _rental_price_cents(hours, editing):
+    """Authoritative price lookup. Returns None if the tier is invalid.
+
+    STRICT: hours must be a whole number 1-5. A float like 1.5 must NOT be
+    silently truncated to 1 — that would charge for 1h while the slot is held
+    for 1.5h. Anything not exactly an integer tier is refused.
+    """
+    if isinstance(hours, bool):
+        return None
+    if isinstance(hours, float) and not hours.is_integer():
+        return None
+    if isinstance(hours, str):
+        hours = hours.strip()
+        if not hours.isdigit():
+            return None
+    try:
+        h = int(hours)
+    except (TypeError, ValueError):
+        return None
+    tier = "editing" if editing else "studio"
+    return STUDIO_RENTAL_PRICING.get(tier, {}).get(h)
+
+
+@app.route('/studio-checkout', methods=['POST'])
+def studio_checkout():
+    """S17: create a Stripe Checkout Session for an on-demand studio rental.
+
+    Called by WP (/book-studio) AFTER it has written a `pending` booking row
+    and is holding the slot. Auth = X-MWM-Portal-Secret (S12 pattern).
+
+    Body: {booking_id, date: YYYY-MM-DD, start_time: HH:MM, hours: 1..5,
+           editing: bool, name, email}
+    Returns: {ok, url, session_id, amount_cents}
+    """
+    _sc_secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not _sc_secret:
+        _report_error("studio_checkout", "WP_PORTAL_SECRET not set")
+        return jsonify({"ok": False, "error": "not configured"}), 503
+    if request.headers.get("X-MWM-Portal-Secret", "") != _sc_secret:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    booking_id = str(data.get("booking_id", "")).strip()
+    date       = str(data.get("date", "")).strip()
+    start_time = str(data.get("start_time", ""))[:5]
+    hours      = data.get("hours")
+    editing    = bool(data.get("editing"))
+    name       = str(data.get("name", "")).strip()[:120]
+    email      = str(data.get("email", "")).strip()[:200]
+
+    if not (booking_id and date and start_time and email):
+        return jsonify({"ok": False, "error": "missing fields"}), 400
+
+    amount = _rental_price_cents(hours, editing)
+    if amount is None:
+        _report_error("studio_checkout", f"invalid tier hours={hours!r} editing={editing!r}")
+        return jsonify({"ok": False, "error": "invalid tier"}), 400
+
+    label = f"{int(hours)}h Studio + Editing" if editing else f"{int(hours)}h Podcast Studio"
+    desc  = f"{date} at {start_time} — 1500 Park Center Dr, Suite 230, Orlando FL"
+
+    try:
+        # Stripe Checkout Session (form-encoded; rob_stripe._stripe_post pattern)
+        payload = {
+            "mode": "payment",
+            "success_url": f"{SITE_BASE_URL}/book-studio/?booking=success&id={booking_id}",
+            "cancel_url":  f"{SITE_BASE_URL}/book-studio/?booking=cancelled&id={booking_id}",
+            "customer_email": email,
+            "line_items[0][price_data][currency]": "usd",
+            "line_items[0][price_data][unit_amount]": str(amount),
+            "line_items[0][price_data][product_data][name]": label,
+            "line_items[0][price_data][product_data][description]": desc,
+            "line_items[0][quantity]": "1",
+            "metadata[kind]": "studio_rental",
+            "metadata[booking_id]": booking_id,
+            "metadata[date]": date,
+            "metadata[start_time]": start_time,
+            "metadata[hours]": str(int(hours)),
+            "metadata[editing]": "1" if editing else "0",
+            "metadata[name]": name,
+            "metadata[email]": email,
+            "expires_at": str(int(time.time()) + max(STUDIO_RENTAL_HOLD_MIN, 30) * 60),
+        }
+        import rob_stripe as _rs
+        res = _rs._stripe_post("checkout/sessions", payload)
+        if not res or res.get("error") or not res.get("url"):
+            _report_error("studio_checkout.stripe",
+                          str((res or {}).get("error", "no url"))[:200],
+                          f"booking={booking_id}")
+            return jsonify({"ok": False, "error": "stripe failed"}), 502
+
+        import pg_store as _pg
+        if _pg.enabled():
+            try:
+                _pg.save_state(f"studio_rental_session:{res.get('id')}", {
+                    "booking_id": booking_id, "date": date, "start_time": start_time,
+                    "hours": int(hours), "editing": editing, "name": name,
+                    "email": email, "amount_cents": amount,
+                    "created": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                })
+            except Exception as _px:
+                _report_error("studio_checkout.persist", _px, f"booking={booking_id}")
+
+        print(f"[RENTAL] checkout created booking={booking_id} {label} ${amount/100:.2f} "
+              f"session={str(res.get('id'))[-8:]}")
+        return jsonify({"ok": True, "url": res.get("url"),
+                        "session_id": res.get("id"), "amount_cents": amount}), 200
+    except Exception as _cx:
+        _report_error("studio_checkout", _cx, f"booking={booking_id}")
+        return jsonify({"ok": False, "error": "exception"}), 500
+
+
+def _confirm_rental_in_wp(booking_id, session_id, amount_cents):
+    """Tell WP the rental is paid → flip pending → confirmed. WP then runs the
+    existing S12 chain (client email + gcal + #matt alert)."""
+    url = os.getenv("WP_PORTAL_PROVISION_URL",
+                    "https://mwmcreations.com/wp-admin/admin-ajax.php")
+    secret = os.getenv("WP_PORTAL_SECRET", "")
+    try:
+        r = http_requests.post(url, data={
+            "action": "mwm_studio_confirm_rental",
+            "booking_id": booking_id,
+            "session_id": session_id,
+            "amount_cents": amount_cents,
+        }, headers={"X-MWM-Portal-Secret": secret}, timeout=10)
+        ok = r.status_code == 200 and '"success":true' in (r.text or "").lower().replace(" ", "")
+        print(f"[RENTAL] WP confirm booking={booking_id} -> {r.status_code} ok={ok}")
+        return ok
+    except Exception as _wx:
+        _report_error("rental_confirm_wp", _wx, f"booking={booking_id}")
+        return False
+
+
+def handle_studio_rental_paid(event):
+    """Route a checkout.session.completed event that is a studio rental.
+    Idempotent on the Stripe event id. Returns True if handled (so the package
+    handler can be skipped), False if this isn't a rental event."""
+    import pg_store as _pg
+    session = (event.get("data", {}) or {}).get("object", {}) or {}
+    meta = session.get("metadata", {}) or {}
+    if meta.get("kind") != "studio_rental":
+        return False
+
+    event_id   = event.get("id", "")
+    booking_id = meta.get("booking_id", "")
+    idem_key   = f"studio_rental_evt:{event_id}"
+    if _pg.enabled():
+        try:
+            if _pg.load_state(idem_key, False):
+                print(f"[RENTAL] duplicate event {event_id} — skipped")
+                return True
+        except Exception:
+            pass
+
+    paid = session.get("payment_status") == "paid"
+    amount = session.get("amount_total", 0)
+    print(f"[RENTAL] checkout.session.completed booking={booking_id} "
+          f"paid={paid} amount={amount}")
+
+    if paid:
+        _confirm_rental_in_wp(booking_id, session.get("id", ""), amount)
+        try:
+            _post_to_slack_async(
+                "#matt",
+                f":moneybag: *Studio rental PAID* — {meta.get('name','?')} "
+                f"({meta.get('email','?')})\n"
+                f"{meta.get('hours','?')}h "
+                f"{'Studio + Editing' if meta.get('editing')=='1' else 'Podcast Studio'} · "
+                f"{meta.get('date','?')} {meta.get('start_time','?')} · "
+                f"${amount/100:.2f} · booking #{booking_id}")
+        except Exception:
+            pass
+
+    if _pg.enabled():
+        try:
+            _pg.save_state(idem_key, True)
+        except Exception:
+            pass
+    return True
+
+
 # S7.1 — STRIPE WEBHOOK: Studio Package purchase -> portal account +
 # welcome email + PACKAGE_PURCHASED + LARA/#matt alerts (studio_package.py)
 # Fast-ACK: verify signature, then process in a background thread so
@@ -11878,6 +12076,10 @@ def stripe_webhook():
 
     def _sw_process(ev):
         try:
+            # S17: on-demand studio rentals are routed first. Returns True if it
+            # owned the event, so the package handler never sees a rental.
+            if ev.get("type") == "checkout.session.completed" and handle_studio_rental_paid(ev):
+                return
             _sw_res = _studio.handle_stripe_event(ev)
             print(f"[STRIPE] {ev.get('type')} ({ev.get('id')}) -> {_sw_res}")
         except Exception as _sw_e:
