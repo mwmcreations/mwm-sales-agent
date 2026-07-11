@@ -11657,21 +11657,31 @@ def studio_availability():
         _sa_busy = []
         for _sa_ev in _sa_events.get("items", []):
             if _sa_ev.get("transparency") == "transparent":
-                continue  # marked Free — not a real block
+                continue  # marked Free — not a real block (incl. default all-day reminders)
             _sa_s = _sa_ev.get("start", {})
             _sa_e = _sa_ev.get("end", {})
-            if "dateTime" not in _sa_s or "dateTime" not in _sa_e:
-                continue  # all-day event — ignored by policy
             try:
-                _sa_bs = datetime.fromisoformat(_sa_s["dateTime"]).astimezone(_sa_tz)
-                _sa_be = datetime.fromisoformat(_sa_e["dateTime"]).astimezone(_sa_tz)
+                if "dateTime" in _sa_s and "dateTime" in _sa_e:
+                    _sa_bs = datetime.fromisoformat(_sa_s["dateTime"]).astimezone(_sa_tz)
+                    _sa_be = datetime.fromisoformat(_sa_e["dateTime"]).astimezone(_sa_tz)
+                elif "date" in _sa_s and "date" in _sa_e:
+                    # S15.1: all-day event explicitly marked Busy — blocks whole day(s).
+                    # (Google defaults all-day events to Free/transparent, filtered above.)
+                    _sa_bs = _sa_tz.localize(datetime.strptime(_sa_s["date"], "%Y-%m-%d"))
+                    _sa_be = _sa_tz.localize(datetime.strptime(_sa_e["date"], "%Y-%m-%d"))  # end date is exclusive
+                else:
+                    continue
             except Exception:
                 continue
             if _sa_be <= _sa_start or _sa_bs >= _sa_end:
                 continue
             _sa_bs = max(_sa_bs, _sa_start)
             _sa_be = min(_sa_be, _sa_end)
-            _sa_busy.append({"start": _sa_bs.strftime("%H:%M"), "end": _sa_be.strftime("%H:%M")})
+            # S15.1 fix: a block running to (or past) next midnight must serialize as
+            # "24:00" — "00:00" made multi-day events collapse to zero-length blocks
+            # that the plugin discarded (found by Michael: Jul 23–26 convention showed open).
+            _sa_end_str = "24:00" if _sa_be >= _sa_end else _sa_be.strftime("%H:%M")
+            _sa_busy.append({"start": _sa_bs.strftime("%H:%M"), "end": _sa_end_str})
         print(f"[STUDIO-AVAIL] {_sa_date}: {len(_sa_busy)} busy block(s)")
         return jsonify({"date": _sa_date, "timezone": TIMEZONE, "busy": _sa_busy})
     except Exception as _sa_exc:
