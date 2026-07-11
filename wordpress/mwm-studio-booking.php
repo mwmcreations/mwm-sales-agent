@@ -382,6 +382,89 @@ class MWM_Studio_Booking {
 	 * Returns array of start times (H:i) that can accommodate $duration_hours before close/next booking,
 	 * respecting the buffer between bookings.
 	 */
+	/**
+	 * S15: busy blocks from the MWM CREATIONS Google Calendar via the machine's
+	 * /studio-availability endpoint, so portal slots respect calendar-only
+	 * commitments (shoots, meetings, holds). Returns array of blocks
+	 * [['start'=>'HH:MM','end'=>'HH:MM'],...] on success, or NULL when availability
+	 * is UNKNOWN (machine unreachable + no usable cache) — callers treat NULL as
+	 * fail-closed. Cache ladder (Michael-approved Jul 10 2026): fresh transient
+	 * (<5 min) -> live fetch -> stale transient (<=1 h) -> NULL + throttled alert.
+	 */
+	private function get_gcal_busy_blocks( $date ) {
+		static $request_cache = array();
+		if ( array_key_exists( $date, $request_cache ) ) {
+			return $request_cache[ $date ];
+		}
+
+		$transient_key = 'mwm_gcal_busy_' . $date;
+		$cached        = get_transient( $transient_key );
+		if ( is_array( $cached ) && isset( $cached['blocks'], $cached['fetched'] ) && ( time() - (int) $cached['fetched'] ) < 5 * MINUTE_IN_SECONDS ) {
+			$request_cache[ $date ] = $cached['blocks'];
+			return $cached['blocks'];
+		}
+
+		$base   = get_option( 'mwm_studio_availability_url', 'https://mwm-sales-agent-production.up.railway.app/studio-availability' );
+		$secret = get_option( 'mwm_portal_provision_secret' );
+		$blocks = null;
+		if ( $secret ) {
+			$resp = wp_remote_get(
+				add_query_arg( 'date', rawurlencode( $date ), $base ),
+				array(
+					'timeout' => 3,
+					'headers' => array( 'X-MWM-Portal-Secret' => $secret ),
+				)
+			);
+			if ( ! is_wp_error( $resp ) && 200 === (int) wp_remote_retrieve_response_code( $resp ) ) {
+				$body = json_decode( wp_remote_retrieve_body( $resp ), true );
+				if ( is_array( $body ) && isset( $body['busy'] ) && is_array( $body['busy'] ) ) {
+					$blocks = array();
+					foreach ( $body['busy'] as $b ) {
+						if ( isset( $b['start'], $b['end'] ) ) {
+							$blocks[] = array( 'start' => $b['start'], 'end' => $b['end'] );
+						}
+					}
+				}
+			}
+		}
+
+		if ( is_array( $blocks ) ) {
+			set_transient( $transient_key, array( 'blocks' => $blocks, 'fetched' => time() ), HOUR_IN_SECONDS );
+			$request_cache[ $date ] = $blocks;
+			return $blocks;
+		}
+
+		// Machine unreachable/bad response: degrade to stale cache (<=1h via transient TTL).
+		if ( is_array( $cached ) && isset( $cached['blocks'] ) ) {
+			$this->alert_gcal_outage( 'degraded-stale-cache', $date );
+			$request_cache[ $date ] = $cached['blocks'];
+			return $cached['blocks'];
+		}
+
+		// No cache at all: FAIL-CLOSED — availability unknown, hide slots.
+		$this->alert_gcal_outage( 'fail-closed', $date );
+		$request_cache[ $date ] = null;
+		return null;
+	}
+
+	/** S15: throttled (1/hr) email alert when the availability feed is degraded or down. */
+	private function alert_gcal_outage( $mode, $date ) {
+		if ( get_transient( 'mwm_gcal_outage_alerted' ) ) {
+			return;
+		}
+		set_transient( 'mwm_gcal_outage_alerted', 1, HOUR_IN_SECONDS );
+		wp_mail(
+			'michael@mwmcreations.com',
+			'[MWM Portal] Availability feed ' . ( 'fail-closed' === $mode ? 'DOWN - bookings hidden' : 'degraded (stale cache in use)' ),
+			"The studio portal could not reach the machine's /studio-availability endpoint (date requested: {$date}).\n\n" .
+			"Mode: {$mode}\n" .
+			( 'fail-closed' === $mode
+				? "Effect: clients see 'booking temporarily unavailable' until the machine responds again.\n"
+				: "Effect: slots are filtered with calendar data up to 1 hour old.\n" ) .
+			"Check Railway (mwm-sales-agent) status. This alert is throttled to once per hour."
+		);
+	}
+
 	private function get_available_slots( $date, $duration_hours = null ) {
 		global $wpdb;
 		$settings = $this->get_settings();
@@ -429,6 +512,20 @@ class MWM_Studio_Booking {
 			$busy[]  = array( $b_start, $b_end );
 		}
 
+		// S15: merge Google Calendar busy blocks so calendar-only commitments
+		// block portal slots. NULL = availability unknown -> fail-closed.
+		$gcal_blocks = $this->get_gcal_busy_blocks( $date );
+		if ( null === $gcal_blocks ) {
+			return null;
+		}
+		foreach ( $gcal_blocks as $g ) {
+			$g_start = strtotime( $date . ' ' . $g['start'] );
+			$g_end   = strtotime( $date . ' ' . $g['end'] );
+			if ( $g_start && $g_end && $g_end > $g_start ) {
+				$busy[] = array( $g_start - $buffer_seconds, $g_end + $buffer_seconds );
+			}
+		}
+
 		$duration_seconds = $duration_hours ? ( (float) $duration_hours * HOUR_IN_SECONDS ) : HOUR_IN_SECONDS;
 
 		$slots = array();
@@ -455,7 +552,7 @@ class MWM_Studio_Booking {
 	private function max_duration_at_slot( $date, $start_time, $cap = 4 ) {
 		for ( $d = $cap; $d >= 1; $d-- ) {
 			$slots = $this->get_available_slots( $date, $d );
-			if ( in_array( $start_time, $slots, true ) ) {
+			if ( is_array( $slots ) && in_array( $start_time, $slots, true ) ) {
 				return $d;
 			}
 		}
@@ -721,6 +818,10 @@ class MWM_Studio_Booking {
 		}
 
 		$base_slots = $this->get_available_slots( $date, 1 );
+		if ( null === $base_slots ) {
+			// S15 fail-closed: machine unreachable and no cached calendar data.
+			wp_send_json_success( array( 'slots' => array(), 'reason' => 'availability_unavailable' ) );
+		}
 
 		$slot_data = array();
 		foreach ( $base_slots as $start ) {
@@ -730,7 +831,7 @@ class MWM_Studio_Booking {
 					continue;
 				}
 				$avail = $this->get_available_slots( $date, $d );
-				if ( in_array( $start, $avail, true ) ) {
+				if ( is_array( $avail ) && in_array( $start, $avail, true ) ) {
 					$max_dur = $d;
 					break;
 				}
@@ -796,6 +897,10 @@ class MWM_Studio_Booking {
 
 		// Re-validate slot is actually available (race condition guard).
 		$available = $this->get_available_slots( $date, $duration );
+		if ( null === $available ) {
+			// S15 fail-closed: availability unknown -> refuse to guess.
+			wp_send_json_error( array( 'message' => __( 'Booking is temporarily unavailable — please try again in a few minutes, or message us on WhatsApp.', 'mwm-studio' ) ) );
+		}
 		if ( ! in_array( $start_time, $available, true ) ) {
 			wp_send_json_error( array( 'message' => __( 'That time slot is no longer available. Please pick another time.', 'mwm-studio' ) ) );
 		}
@@ -2470,6 +2575,10 @@ class MWM_Studio_Booking {
 					$('#mwm-book-error').hide();
 					$('#mwm-slots').html('<div class="mwm-empty">Checking availability…</div>');
 					this.ajax('mwm_studio_get_available_slots', { date: date }, function(data){
+						if (data && data.reason === 'availability_unavailable') {
+							$('#mwm-slots').html('<div class="mwm-empty">Booking is temporarily unavailable — please try again in a few minutes, or message us on WhatsApp.</div>');
+							return;
+						}
 						var slots = (data && data.slots) || [];
 						if (!slots.length) {
 							$('#mwm-slots').html('<div class="mwm-empty">No available times on this date — try another day.</div>');
