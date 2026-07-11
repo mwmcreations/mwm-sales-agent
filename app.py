@@ -5565,6 +5565,59 @@ def _daily_briefing_thread():
             time.sleep(600)  # retry in 10 min on error
 
 
+
+# ─── S6.7b: WhatsApp delivery-status callbacks → error bus ──────────────────
+# Jul 5 billing incident + US-marketing-pause discovery were both invisible
+# because status webhooks were discarded. This captures them: per-status log,
+# daily counters (pg key wa_delivery_counters:YYYY-MM-DD), failed → error bus
+# keyed by Meta error code, and a consecutive-failure streak escalation.
+_wa_status_streak = {"failed": 0}
+
+def _handle_wa_statuses(value):
+    """Process value["statuses"] from a Meta webhook status callback."""
+    import pg_store as _s67pg
+    statuses = value.get("statuses", []) or []
+    if not statuses:
+        return
+    day_key = "wa_delivery_counters:" + datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+    counters = {}
+    if _s67pg.enabled():
+        try:
+            counters = _s67pg.load_state(day_key, {}) or {}
+        except Exception:
+            counters = {}
+    for st in statuses:
+        status    = st.get("status", "unknown")
+        wamid     = st.get("id", "")
+        recipient = st.get("recipient_id", "")
+        rec_tail  = ("..." + recipient[-4:]) if recipient else "?"
+        counters[status] = counters.get(status, 0) + 1
+        if status == "failed":
+            _wa_status_streak["failed"] += 1
+            errs = st.get("errors", []) or [{}]
+            for err in errs:
+                code    = err.get("code", "?")
+                title   = err.get("title", "unknown error")
+                details = (err.get("error_data", {}) or {}).get("details", "")
+                print(f"[WA-STATUS] FAILED to {rec_tail} code={code} title={title!r} "
+                      f"details={details!r} wamid={wamid[-12:]}")
+                _report_error(f"wa_delivery_failed_{code}", title,
+                              f"to={rec_tail} {str(details)[:200]}")
+            if _wa_status_streak["failed"] == 3:
+                _report_error("wa_delivery_streak",
+                              "3+ consecutive template/message deliveries FAILED",
+                              "check billing / template category / number health")
+        else:
+            if status == "delivered":
+                _wa_status_streak["failed"] = 0
+            print(f"[WA-STATUS] {status} to {rec_tail} wamid={wamid[-12:]}")
+    if _s67pg.enabled():
+        try:
+            _s67pg.save_state(day_key, counters)
+        except Exception as _cx:
+            print(f"[WA-STATUS] counter persist failed (non-fatal): {_cx}")
+
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # ââ GET: Meta webhook verification âââââââââââââââââââââââââââââââ
@@ -5587,6 +5640,10 @@ def webhook():
         for change in entry.get("changes", []):
             value = change.get("value", {})
             if "statuses" in value and "messages" not in value:
+                try:
+                    _handle_wa_statuses(value)
+                except Exception as _sx:
+                    _report_error("wa_status_handler", _sx)
                 continue
             # ── Extract recipient phone_number_id (which Meta sender number was hit) ──
             # Meta puts this in value.metadata.phone_number_id. Used to fan out
