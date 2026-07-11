@@ -11622,6 +11622,63 @@ def stripe_webhook():
     return jsonify({"received": True}), 200
 
 
+@app.route('/studio-availability', methods=['GET'])
+def studio_availability():
+    """S15: read-only availability feed for the WP portal's slot filter.
+    Returns busy blocks (local HH:MM) from the MWM CREATIONS calendar for one date.
+    Auth = X-MWM-Portal-Secret (same shared secret as /webhook/studio-booking).
+    Skips transparent (free) events and all-day events — same policy as Maya's
+    get_available_slots — so reminders never block real bookable hours.
+    Read-only, no new threads (S15 design, Michael-approved)."""
+    _sa_secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not _sa_secret:
+        _report_error("studio_availability", "WP_PORTAL_SECRET not set")
+        return jsonify({"error": "not configured"}), 503
+    if request.headers.get("X-MWM-Portal-Secret", "") != _sa_secret:
+        print("[STUDIO-AVAIL] rejected — bad secret")
+        return jsonify({"error": "unauthorized"}), 401
+    _sa_date = (request.args.get("date") or "").strip()
+    try:
+        _sa_day = datetime.strptime(_sa_date, "%Y-%m-%d")
+    except Exception:
+        return jsonify({"error": "bad date"}), 400
+    try:
+        _sa_tz = pytz.timezone(TIMEZONE)
+        _sa_start = _sa_tz.localize(_sa_day)
+        _sa_end = _sa_start + timedelta(days=1)
+        _sa_svc = get_calendar_service()
+        _sa_events = _sa_svc.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=_sa_start.isoformat(),
+            timeMax=_sa_end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+        _sa_busy = []
+        for _sa_ev in _sa_events.get("items", []):
+            if _sa_ev.get("transparency") == "transparent":
+                continue  # marked Free — not a real block
+            _sa_s = _sa_ev.get("start", {})
+            _sa_e = _sa_ev.get("end", {})
+            if "dateTime" not in _sa_s or "dateTime" not in _sa_e:
+                continue  # all-day event — ignored by policy
+            try:
+                _sa_bs = datetime.fromisoformat(_sa_s["dateTime"]).astimezone(_sa_tz)
+                _sa_be = datetime.fromisoformat(_sa_e["dateTime"]).astimezone(_sa_tz)
+            except Exception:
+                continue
+            if _sa_be <= _sa_start or _sa_bs >= _sa_end:
+                continue
+            _sa_bs = max(_sa_bs, _sa_start)
+            _sa_be = min(_sa_be, _sa_end)
+            _sa_busy.append({"start": _sa_bs.strftime("%H:%M"), "end": _sa_be.strftime("%H:%M")})
+        print(f"[STUDIO-AVAIL] {_sa_date}: {len(_sa_busy)} busy block(s)")
+        return jsonify({"date": _sa_date, "timezone": TIMEZONE, "busy": _sa_busy})
+    except Exception as _sa_exc:
+        _report_error("studio_availability", _sa_exc, f"date={_sa_date}")
+        return jsonify({"error": "internal"}), 500
+
+
 @app.route('/webhook/studio-booking', methods=['POST'])
 def studio_booking_webhook():
     """S12: WP portal pushes booking events here (booking_created / booking_cancelled /
