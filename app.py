@@ -5620,6 +5620,258 @@ def _handle_wa_statuses(value):
             print(f"[WA-STATUS] counter persist failed (non-fatal): {_cx}")
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# S16 — SMS INFRASTRUCTURE (Re-engagement 2.0 / G1) + MAYA HUMANIZED PACING
+# Sends are dark until TWILIO_MESSAGING_SERVICE_SID is set in Railway (post-A2P
+# approval) AND callers invoke _send_sms. Pacing is dark until MAYA_PACING=on.
+# ═══════════════════════════════════════════════════════════════════════════════
+TWILIO_ACCOUNT_SID           = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN            = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_MESSAGING_SERVICE_SID = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "")
+SMS_QUIET_START_H            = int(os.getenv("SMS_QUIET_START_H", "10"))   # sends allowed from 10:00 ET
+SMS_QUIET_END_H              = int(os.getenv("SMS_QUIET_END_H", "20"))    # ...until 20:00 ET
+SMS_MONTHLY_CAP              = int(os.getenv("SMS_MONTHLY_CAP", "4"))     # /terms §19 public promise
+
+_sms_status_streak = {"failed": 0}
+
+
+def _sms_consent_get(lead_phone):
+    """Read SMS consent record for a lead (keyed by E.164 phone, e.g. +14075551234)."""
+    import pg_store as _pg
+    if not _pg.enabled():
+        return {}
+    try:
+        return _pg.load_state(f"sms_consent:{lead_phone}", {}) or {}
+    except Exception:
+        return {}
+
+
+def _sms_consent_set(lead_phone, status, source, context=""):
+    """Write SMS consent. status: yes|no. source: form|maya|in_person. Context = short quote."""
+    import pg_store as _pg
+    rec = {"status": status, "source": source, "context": str(context)[:300],
+           "ts": datetime.now(pytz.timezone(TIMEZONE)).isoformat()}
+    if _pg.enabled():
+        try:
+            _pg.save_state(f"sms_consent:{lead_phone}", rec)
+        except Exception as _cx:
+            _report_error("sms_consent_persist", _cx, lead_phone[-4:])
+    print(f"[SMS-CONSENT] {status} for ...{lead_phone[-4:]} via {source}")
+    return rec
+
+
+def _sms_gates(lead_phone):
+    """All conditions that must hold before ANY outbound SMS. Returns (ok, reason)."""
+    import pg_store as _pg
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_MESSAGING_SERVICE_SID):
+        return False, "twilio_env_missing"
+    if _pg.enabled():
+        try:
+            if _pg.load_state(f"do_not_sms:{lead_phone}", False):
+                return False, "do_not_sms"
+        except Exception:
+            return False, "do_not_sms_check_failed"   # fail-closed
+    consent = _sms_consent_get(lead_phone)
+    if consent.get("status") != "yes":
+        return False, "no_consent"
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    if not (SMS_QUIET_START_H <= now.hour < SMS_QUIET_END_H):
+        return False, "quiet_hours"
+    if _pg.enabled():
+        try:
+            st = _pg.load_state(f"sms_touch_state:{lead_phone}", {}) or {}
+            month = now.strftime("%Y-%m")
+            if st.get("month") == month and int(st.get("monthly_count", 0)) >= SMS_MONTHLY_CAP:
+                return False, "monthly_cap"
+        except Exception:
+            return False, "touch_state_check_failed"  # fail-closed
+    return True, "ok"
+
+
+def _send_sms(lead_phone, body):
+    """Send one SMS via the Messaging Service. Enforces every gate; increments the
+    monthly counter on acceptance. Returns dict {ok, reason|sid}."""
+    import pg_store as _pg
+    ok, reason = _sms_gates(lead_phone)
+    if not ok:
+        print(f"[SMS] REFUSED to ...{lead_phone[-4:]}: {reason}")
+        return {"ok": False, "reason": reason}
+    try:
+        resp = http_requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json",
+            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+            data={"MessagingServiceSid": TWILIO_MESSAGING_SERVICE_SID,
+                  "To": lead_phone, "Body": body},
+            timeout=15)
+        data = resp.json()
+        if resp.status_code >= 300:
+            _report_error(f"sms_send_failed_{data.get('code', resp.status_code)}",
+                          data.get("message", "send error"), f"to=...{lead_phone[-4:]}")
+            return {"ok": False, "reason": f"api_{resp.status_code}"}
+        sid = data.get("sid", "")
+        print(f"[SMS] accepted for ...{lead_phone[-4:]} sid={sid[-8:]}")
+        if _pg.enabled():
+            try:
+                now = datetime.now(pytz.timezone(TIMEZONE))
+                month = now.strftime("%Y-%m")
+                st = _pg.load_state(f"sms_touch_state:{lead_phone}", {}) or {}
+                if st.get("month") != month:
+                    st["month"], st["monthly_count"] = month, 0
+                st["monthly_count"] = int(st.get("monthly_count", 0)) + 1
+                st["last_sent_ts"] = now.isoformat()
+                _pg.save_state(f"sms_touch_state:{lead_phone}", st)
+            except Exception as _cx:
+                _report_error("sms_touch_state_persist", _cx, lead_phone[-4:])
+        return {"ok": True, "sid": sid}
+    except Exception as _sx:
+        _report_error("sms_send_exception", _sx, f"to=...{lead_phone[-4:]}")
+        return {"ok": False, "reason": "exception"}
+
+
+@app.route("/webhook/sms-status", methods=["POST"])
+def sms_status_webhook():
+    """Twilio Messaging Service statusCallback — mirror of S6.7b for SMS.
+    Fast-ACK: all processing wrapped; Twilio just needs a 2xx."""
+    try:
+        import pg_store as _pg
+        status  = request.form.get("MessageStatus", "unknown")
+        sid     = request.form.get("MessageSid", "")
+        to      = request.form.get("To", "")
+        errcode = request.form.get("ErrorCode", "")
+        tail    = ("..." + to[-4:]) if to else "?"
+        day_key = "sms_delivery_counters:" + datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+        counters = {}
+        if _pg.enabled():
+            try:
+                counters = _pg.load_state(day_key, {}) or {}
+            except Exception:
+                counters = {}
+        counters[status] = counters.get(status, 0) + 1
+        if status in ("failed", "undelivered"):
+            _sms_status_streak["failed"] += 1
+            print(f"[SMS-STATUS] {status.upper()} to {tail} code={errcode} sid={sid[-8:]}")
+            _report_error(f"sms_delivery_failed_{errcode or status}",
+                          f"SMS {status}", f"to={tail}")
+            if errcode == "21610":   # attempt to message an opted-out number
+                if _pg.enabled():
+                    try:
+                        _pg.save_state(f"do_not_sms:{to}", True)
+                        print(f"[SMS-OPTOUT] do_not_sms set for {tail} (21610)")
+                    except Exception:
+                        pass
+            if _sms_status_streak["failed"] == 3:
+                _report_error("sms_delivery_streak",
+                              "3+ consecutive SMS deliveries FAILED",
+                              "check A2P campaign status / number / service SID")
+        else:
+            if status == "delivered":
+                _sms_status_streak["failed"] = 0
+            print(f"[SMS-STATUS] {status} to {tail} sid={sid[-8:]}")
+        if _pg.enabled():
+            try:
+                _pg.save_state(day_key, counters)
+            except Exception as _cx:
+                print(f"[SMS-STATUS] counter persist failed (non-fatal): {_cx}")
+    except Exception as _wx:
+        _report_error("sms_status_webhook", _wx)
+    return ("", 204)
+
+
+@app.route("/webhook/sms-inbound", methods=["POST"])
+def sms_inbound_webhook():
+    """Inbound SMS on the main line. Pilot routing per spec §8.4 recommendation:
+    alert-only to #dev (Maya-as-SMS-channel = Phase 2). STOP/START mirrored to
+    do_not_sms so machine state matches Twilio Advanced Opt-Out."""
+    try:
+        import pg_store as _pg
+        frm  = request.form.get("From", "")
+        body = (request.form.get("Body", "") or "").strip()
+        opt  = (request.form.get("OptOutType", "") or "").upper()
+        tail = ("..." + frm[-4:]) if frm else "?"
+        kw   = body.upper()
+        if opt == "STOP" or kw in ("STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "OPTOUT", "REVOKE"):
+            if _pg.enabled():
+                try:
+                    _pg.save_state(f"do_not_sms:{frm}", True)
+                except Exception:
+                    pass
+            print(f"[SMS-OPTOUT] STOP from {tail}")
+            _post_to_slack_async("#dev", f":no_bell: SMS opt-out from {tail}")
+        elif opt == "START" or kw in ("START", "UNSTOP", "YES"):
+            if _pg.enabled():
+                try:
+                    _pg.save_state(f"do_not_sms:{frm}", False)
+                except Exception:
+                    pass
+            print(f"[SMS-OPTIN] START from {tail}")
+        else:
+            print(f"[SMS-INBOUND] {tail}: {body[:120]!r}")
+            _post_to_slack_async("#dev", f":speech_balloon: Inbound SMS from {tail}: {body[:200]}")
+    except Exception as _wx:
+        _report_error("sms_inbound_webhook", _wx)
+    return ("<Response></Response>", 200, {"Content-Type": "text/xml"})
+
+
+# ── S16: Maya humanized pacing (John's feature) — dark until MAYA_PACING=on ──
+MAYA_PACING       = os.getenv("MAYA_PACING", "")
+MAYA_PACING_MIN_S = float(os.getenv("MAYA_PACING_MIN_S", "4"))
+MAYA_PACING_MAX_S = float(os.getenv("MAYA_PACING_MAX_S", "18"))
+MAYA_PACING_CPS   = float(os.getenv("MAYA_PACING_CPS", "14"))   # simulated chars/sec
+
+
+def _wa_typing_on(wamid):
+    """Mark inbound read + show typing indicator (WhatsApp Cloud API). Best-effort."""
+    if not (wamid and META_ACCESS_TOKEN and META_PHONE_NUMBER_ID):
+        return
+    try:
+        http_requests.post(
+            f"https://graph.facebook.com/v21.0/{META_PHONE_NUMBER_ID}/messages",
+            headers={"Authorization": f"Bearer {META_ACCESS_TOKEN}",
+                     "Content-Type": "application/json"},
+            json={"messaging_product": "whatsapp", "status": "read",
+                  "message_id": wamid, "typing_indicator": {"type": "text"}},
+            timeout=8)
+    except Exception as _tx:
+        print(f"[Pacing] wa typing indicator failed (non-fatal): {_tx}")
+
+
+def _ig_typing_on(ig_sender_id):
+    """Show typing indicator on Instagram DM (sender_action). Best-effort."""
+    token = INSTAGRAM_ACCESS_TOKEN
+    if not (ig_sender_id and token and INSTAGRAM_PAGE_ID):
+        return
+    try:
+        base = "https://graph.instagram.com/v21.0" if token.startswith("IGAA") else "https://graph.facebook.com/v19.0"
+        http_requests.post(
+            f"{base}/{INSTAGRAM_PAGE_ID}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"recipient": {"id": ig_sender_id}, "sender_action": "typing_on"},
+            timeout=8)
+    except Exception as _tx:
+        print(f"[Pacing] ig typing indicator failed (non-fatal): {_tx}")
+
+
+def _maya_pacing_delay(reply_text, typing_fn=None):
+    """Humanized reply delay: base + typing-time for the reply length, jittered,
+    clamped to [MIN, MAX]. Runs inside per-message daemon threads only — never
+    blocks webhook fast-ACK. No-op unless MAYA_PACING=on."""
+    if MAYA_PACING.lower() not in ("on", "1", "true"):
+        return
+    import random
+    secs = MAYA_PACING_MIN_S + len(reply_text or "") / max(MAYA_PACING_CPS, 1.0)
+    secs *= random.uniform(0.8, 1.2)
+    secs = max(MAYA_PACING_MIN_S, min(MAYA_PACING_MAX_S, secs))
+    if typing_fn:
+        try:
+            typing_fn()
+        except Exception:
+            pass
+    print(f"[Pacing] delaying reply {secs:.1f}s")
+    time.sleep(secs)
+
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     # ââ GET: Meta webhook verification âââââââââââââââââââââââââââââââ
@@ -6350,6 +6602,12 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"\u274c Maya error: {e}")
                 clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
                 send_photos = False
+            # S16: humanized pacing (John's feature) — no-op unless MAYA_PACING=on
+            try:
+                _maya_pacing_delay(clean_reply,
+                                   lambda: _wa_typing_on((wa_messages or [{}])[-1].get("id", "")))
+            except Exception as _pace_err:
+                print(f"[Pacing] non-fatal: {_pace_err}")
             # —— Voice note reply: send TTS audio if incoming was a voice note ——
             if was_audio:
                 try:
@@ -6700,6 +6958,11 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             send_photos = False
 
         # Send reply via Instagram DM
+        # S16: humanized pacing (John's feature) — no-op unless MAYA_PACING=on
+        try:
+            _maya_pacing_delay(clean_reply, lambda: _ig_typing_on(ig_sender_id))
+        except Exception as _pace_err:
+            print(f"[Pacing] non-fatal: {_pace_err}")
         send_instagram_dm(ig_sender_id, body=clean_reply)
         print(f"✅ Maya IG DM reply sent to {ig_sender_id}")
 
