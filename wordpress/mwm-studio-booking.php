@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.3.0
+ * Version: 2.4.0
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.3.0' ); // S19: branded HTML transactional emails
+define( 'MWM_STUDIO_VERSION', '2.4.0' ); // S19b: month-calendar availability + company sender
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -71,6 +71,7 @@ class MWM_Studio_Booking {
 			'mwm_studio_hold_slot',
 			'mwm_studio_confirm_rental',
 			'mwm_studio_rental_slots',
+			'mwm_studio_rental_month',
 			// S8.5 (Jul 8 2026): 'mwm_studio_record_calendly_booking' de-registered — portal-only booking; legacy Calendly path had no contract/date/hours checks.
 		);
 		foreach ( $ajax_actions as $action ) {
@@ -617,7 +618,8 @@ class MWM_Studio_Booking {
 		}
 		$headers = array(
 			'Content-Type: text/html; charset=UTF-8',
-			'From: MWM Creations & Studios <michael@mwmcreations.com>',
+			'From: MWM Creations & Studios <info@mwmcreations.com>',
+			'Reply-To: MWM Creations & Studios <michael@mwmcreations.com>',
 		);
 		wp_mail( $email, $subject, $html, $headers );
 	}
@@ -680,7 +682,7 @@ class MWM_Studio_Booking {
 
 		return '<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' . esc_html( $a['title'] ) . '</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width = device-width, initial-scale = 1.0"><title>' . esc_html( $a['title'] ) . '</title></head>
 <body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,\'Helvetica Neue\',Helvetica,sans-serif;">
 <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">' . esc_html( $a['preheader'] ) . '</div>
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f4f4f4;">
@@ -697,9 +699,9 @@ class MWM_Studio_Booking {
 </td></tr>
 <tr><td style="padding:24px 40px 0;">' . $greeting_html . $intro_html . '</td></tr>
 ' . $rows_html . $body_after_html . $cta_html . '
-<tr><td style="padding:24px 40px 30px;">' . $outro_html . '<div style="border-top:2px solid #f0f0f0;padding-top:16px;"><div style="font-size:16px;font-weight:700;color:#1a1a2e;">Michael Moraes</div>
-  <div style="font-size:14px;color:#666666;">MWM Creations &amp; Studios</div>
-  <div style="font-size:14px;margin-top:4px;"><a href="mailto:michael@mwmcreations.com" style="color:#0f3460;text-decoration:none;">michael@mwmcreations.com</a></div>
+<tr><td style="padding:24px 40px 30px;">' . $outro_html . '<div style="border-top:2px solid #f0f0f0;padding-top:16px;"><div style="font-size:16px;font-weight:700;color:#1a1a2e;">MWM Creations &amp; Studios</div>
+  <div style="font-size:14px;color:#666666;">Orlando, FL</div>
+  <div style="font-size:14px;margin-top:4px;"><a href="mailto:info@mwmcreations.com" style="color:#0f3460;text-decoration:none;">info@mwmcreations.com</a></div>
   <div style="font-size:14px;"><a href="https://mwmcreations.com" style="color:#0f3460;text-decoration:none;">mwmcreations.com</a></div></div>
 </td></tr>
 <tr><td style="background-color:#faf6eb;padding:16px 40px;text-align:center;border-top:1px solid #f0e9d2;">
@@ -1047,6 +1049,7 @@ class MWM_Studio_Booking {
 		}
 
 		$booking_id = $wpdb->insert_id;
+		$this->clear_rental_day_cache( $date );
 
 		// Notify admin.
 		$subject = sprintf( '[%s] New Studio Booking: %s', $settings['studio_name'], $client->name );
@@ -1151,6 +1154,13 @@ class MWM_Studio_Booking {
 		);
 	}
 
+	/** S19: drop cached day-availability for a date after any booking write. */
+	private function clear_rental_day_cache( $date ) {
+		for ( $mwm_d = 1; $mwm_d <= 5; $mwm_d++ ) {
+			delete_transient( 'mwm_rmday_' . $date . '_' . $mwm_d );
+		}
+	}
+
 	/** Public slot feed for /book-studio (no login). Same engine as the portal. */
 	public function mwm_studio_rental_slots() {
 		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
@@ -1173,6 +1183,58 @@ class MWM_Studio_Booking {
 			) );
 		}
 		wp_send_json_success( array( 'slots' => $slots ) );
+	}
+
+	/** S19: day-level availability for the /book-studio month calendar.
+	 *  Derives from get_available_slots (single source of truth, incl. pending
+	 *  holds + gcal busy blocks) with a short per-date transient cache. */
+	public function mwm_studio_rental_month() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		$year     = isset( $_POST['year'] ) ? (int) $_POST['year'] : 0;
+		$month    = isset( $_POST['month'] ) ? (int) $_POST['month'] : 0;
+		$duration = isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 1;
+
+		if ( $year < 2020 || $year > 2100 || $month < 1 || $month > 12 ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid month.', 'mwm-studio' ) ) );
+		}
+		if ( $duration < 1 || $duration > 5 || floor( $duration ) != $duration ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid duration.', 'mwm-studio' ) ) );
+		}
+
+		$today   = date( 'Y-m-d', current_time( 'timestamp' ) );
+		$horizon = date( 'Y-m-d', strtotime( $today . ' +60 days' ) );
+		$first   = sprintf( '%04d-%02d-01', $year, $month );
+		$last    = date( 'Y-m-t', strtotime( $first ) );
+
+		$days   = array();
+		$outage = false;
+		for ( $d = $first; $d <= $last; $d = date( 'Y-m-d', strtotime( $d . ' +1 day' ) ) ) {
+			if ( $d < $today || $d > $horizon ) {
+				continue;
+			}
+			$ck  = 'mwm_rmday_' . $d . '_' . intval( $duration );
+			$val = get_transient( $ck );
+			if ( false === $val ) {
+				$slots = $this->get_available_slots( $d, $duration );
+				if ( null === $slots ) {
+					$outage = true;
+					break;
+				}
+				$val = count( $slots ) > 0 ? 'y' : 'n';
+				set_transient( $ck, $val, 10 * MINUTE_IN_SECONDS );
+			}
+			if ( 'y' === $val ) {
+				$days[] = $d;
+			}
+		}
+
+		if ( $outage ) {
+			wp_send_json_error( array(
+				'reason'  => 'availability_unavailable',
+				'message' => __( 'Booking is temporarily unavailable. Please message us on WhatsApp and we will get you booked.', 'mwm-studio' ),
+			) );
+		}
+		wp_send_json_success( array( 'days' => $days, 'today' => $today, 'horizon' => $horizon ) );
 	}
 
 	/**
@@ -1250,6 +1312,7 @@ class MWM_Studio_Booking {
 			wp_send_json_error( array( 'message' => __( 'Could not hold that slot. Please try again.', 'mwm-studio' ) ) );
 		}
 		$booking_id = (int) $wpdb->insert_id;
+		$this->clear_rental_day_cache( $date );
 
 		// Ask the machine for a Stripe Checkout URL. It prices the tier itself.
 		$machine = get_option( 'mwm_studio_checkout_url', 'https://mwm-sales-agent-production.up.railway.app/studio-checkout' );
@@ -1332,6 +1395,7 @@ class MWM_Studio_Booking {
 			),
 			array( 'id' => $booking_id )
 		);
+		$this->clear_rental_day_cache( $booking->booking_date );
 
 		$settings = $this->get_settings();
 		$start    = substr( $booking->start_time, 0, 5 );
@@ -1433,6 +1497,8 @@ class MWM_Studio_Booking {
 			array( '%s', '%s' ),
 			array( '%d' )
 		);
+
+		$this->clear_rental_day_cache( $booking->booking_date );
 
 		$subject = sprintf( '[%s] Booking Cancelled: %s', $settings['studio_name'], $client->name );
 		$message = sprintf(
@@ -2430,7 +2496,8 @@ class MWM_Studio_Booking {
 
 		$headers = array(
 			'Content-Type: text/html; charset=UTF-8',
-			'From: Michael Moraes <michael@mwmcreations.com>',
+			'From: MWM Creations & Studios <info@mwmcreations.com>',
+			'Reply-To: MWM Creations & Studios <michael@mwmcreations.com>',
 		);
 
 		$sent = wp_mail( $email, $subject, $html, $headers );
@@ -2453,7 +2520,7 @@ class MWM_Studio_Booking {
 
 		return '<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Welcome to Your MWM Studio Portal</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width = device-width, initial-scale = 1.0"><title>Welcome to Your MWM Studio Portal</title></head>
 <body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,\'Helvetica Neue\',Helvetica,sans-serif;">
 <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">Your exclusive studio portal is live — log in to manage your sessions, view your hours, and book time anytime.</div>
 <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f4f4f4;">
@@ -2531,9 +2598,9 @@ class MWM_Studio_Booking {
 <tr><td style="padding:15px 40px 25px;">
   <div style="font-size:15px;color:#444444;line-height:1.7;">If you have any questions about the portal or need help getting started, don\'t hesitate to reach out!</div>
   <div style="font-size:15px;color:#444444;line-height:1.7;margin-top:15px;">Looking forward to your first session,</div>
-  <div style="margin-top:12px;"><div style="font-size:16px;font-weight:700;color:#1a1a2e;">Michael Moraes</div>
-  <div style="font-size:14px;color:#666666;">MWM Creations &amp; Studios</div>
-  <div style="font-size:14px;color:#0f3460;margin-top:4px;"><a href="mailto:michael@mwmcreations.com" style="color:#0f3460;text-decoration:none;">michael@mwmcreations.com</a></div>
+  <div style="margin-top:12px;"><div style="font-size:16px;font-weight:700;color:#1a1a2e;">MWM Creations &amp; Studios</div>
+  <div style="font-size:14px;color:#666666;">Orlando, FL</div>
+  <div style="font-size:14px;color:#0f3460;margin-top:4px;"><a href="mailto:info@mwmcreations.com" style="color:#0f3460;text-decoration:none;">info@mwmcreations.com</a></div>
   <div style="font-size:14px;color:#0f3460;"><a href="https://mwmcreations.com" style="color:#0f3460;text-decoration:none;">mwmcreations.com</a></div></div>
 </td></tr>
 <tr><td bgcolor="#1a1a2e" style="background-color:#1a1a2e;padding:25px 40px;text-align:center;">
