@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.2.1
+ * Version: 2.3.0
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.2.1' ); // S18: string-slot hold fix
+define( 'MWM_STUDIO_VERSION', '2.3.0' ); // S19: branded HTML transactional emails
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -611,6 +611,107 @@ class MWM_Studio_Booking {
 		wp_mail( $email, $subject, $message );
 	}
 
+	private function notify_client_html( $email, $subject, $html ) {
+		if ( ! $email || ! is_email( $email ) ) {
+			return;
+		}
+		$headers = array(
+			'Content-Type: text/html; charset=UTF-8',
+			'From: MWM Creations & Studios <michael@mwmcreations.com>',
+		);
+		wp_mail( $email, $subject, $html, $headers );
+	}
+
+	/**
+	 * S19: shared branded transactional email shell (gold-on-white, table layout,
+	 * inline CSS — Gmail/Outlook safe). Keys: eyebrow, title, preheader, name,
+	 * intro, rows (label => value), body_after, cta_label, cta_url, outro.
+	 * intro/body_after accept trusted inline HTML (<strong>); escape any dynamic
+	 * values interpolated into them. All other values are escaped here.
+	 */
+	private function get_branded_email_html( $args ) {
+		$defaults = array(
+			'eyebrow'    => '',
+			'title'      => '',
+			'preheader'  => '',
+			'name'       => '',
+			'intro'      => '',
+			'rows'       => array(),
+			'body_after' => '',
+			'cta_label'  => '',
+			'cta_url'    => '',
+			'outro'      => '',
+		);
+		$a = array_merge( $defaults, is_array( $args ) ? $args : array() );
+
+		$rows_html = '';
+		if ( ! empty( $a['rows'] ) && is_array( $a['rows'] ) ) {
+			$inner = '';
+			foreach ( $a['rows'] as $mwm_label => $mwm_value ) {
+				$inner .= '<tr><td width="112" style="font-size:12px;color:#8b7d3c;font-weight:700;letter-spacing:1px;text-transform:uppercase;vertical-align:top;padding:8px 0;">' . esc_html( $mwm_label ) . '</td><td style="font-size:15px;color:#1a1a2e;font-weight:600;line-height:1.5;padding:8px 0;">' . esc_html( $mwm_value ) . '</td></tr>';
+			}
+			$rows_html = '<tr><td style="padding:22px 40px 4px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#faf6eb;border-radius:10px;border:1px solid #e8ddb5;"><tr><td style="padding:22px 28px;"><table role="presentation" cellpadding="0" cellspacing="0" width="100%">' . $inner . '</table></td></tr></table></td></tr>';
+		}
+
+		$cta_html = '';
+		if ( $a['cta_label'] && $a['cta_url'] ) {
+			$cta_html = '<tr><td align="center" style="padding:26px 40px 6px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td align="center" bgcolor="#c9a84c" style="background-color:#c9a84c;border-radius:8px;"><a href="' . esc_url( $a['cta_url'] ) . '" target="_blank" style="display:inline-block;padding:15px 46px;font-size:15px;font-weight:700;color:#1a1a2e;text-decoration:none;letter-spacing:1px;">' . esc_html( $a['cta_label'] ) . '</a></td></tr></table></td></tr>';
+		}
+
+		$greeting_html = '';
+		if ( $a['name'] ) {
+			$greeting_html = '<div style="font-size:17px;color:#1a1a2e;font-weight:600;">Hi ' . esc_html( $a['name'] ) . ',</div>';
+		}
+
+		$intro_html = '';
+		if ( $a['intro'] ) {
+			$intro_html = '<div style="font-size:15px;color:#444444;line-height:1.7;margin-top:12px;">' . $a['intro'] . '</div>';
+		}
+
+		$body_after_html = '';
+		if ( $a['body_after'] ) {
+			$body_after_html = '<tr><td style="padding:20px 40px 0;"><div style="font-size:14px;color:#555555;line-height:1.7;">' . $a['body_after'] . '</div></td></tr>';
+		}
+
+		$outro_html = '';
+		if ( $a['outro'] ) {
+			$outro_html = '<div style="font-size:15px;color:#444444;line-height:1.7;margin-bottom:14px;">' . esc_html( $a['outro'] ) . '</div>';
+		}
+
+		return '<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>' . esc_html( $a['title'] ) . '</title></head>
+<body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,\'Helvetica Neue\',Helvetica,sans-serif;">
+<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">' . esc_html( $a['preheader'] ) . '</div>
+<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f4f4f4;">
+<tr><td align="center" style="padding:20px 10px;">
+<table role="presentation" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;width:100%;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+<tr><td style="padding:36px 40px 22px;text-align:center;border-bottom:1px solid #f0e9d2;">
+  <div style="font-size:28px;font-weight:700;color:#1a1a2e;letter-spacing:2px;font-family:Georgia,serif;">MWM CREATIONS</div>
+  <div style="font-size:12px;color:#c9a84c;letter-spacing:4px;text-transform:uppercase;margin-top:4px;">&amp; Studios</div>
+  <table role="presentation" cellpadding="0" cellspacing="0" width="70" style="margin:16px auto 0;"><tr><td style="height:2px;background-color:#c9a84c;"></td></tr></table>
+</td></tr>
+<tr><td style="padding:28px 40px 0;text-align:center;">
+  <div style="font-size:12px;color:#c9a84c;letter-spacing:3px;text-transform:uppercase;font-weight:700;">' . esc_html( $a['eyebrow'] ) . '</div>
+  <div style="font-size:24px;font-weight:700;color:#1a1a2e;margin-top:8px;line-height:1.3;">' . esc_html( $a['title'] ) . '</div>
+</td></tr>
+<tr><td style="padding:24px 40px 0;">' . $greeting_html . $intro_html . '</td></tr>
+' . $rows_html . $body_after_html . $cta_html . '
+<tr><td style="padding:24px 40px 30px;">' . $outro_html . '<div style="border-top:2px solid #f0f0f0;padding-top:16px;"><div style="font-size:16px;font-weight:700;color:#1a1a2e;">Michael Moraes</div>
+  <div style="font-size:14px;color:#666666;">MWM Creations &amp; Studios</div>
+  <div style="font-size:14px;margin-top:4px;"><a href="mailto:michael@mwmcreations.com" style="color:#0f3460;text-decoration:none;">michael@mwmcreations.com</a></div>
+  <div style="font-size:14px;"><a href="https://mwmcreations.com" style="color:#0f3460;text-decoration:none;">mwmcreations.com</a></div></div>
+</td></tr>
+<tr><td style="background-color:#faf6eb;padding:16px 40px;text-align:center;border-top:1px solid #f0e9d2;">
+  <div style="font-size:12px;color:#8b7d3c;">&copy; ' . esc_html( date_i18n( 'Y' ) ) . ' MWM Creations &amp; Studios &middot; Orlando, FL</div>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>';
+	}
+
 	private function push_booking_event( $event, $payload ) {
 		$url    = get_option( 'mwm_studio_webhook_url', 'https://mwm-sales-agent-production.up.railway.app/webhook/studio-booking' );
 		$secret = get_option( 'mwm_portal_provision_secret' );
@@ -961,15 +1062,27 @@ class MWM_Studio_Booking {
 		);
 		$this->notify_admin( $subject, $message );
 
-		// S12: client confirmation email + machine push
+		// S12: client confirmation email + machine push (S19: branded HTML)
 		$mwm_client_subject = sprintf( 'Booking confirmed — %s at %s | %s', $date, $start_time, $settings['studio_name'] );
-		$mwm_client_message = sprintf(
-			"Hi %s,\n\nYour studio session is confirmed.\n\nDate: %s\nTime: %s – %s\nDuration: %s hour(s)\nLocation: %s, %s\n\nYour booking appears under Upcoming Bookings in your client portal. Plans changed? You can cancel from the portal free of charge up to %d hours before your session; cancellations within %d hours forfeit the booked hours per your agreement.\n\nSee you at the studio!\nMWM Creations & Studios",
-			$client->name, $date, $start_time, substr( $end_time, 0, 5 ), $duration,
-			$settings['studio_name'], $settings['studio_address'],
-			intval( $settings['cancellation_hours'] ), intval( $settings['cancellation_hours'] )
-		);
-		$this->notify_client( $client->email, $mwm_client_subject, $mwm_client_message );
+		$mwm_cancel_h       = intval( $settings['cancellation_hours'] );
+		$mwm_client_html    = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Booking Confirmed',
+			'title'      => 'Your Studio Session Is Booked',
+			'preheader'  => sprintf( 'Your studio session on %s at %s is confirmed.', date_i18n( 'F j, Y', strtotime( $date ) ), $start_time ),
+			'name'       => $client->name,
+			'intro'      => 'Great news — your studio session is confirmed. Here are your details:',
+			'rows'       => array(
+				'Date'     => date_i18n( 'l, F j, Y', strtotime( $date ) ),
+				'Time'     => $start_time . ' – ' . substr( $end_time, 0, 5 ),
+				'Duration' => $duration . ' hour(s)',
+				'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
+			),
+			'body_after' => sprintf( 'This booking appears under <strong>Upcoming Bookings</strong> in your client portal. Plans changed? You can cancel from the portal free of charge up to <strong>%d hours</strong> before your session; cancellations within %d hours forfeit the booked hours per your agreement.', $mwm_cancel_h, $mwm_cancel_h ),
+			'cta_label'  => 'Open Your Client Portal',
+			'cta_url'    => 'https://mwmcreations.com/studio-portal/',
+			'outro'      => 'See you at the studio!',
+		) );
+		$this->notify_client_html( $client->email, $mwm_client_subject, $mwm_client_html );
 		$this->push_booking_event( 'booking_created', array(
 			'booking_id'   => $booking_id,
 			'client_name'  => $client->name,
@@ -1225,13 +1338,27 @@ class MWM_Studio_Booking {
 		$end      = substr( $booking->end_time, 0, 5 );
 		$paid     = $amount ? number_format( $amount / 100, 2 ) : '';
 
-		$subject = sprintf( 'Booking confirmed — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
-		$message = sprintf(
-			"Hi %s,\n\nYour studio session is confirmed and paid.\n\nDate: %s\nTime: %s – %s\nDuration: %s hour(s)\nAmount paid: $%s\nLocation: %s, %s\n\nNeed to change plans? You can reschedule or cancel for a full refund up to 24 hours before your session — just reply to this email. Within 24 hours of the session, the booking is non-refundable and rebooking requires a new payment.\n\nSee you at the studio!\nMWM Creations & Studios",
-			$booking->guest_name, $booking->booking_date, $start, $end, $booking->duration_hours, $paid,
-			$settings['studio_name'], $settings['studio_address']
+		$subject  = sprintf( 'Booking confirmed — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+		$mwm_rows = array(
+			'Date'     => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
+			'Time'     => $start . ' – ' . $end,
+			'Duration' => $booking->duration_hours . ' hour(s)',
 		);
-		$this->notify_client( $booking->guest_email, $subject, $message );
+		if ( $paid ) {
+			$mwm_rows['Amount Paid'] = '$' . $paid . ' USD';
+		}
+		$mwm_rows['Location'] = $settings['studio_name'] . ', ' . $settings['studio_address'];
+		$mwm_html = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Payment Received',
+			'title'      => 'Your Studio Session Is Confirmed',
+			'preheader'  => sprintf( 'Your studio session on %s at %s is confirmed and paid.', date_i18n( 'F j, Y', strtotime( $booking->booking_date ) ), $start ),
+			'name'       => $booking->guest_name,
+			'intro'      => 'Thank you — your payment went through and your studio session is confirmed. Here are your details:',
+			'rows'       => $mwm_rows,
+			'body_after' => 'Need to change plans? You can reschedule or cancel for a full refund up to <strong>24 hours</strong> before your session — just reply to this email. Within 24 hours of the session, the booking is non-refundable and rebooking requires a new payment.',
+			'outro'      => 'See you at the studio!',
+		) );
+		$this->notify_client_html( $booking->guest_email, $subject, $mwm_html );
 		$this->notify_admin(
 			sprintf( 'PAID studio rental — %s (%s)', $booking->guest_name, $booking->guest_email ),
 			sprintf( "%s %s–%s (%sh) — $%s\nBooking #%d", $booking->booking_date, $start, $end, $booking->duration_hours, $paid, $booking_id )
@@ -1321,15 +1448,26 @@ class MWM_Studio_Booking {
 		// S12: client cancellation email + machine push
 		$mwm_client_subject = sprintf( 'Booking cancelled — %s at %s | %s', $booking->booking_date, substr( $booking->start_time, 0, 5 ), $settings['studio_name'] );
 		if ( $mwm_late_cancel ) {
-			$mwm_policy_line = sprintf( 'Because this cancellation was within %d hours of the session, the booked hours were deducted from your package per your agreement.', intval( $settings['cancellation_hours'] ) );
+			$mwm_policy_line = sprintf( 'Because this cancellation was within <strong>%d hours</strong> of the session, the booked hours were deducted from your package per your agreement.', intval( $settings['cancellation_hours'] ) );
 		} else {
-			$mwm_policy_line = 'Your hours were returned to your package.';
+			$mwm_policy_line = 'Your hours were returned to your package — nothing was deducted.';
 		}
-		$mwm_client_message = sprintf(
-			"Hi %s,\n\nYour studio session on %s (%s – %s) has been cancelled.\n\n%s\n\nYou can book a new session any time from your client portal.\n\nMWM Creations & Studios",
-			$client->name, $booking->booking_date, substr( $booking->start_time, 0, 5 ), substr( $booking->end_time, 0, 5 ), $mwm_policy_line
-		);
-		$this->notify_client( $client->email, $mwm_client_subject, $mwm_client_message );
+		$mwm_client_html = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Booking Cancelled',
+			'title'      => 'Your Session Was Cancelled',
+			'preheader'  => sprintf( 'Your studio session on %s was cancelled.', date_i18n( 'F j, Y', strtotime( $booking->booking_date ) ) ),
+			'name'       => $client->name,
+			'rows'       => array(
+				'Date' => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
+				'Time' => substr( $booking->start_time, 0, 5 ) . ' – ' . substr( $booking->end_time, 0, 5 ),
+			),
+			'intro'      => 'Your studio session below has been cancelled.',
+			'body_after' => $mwm_policy_line . ' You can book a new session any time from your client portal.',
+			'cta_label'  => 'Book a New Session',
+			'cta_url'    => 'https://mwmcreations.com/studio-portal/',
+			'outro'      => 'Hope to see you back at the studio soon,',
+		) );
+		$this->notify_client_html( $client->email, $mwm_client_subject, $mwm_client_html );
 		$this->push_booking_event( $mwm_late_cancel ? 'booking_cancelled_late' : 'booking_cancelled', array(
 			'booking_id'   => $booking_id,
 			'client_name'  => $client->name,
