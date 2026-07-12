@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.1.4
+ * Version: 2.2.1
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.2.0' ); // S17: on-demand rentals
+define( 'MWM_STUDIO_VERSION', '2.2.1' ); // S18: string-slot hold fix
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -1102,7 +1102,8 @@ class MWM_Studio_Booking {
 		}
 		$ok = false;
 		foreach ( $slots as $s ) {
-			if ( isset( $s['start'] ) && substr( $s['start'], 0, 5 ) === $start_time ) {
+			$slot_start = is_array( $s ) ? ( isset( $s['start'] ) ? $s['start'] : '' ) : (string) $s;
+			if ( substr( $slot_start, 0, 5 ) === $start_time ) {
 				$ok = true;
 				break;
 			}
