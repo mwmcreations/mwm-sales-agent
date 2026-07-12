@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.1.4' );
+define( 'MWM_STUDIO_VERSION', '2.2.0' ); // S17: on-demand rentals
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -67,6 +67,10 @@ class MWM_Studio_Booking {
 			'mwm_studio_cancel_booking',
 			'mwm_studio_get_history',
 			'mwm_studio_logout',
+			// S17 (Phase A): public on-demand rental booking.
+			'mwm_studio_hold_slot',
+			'mwm_studio_confirm_rental',
+			'mwm_studio_rental_slots',
 			// S8.5 (Jul 8 2026): 'mwm_studio_record_calendly_booking' de-registered — portal-only booking; legacy Calendly path had no contract/date/hours checks.
 		);
 		foreach ( $ajax_actions as $action ) {
@@ -76,6 +80,8 @@ class MWM_Studio_Booking {
 
 		// Auto-complete past bookings opportunistically.
 		add_action( 'init', array( $this, 'auto_complete_past_bookings' ) );
+		add_action( 'init', array( $this, 'sweep_expired_holds' ) ); // S17
+		add_action( 'wp_footer', array( $this, 'rental_bootstrap' ) ); // S17
 
 		// Stripe webhook REST API endpoint.
 		add_action( 'rest_api_init', array( $this, 'register_stripe_webhook' ) );
@@ -140,10 +146,17 @@ class MWM_Studio_Booking {
 			notes LONGTEXT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			cancelled_at DATETIME NULL,
+			is_rental TINYINT(1) NOT NULL DEFAULT 0,
+			guest_name VARCHAR(191) NULL,
+			guest_email VARCHAR(191) NULL,
+			stripe_session_id VARCHAR(191) NULL,
+			amount_cents INT NULL,
+			hold_expires_at DATETIME NULL,
 			PRIMARY KEY (id),
 			KEY client_id (client_id),
 			KEY booking_date (booking_date),
-			KEY status (status)
+			KEY status (status),
+			KEY hold_expires_at (hold_expires_at)
 		) {$charset_collate};";
 
 		dbDelta( $sql_clients );
@@ -497,10 +510,15 @@ class MWM_Studio_Booking {
 		$buffer_seconds = (int) $settings['buffer_minutes'] * 60;
 
 		// Fetch existing confirmed bookings for that date.
+		// S17: confirmed bookings AND un-expired rental holds both block a slot.
+		// Without the hold clause two customers can pay for the same time.
 		$bookings = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT start_time, end_time FROM {$this->bookings_table}
-				WHERE booking_date = %s AND status = 'confirmed' ORDER BY start_time ASC",
+				WHERE booking_date = %s
+				  AND ( status = 'confirmed'
+				        OR ( status = 'pending_payment' AND hold_expires_at IS NOT NULL AND hold_expires_at > UTC_TIMESTAMP() ) )
+				ORDER BY start_time ASC",
 				$date
 			)
 		);
@@ -978,6 +996,258 @@ class MWM_Studio_Booking {
 				),
 			)
 		);
+	}
+
+
+	/**
+	 * ─────────────────────────────────────────────────────────────────
+	 * S17 — CALENDLY PHASE A: public on-demand studio rentals.
+	 * Rentals live in the SAME bookings table as package clients, so the two
+	 * can never double-book each other. Rentals use client_id = 0 and carry
+	 * guest_* + stripe_* columns. Pricing is NEVER trusted from the browser —
+	 * the machine (app.py) is the sole pricing authority.
+	 * ─────────────────────────────────────────────────────────────────
+	 */
+
+	/**
+	 * Expose ajaxurl + nonce to the native booking UI on /book-studio.
+	 * That page is a hand-built HTML page (not the plugin shortcode), so it has
+	 * neither. URI-guard: is_page() proved unreliable there (S14).
+	 */
+	public function rental_bootstrap() {
+		$uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		if ( false === strpos( $uri, 'book-studio' ) ) {
+			return;
+		}
+		printf(
+			'<script>window.MWM_RENTAL = { ajaxurl: %s, nonce: %s };</script>',
+			wp_json_encode( admin_url( 'admin-ajax.php' ) ),
+			wp_json_encode( wp_create_nonce( 'mwm_studio_rental' ) )
+		);
+	}
+
+	/** Sweep holds whose payment window elapsed. Frees the slot again. */
+	public function sweep_expired_holds() {
+		global $wpdb;
+		$wpdb->query(
+			"UPDATE {$this->bookings_table}
+			 SET status = 'hold_expired'
+			 WHERE status = 'pending_payment'
+			   AND hold_expires_at IS NOT NULL
+			   AND hold_expires_at < UTC_TIMESTAMP()"
+		);
+	}
+
+	/** Public slot feed for /book-studio (no login). Same engine as the portal. */
+	public function mwm_studio_rental_slots() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		$date     = isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '';
+		$duration = isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 1;
+
+		if ( ! $date || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid date.', 'mwm-studio' ) ) );
+		}
+		if ( $duration < 1 || $duration > 5 || floor( $duration ) != $duration ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid duration.', 'mwm-studio' ) ) );
+		}
+
+		$slots = $this->get_available_slots( $date, $duration );
+		// S15 fail-closed: NULL = calendar feed down -> never show slots.
+		if ( null === $slots ) {
+			wp_send_json_error( array(
+				'reason'  => 'availability_unavailable',
+				'message' => __( 'Booking is temporarily unavailable. Please message us on WhatsApp and we will get you booked.', 'mwm-studio' ),
+			) );
+		}
+		wp_send_json_success( array( 'slots' => $slots ) );
+	}
+
+	/**
+	 * Hold a slot, then ask the machine to create a Stripe Checkout Session.
+	 * The hold row is written FIRST so the slot is locked while the customer pays.
+	 */
+	public function mwm_studio_hold_slot() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		global $wpdb;
+		$settings = $this->get_settings();
+
+		$date       = isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '';
+		$start_time = isset( $_POST['start_time'] ) ? sanitize_text_field( wp_unslash( $_POST['start_time'] ) ) : '';
+		$hours      = isset( $_POST['hours'] ) ? (int) $_POST['hours'] : 0;
+		$editing    = ! empty( $_POST['editing'] ) && 'false' !== $_POST['editing'] ? 1 : 0;
+		$name       = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
+		$email      = isset( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '';
+		$notes      = isset( $_POST['notes'] ) ? sanitize_textarea_field( wp_unslash( $_POST['notes'] ) ) : '';
+
+		if ( ! $date || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid date.', 'mwm-studio' ) ) );
+		}
+		if ( ! $start_time || ! preg_match( '/^\d{2}:\d{2}$/', $start_time ) ) {
+			wp_send_json_error( array( 'message' => __( 'Invalid start time.', 'mwm-studio' ) ) );
+		}
+		if ( $hours < 1 || $hours > 5 ) {
+			wp_send_json_error( array( 'message' => __( 'Please choose between 1 and 5 hours.', 'mwm-studio' ) ) );
+		}
+		if ( ! $name || ! is_email( $email ) ) {
+			wp_send_json_error( array( 'message' => __( 'Please enter your name and a valid email.', 'mwm-studio' ) ) );
+		}
+
+		// Re-verify the slot is still free (guards the gap between picking and paying).
+		$slots = $this->get_available_slots( $date, $hours );
+		if ( null === $slots ) {
+			wp_send_json_error( array(
+				'reason'  => 'availability_unavailable',
+				'message' => __( 'Booking is temporarily unavailable. Please message us on WhatsApp.', 'mwm-studio' ),
+			) );
+		}
+		$ok = false;
+		foreach ( $slots as $s ) {
+			if ( isset( $s['start'] ) && substr( $s['start'], 0, 5 ) === $start_time ) {
+				$ok = true;
+				break;
+			}
+		}
+		if ( ! $ok ) {
+			wp_send_json_error( array( 'message' => __( 'Sorry — that time was just taken. Please pick another slot.', 'mwm-studio' ) ) );
+		}
+
+		$end_time    = date( 'H:i:s', strtotime( $date . ' ' . $start_time ) + $hours * HOUR_IN_SECONDS );
+		$hold_min    = (int) apply_filters( 'mwm_studio_hold_minutes', 15 );
+		$hold_expiry = gmdate( 'Y-m-d H:i:s', time() + $hold_min * MINUTE_IN_SECONDS );
+
+		$inserted = $wpdb->insert(
+			$this->bookings_table,
+			array(
+				'client_id'       => 0,
+				'booking_date'    => $date,
+				'start_time'      => $start_time . ':00',
+				'end_time'        => $end_time,
+				'duration_hours'  => $hours,
+				'status'          => 'pending_payment',
+				'notes'           => $notes,
+				'is_rental'       => 1,
+				'guest_name'      => $name,
+				'guest_email'     => $email,
+				'hold_expires_at' => $hold_expiry,
+			),
+			array( '%d', '%s', '%s', '%s', '%f', '%s', '%s', '%d', '%s', '%s', '%s' )
+		);
+		if ( ! $inserted ) {
+			wp_send_json_error( array( 'message' => __( 'Could not hold that slot. Please try again.', 'mwm-studio' ) ) );
+		}
+		$booking_id = (int) $wpdb->insert_id;
+
+		// Ask the machine for a Stripe Checkout URL. It prices the tier itself.
+		$machine = get_option( 'mwm_studio_checkout_url', 'https://mwm-sales-agent-production.up.railway.app/studio-checkout' );
+		$secret  = get_option( 'mwm_portal_provision_secret', '' );
+		$resp    = wp_remote_post( $machine, array(
+			'timeout' => 12,
+			'headers' => array(
+				'Content-Type'        => 'application/json',
+				'X-MWM-Portal-Secret' => $secret,
+			),
+			'body'    => wp_json_encode( array(
+				'booking_id' => $booking_id,
+				'date'       => $date,
+				'start_time' => $start_time,
+				'hours'      => $hours,
+				'editing'    => (bool) $editing,
+				'name'       => $name,
+				'email'      => $email,
+			) ),
+		) );
+
+		if ( is_wp_error( $resp ) || 200 !== wp_remote_retrieve_response_code( $resp ) ) {
+			// Release the hold immediately — never strand a slot on our error.
+			$wpdb->update( $this->bookings_table, array( 'status' => 'hold_expired' ), array( 'id' => $booking_id ) );
+			wp_send_json_error( array( 'message' => __( 'Payment could not be started. Please try again or message us on WhatsApp.', 'mwm-studio' ) ) );
+		}
+
+		$body = json_decode( wp_remote_retrieve_body( $resp ), true );
+		if ( empty( $body['ok'] ) || empty( $body['url'] ) ) {
+			$wpdb->update( $this->bookings_table, array( 'status' => 'hold_expired' ), array( 'id' => $booking_id ) );
+			wp_send_json_error( array( 'message' => __( 'Payment could not be started. Please try again.', 'mwm-studio' ) ) );
+		}
+
+		$wpdb->update(
+			$this->bookings_table,
+			array( 'amount_cents' => isset( $body['amount_cents'] ) ? (int) $body['amount_cents'] : null ),
+			array( 'id' => $booking_id )
+		);
+
+		wp_send_json_success( array(
+			'booking_id'   => $booking_id,
+			'checkout_url' => esc_url_raw( $body['url'] ),
+			'hold_minutes' => $hold_min,
+		) );
+	}
+
+	/**
+	 * Machine-only: Stripe says the rental is PAID -> confirm it and run the
+	 * same S12 chain package bookings use (client email + gcal + #matt alert).
+	 */
+	public function mwm_studio_confirm_rental() {
+		global $wpdb;
+		$secret = get_option( 'mwm_portal_provision_secret', '' );
+		$given  = isset( $_SERVER['HTTP_X_MWM_PORTAL_SECRET'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_MWM_PORTAL_SECRET'] ) ) : '';
+		if ( ! $secret || ! hash_equals( $secret, $given ) ) {
+			status_header( 401 );
+			wp_send_json_error( array( 'message' => 'unauthorized' ) );
+		}
+
+		$booking_id  = isset( $_POST['booking_id'] ) ? (int) $_POST['booking_id'] : 0;
+		$session_id  = isset( $_POST['session_id'] ) ? sanitize_text_field( wp_unslash( $_POST['session_id'] ) ) : '';
+		$amount      = isset( $_POST['amount_cents'] ) ? (int) $_POST['amount_cents'] : 0;
+
+		$booking = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $booking_id ) );
+		if ( ! $booking || ! (int) $booking->is_rental ) {
+			wp_send_json_error( array( 'message' => 'booking not found' ) );
+		}
+		// Idempotent: Stripe retries deliveries.
+		if ( 'confirmed' === $booking->status ) {
+			wp_send_json_success( array( 'message' => 'already confirmed', 'booking_id' => $booking_id ) );
+		}
+
+		$wpdb->update(
+			$this->bookings_table,
+			array(
+				'status'            => 'confirmed',
+				'stripe_session_id' => $session_id,
+				'amount_cents'      => $amount ? $amount : $booking->amount_cents,
+				'hold_expires_at'   => null,
+			),
+			array( 'id' => $booking_id )
+		);
+
+		$settings = $this->get_settings();
+		$start    = substr( $booking->start_time, 0, 5 );
+		$end      = substr( $booking->end_time, 0, 5 );
+		$paid     = $amount ? number_format( $amount / 100, 2 ) : '';
+
+		$subject = sprintf( 'Booking confirmed — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+		$message = sprintf(
+			"Hi %s,\n\nYour studio session is confirmed and paid.\n\nDate: %s\nTime: %s – %s\nDuration: %s hour(s)\nAmount paid: $%s\nLocation: %s, %s\n\nNeed to change plans? You can reschedule or cancel for a full refund up to 24 hours before your session — just reply to this email. Within 24 hours of the session, the booking is non-refundable and rebooking requires a new payment.\n\nSee you at the studio!\nMWM Creations & Studios",
+			$booking->guest_name, $booking->booking_date, $start, $end, $booking->duration_hours, $paid,
+			$settings['studio_name'], $settings['studio_address']
+		);
+		$this->notify_client( $booking->guest_email, $subject, $message );
+		$this->notify_admin(
+			sprintf( 'PAID studio rental — %s (%s)', $booking->guest_name, $booking->guest_email ),
+			sprintf( "%s %s–%s (%sh) — $%s\nBooking #%d", $booking->booking_date, $start, $end, $booking->duration_hours, $paid, $booking_id )
+		);
+
+		$this->push_booking_event( 'booking_created', array(
+			'booking_id'   => $booking_id,
+			'client_name'  => $booking->guest_name . ' (rental)',
+			'client_email' => $booking->guest_email,
+			'date'         => $booking->booking_date,
+			'start_time'   => $start,
+			'end_time'     => $end,
+			'duration'     => $booking->duration_hours,
+			'notes'        => $booking->notes,
+		) );
+
+		wp_send_json_success( array( 'message' => 'confirmed', 'booking_id' => $booking_id ) );
 	}
 
 	public function mwm_studio_cancel_booking() {
