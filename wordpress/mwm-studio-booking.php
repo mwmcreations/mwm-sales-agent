@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.4.0
+ * Version: 2.5.0
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.4.0' ); // S19b: month-calendar availability + company sender
+define( 'MWM_STUDIO_VERSION', '2.5.0' ); // S19c: magic-link manage page + .ics + reminders
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -72,12 +72,24 @@ class MWM_Studio_Booking {
 			'mwm_studio_confirm_rental',
 			'mwm_studio_rental_slots',
 			'mwm_studio_rental_month',
+			'mwm_studio_manage_get',
+			'mwm_studio_manage_cancel',
+			'mwm_studio_manage_reschedule',
 			// S8.5 (Jul 8 2026): 'mwm_studio_record_calendly_booking' de-registered — portal-only booking; legacy Calendly path had no contract/date/hours checks.
 		);
 		foreach ( $ajax_actions as $action ) {
 			add_action( 'wp_ajax_' . $action, array( $this, $action ) );
 			add_action( 'wp_ajax_nopriv_' . $action, array( $this, $action ) );
 		}
+
+		// S19c: admin-only QA helpers (capability + nonce checked in handlers).
+		add_action( 'wp_ajax_mwm_studio_admin_manage_link', array( $this, 'mwm_studio_admin_manage_link' ) );
+		add_action( 'wp_ajax_mwm_studio_admin_qa_confirm', array( $this, 'mwm_studio_admin_qa_confirm' ) );
+		add_action( 'wp_ajax_mwm_studio_admin_test_reminder', array( $this, 'mwm_studio_admin_test_reminder' ) );
+
+		// S19c: 24h/2h reminder cron.
+		add_action( 'mwm_studio_reminders_event', array( $this, 'run_reminder_cron' ) );
+		add_action( 'init', array( $this, 'ensure_reminder_cron' ) );
 
 		// Auto-complete past bookings opportunistically.
 		add_action( 'init', array( $this, 'auto_complete_past_bookings' ) );
@@ -106,7 +118,27 @@ class MWM_Studio_Booking {
 			if ( false === get_option( $this->settings_option ) ) {
 				update_option( $this->settings_option, $this->default_settings() );
 			}
+			$this->ensure_manage_page();
 			update_option( 'mwm_studio_db_version', MWM_STUDIO_VERSION );
+		}
+	}
+
+	/** S19c: create the public /manage-booking/ page (idempotent). */
+	private function ensure_manage_page() {
+		$existing = get_page_by_path( 'manage-booking' );
+		if ( $existing ) {
+			update_option( 'mwm_studio_manage_page_id', $existing->ID );
+			return;
+		}
+		$pid = wp_insert_post( array(
+			'post_title'   => 'Manage Your Booking',
+			'post_name'    => 'manage-booking',
+			'post_type'    => 'page',
+			'post_status'  => 'publish',
+			'post_content' => '[mwm_manage_booking]',
+		) );
+		if ( $pid && ! is_wp_error( $pid ) ) {
+			update_option( 'mwm_studio_manage_page_id', $pid );
 		}
 	}
 
@@ -153,6 +185,9 @@ class MWM_Studio_Booking {
 			stripe_session_id VARCHAR(191) NULL,
 			amount_cents INT NULL,
 			hold_expires_at DATETIME NULL,
+			reminder_24_sent TINYINT(1) NOT NULL DEFAULT 0,
+			reminder_2_sent TINYINT(1) NOT NULL DEFAULT 0,
+			reschedule_count INT NOT NULL DEFAULT 0,
 			PRIMARY KEY (id),
 			KEY client_id (client_id),
 			KEY booking_date (booking_date),
@@ -199,6 +234,7 @@ class MWM_Studio_Booking {
 
 	public function register_shortcode() {
 		add_shortcode( 'mwm_studio_portal', array( $this, 'render_portal' ) );
+		add_shortcode( 'mwm_manage_booking', array( $this, 'render_manage_page' ) );
 	}
 
 	public function frontend_assets() {
@@ -1085,7 +1121,8 @@ class MWM_Studio_Booking {
 			'cta_url'    => 'https://mwmcreations.com/studio-portal/',
 			'outro'      => 'See you at the studio!',
 		) );
-		$this->notify_client_html( $client->email, $mwm_client_subject, $mwm_client_html );
+		$mwm_ics_bk = (object) array( 'id' => $booking_id, 'booking_date' => $date, 'start_time' => $start_time . ':00', 'end_time' => $end_time, 'is_rental' => 0, 'reschedule_count' => 0, 'guest_email' => '', 'created_at' => '' );
+		$this->notify_client_html_ics( $client->email, $mwm_client_subject, $mwm_client_html, $mwm_ics_bk );
 		$this->push_booking_event( 'booking_created', array(
 			'booking_id'   => $booking_id,
 			'client_name'  => $client->name,
@@ -1132,7 +1169,7 @@ class MWM_Studio_Booking {
 	 */
 	public function rental_bootstrap() {
 		$uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
-		if ( false === strpos( $uri, 'book-studio' ) ) {
+		if ( false === strpos( $uri, 'book-studio' ) && false === strpos( $uri, 'manage-booking' ) ) {
 			return;
 		}
 		printf(
@@ -1152,6 +1189,657 @@ class MWM_Studio_Booking {
 			   AND hold_expires_at IS NOT NULL
 			   AND hold_expires_at < UTC_TIMESTAMP()"
 		);
+	}
+
+	/* =========================================================================
+	 * S19c: MAGIC-LINK MANAGE PAGE + ICS + REMINDERS
+	 * ========================================================================= */
+
+	private function manage_token( $booking ) {
+		return hash_hmac( 'sha256', $booking->id . '|' . $booking->guest_email . '|' . $booking->created_at, wp_salt( 'auth' ) );
+	}
+
+	private function manage_url( $booking ) {
+		return home_url( '/manage-booking/' ) . '?b=' . intval( $booking->id ) . '&t=' . substr( $this->manage_token( $booking ), 0, 32 );
+	}
+
+	private function get_booking_by_manage_token() {
+		global $wpdb;
+		$bid = isset( $_REQUEST['b'] ) ? (int) $_REQUEST['b'] : 0;
+		$tok = isset( $_REQUEST['t'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['t'] ) ) : '';
+		if ( ! $bid || strlen( $tok ) < 20 ) {
+			return null;
+		}
+		$booking = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d AND is_rental = 1", $bid ) );
+		if ( ! $booking ) {
+			return null;
+		}
+		if ( ! hash_equals( substr( $this->manage_token( $booking ), 0, 32 ), $tok ) ) {
+			return null;
+		}
+		return $booking;
+	}
+
+	/** Machine event id: reschedules need fresh idempotency keys + gcal records. */
+	private function event_bid( $booking ) {
+		$c = isset( $booking->reschedule_count ) ? (int) $booking->reschedule_count : 0;
+		return $c > 0 ? $booking->id . '-r' . $c : (string) $booking->id;
+	}
+
+	private function ics_escape( $s ) {
+		return str_replace( array( '\\', ';', ',', "\n" ), array( '\\\\', '\;', '\,', '\n' ), $s );
+	}
+
+	private function build_booking_ics( $booking, $settings ) {
+		$rc      = isset( $booking->reschedule_count ) ? (int) $booking->reschedule_count : 0;
+		$uid     = 'mwm-booking-' . $booking->id . '-r' . $rc . '@mwmcreations.com';
+		$start   = get_gmt_from_date( $booking->booking_date . ' ' . $booking->start_time, 'Ymd\THis\Z' );
+		$end     = get_gmt_from_date( $booking->booking_date . ' ' . $booking->end_time, 'Ymd\THis\Z' );
+		$now     = gmdate( 'Ymd\THis\Z' );
+		$manage  = ( 1 === (int) $booking->is_rental ) ? $this->manage_url( $booking ) : 'https://mwmcreations.com/studio-portal/';
+		$lines   = array(
+			'BEGIN:VCALENDAR',
+			'VERSION:2.0',
+			'PRODID:-//MWM Creations & Studios//Studio Booking//EN',
+			'CALSCALE:GREGORIAN',
+			'METHOD:PUBLISH',
+			'BEGIN:VEVENT',
+			'UID:' . $uid,
+			'DTSTAMP:' . $now,
+			'DTSTART:' . $start,
+			'DTEND:' . $end,
+			'SUMMARY:' . $this->ics_escape( 'Studio Session — ' . $settings['studio_name'] ),
+			'LOCATION:' . $this->ics_escape( $settings['studio_name'] . ', ' . $settings['studio_address'] ),
+			'DESCRIPTION:' . $this->ics_escape( 'Your studio session at ' . $settings['studio_name'] . '. Manage: ' . $manage ),
+			'STATUS:CONFIRMED',
+			'END:VEVENT',
+			'END:VCALENDAR',
+		);
+		return implode( "\r\n", $lines ) . "\r\n";
+	}
+
+	/** Branded HTML email + .ics calendar attachment. */
+	private function notify_client_html_ics( $email, $subject, $html, $booking ) {
+		if ( ! $email || ! is_email( $email ) ) {
+			return;
+		}
+		$settings = $this->get_settings();
+		$path     = trailingslashit( get_temp_dir() ) . 'mwm-booking-' . intval( $booking->id ) . '.ics';
+		$wrote    = @file_put_contents( $path, $this->build_booking_ics( $booking, $settings ) );
+		$headers  = array(
+			'Content-Type: text/html; charset=UTF-8',
+			'From: MWM Creations & Studios <info@mwmcreations.com>',
+			'Reply-To: MWM Creations & Studios <michael@mwmcreations.com>',
+		);
+		wp_mail( $email, $subject, $html, $headers, $wrote ? array( $path ) : array() );
+		if ( $wrote ) {
+			@unlink( $path );
+		}
+	}
+
+	public function mwm_studio_manage_get() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		$booking = $this->get_booking_by_manage_token();
+		if ( ! $booking ) {
+			wp_send_json_error( array( 'message' => 'Booking not found. Please use the link from your confirmation email.' ) );
+		}
+		$settings = $this->get_settings();
+		$sess_ts  = strtotime( $booking->booking_date . ' ' . $booking->start_time );
+		$gt24     = ( $sess_ts - current_time( 'timestamp' ) ) >= DAY_IN_SECONDS;
+		wp_send_json_success( array(
+			'status'     => $booking->status,
+			'date'       => $booking->booking_date,
+			'date_label' => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
+			'start'      => substr( $booking->start_time, 0, 5 ),
+			'end'        => substr( $booking->end_time, 0, 5 ),
+			'duration'   => (float) $booking->duration_hours,
+			'name'       => $booking->guest_name,
+			'amount'     => $booking->amount_cents ? number_format( $booking->amount_cents / 100, 2 ) : '',
+			'gt24'       => $gt24,
+			'location'   => $settings['studio_name'] . ', ' . $settings['studio_address'],
+		) );
+	}
+
+	public function mwm_studio_manage_cancel() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		global $wpdb;
+		$booking = $this->get_booking_by_manage_token();
+		if ( ! $booking || 'confirmed' !== $booking->status ) {
+			wp_send_json_error( array( 'message' => 'This booking is not active, so it cannot be cancelled.' ) );
+		}
+		$settings = $this->get_settings();
+		$sess_ts  = strtotime( $booking->booking_date . ' ' . $booking->start_time );
+		$late     = ( $sess_ts - current_time( 'timestamp' ) ) < DAY_IN_SECONDS;
+		$wpdb->update(
+			$this->bookings_table,
+			array( 'status' => $late ? 'cancelled_late' : 'cancelled', 'cancelled_at' => current_time( 'mysql' ) ),
+			array( 'id' => $booking->id )
+		);
+		$this->clear_rental_day_cache( $booking->booking_date );
+		$amount       = $booking->amount_cents ? number_format( $booking->amount_cents / 100, 2 ) : '';
+		$fee_cents    = $booking->amount_cents ? ( (int) round( (int) $booking->amount_cents * 0.029 ) + 30 ) : 0;
+		$refund_cents = $booking->amount_cents ? max( 0, (int) $booking->amount_cents - $fee_cents ) : 0;
+		$fee_disp     = number_format( $fee_cents / 100, 2 );
+		$refund_disp  = number_format( $refund_cents / 100, 2 );
+		$start  = substr( $booking->start_time, 0, 5 );
+		$end    = substr( $booking->end_time, 0, 5 );
+		if ( $late ) {
+			$this->notify_admin(
+				sprintf( '[%s] Rental cancelled LATE (<24h, no refund) — #%d %s', $settings['studio_name'], $booking->id, $booking->guest_name ),
+				sprintf( "Rental booking #%d cancelled via manage link within 24h of the session.\nGuest: %s (%s)\n%s %s-%s\nNo refund due per policy.", $booking->id, $booking->guest_name, $booking->guest_email, $booking->booking_date, $start, $end )
+			);
+		} else {
+			$this->notify_admin(
+				sprintf( '[%s] REFUND NEEDED ~$%s — rental cancelled #%d %s', $settings['studio_name'], $refund_disp, $booking->id, $booking->guest_name ),
+				sprintf( "Rental booking #%d cancelled via manage link MORE than 24h ahead — refund due MINUS processing fees.\nGuest: %s (%s)\n%s %s-%s\nAmount paid: $%s\nEst. processing fee (kept by Stripe): $%s\nREFUND DUE: ~$%s — check the exact fee on the payment in Stripe and refund (paid minus fee).\nStripe session: %s\n(Refund automation lands with the real-card session.)", $booking->id, $booking->guest_name, $booking->guest_email, $booking->booking_date, $start, $end, $amount, $fee_disp, $refund_disp, $booking->stripe_session_id )
+			);
+		}
+		$policy = $late
+			? 'Because this cancellation was within <strong>24 hours</strong> of the session, the booking is non-refundable per our policy.'
+			: 'Your payment' . ( $amount ? ' of <strong>$' . $amount . '</strong>' : '' ) . ' will be refunded minus payment-processing fees' . ( $refund_cents ? ' — a refund of approximately <strong>$' . $refund_disp . '</strong>' : '' ) . ' to your original payment method. Please allow 1–2 business days for it to appear.';
+		$html = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Booking Cancelled',
+			'title'      => 'Your Session Was Cancelled',
+			'preheader'  => sprintf( 'Your studio session on %s was cancelled.', date_i18n( 'F j, Y', strtotime( $booking->booking_date ) ) ),
+			'name'       => $booking->guest_name,
+			'intro'      => 'Your studio session below has been cancelled.',
+			'rows'       => array(
+				'Date' => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
+				'Time' => $start . ' – ' . $end,
+			),
+			'body_after' => $policy . ' We would love to see you back — you can book a new session any time.',
+			'cta_label'  => 'Book a New Session',
+			'cta_url'    => 'https://mwmcreations.com/book-studio/',
+			'outro'      => 'Hope to see you back at the studio soon,',
+		) );
+		$this->notify_client_html( $booking->guest_email, sprintf( 'Booking cancelled — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] ), $html );
+		$this->push_booking_event( $late ? 'booking_cancelled_late' : 'booking_cancelled', array(
+			'booking_id'   => $this->event_bid( $booking ),
+			'client_name'  => $booking->guest_name . ' (rental)',
+			'client_email' => $booking->guest_email,
+			'date'         => $booking->booking_date,
+			'start_time'   => $start,
+			'end_time'     => $end,
+		) );
+		wp_send_json_success( array(
+			'message' => $late
+				? 'Your booking was cancelled. Per policy, bookings cancelled within 24 hours of the session are non-refundable.'
+				: 'Your booking was cancelled and your refund (minus payment-processing fees) is on its way — please allow 1–2 business days.',
+		) );
+	}
+
+	public function mwm_studio_manage_reschedule() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		global $wpdb;
+		$booking = $this->get_booking_by_manage_token();
+		if ( ! $booking || 'confirmed' !== $booking->status ) {
+			wp_send_json_error( array( 'message' => 'This booking is not active, so it cannot be rescheduled.' ) );
+		}
+		$sess_ts = strtotime( $booking->booking_date . ' ' . $booking->start_time );
+		if ( ( $sess_ts - current_time( 'timestamp' ) ) < DAY_IN_SECONDS ) {
+			wp_send_json_error( array( 'message' => 'Within 24 hours of the session, rescheduling is no longer available per our policy.' ) );
+		}
+		$date  = isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '';
+		$start = isset( $_POST['start_time'] ) ? sanitize_text_field( wp_unslash( $_POST['start_time'] ) ) : '';
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) || ! preg_match( '/^\d{2}:\d{2}$/', $start ) ) {
+			wp_send_json_error( array( 'message' => 'Invalid date or time.' ) );
+		}
+		$duration = (float) $booking->duration_hours;
+		$slots    = $this->get_available_slots( $date, $duration );
+		if ( null === $slots ) {
+			wp_send_json_error( array( 'message' => 'Booking is temporarily unavailable. Please message us on WhatsApp and we will get you rescheduled.' ) );
+		}
+		$found = false;
+		foreach ( $slots as $s ) {
+			$slot_start = is_array( $s ) ? ( isset( $s['start'] ) ? $s['start'] : '' ) : (string) $s;
+			if ( $slot_start === $start ) {
+				$found = true;
+				break;
+			}
+		}
+		if ( ! $found ) {
+			wp_send_json_error( array( 'message' => 'That time was just taken — please pick another slot.' ) );
+		}
+		$settings  = $this->get_settings();
+		$old_label = date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ) . ' · ' . substr( $booking->start_time, 0, 5 ) . '–' . substr( $booking->end_time, 0, 5 );
+		$old_date  = $booking->booking_date;
+		// Remove the OLD calendar event first (old idempotency id).
+		$this->push_booking_event( 'booking_cancelled', array(
+			'booking_id'   => $this->event_bid( $booking ),
+			'client_name'  => $booking->guest_name . ' (rental — rescheduling)',
+			'client_email' => $booking->guest_email,
+			'date'         => $booking->booking_date,
+			'start_time'   => substr( $booking->start_time, 0, 5 ),
+			'end_time'     => substr( $booking->end_time, 0, 5 ),
+		) );
+		$new_end = date( 'H:i:s', strtotime( $date . ' ' . $start . ':00' ) + (int) round( $duration * HOUR_IN_SECONDS ) );
+		$wpdb->update(
+			$this->bookings_table,
+			array(
+				'booking_date'     => $date,
+				'start_time'       => $start . ':00',
+				'end_time'         => $new_end,
+				'reschedule_count' => (int) $booking->reschedule_count + 1,
+			),
+			array( 'id' => $booking->id )
+		);
+		$this->clear_rental_day_cache( $old_date );
+		$this->clear_rental_day_cache( $date );
+		$fresh = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $booking->id ) );
+		// Create the NEW calendar event under a fresh idempotency id.
+		$this->push_booking_event( 'booking_created', array(
+			'booking_id'   => $this->event_bid( $fresh ),
+			'client_name'  => $fresh->guest_name . ' (rental — rescheduled)',
+			'client_email' => $fresh->guest_email,
+			'date'         => $fresh->booking_date,
+			'start_time'   => substr( $fresh->start_time, 0, 5 ),
+			'end_time'     => substr( $fresh->end_time, 0, 5 ),
+			'duration'     => $fresh->duration_hours,
+			'notes'        => 'Rescheduled via manage link (was ' . $old_label . ')',
+		) );
+		$this->notify_admin(
+			sprintf( '[%s] Rental RESCHEDULED — #%d %s', $settings['studio_name'], $fresh->id, $fresh->guest_name ),
+			sprintf( "Rental booking #%d rescheduled via manage link.\nGuest: %s (%s)\nWas: %s\nNow: %s %s-%s", $fresh->id, $fresh->guest_name, $fresh->guest_email, $old_label, $fresh->booking_date, substr( $fresh->start_time, 0, 5 ), substr( $fresh->end_time, 0, 5 ) )
+		);
+		$html = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Booking Updated',
+			'title'      => 'Your Session Was Rescheduled',
+			'preheader'  => sprintf( 'Your studio session moved to %s at %s.', date_i18n( 'F j, Y', strtotime( $fresh->booking_date ) ), substr( $fresh->start_time, 0, 5 ) ),
+			'name'       => $fresh->guest_name,
+			'intro'      => 'All set — your studio session has been moved. Here are your new details:',
+			'rows'       => array(
+				'New Date' => date_i18n( 'l, F j, Y', strtotime( $fresh->booking_date ) ),
+				'New Time' => substr( $fresh->start_time, 0, 5 ) . ' – ' . substr( $fresh->end_time, 0, 5 ),
+				'Duration' => $fresh->duration_hours . ' hour(s)',
+				'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
+			),
+			'body_after' => 'Previously: ' . esc_html( $old_label ) . '. An updated calendar invite (.ics) is attached. Need another change? Use the button below — free up to <strong>24 hours</strong> before your session.',
+			'cta_label'  => 'Manage Your Booking',
+			'cta_url'    => $this->manage_url( $fresh ),
+			'outro'      => 'See you at the studio!',
+		) );
+		$this->notify_client_html_ics( $fresh->guest_email, sprintf( 'Booking updated — %s at %s | %s', $fresh->booking_date, substr( $fresh->start_time, 0, 5 ), $settings['studio_name'] ), $html, $fresh );
+		wp_send_json_success( array(
+			'message'    => 'Your session was rescheduled. A confirmation with an updated calendar invite is on its way.',
+			'date_label' => date_i18n( 'l, F j, Y', strtotime( $fresh->booking_date ) ),
+			'start'      => substr( $fresh->start_time, 0, 5 ),
+			'end'        => substr( $fresh->end_time, 0, 5 ),
+		) );
+	}
+
+	/* ---- S19c: reminders ---- */
+
+	public function ensure_reminder_cron() {
+		if ( ! wp_next_scheduled( 'mwm_studio_reminders_event' ) ) {
+			wp_schedule_event( time() + 300, 'hourly', 'mwm_studio_reminders_event' );
+		}
+	}
+
+	public function run_reminder_cron() {
+		global $wpdb;
+		$now   = current_time( 'timestamp' );
+		$today = date( 'Y-m-d', $now );
+		$until = date( 'Y-m-d', $now + 2 * DAY_IN_SECONDS );
+		$rows  = $wpdb->get_results( $wpdb->prepare(
+			"SELECT * FROM {$this->bookings_table}
+			 WHERE status = 'confirmed' AND booking_date >= %s AND booking_date <= %s
+			   AND ( reminder_24_sent = 0 OR reminder_2_sent = 0 )",
+			$today,
+			$until
+		) );
+		if ( ! $rows ) {
+			return;
+		}
+		foreach ( $rows as $bk ) {
+			$start_ts = strtotime( $bk->booking_date . ' ' . $bk->start_time );
+			if ( ! $start_ts ) {
+				continue;
+			}
+			$left = $start_ts - $now;
+			if ( $left <= 0 ) {
+				continue;
+			}
+			if ( $left <= 2 * HOUR_IN_SECONDS ) {
+				if ( ! (int) $bk->reminder_2_sent ) {
+					$this->send_booking_reminder( $bk, '2h' );
+					$wpdb->update( $this->bookings_table, array( 'reminder_2_sent' => 1, 'reminder_24_sent' => 1 ), array( 'id' => $bk->id ) );
+				}
+			} elseif ( $left <= 24 * HOUR_IN_SECONDS ) {
+				if ( ! (int) $bk->reminder_24_sent ) {
+					$this->send_booking_reminder( $bk, '24h' );
+					$wpdb->update( $this->bookings_table, array( 'reminder_24_sent' => 1 ), array( 'id' => $bk->id ) );
+				}
+			}
+		}
+	}
+
+	private function send_booking_reminder( $booking, $type ) {
+		$settings  = $this->get_settings();
+		$is_rental = 1 === (int) $booking->is_rental;
+		if ( $is_rental ) {
+			$email = $booking->guest_email;
+			$name  = $booking->guest_name;
+		} else {
+			$client = $this->get_client( $booking->client_id );
+			if ( ! $client ) {
+				return;
+			}
+			$email = $client->email;
+			$name  = $client->name;
+		}
+		$start      = substr( $booking->start_time, 0, 5 );
+		$end        = substr( $booking->end_time, 0, 5 );
+		$date_label = date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) );
+		$is24       = ( '2h' !== $type );
+		$cta_url    = $is_rental ? $this->manage_url( $booking ) : 'https://mwmcreations.com/studio-portal/';
+		$cta_label  = $is_rental ? 'Manage Your Booking' : 'Open Your Client Portal';
+		if ( $is24 ) {
+			$title     = 'Your Session Is Tomorrow';
+			$intro     = 'Just a friendly reminder — your studio session is coming up. Here are the details:';
+			$preheader = sprintf( 'Reminder: your studio session is tomorrow at %s.', $start );
+			$body      = $is_rental
+				? 'Need to change plans? Up to <strong>24 hours</strong> before your session you can reschedule free of charge, or cancel for a refund minus payment-processing fees — after that the booking is non-refundable. Please arrive 5–10 minutes early so we can get you set up.'
+				: 'Plans changed? You can cancel or rebook from your client portal up to <strong>24 hours</strong> before your session. Please arrive 5–10 minutes early so we can get you set up.';
+			$subject   = sprintf( 'Reminder: session tomorrow — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+		} else {
+			$title     = 'See You Soon!';
+			$intro     = 'Your studio session starts in about two hours. Here are the details:';
+			$preheader = sprintf( 'Your studio session starts at %s today.', $start );
+			$body      = 'Please arrive 5–10 minutes early so we can get you set up. See you shortly!';
+			$subject   = sprintf( 'Starting soon — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+		}
+		$html = $this->get_branded_email_html( array(
+			'eyebrow'    => 'Session Reminder',
+			'title'      => $title,
+			'preheader'  => $preheader,
+			'name'       => $name,
+			'intro'      => $intro,
+			'rows'       => array(
+				'Date'     => $date_label,
+				'Time'     => $start . ' – ' . $end,
+				'Duration' => $booking->duration_hours . ' hour(s)',
+				'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
+			),
+			'body_after' => $body,
+			'cta_label'  => $cta_label,
+			'cta_url'    => $cta_url,
+			'outro'      => 'See you at the studio!',
+		) );
+		$this->notify_client_html_ics( $email, $subject, $html, $booking );
+	}
+
+	/* ---- S19c: admin QA helpers (temporary; capability + nonce gated) ---- */
+
+	public function mwm_studio_admin_manage_link() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'forbidden' ) );
+		}
+		global $wpdb;
+		$bid     = isset( $_POST['booking_id'] ) ? (int) $_POST['booking_id'] : 0;
+		$booking = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d AND is_rental = 1", $bid ) );
+		if ( ! $booking ) {
+			wp_send_json_error( array( 'message' => 'not found / not a rental' ) );
+		}
+		wp_send_json_success( array( 'url' => $this->manage_url( $booking ) ) );
+	}
+
+	public function mwm_studio_admin_qa_confirm() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'forbidden' ) );
+		}
+		global $wpdb;
+		$bid = isset( $_POST['booking_id'] ) ? (int) $_POST['booking_id'] : 0;
+		$booking = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d AND is_rental = 1", $bid ) );
+		if ( ! $booking ) {
+			wp_send_json_error( array( 'message' => 'not found / not a rental' ) );
+		}
+		$wpdb->update( $this->bookings_table, array( 'status' => 'confirmed', 'hold_expires_at' => null ), array( 'id' => $bid ) );
+		$this->clear_rental_day_cache( $booking->booking_date );
+		wp_send_json_success( array( 'message' => 'QA: booking confirmed silently (no emails, no machine push).' ) );
+	}
+
+	public function mwm_studio_admin_test_reminder() {
+		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'forbidden' ) );
+		}
+		global $wpdb;
+		$bid  = isset( $_POST['booking_id'] ) ? (int) $_POST['booking_id'] : 0;
+		$type = isset( $_POST['type'] ) && '2h' === $_POST['type'] ? '2h' : '24h';
+		$booking = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $bid ) );
+		if ( ! $booking ) {
+			wp_send_json_error( array( 'message' => 'not found' ) );
+		}
+		$this->send_booking_reminder( $booking, $type );
+		wp_send_json_success( array( 'message' => 'QA: ' . $type . ' reminder sent (flags untouched).' ) );
+	}
+
+	/** S19c: /manage-booking/ page (shortcode). Token-gated; JS drives everything. */
+	public function render_manage_page() {
+		$css = <<<'MWMCSS'
+<style>
+.mwm-mb-wrap { max-width:640px; margin:40px auto 80px; padding:0 16px; font-family:Arial,'Helvetica Neue',Helvetica,sans-serif; }
+.mwm-mb-card { background:#0A0A0A; border:1px solid #2A2A2A; border-radius:14px; padding:32px 28px; color:#FFFFFF; }
+.mwm-mb-eyebrow { font-size:12px; color:#C8A96E; letter-spacing:3px; text-transform:uppercase; font-weight:700; text-align:center; }
+.mwm-mb-title { font-size:24px; font-weight:700; text-align:center; margin:8px 0 22px; color:#FFFFFF; }
+.mwm-mb-rows { background:#111111; border:1px solid #2A2A2A; border-radius:10px; padding:18px 20px; margin-bottom:18px; }
+.mwm-mb-row { display:flex; gap:14px; padding:6px 0; font-size:15px; }
+.mwm-mb-row b { color:#C8A96E; min-width:100px; font-size:12px; letter-spacing:1px; text-transform:uppercase; padding-top:2px; }
+.mwm-mb-status { text-align:center; font-size:14px; color:#B0B0B0; margin-bottom:18px; }
+.mwm-mb-actions { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+.mwm-mb-btn { border:none; border-radius:8px; padding:14px 28px; font-size:15px; font-weight:700; cursor:pointer; letter-spacing:1px; }
+.mwm-mb-btn-gold { background:#C8A96E; color:#111111; }
+.mwm-mb-btn-ghost { background:transparent; color:#C8A96E; border:1px solid #C8A96E; }
+.mwm-mb-btn:disabled { opacity:.45; cursor:default; }
+.mwm-mb-msg { text-align:center; font-size:14px; color:#B0B0B0; margin-top:16px; line-height:1.6; }
+.mwm-mb-msg.mwm-mb-ok { color:#C8A96E; }
+.mwm-mb-policy { font-size:13px; color:#808080; text-align:center; margin-top:20px; line-height:1.6; }
+.mwm-mb-resched { display:none; margin-top:24px; }
+.mwm-mb-sub { font-size:13px; color:#C8A96E; letter-spacing:2px; text-transform:uppercase; font-weight:700; margin:18px 0 10px; }
+.mwm-mb-cal { background:#111111; border:1px solid #2A2A2A; border-radius:12px; padding:16px; }
+.mwm-mb-cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.mwm-mb-cal-title { color:#FFFFFF; font-size:15px; font-weight:700; letter-spacing:1px; }
+.mwm-mb-cal-nav { background:#1A1A1A; border:1px solid #2A2A2A; color:#C8A96E; width:32px; height:32px; border-radius:8px; font-size:16px; cursor:pointer; line-height:1; }
+.mwm-mb-cal-nav:disabled { opacity:.35; cursor:default; }
+.mwm-mb-cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; }
+.mwm-mb-cal-dow { color:#808080; font-size:10px; text-transform:uppercase; letter-spacing:1px; text-align:center; padding:3px 0; }
+.mwm-mb-cal-day { background:transparent; border:1px solid transparent; border-radius:7px; color:#4A4A4A; padding:8px 0; font-size:13px; font-weight:600; text-align:center; }
+.mwm-mb-cal-day.mwm-mb-avail { background:#1A1A1A; border-color:#3d3420; color:#C8A96E; cursor:pointer; }
+.mwm-mb-cal-day.mwm-mb-on { background:#C8A96E; border-color:#C8A96E; color:#111111; }
+.mwm-mb-slots { display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px; margin-top:12px; }
+.mwm-mb-slot { background:#111111; border:1px solid #2A2A2A; border-radius:8px; color:#FFFFFF; padding:10px 0; font-size:14px; font-weight:600; cursor:pointer; }
+.mwm-mb-slot.mwm-mb-on { background:#C8A96E; border-color:#C8A96E; color:#111111; }
+</style>
+MWMCSS;
+		$shell = '<div class="mwm-mb-wrap"><div class="mwm-mb-card" id="mwm-mb"><div class="mwm-mb-msg">Loading your booking…</div></div></div>';
+		$js = <<<'MWMJS'
+<script>
+(function () {
+  function init() {
+    var boot = window.MWM_RENTAL || {};
+    var root = document.getElementById('mwm-mb');
+    if (!root) { return; }
+    var qs = new URLSearchParams(window.location.search);
+    var B = { b: qs.get('b') || '', t: qs.get('t') || '' };
+    var state = null;
+    var calY = 0, calM = 0, pickDate = '', pickSlot = '';
+
+    function api(action, data, cb) {
+      if (!boot.ajaxurl || !boot.nonce) { cb({ success: false, data: { message: 'Page is temporarily unavailable — please refresh.' } }); return; }
+      var fd = new FormData();
+      fd.append('action', action);
+      fd.append('nonce', boot.nonce);
+      fd.append('b', B.b);
+      fd.append('t', B.t);
+      Object.keys(data).forEach(function (k) { fd.append(k, data[k]); });
+      fetch(boot.ajaxurl, { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(cb)
+        .catch(function () { cb({ success: false, data: { message: 'Network error — please try again.' } }); });
+    }
+    function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+    function msg(text, ok) { var el = root.querySelector('.mwm-mb-msg'); if (el) { el.textContent = text; el.className = 'mwm-mb-msg' + (ok ? ' mwm-mb-ok' : ''); } }
+
+    function render() {
+      var s = state;
+      var statusLabel = { confirmed: 'Confirmed', pending_payment: 'Pending payment', cancelled: 'Cancelled', cancelled_late: 'Cancelled (late)' }[s.status] || s.status;
+      var h = '';
+      h += '<div class="mwm-mb-eyebrow">Manage Booking</div>';
+      h += '<div class="mwm-mb-title">Hi ' + esc(s.name) + ' — your studio session</div>';
+      h += '<div class="mwm-mb-rows">';
+      h += '<div class="mwm-mb-row"><b>Date</b><span>' + esc(s.date_label) + '</span></div>';
+      h += '<div class="mwm-mb-row"><b>Time</b><span>' + esc(s.start) + ' – ' + esc(s.end) + '</span></div>';
+      h += '<div class="mwm-mb-row"><b>Duration</b><span>' + esc(s.duration) + ' hour(s)</span></div>';
+      if (s.amount) { h += '<div class="mwm-mb-row"><b>Paid</b><span>$' + esc(s.amount) + '</span></div>'; }
+      h += '<div class="mwm-mb-row"><b>Location</b><span>' + esc(s.location) + '</span></div>';
+      h += '</div>';
+      h += '<div class="mwm-mb-status">Status: ' + esc(statusLabel) + '</div>';
+      if (s.status === 'confirmed') {
+        h += '<div class="mwm-mb-actions">';
+        if (s.gt24) { h += '<button type="button" class="mwm-mb-btn mwm-mb-btn-gold" id="mwm-mb-resched-btn">Reschedule</button>'; }
+        h += '<button type="button" class="mwm-mb-btn mwm-mb-btn-ghost" id="mwm-mb-cancel-btn">Cancel booking</button>';
+        h += '</div>';
+        h += '<div class="mwm-mb-resched" id="mwm-mb-resched">';
+        h += '<div class="mwm-mb-sub">Pick a new date</div><div class="mwm-mb-cal" id="mwm-mb-cal"></div>';
+        h += '<div class="mwm-mb-sub" id="mwm-mb-slots-label" style="display:none">Pick a new start time</div><div class="mwm-mb-slots" id="mwm-mb-slots"></div>';
+        h += '<div class="mwm-mb-actions" style="margin-top:16px"><button type="button" class="mwm-mb-btn mwm-mb-btn-gold" id="mwm-mb-confirm-resched" disabled>Confirm new time</button></div>';
+        h += '</div>';
+        h += s.gt24
+          ? '<div class="mwm-mb-policy">Free reschedule until 24 hours before your session; cancellations are refunded minus payment-processing fees.<br>Within 24 hours the booking is non-refundable.</div>'
+          : '<div class="mwm-mb-policy">Your session is less than 24 hours away — per policy it is non-refundable and can no longer be rescheduled. You may still cancel below if you cannot make it.</div>';
+      }
+      h += '<div class="mwm-mb-msg"></div>';
+      root.innerHTML = h;
+      var cb = document.getElementById('mwm-mb-cancel-btn');
+      if (cb) { cb.addEventListener('click', doCancel); }
+      var rb = document.getElementById('mwm-mb-resched-btn');
+      if (rb) { rb.addEventListener('click', function () { document.getElementById('mwm-mb-resched').style.display = 'block'; rb.disabled = true; calRefresh(); }); }
+      var cf = document.getElementById('mwm-mb-confirm-resched');
+      if (cf) { cf.addEventListener('click', doResched); }
+    }
+
+    function doCancel() {
+      var warn = state.gt24
+        ? 'Cancel this booking? Your payment will be refunded minus payment-processing fees.'
+        : 'Cancel this booking? It is within 24 hours of the session, so per policy it is NON-REFUNDABLE.';
+      if (!window.confirm(warn)) { return; }
+      msg('Cancelling…');
+      api('mwm_studio_manage_cancel', {}, function (res) {
+        if (res.success) { state.status = state.gt24 ? 'cancelled' : 'cancelled_late'; render(); msg(res.data.message, true); }
+        else { msg((res.data && res.data.message) || 'Could not cancel — please try again.'); }
+      });
+    }
+
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    function calRefresh() {
+      var box = document.getElementById('mwm-mb-cal');
+      if (!box) { return; }
+      if (!calY) { var now = new Date(); calY = now.getFullYear(); calM = now.getMonth() + 1; }
+      calRender(box, null);
+      api('mwm_studio_rental_month', { year: calY, month: calM, duration: state.duration }, function (res) {
+        if (!res.success) { calRender(box, {}); msg((res.data && res.data.message) || 'Availability unavailable.'); return; }
+        var map = {};
+        res.data.days.forEach(function (d) { map[d] = true; });
+        calRender(box, map);
+      });
+    }
+    function calRender(box, map) {
+      var dows = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      var now = new Date();
+      var ymNow = now.getFullYear() * 12 + now.getMonth();
+      var ymCal = calY * 12 + (calM - 1);
+      var horizon = new Date(now.getTime() + 60 * 86400000);
+      var ymHor = horizon.getFullYear() * 12 + horizon.getMonth();
+      var startDow = new Date(calY, calM - 1, 1).getDay();
+      var dim = new Date(calY, calM, 0).getDate();
+      var h = '<div class="mwm-mb-cal-head">';
+      h += '<button type="button" class="mwm-mb-cal-nav" id="mwm-mb-prev"' + (ymCal <= ymNow ? ' disabled' : '') + '>&#8249;</button>';
+      h += '<div class="mwm-mb-cal-title">' + months[calM - 1] + ' ' + calY + '</div>';
+      h += '<button type="button" class="mwm-mb-cal-nav" id="mwm-mb-next"' + (ymCal >= ymHor ? ' disabled' : '') + '>&#8250;</button>';
+      h += '</div><div class="mwm-mb-cal-grid">';
+      var i;
+      for (i = 0; i < 7; i++) { h += '<div class="mwm-mb-cal-dow">' + dows[i] + '</div>'; }
+      for (i = 0; i < startDow; i++) { h += '<div></div>'; }
+      for (var d = 1; d <= dim; d++) {
+        var ds = calY + '-' + pad(calM) + '-' + pad(d);
+        var ok = map ? !!map[ds] : false;
+        var cls = 'mwm-mb-cal-day' + (ok ? ' mwm-mb-avail' : '') + (ds === pickDate ? ' mwm-mb-on' : '');
+        h += '<button type="button" class="' + cls + '" data-d="' + ds + '"' + (ok ? '' : ' disabled') + '>' + d + '</button>';
+      }
+      h += '</div>';
+      box.innerHTML = h;
+      var prev = box.querySelector('#mwm-mb-prev');
+      var next = box.querySelector('#mwm-mb-next');
+      if (prev) { prev.addEventListener('click', function () { calM -= 1; if (calM < 1) { calM = 12; calY -= 1; } calRefresh(); }); }
+      if (next) { next.addEventListener('click', function () { calM += 1; if (calM > 12) { calM = 1; calY += 1; } calRefresh(); }); }
+      box.querySelectorAll('.mwm-mb-avail').forEach(function (el) {
+        el.addEventListener('click', function () {
+          pickDate = el.getAttribute('data-d');
+          pickSlot = '';
+          document.getElementById('mwm-mb-confirm-resched').disabled = true;
+          box.querySelectorAll('.mwm-mb-on').forEach(function (o) { o.classList.remove('mwm-mb-on'); });
+          el.classList.add('mwm-mb-on');
+          loadSlots();
+        });
+      });
+    }
+    function loadSlots() {
+      var grid = document.getElementById('mwm-mb-slots');
+      var lbl = document.getElementById('mwm-mb-slots-label');
+      lbl.style.display = 'block';
+      grid.innerHTML = '<div class="mwm-mb-msg">Loading times…</div>';
+      api('mwm_studio_rental_slots', { date: pickDate, duration: state.duration }, function (res) {
+        if (!res.success) { grid.innerHTML = ''; msg((res.data && res.data.message) || 'No times available.'); return; }
+        var slots = res.data.slots || [];
+        if (!slots.length) { grid.innerHTML = '<div class="mwm-mb-msg">No times left on this day — pick another.</div>'; return; }
+        grid.innerHTML = '';
+        slots.forEach(function (s) {
+          var v = (typeof s === 'string') ? s : (s.start || '');
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'mwm-mb-slot';
+          b.textContent = v;
+          b.addEventListener('click', function () {
+            pickSlot = v;
+            grid.querySelectorAll('.mwm-mb-on').forEach(function (o) { o.classList.remove('mwm-mb-on'); });
+            b.classList.add('mwm-mb-on');
+            document.getElementById('mwm-mb-confirm-resched').disabled = false;
+          });
+          grid.appendChild(b);
+        });
+      });
+    }
+    function doResched() {
+      if (!pickDate || !pickSlot) { return; }
+      if (!window.confirm('Move your session to ' + pickDate + ' at ' + pickSlot + '?')) { return; }
+      msg('Rescheduling…');
+      api('mwm_studio_manage_reschedule', { date: pickDate, start_time: pickSlot }, function (res) {
+        if (res.success) {
+          state.date_label = res.data.date_label;
+          state.start = res.data.start;
+          state.end = res.data.end;
+          render();
+          msg(res.data.message, true);
+        } else {
+          msg((res.data && res.data.message) || 'Could not reschedule — please try again.');
+        }
+      });
+    }
+
+    api('mwm_studio_manage_get', {}, function (res) {
+      if (!res.success) { root.innerHTML = '<div class="mwm-mb-msg">' + esc((res.data && res.data.message) || 'Booking not found.') + '</div>'; return; }
+      state = res.data;
+      render();
+    });
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); } else { init(); }
+})();
+</script>
+MWMJS;
+		return $css . $shell . $js;
 	}
 
 	/** S19: drop cached day-availability for a date after any booking write. */
@@ -1419,10 +2107,12 @@ class MWM_Studio_Booking {
 			'name'       => $booking->guest_name,
 			'intro'      => 'Thank you — your payment went through and your studio session is confirmed. Here are your details:',
 			'rows'       => $mwm_rows,
-			'body_after' => 'Need to change plans? You can reschedule or cancel for a full refund up to <strong>24 hours</strong> before your session — just reply to this email. Within 24 hours of the session, the booking is non-refundable and rebooking requires a new payment.',
+			'body_after' => 'Need to change plans? Up to <strong>24 hours</strong> before your session you can reschedule free of charge, or cancel for a refund minus payment-processing fees — use the Manage Booking button below. Within 24 hours of the session, the booking is non-refundable and rebooking requires a new payment. A calendar invite (.ics) is attached.',
+			'cta_label'  => 'Manage Your Booking',
+			'cta_url'    => $this->manage_url( $booking ),
 			'outro'      => 'See you at the studio!',
 		) );
-		$this->notify_client_html( $booking->guest_email, $subject, $mwm_html );
+		$this->notify_client_html_ics( $booking->guest_email, $subject, $mwm_html, $booking );
 		$this->notify_admin(
 			sprintf( 'PAID studio rental — %s (%s)', $booking->guest_name, $booking->guest_email ),
 			sprintf( "%s %s–%s (%sh) — $%s\nBooking #%d", $booking->booking_date, $start, $end, $booking->duration_hours, $paid, $booking_id )
