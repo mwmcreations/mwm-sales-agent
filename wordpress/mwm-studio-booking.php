@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.0
+ * Version: 2.5.1
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -90,6 +90,11 @@ class MWM_Studio_Booking {
 		// S19c: 24h/2h reminder cron.
 		add_action( 'mwm_studio_reminders_event', array( $this, 'run_reminder_cron' ) );
 		add_action( 'init', array( $this, 'ensure_reminder_cron' ) );
+		add_action( 'init', array( $this, 'ensure_manage_page' ) );
+
+		// S19c: force base64 transfer encoding — the host mail chain QP-decodes 8bit
+		// bodies, corrupting '=XX' hex sequences (manage URLs ?b=45&t=<hex> were eaten).
+		add_action( 'phpmailer_init', array( $this, 'force_mail_encoding' ) );
 
 		// Auto-complete past bookings opportunistically.
 		add_action( 'init', array( $this, 'auto_complete_past_bookings' ) );
@@ -118,13 +123,22 @@ class MWM_Studio_Booking {
 			if ( false === get_option( $this->settings_option ) ) {
 				update_option( $this->settings_option, $this->default_settings() );
 			}
-			$this->ensure_manage_page();
 			update_option( 'mwm_studio_db_version', MWM_STUDIO_VERSION );
 		}
 	}
 
-	/** S19c: create the public /manage-booking/ page (idempotent). */
-	private function ensure_manage_page() {
+	/** S19c: base64-encode outgoing mail (see phpmailer_init hook note). */
+	public function force_mail_encoding( $phpmailer ) {
+		$phpmailer->Encoding = 'base64';
+	}
+
+	/** S19c: create the public /manage-booking/ page (idempotent; runs on init —
+	 *  wp_insert_post needs $wp_rewrite, which does not exist at plugins_loaded). */
+	public function ensure_manage_page() {
+		$known = (int) get_option( 'mwm_studio_manage_page_id' );
+		if ( $known && get_post( $known ) ) {
+			return;
+		}
 		$existing = get_page_by_path( 'manage-booking' );
 		if ( $existing ) {
 			update_option( 'mwm_studio_manage_page_id', $existing->ID );
