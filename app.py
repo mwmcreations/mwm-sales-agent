@@ -4258,7 +4258,7 @@ def get_command_reply(messages):
                         "tool_use_id": block.id,
                         "content": json.dumps(result)
                     })
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _serialize_content_blocks(response.content)})
             messages.append({"role": "user", "content": tool_results})
         else:
             final_text = ""
@@ -5077,6 +5077,94 @@ def clean_response(text):
 # CLAUDE API WITH TOOL USE
 # âââââââââââââââââââââââââââââââââââââââââââââ
 
+def _serialize_content_blocks(content):
+    """S20: Anthropic SDK content blocks -> plain JSON-safe dicts.
+
+    conversation_history / ig_conversation_history / lara_history are persisted
+    to Postgres as JSON. Appending raw SDK block objects (TextBlock, ToolUseBlock)
+    means they do NOT round-trip: on reload content[0] is a string, and every
+    subsequent Claude call for that conversation dies with
+    400 "messages.N.content.0: Input should be an object" — permanently.
+    """
+    if isinstance(content, str):
+        return content
+    out = []
+    for block in content or []:
+        if isinstance(block, dict):
+            out.append(block)
+            continue
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            out.append({"type": "text", "text": getattr(block, "text", "") or ""})
+        elif btype == "tool_use":
+            out.append({
+                "type": "tool_use",
+                "id": getattr(block, "id", ""),
+                "name": getattr(block, "name", ""),
+                "input": getattr(block, "input", {}) or {},
+            })
+        elif btype == "tool_result":
+            out.append({
+                "type": "tool_result",
+                "tool_use_id": getattr(block, "tool_use_id", ""),
+                "content": getattr(block, "content", "") or "",
+            })
+        # Unknown / unserializable blocks are dropped rather than poisoning history.
+    return out
+
+
+def _normalize_history(hist):
+    """S20: make a persisted history safe to send back to the Claude API.
+
+    Repairs records written before _serialize_content_blocks existed. Strategy:
+    reduce every turn to plain text (tool_use / tool_result turns are dropped —
+    they are transient scaffolding, not conversation), merge consecutive
+    same-role turns, and ensure the history opens on a user turn. Anything that
+    cannot be salvaged is discarded: a dropped turn costs a little context, a
+    malformed one bricks the lead forever.
+    """
+    if not isinstance(hist, list):
+        return []
+
+    cleaned = []
+    for msg in hist:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content")
+
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                # tool_use / tool_result -> dropped; non-dict item == the poison -> dropped
+            text = "\n".join(p for p in parts if p).strip()
+        else:
+            continue
+
+        if text:
+            cleaned.append({"role": role, "content": text})
+
+    # The API requires alternating roles — merge consecutive same-role turns.
+    merged = []
+    for msg in cleaned:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] = merged[-1]["content"] + "\n" + msg["content"]
+        else:
+            merged.append(msg)
+
+    # History must open on a user turn.
+    while merged and merged[0]["role"] != "user":
+        merged.pop(0)
+
+    return merged
+
+
 def get_claude_reply(messages, sender=None, lead_context=None, is_owner=False, channel=None):
     """
     Call Claude (Maya) with tool use support.
@@ -5148,7 +5236,7 @@ You are responding to a lead who messaged you on Instagram DM. Adjust your behav
                     })
 
             # Append assistant's tool-use turn and the tool results
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": _serialize_content_blocks(response.content)})
             messages.append({"role": "user", "content": tool_results})
 
         else:
@@ -13798,11 +13886,11 @@ def _restore_state_from_pg():
                 _leads_db.revive_datetimes(_v, _app_tz)  # S4.1: ISO strings -> datetime (fixes silent cold-lead breakage post-restore)
             lead_data.setdefault(_k, _v)
         for _k, _v in (_pg.load_state("conversation_history", {}) or {}).items():
-            conversation_history.setdefault(_k, _v)
+            conversation_history.setdefault(_k, _normalize_history(_v))  # S20: repair poisoned records
         for _k, _v in (_pg.load_state("ig_conversation_history", {}) or {}).items():
-            ig_conversation_history.setdefault(_k, _v)
+            ig_conversation_history.setdefault(_k, _normalize_history(_v))  # S20: repair poisoned records
         for _k, _v in (_pg.load_state("lara_history", {}) or {}).items():
-            lara_history.setdefault(_k, _v)
+            lara_history.setdefault(_k, _normalize_history(_v))  # S20: repair poisoned records
         for _k, _v in (_pg.load_state("maya_shadow_threads", {}) or {}).items():
             maya_shadow_threads.setdefault(_k, _v)
         for _k, _v in (_pg.load_state("lara_shadow_threads", {}) or {}).items():
