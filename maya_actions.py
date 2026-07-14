@@ -927,6 +927,10 @@ def normalize_wa_phone(phone):
 # template-send failures alert #dev instead of dying as silent prints.
 ERROR_REPORTER = None
 
+# S21: app.py injects _wa_is_suppressed here at boot. Templates are exempt from
+# the 24h-window rule but NOT from the bad-number suppression list.
+SUPPRESSION_CHECK = None
+
 
 def send_reengagement_template(phone, name, template_name):
     """Send a Maya re-engagement template via Meta WhatsApp Cloud API.
@@ -952,6 +956,17 @@ def send_reengagement_template(phone, name, template_name):
     # S6.6 (widens S6.4): full normalize→validate — the ≥15-digit guard only
     # caught IG-scoped ids; lead ...0420 proved other malformations reach Meta
     # as 131009. Now ANY non-E.164-sendable value is refused locally.
+    # S21: suppression gate — a number that permanently cannot receive WhatsApp
+    # (131026) must not be retried, template or not.
+    if SUPPRESSION_CHECK:
+        try:
+            if SUPPRESSION_CHECK(phone):
+                _s_tail = re.sub(r"\D", "", str(phone))[-4:] or "????"
+                print(f"[Maya] REFUSED template '{template_name}' — ...{_s_tail} is on the suppression list")
+                return False
+        except Exception:
+            pass   # gate failure -> fail open, never block on infra error
+
     clean_phone = normalize_wa_phone(phone)
     if clean_phone is None:
         _raw_tail = re.sub(r"\D", "", str(phone))[-4:] or "????"

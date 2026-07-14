@@ -88,6 +88,113 @@ ig_shadow_threads = {}
 _ig_403_blocked = set()
 
 
+# ══════════════════════════════════════════════════════════════════════
+# S21 — WHATSAPP SEND ELIGIBILITY GATE (suppression + 24h window pre-check)
+#
+# Two classes of send were being attempted that CANNOT succeed:
+#   131026 — recipient can't receive (not on WhatsApp). Permanent. ...2333
+#            failed on three consecutive days; we kept retrying it.
+#   131047 — >24h since the customer last replied. A FREE-FORM send outside
+#            the window is structurally impossible. ...1224 was attempted
+#            twice in one day, burning the send both times.
+# Approved TEMPLATES are exempt from the window rule (that is the correct Meta
+# mechanism for out-of-window contact) but are still subject to suppression.
+# ══════════════════════════════════════════════════════════════════════
+
+WA_HARD_FAIL_CODES = {131026}   # permanent, number-level. Suppress on first hit.
+WA_WINDOW_HOURS    = 24
+
+
+def _wa_digits(phone):
+    return re.sub(r"\D", "", str(phone or ""))
+
+
+def _wa_tail(phone):
+    d = _wa_digits(phone)
+    return ("..." + d[-4:]) if len(d) >= 4 else "????"
+
+
+def _wa_is_suppressed(phone):
+    """True if this number is on the bad-number suppression list."""
+    d = _wa_digits(phone)
+    if not d:
+        return False
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return False
+        return bool(_p.load_state("wa_suppressed:" + d, False))
+    except Exception:
+        return False   # infra error -> fail OPEN (never block a good send)
+
+
+def _wa_suppress(phone, code, reason=""):
+    """Add a number to the suppression list (idempotent). Alerts #dev once."""
+    d = _wa_digits(phone)
+    if not d:
+        return
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return
+        if _p.load_state("wa_suppressed:" + d, False):
+            return   # already suppressed — stay quiet
+        _p.save_state("wa_suppressed:" + d, {
+            "code": code,
+            "reason": str(reason)[:200],
+            "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+        })
+        print(f"[WA-GATE] SUPPRESSED {_wa_tail(phone)} — code={code} ({reason})")
+        _report_error("wa_number_suppressed",
+                      f"number suppressed after hard failure {code}",
+                      f"to={_wa_tail(phone)} reason={str(reason)[:120]} — no further sends will be attempted")
+    except Exception as _e:
+        print(f"[WA-GATE] suppress failed (non-fatal): {_e}")
+
+
+def _wa_last_inbound(phone):
+    """Timestamp of the customer's last INBOUND message, or None if unknown."""
+    d = _wa_digits(phone)
+    if not d:
+        return None
+    for _k in (f"whatsapp:+{d}", f"whatsapp:{d}", d, "+" + d):
+        _v = (lead_data.get(_k) or {}).get("last_message_time")
+        if _v:
+            return _v
+    return None
+
+
+def wa_send_eligibility(phone, is_template=False):
+    """Shared pre-send gate. Returns (ok: bool, reason: str).
+
+    Fails OPEN on anything unknown — an unknown last-reply time means we let
+    Meta decide, rather than risk blocking a legitimate reply.
+    """
+    if _wa_is_suppressed(phone):
+        return False, "suppressed"
+
+    if is_template:
+        return True, "ok"   # templates are valid outside the 24h window
+
+    last = _wa_last_inbound(phone)
+    if not last:
+        return True, "ok"   # unknown -> fail open
+
+    try:
+        _tz = pytz.timezone(TIMEZONE)
+        if isinstance(last, str):
+            last = datetime.fromisoformat(last)
+        if last.tzinfo is None:
+            last = _tz.localize(last)
+        hours = (datetime.now(_tz) - last).total_seconds() / 3600.0
+    except Exception:
+        return True, "ok"   # unparseable -> fail open
+
+    if hours > WA_WINDOW_HOURS:
+        return False, "window_expired"
+    return True, "ok"
+
+
 def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
                        phone_number_id: str = None):
     """Send a WhatsApp message via Meta Cloud API.
@@ -97,6 +204,18 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
     to send as LARA. Both numbers live on the same WABA + access token.
     """
     pn_id = phone_number_id or META_PHONE_NUMBER_ID
+
+    # S21: pre-send eligibility gate — refuse sends that cannot succeed.
+    _ok, _why = wa_send_eligibility(to, is_template=False)
+    if not _ok:
+        print(f"[WA-GATE] BLOCKED free-form send to {_wa_tail(to)} — {_why}")
+        try:
+            _report_error(f"wa_send_blocked_{_why}",
+                          "send prevented pre-flight (would have failed at Meta)",
+                          f"to={_wa_tail(to)} — this is a PREVENTED send, not a burned one")
+        except Exception:
+            pass
+        return None
 
     # Strip Slack "Sent using Claude/Cowork" suffix before sending to WhatsApp
     if body:
@@ -612,6 +731,7 @@ def _report_error(context, exc, detail=""):
 # S6.2: wire the error bus into maya_actions so template-send failures alert #dev
 import maya_actions as _maya_actions_mod
 _maya_actions_mod.ERROR_REPORTER = _report_error
+_maya_actions_mod.SUPPRESSION_CHECK = _wa_is_suppressed  # S21
 
 
 def _post_to_slack_async(channel, text, blocks=None):
@@ -5693,6 +5813,14 @@ def _handle_wa_statuses(value):
                       f"details={details!r} wamid={wamid[-12:]}")
                 _report_error(f"wa_delivery_failed_{code}", title,
                               f"to={rec_tail} {str(details)[:200]}")
+                # S21: permanent number-level failure -> suppress immediately.
+                # 131026 means the recipient cannot receive WhatsApp at all;
+                # retrying it tomorrow will fail exactly the same way.
+                try:
+                    if int(code) in WA_HARD_FAIL_CODES and recipient:
+                        _wa_suppress(recipient, code, title)
+                except (TypeError, ValueError):
+                    pass
             if _wa_status_streak["failed"] == 3:
                 _report_error("wa_delivery_streak",
                               "3+ consecutive template/message deliveries FAILED",
