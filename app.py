@@ -12203,23 +12203,56 @@ def studio_checkout():
 
 def _confirm_rental_in_wp(booking_id, session_id, amount_cents):
     """Tell WP the rental is paid → flip pending → confirmed. WP then runs the
-    existing S12 chain (client email + gcal + #matt alert)."""
+    existing S12 chain (client email + gcal + #matt alert).
+
+    S21: MUST send a non-default User-Agent. The host WAF (Bluehost/Endurance
+    mod_security) returns HTTP 406 to any request whose UA is the default
+    'python-requests/*' — the same block studio_package.py already works around
+    (WP_UA). This call was missed: booking #51 (Jul 15) silently 406'd here, so
+    the client PAID in Stripe but WP never confirmed it (no email, no calendar).
+    Now retries and alerts LOUDLY so a paid-but-unconfirmed booking is never
+    silent again. WP confirm is idempotent, so retry is safe."""
+    import time as _t
     url = os.getenv("WP_PORTAL_PROVISION_URL",
                     "https://mwmcreations.com/wp-admin/admin-ajax.php")
     secret = os.getenv("WP_PORTAL_SECRET", "")
+    headers = {
+        "X-MWM-Portal-Secret": secret,
+        "User-Agent": "MWM-SalesMachine/1.0 (+https://mwmcreations.com)",
+    }
+    body = {
+        "action": "mwm_studio_confirm_rental",
+        "booking_id": booking_id,
+        "session_id": session_id,
+        "amount_cents": amount_cents,
+    }
+    last = ""
+    for attempt in range(3):
+        try:
+            r = http_requests.post(url, data=body, headers=headers, timeout=10)
+            ok = r.status_code == 200 and '"success":true' in (r.text or "").lower().replace(" ", "")
+            print(f"[RENTAL] WP confirm booking={booking_id} -> {r.status_code} ok={ok} (attempt {attempt+1}/3)")
+            if ok:
+                return True
+            last = f"HTTP {r.status_code}: {(r.text or '')[:150]}"
+        except Exception as _wx:
+            last = repr(_wx)
+            print(f"[RENTAL] WP confirm booking={booking_id} attempt {attempt+1}/3 error: {_wx}")
+        if attempt < 2:
+            _t.sleep(2 ** attempt)
+    _report_error("rental_confirm_wp_failed",
+                  f"WP confirm FAILED for PAID booking #{booking_id} after 3 attempts",
+                  f"{last} — payment captured in Stripe but WP booking is NOT confirmed "
+                  f"(no client email, no calendar event). Needs manual reconcile.")
     try:
-        r = http_requests.post(url, data={
-            "action": "mwm_studio_confirm_rental",
-            "booking_id": booking_id,
-            "session_id": session_id,
-            "amount_cents": amount_cents,
-        }, headers={"X-MWM-Portal-Secret": secret}, timeout=10)
-        ok = r.status_code == 200 and '"success":true' in (r.text or "").lower().replace(" ", "")
-        print(f"[RENTAL] WP confirm booking={booking_id} -> {r.status_code} ok={ok}")
-        return ok
-    except Exception as _wx:
-        _report_error("rental_confirm_wp", _wx, f"booking={booking_id}")
-        return False
+        _post_to_slack_async(
+            SLACK_DEV_CHANNEL,
+            f":rotating_light: *Paid studio rental #{booking_id} did NOT confirm in WP* — {last}\n"
+            f"Stripe captured payment but WP never confirmed it (no client email, no calendar). "
+            f"Manual reconcile needed.")
+    except Exception:
+        pass
+    return False
 
 
 def handle_studio_rental_paid(event):
