@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.1
+ * Version: 2.5.2
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -1865,7 +1865,12 @@ MWMJS;
 
 	/** Public slot feed for /book-studio (no login). Same engine as the portal. */
 	public function mwm_studio_rental_slots() {
-		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		// S21: PUBLIC read-only availability lookup — intentionally NO nonce.
+		// The nonce is baked into the cached /book-studio HTML and expires in ~24h;
+		// anonymous visitors on a stale cached page were getting 403 -> the calendar
+		// showed "Booking is temporarily unavailable." This endpoint changes no state
+		// and returns only public availability, so CSRF protection is unnecessary here.
+		// (The booking WRITE, mwm_studio_hold_slot, keeps its nonce.)
 		$date     = isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '';
 		$duration = isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 1;
 
@@ -1891,7 +1896,12 @@ MWMJS;
 	 *  Derives from get_available_slots (single source of truth, incl. pending
 	 *  holds + gcal busy blocks) with a short per-date transient cache. */
 	public function mwm_studio_rental_month() {
-		check_ajax_referer( 'mwm_studio_rental', 'nonce' );
+		// S21: PUBLIC read-only availability lookup — intentionally NO nonce.
+		// The nonce is baked into the cached /book-studio HTML and expires in ~24h;
+		// anonymous visitors on a stale cached page were getting 403 -> the calendar
+		// showed "Booking is temporarily unavailable." This endpoint changes no state
+		// and returns only public availability, so CSRF protection is unnecessary here.
+		// (The booking WRITE, mwm_studio_hold_slot, keeps its nonce.)
 		$year     = isset( $_POST['year'] ) ? (int) $_POST['year'] : 0;
 		$month    = isset( $_POST['month'] ) ? (int) $_POST['month'] : 0;
 		$duration = isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 1;
