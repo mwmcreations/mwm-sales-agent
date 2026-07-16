@@ -12281,8 +12281,18 @@ def handle_studio_rental_paid(event):
     print(f"[RENTAL] checkout.session.completed booking={booking_id} "
           f"paid={paid} amount={amount}")
 
+    confirmed = True
     if paid:
-        _confirm_rental_in_wp(booking_id, session.get("id", ""), amount)
+        # S22 gap #2/#3: capture the confirm result — the #matt message must
+        # never show green on a failed confirm, and the idem key must only be
+        # written on success so Stripe's automatic retries can self-heal a
+        # transient confirm failure (booking #51 could not, because the event
+        # was marked processed despite the 406).
+        confirmed = _confirm_rental_in_wp(booking_id, session.get("id", ""), amount)
+        _sr_status = ("" if confirmed else
+                      "\n:rotating_light: *WP CONFIRM FAILED* — client has NOT "
+                      "received a confirmation email and the calendar is NOT "
+                      "updated. See #dev alert. Stripe will retry this event.")
         try:
             _post_to_slack_async(
                 "#matt",
@@ -12291,11 +12301,11 @@ def handle_studio_rental_paid(event):
                 f"{meta.get('hours','?')}h "
                 f"{'Studio + Editing' if meta.get('editing')=='1' else 'Podcast Studio'} · "
                 f"{meta.get('date','?')} {meta.get('start_time','?')} · "
-                f"${amount/100:.2f} · booking #{booking_id}")
+                f"${amount/100:.2f} · booking #{booking_id}{_sr_status}")
         except Exception:
             pass
 
-    if _pg.enabled():
+    if _pg.enabled() and confirmed:
         try:
             _pg.save_state(idem_key, True)
         except Exception:

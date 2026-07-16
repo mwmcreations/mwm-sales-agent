@@ -174,19 +174,34 @@ def provision_portal_client(name: str, email: str, dry_run: bool = False) -> dic
     }
     if dry_run:
         payload["dry_run"] = "1"
-    try:
-        r = http_requests.post(
-            WP_PORTAL_PROVISION_URL, data=payload,
-            headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET, "User-Agent": WP_UA}, timeout=20)
-        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-        data = body.get("data") or body  # WP wp_send_json_success wraps in {success, data}
-        return {"ok": bool(body.get("success", r.status_code == 200)),
-                "access_code": data.get("access_code"),
-                "existing": bool(data.get("existing")),
-                "raw": body, "status": r.status_code}
-    except Exception as e:
-        _report("studio.provision_portal_client", e, f"email={email}")
-        return {"ok": False, "access_code": None, "existing": False, "raw": str(e)}
+    # S22 gap #4: retry 3x with backoff — provisioning is idempotent by email
+    # on the WP side, so a transient hiccup should not cost a manual account.
+    import time as _t
+    last_err = ""
+    for _attempt in range(3):
+        try:
+            r = http_requests.post(
+                WP_PORTAL_PROVISION_URL, data=payload,
+                headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET, "User-Agent": WP_UA}, timeout=20)
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            data = body.get("data") or body  # WP wp_send_json_success wraps in {success, data}
+            ok = bool(body.get("success", r.status_code == 200))
+            if ok or _attempt == 2:
+                if not ok:
+                    _report("studio.provision_portal_client",
+                            f"HTTP {r.status_code} after 3 attempts", f"email={email}")
+                return {"ok": ok,
+                        "access_code": data.get("access_code"),
+                        "existing": bool(data.get("existing")),
+                        "raw": body, "status": r.status_code}
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = repr(e)
+            if _attempt == 2:
+                _report("studio.provision_portal_client", e, f"email={email}")
+                return {"ok": False, "access_code": None, "existing": False, "raw": str(e)}
+        _t.sleep(2 ** _attempt)
+    return {"ok": False, "access_code": None, "existing": False, "raw": last_err}
 
 
 def _welcome_email_html(first_name: str, access_code: str) -> str:

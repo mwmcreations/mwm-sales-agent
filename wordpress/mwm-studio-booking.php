@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.2
+ * Version: 2.5.3
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -770,15 +770,33 @@ class MWM_Studio_Booking {
 		if ( ! $url || ! $secret ) {
 			return;
 		}
-		wp_remote_post( $url, array(
-			'timeout'  => 2,
-			'blocking' => false,
+		// v2.5.3 (S22 audit gap #1): was fire-and-forget (blocking=false) — a briefly
+		// unreachable machine silently lost the calendar sync. Now blocking with
+		// verify + one retry + loud admin email on final failure. The machine
+		// fast-ACKs this webhook, so blocking costs milliseconds normally.
+		$args = array(
+			'timeout'  => 5,
+			'blocking' => true,
 			'headers'  => array(
 				'Content-Type'        => 'application/json',
 				'X-MWM-Portal-Secret' => $secret,
 			),
 			'body'     => wp_json_encode( array_merge( array( 'event' => $event, 'sent_at' => gmdate( 'c' ) ), $payload ) ),
-		) );
+		);
+		$resp = null;
+		for ( $mwm_try = 1; $mwm_try <= 2; $mwm_try++ ) {
+			$resp = wp_remote_post( $url, $args );
+			if ( ! is_wp_error( $resp ) && 200 === (int) wp_remote_retrieve_response_code( $resp ) ) {
+				return;
+			}
+		}
+		$err = is_wp_error( $resp ) ? $resp->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code( $resp );
+		error_log( '[MWM Studio] push_booking_event FAILED (' . $event . '): ' . $err );
+		wp_mail(
+			get_option( 'admin_email' ),
+			'MWM Studio ALERT — calendar sync push FAILED',
+			sprintf( "The '%s' event for booking #%s did not reach the machine after 2 attempts (%s).\nThe Google Calendar was NOT updated automatically — please reconcile it by hand.", $event, isset( $payload['booking_id'] ) ? $payload['booking_id'] : '?', $err )
+		);
 	}
 
 	public function mwm_studio_login() {
