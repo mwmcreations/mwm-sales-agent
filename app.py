@@ -12154,6 +12154,12 @@ def studio_checkout():
         # Stripe Checkout Session (form-encoded; rob_stripe._stripe_post pattern)
         payload = {
             "mode": "payment",
+            # S22 E2E finding: without this, Stripe offers every dashboard-enabled
+            # method incl. ACH bank debit, which settles in 1-4 days — the session
+            # completes UNPAID, our handler (correctly) doesn't confirm, and the
+            # 15-min hold expires long before the money moves. Card settles
+            # instantly, matching the hold model. Rentals are card-only.
+            "payment_method_types[0]": "card",
             "success_url": f"{SITE_BASE_URL}/book-studio/?booking=success&id={booking_id}",
             "cancel_url":  f"{SITE_BASE_URL}/book-studio/?booking=cancelled&id={booking_id}",
             "customer_email": email,
@@ -12280,6 +12286,24 @@ def handle_studio_rental_paid(event):
     amount = session.get("amount_total", 0)
     print(f"[RENTAL] checkout.session.completed booking={booking_id} "
           f"paid={paid} amount={amount}")
+
+    if not paid:
+        # S22: delayed-settlement method (e.g. ACH) slipped through — the money
+        # arrives days later via async_payment_succeeded, which nothing handles.
+        # Alert LOUDLY so it gets reconciled by hand; checkout is card-only now,
+        # so this firing at all means something re-enabled a delayed method.
+        _report_error("rental_delayed_payment",
+                      f"rental booking #{booking_id} completed checkout UNPAID",
+                      "delayed-settlement payment method used — booking will NOT "
+                      "auto-confirm when it settles; manual reconcile required")
+        try:
+            _post_to_slack_async(
+                SLACK_DEV_CHANNEL,
+                f":rotating_light: *Studio rental #{booking_id} used a DELAYED payment method* "
+                f"(ACH/bank). It will settle in days and will NOT auto-confirm — manual "
+                f"reconcile needed when it settles. Checkout should be card-only; investigate.")
+        except Exception:
+            pass
 
     confirmed = True
     if paid:
