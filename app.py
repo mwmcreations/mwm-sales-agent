@@ -152,6 +152,44 @@ def _wa_suppress(phone, code, reason=""):
         print(f"[WA-GATE] suppress failed (non-fatal): {_e}")
 
 
+def _wa_mark_window_expired(phone):
+    """Record a Meta 131047 verdict (24h window expired) for this number.
+
+    S24: Meta telling us the window is closed beats our own unknown/stale
+    last-inbound data. Free-form sends are refused until an INBOUND newer than
+    this mark arrives (customer wrote in -> window reopened). Templates are
+    unaffected — they are the correct out-of-window mechanism. This stops the
+    daily burn loop where the same doomed free-form send was retried against
+    a number whose last reply we never recorded (...1224, 4 days running).
+    """
+    d = _wa_digits(phone)
+    if not d:
+        return
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return
+        _p.save_state("wa_window_expired:" + d,
+                      datetime.now(pytz.timezone(TIMEZONE)).isoformat())
+        print(f"[WA-GATE] window-expired mark set for {_wa_tail(phone)} (131047)")
+    except Exception as _e:
+        print(f"[WA-GATE] window mark failed (non-fatal): {_e}")
+
+
+def _wa_window_expired_mark(phone):
+    """Return the stored 131047 mark timestamp for this number, or None."""
+    d = _wa_digits(phone)
+    if not d:
+        return None
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return None
+        return _p.load_state("wa_window_expired:" + d, None)
+    except Exception:
+        return None
+
+
 def _wa_last_inbound(phone):
     """Timestamp of the customer's last INBOUND message, or None if unknown."""
     d = _wa_digits(phone)
@@ -177,6 +215,28 @@ def wa_send_eligibility(phone, is_template=False):
         return True, "ok"   # templates are valid outside the 24h window
 
     last = _wa_last_inbound(phone)
+
+    # S24: honor a prior Meta 131047 verdict. If Meta told us the window is
+    # closed and the customer has NOT written in since, refuse the free-form
+    # send instead of burning it again. A newer inbound reopens the window.
+    _mark = _wa_window_expired_mark(phone)
+    if _mark:
+        try:
+            _tz = pytz.timezone(TIMEZONE)
+            _mark_dt = datetime.fromisoformat(_mark) if isinstance(_mark, str) else None
+            if _mark_dt is not None:
+                if _mark_dt.tzinfo is None:
+                    _mark_dt = _tz.localize(_mark_dt)
+                _last_dt = None
+                if last:
+                    _last_dt = datetime.fromisoformat(last) if isinstance(last, str) else last
+                    if _last_dt is not None and _last_dt.tzinfo is None:
+                        _last_dt = _tz.localize(_last_dt)
+                if _last_dt is None or _last_dt <= _mark_dt:
+                    return False, "window_expired"
+        except Exception:
+            pass   # any parse trouble -> fall through to the normal check
+
     if not last:
         return True, "ok"   # unknown -> fail open
 
@@ -1663,7 +1723,7 @@ def _get_conversion_report():
 MAYA_SHARED_KNOWLEDGE = """
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). Purchase page: mwmcreations.com/studio-package/
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $200 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. ALWAYS mention the $200/month savings when offering the package. Purchase page: mwmcreations.com/studio-package/
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
 - CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
@@ -1854,6 +1914,7 @@ If they say "How long does it take?" → 3–5 business days from when you send 
 STUDIO PRICING (internal reference — do NOT share full pricing details proactively):
 
 Monthly Content Creation Package — $1,200/month
+Hourly comparison: 4h at $349/hr = $1,396 — the package SAVES $200 EVERY MONTH and adds short-form cuts, captions, and a custom logo animation that hourly bookings do not include. ALWAYS state the $200/month savings when offering the package.
 Best for professionals and companies producing content consistently.
 Includes: 4 hours of studio time per month, full studio use, professional cameras, lighting and audio, production crew assistance, and post-production editing.
 
@@ -2114,7 +2175,7 @@ If someone directly asks about pricing, share the plans honestly and briefly.
 If they want HOURLY studio time (with or without editing), route them directly to the booking site — but also keep the door open for a visit:
 "You can book hourly studio time and pay directly online: www.videoproductionplans.com/book-studio — and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
 
-If they want the Monthly 4h package ($1,200/month) or are interested in a broader content strategy, bring it back to the visit:
+If they want the Monthly 4h package ($1,200/month) or are interested in a broader content strategy, ALWAYS mention it saves them $200 every month vs booking hourly ($1,396 -> $1,200, plus package-only short-form cuts, captions, and logo animation), then bring it back to the visit:
 "The best way to kick that off is a quick visit to the studio — Michael will walk you through the space and make sure it's the perfect fit for what you're building. Want to schedule that?"
 
 Step 7 — CAPTURE LEAD
@@ -4940,7 +5001,13 @@ def lookup_lead_in_sheets(sender: str) -> str:
                 for row in rows[1:]:
                     if len(row) > phone_col:
                         row_phone = re.sub(r"\D", "", row[phone_col])
-                        if row_phone in phone_variants or clean_phone.endswith(row_phone) or row_phone.endswith(clean_phone):
+                        # S24: a blank/short Phone cell must never match. An empty row_phone made
+                        # clean_phone.endswith("") true for EVERY caller (the Prime Vacation
+                        # identity-contamination bug); short digit residues ("407") suffix-matched
+                        # unrelated numbers. Suffix matching now requires >= 7 real digits.
+                        if row_phone and (row_phone in phone_variants or
+                                          (len(row_phone) >= 7 and
+                                           (clean_phone.endswith(row_phone) or row_phone.endswith(clean_phone)))):
                             data = {}
                             for i, h in enumerate(headers):
                                 if i < len(row) and row[i]:
@@ -5819,6 +5886,10 @@ def _handle_wa_statuses(value):
                 try:
                     if int(code) in WA_HARD_FAIL_CODES and recipient:
                         _wa_suppress(recipient, code, title)
+                    # S24: 131047 = window expired. Remember it so the gate
+                    # refuses further free-form sends until the customer replies.
+                    if int(code) == 131047 and recipient:
+                        _wa_mark_window_expired(recipient)
                 except (TypeError, ValueError):
                     pass
             if _wa_status_streak["failed"] == 3:
@@ -9990,7 +10061,7 @@ Next step: [if applicable, or "awaiting further instructions"]
 You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). Purchase page: mwmcreations.com/studio-package/
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $200 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. ALWAYS mention the $200/month savings when offering the package. Purchase page: mwmcreations.com/studio-package/
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
 - CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
@@ -11956,11 +12027,32 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
     """Send the welcome email in a background thread. Non-blocking, non-fatal."""
     def _do_send():
         try:
+            # S24: To-header guard. Lead rows sometimes hold two names/emails jammed
+            # into one field ("a@x.com / b@y.com") -> Gmail 400 "Invalid To header".
+            # Extract real addresses: first one is To, the rest become CC. Fail loud
+            # (existing error path) if no valid address can be extracted.
+            import re as _re
+            _addrs = _re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", str(to_email or ""))
+            if not _addrs:
+                _report_error("Welcome email send",
+                              Exception("no valid email address in To field"),
+                              f"raw_to={str(to_email)[:120]}")
+                _post_to_slack_async(SLACK_DEV_CHANNEL,
+                    f"⚠️ Welcome email SKIPPED — unparseable To field: {str(to_email)[:120]} ({lead_name})")
+                return
+            _clean_to = _addrs[0]
+            _clean_cc = ",".join(_addrs[1:]) if len(_addrs) > 1 else None
+            if _clean_to != str(to_email).strip():
+                print(f"[Welcome Email] To-guard normalized {str(to_email)[:80]!r} -> to={_clean_to} cc={_clean_cc}")
             html = _build_welcome_email_html(lead_name)
+            _send_kwargs = {}
+            if _clean_cc:
+                _send_kwargs["cc"] = _clean_cc
             result = send_gmail(
-                to=to_email,
+                to=_clean_to,
                 subject="Thank you for reaching out — MWM Creations & Studios",
-                body_html=html
+                body_html=html,
+                **_send_kwargs
             )
             if result.get("ok"):
                 print(f"[Welcome Email] Sent to {to_email} ({lead_name}) via {source}")
@@ -11984,7 +12076,10 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
     threading.Thread(target=_do_send, daemon=True).start()
 
 
-SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "mwm-agents-2026")
+# S24: env-only, fail-closed. The repo is public — a hardcoded default token
+# meant anyone reading the source could send mail as info@. If the env var is
+# missing the endpoint refuses to send instead of accepting a known default.
+SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "")
 
 @app.route('/api/send-email', methods=['POST'])
 def api_send_email():
@@ -12008,7 +12103,12 @@ def api_send_email():
     try:
         data = request.get_json(force=True)
 
-        # Auth check
+        # Auth check (S24: fail closed if the server has no token configured)
+        if not SEND_EMAIL_TOKEN:
+            _report_error("send_email_token_missing",
+                          "SEND_EMAIL_TOKEN env var is not set — /api/send-email is disabled",
+                          "set it in Railway Variables and redeploy")
+            return jsonify({"success": False, "error": "send-email disabled: no server token configured"}), 503
         token = data.get("token", "")
         if token != SEND_EMAIL_TOKEN:
             return jsonify({"success": False, "error": "Invalid or missing token"}), 401
@@ -14898,6 +14998,30 @@ def meeting_report_submit():
         post_to_slack(SLACK_PIPELINE_CHANNEL, pipeline_msg)
     else:
         test_log.append({"action": "Post to #pipeline", "channel": "SLACK_PIPELINE_CHANNEL", "message_preview": pipeline_msg[:200]})
+
+    # ── S24: EDITING-PIPELINE AUTO-ROUTE ──
+    # When a completed event report mentions editing/delivery in its next steps
+    # or notes, route it to #lara so the editing tracker picks it up without
+    # anyone re-reading #pipeline. LARA's Mon/Wed/Fri scan stays as backstop.
+    try:
+        _edit_text = f"{next_steps} {notes}".lower()
+        _edit_hits = [k for k in ("edit", "editar", "edicao", "edição", "deliver") if k in _edit_text]
+        if _edit_hits and outcome in ("completed", "client_won"):
+            _lara_msg = (
+                f"🎞️ *EDITING PIPELINE — new item from event report*\n"
+                f"*Project:* {name}" + (f" ({business})" if business else "") + "\n"
+                f"*Outcome:* {oc['label']} · {date_str}\n"
+                + (f"*Next steps:* {next_steps}\n" if next_steps else "")
+                + (f"*Notes:* {notes[:300]}\n" if notes else "")
+                + "_Auto-routed (matched: " + ", ".join(_edit_hits) + "). "
+                "LARA: add to EDITING_PIPELINE.json (status AWAITING_EDIT) so the dashboard stays current._"
+            )
+            if not test_mode:
+                post_to_slack(SLACK_LARA_CHANNEL, _lara_msg)
+            else:
+                test_log.append({"action": "Post to #lara (editing auto-route)", "channel": "SLACK_LARA_CHANNEL", "message_preview": _lara_msg[:200]})
+    except Exception as _lara_e:
+        print(f"[record-outcome] lara auto-route error (non-fatal): {_lara_e}")
 
     # Build #matt summary
     matt_msg = ""

@@ -150,7 +150,7 @@ def search_drive_file(filename_query):
 
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
-def send_gmail(to, subject, body_html, drive_file_id=None, filename=None):
+def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None):
     """
     Send an email via Gmail as info@mwmcreations.com.
 
@@ -160,6 +160,7 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None):
         body_html: HTML body content
         drive_file_id: (optional) Google Drive file ID to attach
         filename: (optional) Display filename for the attachment
+        cc: (optional) comma-separated CC addresses
 
     Returns:
         dict with 'ok' bool and 'message_id' or 'error' string
@@ -171,6 +172,8 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None):
             # ── multipart/mixed with attachment ──
             message = MIMEMultipart("mixed")
             message["to"] = to
+            if cc:
+                message["cc"] = cc
             message["from"] = SUSAN_SEND_AS
             message["subject"] = subject
 
@@ -208,6 +211,8 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None):
             # ── Simple HTML email (no attachment) ──
             message = MIMEText(body_html, "html")
             message["to"] = to
+            if cc:
+                message["cc"] = cc
             message["from"] = SUSAN_SEND_AS
             message["subject"] = subject
             print(f"[SUSAN GMAIL] Sending to {to} (no attachment)")
