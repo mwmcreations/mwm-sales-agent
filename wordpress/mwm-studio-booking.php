@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.3
+ * Version: 2.5.4
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -1697,6 +1697,13 @@ MWMCSS;
     var B = { b: qs.get('b') || '', t: qs.get('t') || '' };
     var state = null;
     var calY = 0, calM = 0, pickDate = '', pickSlot = '';
+    // S24c: display times as 12-hour AM/PM (values stay 24h for the API)
+    function fmt12(t) {
+      var p = String(t).split(':');
+      var h = parseInt(p[0], 10);
+      if (isNaN(h)) { return t; }
+      return ((h % 12) || 12) + ':' + (p[1] || '00') + ' ' + (h >= 12 ? 'PM' : 'AM');
+    }
 
     function api(action, data, cb) {
       if (!boot.ajaxurl || !boot.nonce) { cb({ success: false, data: { message: 'Page is temporarily unavailable — please refresh.' } }); return; }
@@ -1833,7 +1840,7 @@ MWMCSS;
           var b = document.createElement('button');
           b.type = 'button';
           b.className = 'mwm-mb-slot';
-          b.textContent = v;
+          b.textContent = fmt12(v);
           b.addEventListener('click', function () {
             pickSlot = v;
             grid.querySelectorAll('.mwm-mb-on').forEach(function (o) { o.classList.remove('mwm-mb-on'); });
@@ -1846,7 +1853,7 @@ MWMCSS;
     }
     function doResched() {
       if (!pickDate || !pickSlot) { return; }
-      if (!window.confirm('Move your session to ' + pickDate + ' at ' + pickSlot + '?')) { return; }
+      if (!window.confirm('Move your session to ' + pickDate + ' at ' + fmt12(pickSlot) + '?')) { return; }
       msg('Rescheduling…');
       api('mwm_studio_manage_reschedule', { date: pickDate, start_time: pickSlot }, function (res) {
         if (res.success) {
@@ -3794,7 +3801,7 @@ MWMJS;
 						}
 						var html = '';
 						for (var i = 0; i < slots.length; i++) {
-							html += '<button type="button" class="mwm-btn mwm-btn-ghost mwm-slot-btn" data-start="' + self.escHtml(String(slots[i].start)) + '" data-max="' + (parseInt(slots[i].max_duration, 10) || 1) + '">' + self.escHtml(String(slots[i].start)) + '</button>';
+							html += '<button type="button" class="mwm-btn mwm-btn-ghost mwm-slot-btn" data-start="' + self.escHtml(String(slots[i].start)) + '" data-max="' + (parseInt(slots[i].max_duration, 10) || 1) + '">' + self.escHtml(self.fmt12(String(slots[i].start))) + '</button>';
 						}
 						$('#mwm-slots').html(html);
 						$('#mwm-slots .mwm-slot-btn').on('click', function(){
@@ -3848,6 +3855,12 @@ MWMJS;
 					console.error(msg);
 				},
 
+				fmt12: function(t){
+					var p = String(t).split(':');
+					var h = parseInt(p[0], 10);
+					if (isNaN(h)) { return t; }
+					return ((h % 12) || 12) + ':' + (p[1] || '00') + ' ' + (h >= 12 ? 'PM' : 'AM');
+				},
 				escHtml: function(str){
 					return $('<div>').text(str == null ? '' : str).html();
 				}
