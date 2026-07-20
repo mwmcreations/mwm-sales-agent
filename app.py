@@ -5850,6 +5850,51 @@ def _daily_briefing_thread():
 # keyed by Meta error code, and a consecutive-failure streak escalation.
 _wa_status_streak = {"failed": 0}
 
+def send_wa_utility_template(to, template_name, body_params, phone_number_id=None, lang="en_US"):
+    """Send an approved WhatsApp TEMPLATE via Meta Cloud API (S24b).
+
+    Templates are exempt from the 24h window — that is their entire purpose —
+    but still respect the bad-number suppression list. body_params fill the
+    template's {{1}}..{{n}} body variables in order. Returns the API response
+    dict on success, None on failure (caller decides the fallback)."""
+    _ok, _why = wa_send_eligibility(to, is_template=True)
+    if not _ok:
+        print(f"[WA-TEMPLATE] BLOCKED {template_name} to {_wa_tail(to)} — {_why}")
+        return None
+    pn_id = phone_number_id or META_PHONE_NUMBER_ID
+    phone = to.replace("whatsapp:", "").lstrip("+")
+    url = f"https://graph.facebook.com/v19.0/{pn_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": lang},
+            "components": [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(p)} for p in body_params],
+            }],
+        },
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        if r.status_code == 200:
+            print(f"[WA-TEMPLATE] {template_name} sent to {_wa_tail(to)}")
+            return r.json()
+        print(f"[WA-TEMPLATE] {template_name} FAILED {r.status_code}: {r.text[:200]}")
+        _report_error("wa_template_send", f"{template_name} HTTP {r.status_code}",
+                      f"to={_wa_tail(to)} {r.text[:150]}")
+        return None
+    except Exception as e:
+        _report_error("wa_template_send", e, f"{template_name} to={_wa_tail(to)}")
+        return None
+
+
 def _handle_wa_statuses(value):
     """Process value["statuses"] from a Meta webhook status callback."""
     import pg_store as _s67pg
@@ -8209,9 +8254,10 @@ threading.Thread(target=_noshow_detector, daemon=True).start()
 
 
 def _lead_reminder_thread():
-    """S2.3: WhatsApp reminders to LEADS at T-24h and T-2h before Studio Visit / Strategy Call.
-    Free-form send works when the lead has an open 24h session; otherwise we alert #matt
-    for a manual touch (until an approved reminder template exists)."""
+    """S2.3 + S24b: WhatsApp reminders to LEADS at T-24h and T-2h before Studio Visit / Strategy Call.
+    Free-form send when the lead has an open 24h session; when the window is closed the
+    approved UTILITY template mwm_lara_shoot_reminder goes out instead (window-exempt).
+    Only if BOTH fail does #matt get a manual-touch alert."""
     import time as _t
     print("[REMINDERS] Lead reminder thread started (polls every 15 min)")
     _t.sleep(720)
@@ -8279,10 +8325,23 @@ def _lead_reminder_thread():
                 if result:
                     _post_to_slack_async(SLACK_PIPELINE_CHANNEL, f"\u23f0 \U0001f916 {stage} reminder sent to *{_ln}* — {summary}, {when}.")
                 else:
-                    _post_to_slack_async(SLACK_MATT_CHANNEL, (
-                        f"\u26a0\ufe0f {stage} reminder to *{_ln}* FAILED (no open WhatsApp session). "
-                        f"Please remind them manually — {summary}, {when}."
-                    ))
+                    # S24b: window closed (or send refused) -> approved utility template.
+                    # mwm_lara_shoot_reminder body: "Hello {{1}}, ... appointment with {{2}} on {{3}} at {{4}}."
+                    _tpl = send_wa_utility_template(
+                        f"whatsapp:+{_lp}", "mwm_lara_shoot_reminder",
+                        [_fn, "MWM Creations & Studios",
+                         event_start.strftime("%A, %B %d"),
+                         event_start.strftime("%I:%M %p")])
+                    if _tpl:
+                        _post_to_slack_async(SLACK_PIPELINE_CHANNEL, (
+                            f"\u23f0 \U0001f916 {stage} reminder sent via TEMPLATE to *{_ln}* — {summary}, {when} "
+                            f"(free-form window closed; utility template used)."
+                        ))
+                    else:
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                            f"\u26a0\ufe0f {stage} reminder to *{_ln}* FAILED (window closed AND template send failed). "
+                            f"Please remind them manually — {summary}, {when}."
+                        ))
         except Exception as e:
             _report_error("Lead reminder thread (S2.3)", e)
         _t.sleep(900)
