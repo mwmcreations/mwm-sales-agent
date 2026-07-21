@@ -5882,7 +5882,7 @@ def send_wa_utility_template(to, template_name, body_params, phone_number_id=Non
         },
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        r = http_requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code == 200:
             print(f"[WA-TEMPLATE] {template_name} sent to {_wa_tail(to)}")
             return r.json()
