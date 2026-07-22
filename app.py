@@ -5912,6 +5912,57 @@ def send_wa_utility_template(to, template_name, body_params, phone_number_id=Non
         return None
 
 
+
+def send_wa_document_template(to, media_url, filename, first_name, file_label,
+                              template_name="mwm_file_delivery", lang="en_US"):
+    """S26: DOCUMENT-header template send — delivers a file OUTSIDE the 24h
+    window via the approved mwm_file_delivery template (id 1683563022923454,
+    approved Jul 22 2026). Body: "Hello {{1}}, here is the file for {{2}} from
+    MWM Creations & Studios. If you have any questions, just reply to this
+    message." Respects suppression; exempt from the 24h window by design.
+    Returns the API response dict on success, None on failure."""
+    _ok, _why = wa_send_eligibility(to, is_template=True)
+    if not _ok:
+        print(f"[WA-DOC-TEMPLATE] BLOCKED to {_wa_tail(to)} — {_why}")
+        return None
+    phone = to.replace("whatsapp:", "").lstrip("+")
+    url = f"https://graph.facebook.com/v19.0/{META_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": phone,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": lang},
+            "components": [
+                {"type": "header",
+                 "parameters": [{"type": "document",
+                                 "document": {"link": media_url,
+                                              "filename": filename or "document.pdf"}}]},
+                {"type": "body",
+                 "parameters": [{"type": "text", "text": str(first_name)},
+                                {"type": "text", "text": str(file_label)}]},
+            ],
+        },
+    }
+    try:
+        r = http_requests.post(url, headers=headers, json=payload, timeout=20)
+        if r.status_code == 200:
+            print(f"[WA-DOC-TEMPLATE] {template_name} sent to {_wa_tail(to)}")
+            return r.json()
+        print(f"[WA-DOC-TEMPLATE] FAILED {r.status_code}: {r.text[:200]}")
+        _report_error("wa_doc_template_send", f"HTTP {r.status_code}",
+                      f"to={_wa_tail(to)} {r.text[:150]}")
+        return None
+    except Exception as e:
+        _report_error("wa_doc_template_send", e, f"to={_wa_tail(to)}")
+        return None
+
+
 def _handle_wa_statuses(value):
     """Process value["statuses"] from a Meta webhook status callback."""
     import pg_store as _s67pg
@@ -12156,6 +12207,27 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
 # meant anyone reading the source could send mail as info@. If the env var is
 # missing the endpoint refuses to send instead of accepting a known default.
 SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "")
+LARA_SEND_TOKEN = os.getenv("LARA_SEND_TOKEN", "")  # S26: per-agent token (independent revocation)
+
+def _api_auth_token(data):
+    """S26: multi-token auth for the agent endpoints (/api/send-email,
+    /api/send-wa-media). Accepts the token in the JSON body ("token") OR an
+    Authorization: Bearer header (alternate transport — the header-vs-body
+    trap cost a morning cycle on Jul 22). Returns (ok, via_label).
+    Fail-closed: no server tokens configured -> caller returns 503."""
+    supplied = str((data or {}).get("token", "") or "")
+    if not supplied:
+        _auth = request.headers.get("Authorization", "")
+        if _auth.startswith("Bearer "):
+            supplied = _auth[7:].strip()
+    if not supplied:
+        return False, None
+    if SEND_EMAIL_TOKEN and supplied == SEND_EMAIL_TOKEN:
+        return True, "master"
+    if LARA_SEND_TOKEN and supplied == LARA_SEND_TOKEN:
+        return True, "lara"
+    return False, None
+
 
 @app.route('/api/send-wa-media', methods=['POST'])
 def api_send_wa_media():
@@ -12181,9 +12253,10 @@ def api_send_wa_media():
     """
     try:
         data = request.get_json(force=True)
-        if not SEND_EMAIL_TOKEN:
+        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN:
             return jsonify({"success": False, "error": "endpoint disabled: no server token configured"}), 503
-        if data.get("token", "") != SEND_EMAIL_TOKEN:
+        _auth_ok, _via = _api_auth_token(data)
+        if not _auth_ok:
             return jsonify({"success": False, "error": "Invalid or missing token"}), 401
         to = re.sub(r"\D", "", str(data.get("to", "")))
         media_url = str(data.get("media_url", "")).strip()
@@ -12199,16 +12272,32 @@ def api_send_wa_media():
             media_url = f"https://drive.google.com/uc?export=download&id={_gid}"
         _ok, _why = wa_send_eligibility("+" + to, is_template=False)
         if not _ok:
+            # S26: closed 24h window -> fall back to the approved DOCUMENT template
+            # (mwm_file_delivery) instead of refusing. Suppressed numbers stay
+            # blocked (the template gate re-checks suppression).
+            _rname = str(data.get("recipient_name", "")).strip() or "there"
+            _flabel = str(data.get("file_label", "")).strip() or (filename or "your file")
+            _tpl = send_wa_document_template(f"whatsapp:+{to}", media_url, filename, _rname, _flabel)
+            if _tpl:
+                _tmid = ""
+                try:
+                    _tmid = (_tpl.get("messages") or [{}])[0].get("id", "")
+                except Exception:
+                    pass
+                _post_to_slack_async(SLACK_PIPELINE_CHANNEL,
+                    f"\U0001F4CE *MEDIA SENT via TEMPLATE (window closed)* — "
+                    f"{filename or media_url.split('/')[-1][:40]} \u2192 ...{to[-4:]} \u00b7 via={_via}")
+                return jsonify({"success": True, "message_id": _tmid, "sent_via": "template"})
             return jsonify({"success": False,
                             "error": f"send refused pre-flight: {_why}",
-                            "hint": "lead's 24h window is closed or number suppressed — "
-                                    "have the lead message first, or use an approved template"}), 409
+                            "hint": "free-form window closed AND template fallback failed/blocked "
+                                    "(suppressed number, or template send error — see #dev)"}), 409
         result = send_whatsapp_meta(f"whatsapp:+{to}", media_url=media_url,
                                     filename=filename, caption=caption)
         if result:
             _label = filename or media_url.split("/")[-1][:40]
             _post_to_slack_async(SLACK_PIPELINE_CHANNEL,
-                f"\U0001F4CE *MEDIA SENT (agent ad-hoc)* — {_label} \u2192 ...{to[-4:]}"
+                f"\U0001F4CE *MEDIA SENT (agent ad-hoc)* — {_label} \u2192 ...{to[-4:]} \u00b7 via={_via}"
                 + (f" \u00b7 caption: {caption[:60]}" if caption else ""))
             _mid = ""
             try:
@@ -12243,14 +12332,14 @@ def api_send_email():
     try:
         data = request.get_json(force=True)
 
-        # Auth check (S24: fail closed if the server has no token configured)
-        if not SEND_EMAIL_TOKEN:
+        # Auth check (S24 fail-closed; S26 multi-token + Bearer-header transport)
+        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN:
             _report_error("send_email_token_missing",
-                          "SEND_EMAIL_TOKEN env var is not set — /api/send-email is disabled",
-                          "set it in Railway Variables and redeploy")
+                          "no send tokens set — /api/send-email is disabled",
+                          "set SEND_EMAIL_TOKEN (and optionally LARA_SEND_TOKEN) in Railway Variables")
             return jsonify({"success": False, "error": "send-email disabled: no server token configured"}), 503
-        token = data.get("token", "")
-        if token != SEND_EMAIL_TOKEN:
+        _auth_ok, _via = _api_auth_token(data)
+        if not _auth_ok:
             return jsonify({"success": False, "error": "Invalid or missing token"}), 401
 
         # Required fields
