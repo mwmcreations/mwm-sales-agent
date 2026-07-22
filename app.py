@@ -256,7 +256,8 @@ def wa_send_eligibility(phone, is_template=False):
 
 
 def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
-                       phone_number_id: str = None):
+                       phone_number_id: str = None, filename: str = None,
+                       caption: str = None):
     """Send a WhatsApp message via Meta Cloud API.
 
     phone_number_id selects which Meta sender number to send FROM.
@@ -287,11 +288,25 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
         "Content-Type": "application/json",
     }
     if media_url:
-        ml = media_url.lower()
+        # S25a: classify by filename when given (Drive direct-download URLs have
+        # no extension), else by the URL path. Documents/video/audio/image all
+        # supported as link-based media per Meta Cloud API.
+        ml = (filename or media_url.split("?")[0]).lower()
+        _m = {"link": media_url}
+        if caption:
+            _m["caption"] = caption
         if any(ml.endswith(ext) for ext in (".mp3", ".ogg", ".wav", ".amr", ".m4a")):
-            payload = {"messaging_product": "whatsapp", "to": phone, "type": "audio", "audio": {"link": media_url}}
+            _m.pop("caption", None)  # audio does not support captions
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "audio", "audio": _m}
+        elif any(ml.endswith(ext) for ext in (".mp4", ".3gp", ".mov")):
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "video", "video": _m}
+        elif any(ml.endswith(ext) for ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx",
+                                              ".ppt", ".pptx", ".csv", ".txt", ".zip")):
+            if filename:
+                _m["filename"] = filename
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "document", "document": _m}
         else:
-            payload = {"messaging_product": "whatsapp", "to": phone, "type": "image", "image": {"link": media_url}}
+            payload = {"messaging_product": "whatsapp", "to": phone, "type": "image", "image": _m}
     else:
         payload = {"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": body or ""}}
     import time as _time_wa
@@ -12139,6 +12154,70 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
 # meant anyone reading the source could send mail as info@. If the env var is
 # missing the endpoint refuses to send instead of accepting a known default.
 SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "")
+
+@app.route('/api/send-wa-media', methods=['POST'])
+def api_send_wa_media():
+    """S25a: Universal agent endpoint — send a WhatsApp attachment (document/
+    image/video/audio) to a lead via the Meta Cloud API.
+
+    Why: browser automation cannot attach files in WhatsApp Web (the send step
+    rejects injected File objects — "file not supported"), so agent sessions
+    (LARA/MAYA) route ad-hoc media through here instead.
+
+    JSON body:
+        token: auth token (required — same SEND_EMAIL_TOKEN as /api/send-email)
+        to: recipient phone, any format (required)
+        media_url: PUBLIC direct-download URL (required). Google Drive share
+                   links are auto-converted to uc?export=download form.
+        filename: display filename e.g. "CallSheet.pdf" (recommended — drives
+                  type classification for extension-less URLs)
+        caption: optional caption under the attachment
+
+    Media is a FREE-FORM send: the eligibility gate applies (suppression +
+    24h window). A closed window returns 409 with the reason instead of
+    burning the send.
+    """
+    try:
+        data = request.get_json(force=True)
+        if not SEND_EMAIL_TOKEN:
+            return jsonify({"success": False, "error": "endpoint disabled: no server token configured"}), 503
+        if data.get("token", "") != SEND_EMAIL_TOKEN:
+            return jsonify({"success": False, "error": "Invalid or missing token"}), 401
+        to = re.sub(r"\D", "", str(data.get("to", "")))
+        media_url = str(data.get("media_url", "")).strip()
+        filename = str(data.get("filename", "")).strip() or None
+        caption = str(data.get("caption", "")).strip() or None
+        if not to or len(to) < 10:
+            return jsonify({"success": False, "error": "Missing/invalid 'to' phone"}), 400
+        if not media_url.startswith("http"):
+            return jsonify({"success": False, "error": "media_url must be a public http(s) URL"}), 400
+        _gd = re.search(r"drive\.google\.com/(?:file/d/([-\w]{20,})|open\?id=([-\w]{20,}))", media_url)
+        if _gd:
+            _gid = _gd.group(1) or _gd.group(2)
+            media_url = f"https://drive.google.com/uc?export=download&id={_gid}"
+        _ok, _why = wa_send_eligibility("+" + to, is_template=False)
+        if not _ok:
+            return jsonify({"success": False,
+                            "error": f"send refused pre-flight: {_why}",
+                            "hint": "lead's 24h window is closed or number suppressed — "
+                                    "have the lead message first, or use an approved template"}), 409
+        result = send_whatsapp_meta(f"whatsapp:+{to}", media_url=media_url,
+                                    filename=filename, caption=caption)
+        if result:
+            _label = filename or media_url.split("/")[-1][:40]
+            _post_to_slack_async(SLACK_PIPELINE_CHANNEL,
+                f"\U0001F4CE *MEDIA SENT (agent ad-hoc)* — {_label} \u2192 ...{to[-4:]}"
+                + (f" \u00b7 caption: {caption[:60]}" if caption else ""))
+            _mid = ""
+            try:
+                _mid = (result.get("messages") or [{}])[0].get("id", "")
+            except Exception:
+                pass
+            return jsonify({"success": True, "message_id": _mid})
+        return jsonify({"success": False, "error": "Meta send failed after retries (see #dev alert)"}), 502
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)[:200]}), 500
+
 
 @app.route('/api/send-email', methods=['POST'])
 def api_send_email():
