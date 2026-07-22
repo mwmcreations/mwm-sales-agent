@@ -10,3 +10,5 @@ google-auth
 pytz
 # trigger Railway deploy - DWD commit d5b6504
 psycopg2-binary
+
+# cache-bust 2026-07-22: python 3.13.13 image bump broke cached .venv shebang (gunicorn: required file not found)
