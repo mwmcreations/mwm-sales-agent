@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.4
+ * Version: 2.5.5
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -472,16 +472,37 @@ class MWM_Studio_Booking {
 		$secret = get_option( 'mwm_portal_provision_secret' );
 		$blocks = null;
 		if ( $secret ) {
+			// S25d: fetch a 14-day range in ONE machine call (one Google query server-side)
+			// and warm the per-date transients, so subsequent date clicks skip the network.
 			$resp = wp_remote_get(
-				add_query_arg( 'date', rawurlencode( $date ), $base ),
+				add_query_arg( array( 'date' => rawurlencode( $date ), 'days' => 14 ), $base ),
 				array(
-					'timeout' => 3,
+					'timeout' => 5,
 					'headers' => array( 'X-MWM-Portal-Secret' => $secret ),
 				)
 			);
 			if ( ! is_wp_error( $resp ) && 200 === (int) wp_remote_retrieve_response_code( $resp ) ) {
 				$body = json_decode( wp_remote_retrieve_body( $resp ), true );
-				if ( is_array( $body ) && isset( $body['busy'] ) && is_array( $body['busy'] ) ) {
+				if ( is_array( $body ) && isset( $body['busy_by_date'] ) && is_array( $body['busy_by_date'] ) ) {
+					$now = time();
+					foreach ( $body['busy_by_date'] as $day => $day_busy ) {
+						if ( ! is_string( $day ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $day ) || ! is_array( $day_busy ) ) {
+							continue;
+						}
+						$day_blocks = array();
+						foreach ( $day_busy as $b ) {
+							if ( isset( $b['start'], $b['end'] ) ) {
+								$day_blocks[] = array( 'start' => $b['start'], 'end' => $b['end'] );
+							}
+						}
+						set_transient( 'mwm_gcal_busy_' . $day, array( 'blocks' => $day_blocks, 'fetched' => $now ), HOUR_IN_SECONDS );
+						$request_cache[ $day ] = $day_blocks;
+						if ( $day === $date ) {
+							$blocks = $day_blocks;
+						}
+					}
+				} elseif ( is_array( $body ) && isset( $body['busy'] ) && is_array( $body['busy'] ) ) {
+					// Legacy single-day shape (machine not yet on S25d) — unchanged behavior.
 					$blocks = array();
 					foreach ( $body['busy'] as $b ) {
 						if ( isset( $b['start'], $b['end'] ) ) {
@@ -563,16 +584,21 @@ class MWM_Studio_Booking {
 		// Fetch existing confirmed bookings for that date.
 		// S17: confirmed bookings AND un-expired rental holds both block a slot.
 		// Without the hold clause two customers can pay for the same time.
-		$bookings = $wpdb->get_results(
-			$wpdb->prepare(
-				"SELECT start_time, end_time FROM {$this->bookings_table}
-				WHERE booking_date = %s
-				  AND ( status = 'confirmed'
-				        OR ( status = 'pending_payment' AND hold_expires_at IS NOT NULL AND hold_expires_at > UTC_TIMESTAMP() ) )
-				ORDER BY start_time ASC",
-				$date
-			)
-		);
+		// S25d: memoize per request — the duration loop calls this up to 4x per slot.
+		static $bookings_memo = array();
+		if ( ! array_key_exists( $date, $bookings_memo ) ) {
+			$bookings_memo[ $date ] = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT start_time, end_time FROM {$this->bookings_table}
+					WHERE booking_date = %s
+					  AND ( status = 'confirmed'
+					        OR ( status = 'pending_payment' AND hold_expires_at IS NOT NULL AND hold_expires_at > UTC_TIMESTAMP() ) )
+					ORDER BY start_time ASC",
+					$date
+				)
+			);
+		}
+		$bookings = $bookings_memo[ $date ];
 
 		$busy = array();
 		foreach ( $bookings as $b ) {

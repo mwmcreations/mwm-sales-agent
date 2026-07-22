@@ -3271,6 +3271,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     body=event,
                     sendUpdates=send_upd
                 ).execute()
+                _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
                 used_attendees = with_attendees
                 used_send_updates = send_upd
                 used_calendar = cal_id
@@ -4386,6 +4387,7 @@ def handle_command_tool_call(tool_name, tool_input):
                 created = service.events().insert(
                     calendarId=CALENDAR_ID, body=event_body, sendUpdates="none"
                 ).execute()
+                _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
                 link = created.get("htmlLink", "")
                 _post_to_slack_async(SLACK_MAYA_CHANNEL,
                     f"*Maya Command — Calendar Event Created*\n"
@@ -12610,14 +12612,20 @@ def stripe_webhook():
     return jsonify({"received": True}), 200
 
 
+# S25d: in-process cache for the availability feed — portal date-clicks were paying
+# a live Google Calendar query per request (Michael measured ~8s slot loads, Jul 22).
+_SA_CACHE = {}
+_SA_CACHE_TTL = 120  # seconds
+
 @app.route('/studio-availability', methods=['GET'])
 def studio_availability():
-    """S15: read-only availability feed for the WP portal's slot filter.
-    Returns busy blocks (local HH:MM) from the MWM CREATIONS calendar for one date.
+    """S15 + S25d: read-only availability feed for the WP portal's slot filter.
+    Returns busy blocks (local HH:MM) from the MWM CREATIONS calendar.
+    S25d: optional days=N (1..31) range mode — ONE calendar query covers the whole
+    range (busy_by_date), and responses are cached in-process for 120s. Legacy
+    single-day "busy" shape is preserved for the requested date.
     Auth = X-MWM-Portal-Secret (same shared secret as /webhook/studio-booking).
-    Skips transparent (free) events and all-day events — same policy as Maya's
-    get_available_slots — so reminders never block real bookable hours.
-    Read-only, no new threads (S15 design, Michael-approved)."""
+    Skips transparent (free) events and all-day events per S15 policy."""
     _sa_secret = os.getenv("WP_PORTAL_SECRET", "")
     if not _sa_secret:
         _report_error("studio_availability", "WP_PORTAL_SECRET not set")
@@ -12631,47 +12639,73 @@ def studio_availability():
     except Exception:
         return jsonify({"error": "bad date"}), 400
     try:
+        _sa_days = int(request.args.get("days", "1"))
+    except Exception:
+        _sa_days = 1
+    _sa_days = max(1, min(31, _sa_days))
+    _sa_key = (_sa_date, _sa_days)
+    _sa_hit = _SA_CACHE.get(_sa_key)
+    if _sa_hit and (time.time() - _sa_hit[0]) < _SA_CACHE_TTL:
+        return jsonify(_sa_hit[1])
+    try:
         _sa_tz = pytz.timezone(TIMEZONE)
-        _sa_start = _sa_tz.localize(_sa_day)
-        _sa_end = _sa_start + timedelta(days=1)
+        _sa_range_start = _sa_tz.localize(_sa_day)
+        _sa_range_end = _sa_range_start + timedelta(days=_sa_days)
         _sa_svc = get_calendar_service()
         _sa_events = _sa_svc.events().list(
             calendarId=CALENDAR_ID,
-            timeMin=_sa_start.isoformat(),
-            timeMax=_sa_end.isoformat(),
+            timeMin=_sa_range_start.isoformat(),
+            timeMax=_sa_range_end.isoformat(),
             singleEvents=True,
             orderBy="startTime",
+            maxResults=2500,
         ).execute()
-        _sa_busy = []
-        for _sa_ev in _sa_events.get("items", []):
-            if _sa_ev.get("transparency") == "transparent":
-                continue  # marked Free — not a real block (incl. default all-day reminders)
-            _sa_s = _sa_ev.get("start", {})
-            _sa_e = _sa_ev.get("end", {})
-            try:
-                if "dateTime" in _sa_s and "dateTime" in _sa_e:
-                    _sa_bs = datetime.fromisoformat(_sa_s["dateTime"]).astimezone(_sa_tz)
-                    _sa_be = datetime.fromisoformat(_sa_e["dateTime"]).astimezone(_sa_tz)
-                elif "date" in _sa_s and "date" in _sa_e:
-                    # S15.1: all-day event explicitly marked Busy — blocks whole day(s).
-                    # (Google defaults all-day events to Free/transparent, filtered above.)
-                    _sa_bs = _sa_tz.localize(datetime.strptime(_sa_s["date"], "%Y-%m-%d"))
-                    _sa_be = _sa_tz.localize(datetime.strptime(_sa_e["date"], "%Y-%m-%d"))  # end date is exclusive
-                else:
+        _sa_items = _sa_events.get("items", [])
+        _sa_by_date = {}
+        for _sa_i in range(_sa_days):
+            _sa_start = _sa_range_start + timedelta(days=_sa_i)
+            _sa_end = _sa_start + timedelta(days=1)
+            _sa_busy = []
+            for _sa_ev in _sa_items:
+                if _sa_ev.get("transparency") == "transparent":
+                    continue  # marked Free — not a real block (incl. default all-day reminders)
+                _sa_s = _sa_ev.get("start", {})
+                _sa_e = _sa_ev.get("end", {})
+                try:
+                    if "dateTime" in _sa_s and "dateTime" in _sa_e:
+                        _sa_bs = datetime.fromisoformat(_sa_s["dateTime"]).astimezone(_sa_tz)
+                        _sa_be = datetime.fromisoformat(_sa_e["dateTime"]).astimezone(_sa_tz)
+                    elif "date" in _sa_s and "date" in _sa_e:
+                        # S15.1: all-day event explicitly marked Busy — blocks whole day(s).
+                        # (Google defaults all-day events to Free/transparent, filtered above.)
+                        _sa_bs = _sa_tz.localize(datetime.strptime(_sa_s["date"], "%Y-%m-%d"))
+                        _sa_be = _sa_tz.localize(datetime.strptime(_sa_e["date"], "%Y-%m-%d"))  # end date is exclusive
+                    else:
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
-            if _sa_be <= _sa_start or _sa_bs >= _sa_end:
-                continue
-            _sa_bs = max(_sa_bs, _sa_start)
-            _sa_be = min(_sa_be, _sa_end)
-            # S15.1 fix: a block running to (or past) next midnight must serialize as
-            # "24:00" — "00:00" made multi-day events collapse to zero-length blocks
-            # that the plugin discarded (found by Michael: Jul 23–26 convention showed open).
-            _sa_end_str = "24:00" if _sa_be >= _sa_end else _sa_be.strftime("%H:%M")
-            _sa_busy.append({"start": _sa_bs.strftime("%H:%M"), "end": _sa_end_str})
-        print(f"[STUDIO-AVAIL] {_sa_date}: {len(_sa_busy)} busy block(s)")
-        return jsonify({"date": _sa_date, "timezone": TIMEZONE, "busy": _sa_busy})
+                if _sa_be <= _sa_start or _sa_bs >= _sa_end:
+                    continue
+                _sa_cs = max(_sa_bs, _sa_start)
+                _sa_ce = min(_sa_be, _sa_end)
+                # S15.1 fix: a block running to (or past) next midnight must serialize as
+                # "24:00" — "00:00" made multi-day events collapse to zero-length blocks
+                # that the plugin discarded (found by Michael: Jul 23-26 convention showed open).
+                _sa_end_str = "24:00" if _sa_ce >= _sa_end else _sa_ce.strftime("%H:%M")
+                _sa_busy.append({"start": _sa_cs.strftime("%H:%M"), "end": _sa_end_str})
+            _sa_by_date[_sa_start.strftime("%Y-%m-%d")] = _sa_busy
+        _sa_payload = {
+            "date": _sa_date,
+            "days": _sa_days,
+            "timezone": TIMEZONE,
+            "busy": _sa_by_date.get(_sa_date, []),
+            "busy_by_date": _sa_by_date,
+        }
+        _SA_CACHE[_sa_key] = (time.time(), _sa_payload)
+        if len(_SA_CACHE) > 200:
+            _SA_CACHE.clear()  # crude bound; a cleared cache rebuilds in one query
+        print(f"[STUDIO-AVAIL] {_sa_date}+{_sa_days}d served fresh")
+        return jsonify(_sa_payload)
     except Exception as _sa_exc:
         _report_error("studio_availability", _sa_exc, f"date={_sa_date}")
         return jsonify({"error": "internal"}), 500
@@ -12691,6 +12725,7 @@ def studio_booking_webhook():
         return jsonify({"error": "unauthorized"}), 401
     try:
         _sb_evt = request.get_json(force=True) or {}
+        _SA_CACHE.clear()  # S25d: booking changes invalidate the availability cache
     except Exception:
         return jsonify({"error": "bad payload"}), 400
     if _sb_evt.get("event") not in ("booking_created", "booking_cancelled", "booking_cancelled_late"):
@@ -14478,6 +14513,7 @@ def _calendar_write_selftest():
             "end": {"dateTime": (start + timedelta(minutes=5)).isoformat()},
         }
         ev = service.events().insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none").execute()
+        _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
         service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"], sendUpdates="none").execute()
         print(f"[CAL-SELFTEST] PASS — SA {sa} has write access to {CALENDAR_ID}")
         _post_to_slack_async(
