@@ -104,6 +104,27 @@ _ig_403_blocked = set()
 WA_HARD_FAIL_CODES = {131026}   # permanent, number-level. Suppress on first hit.
 WA_WINDOW_HOURS    = 24
 
+# S28 — INTERNAL NUMBERS (Michael/test lines). These are real, reachable
+# numbers that legitimately receive DIRECT sends (file deliveries, live
+# tests), so full suppression is wrong. But they must never be treated as
+# leads by automated outreach: re-engagement kept burning sends to ...1224
+# (Michael's own WhatsApp) because his test-lead row sat in the queue.
+# Comma-separated digits in INTERNAL_NUMBERS env; default = Michael's line.
+INTERNAL_NUMBERS = {
+    re.sub(r"\D", "", _n) for _n in
+    os.getenv("INTERNAL_NUMBERS", "18135031224").split(",")
+    if re.sub(r"\D", "", _n)
+}
+
+
+def _is_internal_number(phone):
+    """True if this number belongs to Michael/an internal test line.
+    Matches on full digits or the 10-digit tail (handles +1 variants)."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    if not d:
+        return False
+    return any(d == n or d[-10:] == n[-10:] for n in INTERNAL_NUMBERS if len(n) >= 10)
+
 
 def _wa_digits(phone):
     return re.sub(r"\D", "", str(phone or ""))
@@ -587,7 +608,7 @@ def _count_bookings_on_date(target_date):
             timeMin=day_start.isoformat(),
             timeMax=day_end.isoformat(),
             singleEvents=True,
-        ).execute()
+        ).execute(num_retries=3)
         booking_count = 0
         for event in events_result.get("items", []):
             summary = event.get("summary", "")
@@ -3003,7 +3024,7 @@ def get_available_slots():
             timeMax=end_window.isoformat(),
             singleEvents=True,
             orderBy="startTime"
-        ).execute()
+        ).execute(num_retries=3)
 
         busy_times = []
         for event in events_result.get("items", []):
@@ -3106,7 +3127,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         try:
             service = get_calendar_service(impersonate=delegate) if delegate else get_calendar_service()
             # Quick test — will raise if DWD creds are invalid
-            service.calendarList().list(maxResults=1).execute()
+            service.calendarList().list(maxResults=1).execute(num_retries=3)
             print(f"[book_appointment] using DWD as {delegate}")
         except Exception as dwd_err:
             if "unauthorized_client" in str(dwd_err) or "invalid_grant" in str(dwd_err):
@@ -3133,7 +3154,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     timeMax=future_iso,
                     singleEvents=True,
                     orderBy="startTime"
-                ).execute().get("items", [])
+                ).execute(num_retries=3).get("items", [])
 
                 for ev in existing_events:
                     ev_summary = ev.get("summary", "")
@@ -3158,7 +3179,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                                 calendarId=CALENDAR_ID,
                                 eventId=old_event_id,
                                 sendUpdates="all"
-                            ).execute()
+                            ).execute(num_retries=3)
                             print(f"[book_appointment] AUTO-CLEANUP: Deleted old event {old_event_id}")
                             # Update lead_data if available
                             if lead_phone and lead_phone in lead_data:
@@ -3209,7 +3230,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 timeMin=buffer_start.isoformat(),
                 timeMax=buffer_end.isoformat(),
                 singleEvents=True,
-            ).execute().get("items", [])
+            ).execute(num_retries=3).get("items", [])
             # Filter to timed BUSY events only (ignore all-day events and FREE events)
             # transparency="transparent" means FREE — it's a reminder, not a real block
             timed_conflicts = [
@@ -3270,7 +3291,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     calendarId=cal_id,
                     body=event,
                     sendUpdates=send_upd
-                ).execute()
+                ).execute(num_retries=3)
                 _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
                 used_attendees = with_attendees
                 used_send_updates = send_upd
@@ -3385,7 +3406,7 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date="
             event_id = lead_data[sender]["event_id"]
             print(f"[cancel_appointment] Found stored event_id: {event_id}")
             try:
-                found_event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+                found_event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute(num_retries=3)
                 event_summary = found_event.get("summary", "Appointment")
             except Exception:
                 event_summary = f"Appointment with {lead_name}"
@@ -3402,7 +3423,7 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date="
                 timeMax=time_max.isoformat(),
                 singleEvents=True,
                 orderBy="startTime"
-            ).execute()
+            ).execute(num_retries=3)
             events = events_result.get("items", [])
 
         # Strategy 2: Search calendar by lead name (skip if name is Unknown/empty)
@@ -3514,7 +3535,7 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date="
             calendarId=CALENDAR_ID,
             eventId=event_id,
             sendUpdates="all"  # Notify attendees about the cancellation
-        ).execute()
+        ).execute(num_retries=3)
         print(f"[cancel_appointment] Successfully deleted event {event_id}: {event_summary}")
 
         # Update lead_data
@@ -3637,7 +3658,7 @@ def check_specific_slot(requested_datetime):
             timeMax=window_end.isoformat(),
             singleEvents=True,
             orderBy="startTime"
-        ).execute()
+        ).execute(num_retries=3)
 
         blocking_events = []
         for event in events_result.get("items", []):
@@ -4380,13 +4401,13 @@ def handle_command_tool_call(tool_name, tool_input):
                 try:
                     service = _get_cal_service(impersonate=delegate) if delegate else _get_cal_service()
                     if delegate:
-                        service.calendarList().list(maxResults=1).execute()
+                        service.calendarList().list(maxResults=1).execute(num_retries=3)
                 except Exception:
                     service = _get_cal_service()
                 # Create event
                 created = service.events().insert(
                     calendarId=CALENDAR_ID, body=event_body, sendUpdates="none"
-                ).execute()
+                ).execute(num_retries=3)
                 _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
                 link = created.get("htmlLink", "")
                 _post_to_slack_async(SLACK_MAYA_CHANNEL,
@@ -4679,7 +4700,7 @@ def _ensure_client_roster_tab(svc, sheet_id):
       - Else create 'MWM Clients' with just the header row (no seed data —
         Cowork LARA and Michael are the writers).
     """
-    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute(num_retries=3)
     existing = {s["properties"]["title"] for s in meta["sheets"]}
     if _CLIENT_ROSTER_TAB in existing:
         return
@@ -4689,13 +4710,13 @@ def _ensure_client_roster_tab(svc, sheet_id):
     svc.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": _CLIENT_ROSTER_TAB, "gridProperties": {"frozenRowCount": 1}}}}]}
-    ).execute()
+    ).execute(num_retries=3)
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"'{_CLIENT_ROSTER_TAB}'!A1",
         valueInputOption="RAW",
         body={"values": [_CLIENT_ROSTER_HEADERS]},
-    ).execute()
+    ).execute(num_retries=3)
     print(f"[MWM Clients] Created '{_CLIENT_ROSTER_TAB}' tab with headers (no seed data)")
 
 
@@ -4704,7 +4725,7 @@ def _resolve_client_roster_tab_name(svc, sheet_id):
 
     Preference order: new name → legacy name → None (meaning neither exists).
     """
-    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute(num_retries=3)
     existing = {s["properties"]["title"] for s in meta["sheets"]}
     if _CLIENT_ROSTER_TAB in existing:
         return _CLIENT_ROSTER_TAB
@@ -4758,7 +4779,7 @@ def load_client_roster(force_refresh=False):
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab}'!A:J",
-        ).execute()
+        ).execute(num_retries=3)
         rows = result.get("values", [])
         if len(rows) < 2:
             _CLIENT_ROSTER_CACHE["data"] = []
@@ -4799,7 +4820,7 @@ def load_client_roster(force_refresh=False):
 
 def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
     """Create the monthly tab with headers if it doesn't exist yet. Returns the tab's sheetId (gid)."""
-    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute(num_retries=3)
     existing = {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta["sheets"]}
     if tab_name in existing:
         return existing[tab_name]
@@ -4808,7 +4829,7 @@ def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
     result = service.spreadsheets().batchUpdate(
         spreadsheetId=sheet_id,
         body={"requests": [{"addSheet": {"properties": {"title": tab_name, "gridProperties": {"frozenRowCount": 1}}}}]}
-    ).execute()
+    ).execute(num_retries=3)
     gid = result["replies"][0]["addSheet"]["properties"]["sheetId"]
 
     # Write header row
@@ -4817,7 +4838,7 @@ def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
         range=f"'{tab_name}'!A1",
         valueInputOption="RAW",
         body={"values": [SHEET_HEADERS]},
-    ).execute()
+    ).execute(num_retries=3)
 
     # Format header (bold, dark background, white text)
     service.spreadsheets().batchUpdate(
@@ -4837,7 +4858,7 @@ def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
                 "startIndex": 0, "endIndex": len(SHEET_HEADERS),
             }}},
         ]},
-    ).execute()
+    ).execute(num_retries=3)
     print(f"â Created new monthly tab: {tab_name}")
     return gid
 
@@ -4899,7 +4920,7 @@ def log_new_contact_to_sheets(sender: str):
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab_name}'!E:E",  # Phone column
-        ).execute()
+        ).execute(num_retries=3)
         existing_phones = [r[0] if r else "" for r in result.get("values", [])]
         if clean_phone in existing_phones:
             print(f"[Sheets] First-contact row already exists for {clean_phone} — skipping")
@@ -4927,7 +4948,7 @@ def log_new_contact_to_sheets(sender: str):
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
-        ).execute()
+        ).execute(num_retries=3)
         print(f"â First-contact row logged for {clean_phone}")
     except Exception as e:
         _report_error("Sheets CRM create (log_new_contact_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
@@ -4953,7 +4974,7 @@ def update_lead_columns(sender: str, updates: dict):
                 result = svc.spreadsheets().values().get(
                     spreadsheetId=SHEETS_LEADS_ID,
                     range=f"'{tab_name}'!A1:T",
-                ).execute()
+                ).execute(num_retries=3)
             except Exception:
                 continue  # tab may not exist
             rows = result.get("values", [])
@@ -4978,7 +4999,7 @@ def update_lead_columns(sender: str, updates: dict):
             svc.spreadsheets().values().batchUpdate(
                 spreadsheetId=SHEETS_LEADS_ID,
                 body={"valueInputOption": "RAW", "data": data},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"[Sheets] Updated {list(updates.keys())} for {clean_phone}")
     except Exception as e:
         _report_error("Sheets CRM write (update_lead_columns)", e, f"lead={sender}")  # S1.3
@@ -4996,7 +5017,7 @@ def lookup_lead_in_sheets(sender: str) -> str:
         if clean_phone.startswith("1") and len(clean_phone) == 11:
             phone_variants.add(clean_phone[1:])
         svc = get_sheets_service()
-        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(num_retries=3)
         tabs = [s["properties"]["title"] for s in meta["sheets"]]
         month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
         def tab_sort_key(t):
@@ -5010,7 +5031,7 @@ def lookup_lead_in_sheets(sender: str) -> str:
                 result = svc.spreadsheets().values().get(
                     spreadsheetId=SHEETS_LEADS_ID,
                     range=f"'{tab}'!A1:T",
-                ).execute()
+                ).execute(num_retries=3)
                 rows = result.get("values", [])
                 if not rows:
                     continue
@@ -5075,7 +5096,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab_name}'!A:W",  # S27: widened for attribution cols U/V/W
-        ).execute()
+        ).execute(num_retries=3)
         rows = result.get("values", [])
         # S27: pull ad-attribution fields captured at inbound time
         _attr = lead_data.get(sender, {}) if isinstance(lead_data.get(sender), dict) else {}
@@ -5092,7 +5113,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 range=f"'{tab_name}'!{start_col}1",
                 valueInputOption="RAW",
                 body={"values": [missing]},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"[Sheets] Migrated headers: added {missing}")
             rows[0].extend(missing)
 
@@ -5124,7 +5145,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                     {"range": f"'{tab_name}'!V{row_number}", "values": [[_ad_campaign]]},
                     {"range": f"'{tab_name}'!W{row_number}", "values": [[_ctwa]]},
                 ] if _ad_id or _ctwa else [])},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"â Lead row updated in Sheets (row {row_number}): {clean_phone}")
         else:
             # No existing row — append a full new row
@@ -5156,7 +5177,7 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"â Lead appended to Sheets (no existing row found): {clean_phone}")
     except Exception as e:
         _report_error("Sheets CRM log (log_lead_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
@@ -5184,7 +5205,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab_name}'!A:K",
-        ).execute()
+        ).execute(num_retries=3)
         rows = result.get("values", [])
 
         target_row_index = None
@@ -5201,7 +5222,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
                     {"range": f"'{tab_name}'!H{row_number}", "values": [[status]]},
                     {"range": f"'{tab_name}'!I{row_number}", "values": [[appt_str]]},
                 ]},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"â Booking updated in Sheets row {row_number}: {status}")
         else:
             # Row not found — append a fresh complete row
@@ -5216,7 +5237,7 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]},
-            ).execute()
+            ).execute(num_retries=3)
             print(f"â Booking row appended to Sheets (lead not found by phone)")
     except Exception as e:
         _report_error("Sheets booking update (update_booking_in_sheets)", e, f"lead={sender}")  # S3b.2 sweep
@@ -5658,7 +5679,7 @@ def send_briefing():
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         result = service.users().messages().send(
             userId="me", body={"raw": raw}
-        ).execute()
+        ).execute()  # S28: NO retries on message sends — ambiguous 5xx retry could double-send
         return jsonify({"ok": True, "messageId": result.get("id", "")})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
@@ -5762,7 +5783,7 @@ def _daily_briefing_thread():
                 singleEvents=True,
                 orderBy="startTime",
                 timeZone="America/New_York",
-            ).execute()
+            ).execute(num_retries=3)
             return result.get("items", [])
         except Exception:
             return []
@@ -5849,7 +5870,7 @@ def _daily_briefing_thread():
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         gmail.users().messages().send(
             userId="me", body={"raw": raw}
-        ).execute()
+        ).execute()  # S28: NO retries on message sends — ambiguous 5xx retry could double-send
         print(f"[BRIEFING] Sent daily briefing for {date_str}")
 
     print("[BRIEFING] Daily briefing thread started")
@@ -7579,7 +7600,7 @@ def _repopulate_lead_data_from_sheets():
         return
     try:
         svc = get_sheets_service()
-        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(num_retries=3)
         tabs = [s["properties"]["title"] for s in meta["sheets"]]
         month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
                        "Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12}
@@ -7611,7 +7632,7 @@ def _repopulate_lead_data_from_sheets():
                 result = svc.spreadsheets().values().get(
                     spreadsheetId=SHEETS_LEADS_ID,
                     range=f"\'{tab}\'!A1:T",
-                ).execute()
+                ).execute(num_retries=3)
                 rows = result.get("values", [])
                 if len(rows) < 2:
                     continue
@@ -7720,6 +7741,8 @@ def _cold_lead_checker():
             for phone, data in list(lead_data.items()):
                 if data.get("booked") or data.get("cold_fired"):
                     continue
+                if _is_internal_number(phone):
+                    continue  # S28: internal/test lines never go cold-lead/farewell
                 last_msg = data.get("last_message_time")
                 if not last_msg:
                     continue
@@ -7858,7 +7881,7 @@ def _post_visit_checker():
                 timeMax=window_end,
                 singleEvents=True,
                 orderBy="startTime"
-            ).execute()
+            ).execute(num_retries=3)
 
             for event in events_result.get("items", []):
                 event_id = event.get("id", "")
@@ -8124,7 +8147,7 @@ def _pre_meeting_briefer():
                 timeMax=window_end,
                 singleEvents=True,
                 orderBy="startTime"
-            ).execute()
+            ).execute(num_retries=3)
 
             for event in events_result.get("items", []):
                 event_id = event.get("id", "")
@@ -8256,7 +8279,7 @@ def _noshow_detector():
                     timeMax=day_end.isoformat(),
                     singleEvents=True,
                     orderBy="startTime"
-                ).execute()
+                ).execute(num_retries=3)
 
                 for event in events_result.get("items", []):
                     event_id = event.get("id", "")
@@ -8320,7 +8343,7 @@ def _noshow_detector():
                     timeMax=day_start.isoformat(),
                     singleEvents=True,
                     orderBy="startTime"
-                ).execute()
+                ).execute(num_retries=3)
                 for event in y_events.get("items", []):
                     event_id = event.get("id", "")
                     summary = event.get("summary", "")
@@ -8381,7 +8404,7 @@ def _lead_reminder_thread():
                 timeMax=(now + timedelta(hours=26)).isoformat(),
                 singleEvents=True,
                 orderBy="startTime"
-            ).execute()
+            ).execute(num_retries=3)
             for event in events_result.get("items", []):
                 event_id = event.get("id", "")
                 summary = event.get("summary", "")
@@ -8672,6 +8695,12 @@ def _reengagement_checker():
                 if not phone or not last_inbound_str:
                     continue
 
+                # S28: never re-engage internal/test numbers (Michael's own
+                # line kept getting doomed re-engagement sends + alert noise).
+                if _is_internal_number(phone):
+                    print(f"[Re-engagement] SKIP internal number {_wa_tail(phone)} ({name}) — INTERNAL_NUMBERS")
+                    continue
+
                 # Parse last inbound time
                 try:
                     last_inbound = datetime.strptime(last_inbound_str, "%Y-%m-%d %H:%M")
@@ -8875,6 +8904,153 @@ def _reengagement_checker():
         _time.sleep(1500)  # Check every 25 min (under 30-min stale threshold)
 
 threading.Thread(target=_reengagement_checker, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# S28 — FOLLOW-UP SCHEDULER (Susan's push-based lead cadence)
+#
+# Root problem (Susan, Jul 24): email follow-ups were pull-based — leads sat
+# 20+ days because nothing computed "who is due" and told her. This thread
+# makes it push-based:
+#   • welcome_email_at:{email}  — stamped when the auto-welcome sends
+#   • followup_sent:{email}     — stamped on every /api/send-email success
+#   • Rules: first personalized follow-up due 24h after welcome; subsequent
+#     touches due 3 days after the last send (Susan's standing cadence).
+#   • Leads with an email but NO stamps (pre-S28 backlog) are surfaced ONCE
+#     as "untracked" so Susan can triage the existing pile at cutover.
+# Digest posts to #susan at most every 6h and only when something is due;
+# items ≥7 days overdue also escalate one line to #matt.
+# ═══════════════════════════════════════════════════════════════════════════
+
+FOLLOWUP_FIRST_HOURS = 24      # welcome -> first personalized follow-up
+FOLLOWUP_SPACING_DAYS = 3      # spacing between subsequent touches
+FOLLOWUP_ESCALATE_DAYS = 7     # overdue this long -> #matt escalation
+FOLLOWUP_DIGEST_GAP_HOURS = 6  # min hours between digests
+
+INTERNAL_EMAILS = {
+    e.strip().lower() for e in
+    os.getenv("INTERNAL_EMAILS",
+              "michael@mwmcreations.com,yasminfmoraes@icloud.com").split(",")
+    if e.strip()
+}
+
+
+def _followup_scheduler():
+    import time as _time
+    print("[Followup Scheduler] Started (polls every 25 min; 24h/3d cadence; digest to #susan)")
+    _heartbeat("followup_scheduler")
+    _time.sleep(1500)
+    while True:
+        try:
+            _heartbeat("followup_scheduler")
+            import pg_store as _p
+            if not _p.enabled():
+                _time.sleep(1500)
+                continue
+            now = datetime.now(pytz.timezone(TIMEZONE))
+            due, untracked = [], []
+            seen_emails = set()
+            for phone, data in list(lead_data.items()):
+                email = str(data.get("email") or "").strip().lower()
+                if not email or "@" not in email:
+                    continue
+                if email in seen_emails:
+                    continue
+                seen_emails.add(email)
+                if email in INTERNAL_EMAILS or email.endswith("@mwmcreations.com"):
+                    continue
+                if _is_internal_number(phone):
+                    continue
+                if data.get("cold_fired"):
+                    continue
+                name = data.get("name") or "?"
+                biz = data.get("business") or ""
+                booked = bool(data.get("booked"))
+                fu = _p.load_state("followup_sent:" + email, None)
+                wel = _p.load_state("welcome_email_at:" + email, None)
+
+                def _parse(ts):
+                    try:
+                        d = datetime.fromisoformat(str(ts))
+                        return d if d.tzinfo else pytz.timezone(TIMEZONE).localize(d)
+                    except Exception:
+                        return None
+
+                if fu:
+                    at = _parse(fu.get("at") if isinstance(fu, dict) else fu)
+                    if at:
+                        days_since = (now - at).total_seconds() / 86400
+                        if days_since >= FOLLOWUP_SPACING_DAYS:
+                            due.append({"email": email, "name": name, "biz": biz,
+                                        "booked": booked, "kind": "next touch",
+                                        "overdue_days": round(days_since - FOLLOWUP_SPACING_DAYS, 1)})
+                elif wel:
+                    at = _parse(wel)
+                    if at:
+                        hours_since = (now - at).total_seconds() / 3600
+                        if hours_since >= FOLLOWUP_FIRST_HOURS:
+                            due.append({"email": email, "name": name, "biz": biz,
+                                        "booked": booked, "kind": "FIRST personalized follow-up",
+                                        "overdue_days": round((hours_since - FOLLOWUP_FIRST_HOURS) / 24, 1)})
+                else:
+                    # Pre-S28 lead with an email but no tracking history.
+                    # Surface once, ever, so the backlog gets triaged.
+                    if not _p.load_state("followup_untracked_listed:" + email, False):
+                        untracked.append({"email": email, "name": name, "biz": biz, "booked": booked})
+
+            if not due and not untracked:
+                _time.sleep(1500)
+                continue
+
+            last_digest = _p.load_state("followup_digest_last", None)
+            if last_digest:
+                try:
+                    _ld = datetime.fromisoformat(str(last_digest))
+                    if _ld.tzinfo is None:
+                        _ld = pytz.timezone(TIMEZONE).localize(_ld)
+                    if (now - _ld).total_seconds() < FOLLOWUP_DIGEST_GAP_HOURS * 3600:
+                        _time.sleep(1500)
+                        continue
+                except Exception:
+                    pass
+
+            due.sort(key=lambda d: -d["overdue_days"])
+            lines = [f"*FOLLOW-UP DIGEST — {len(due)} due" +
+                     (f", {len(untracked)} untracked (first-time listing)" if untracked else "") +
+                     "* _(auto — followup_scheduler S28)_"]
+            SHOW = 15
+            for d in due[:SHOW]:
+                flag = " 📅booked" if d["booked"] else ""
+                biz = f" ({d['biz']})" if d["biz"] else ""
+                od = f" — *{d['overdue_days']}d overdue*" if d["overdue_days"] >= 1 else ""
+                lines.append(f"• {d['name']}{biz} <{d['email']}> — {d['kind']}{od}{flag}")
+            if len(due) > SHOW:
+                lines.append(f"…and {len(due) - SHOW} more due (not shown — full list next digest)")
+            for u in untracked[:SHOW]:
+                biz = f" ({u['biz']})" if u["biz"] else ""
+                flag = " 📅booked" if u["booked"] else ""
+                lines.append(f"• [untracked] {u['name']}{biz} <{u['email']}> — no send history on record; triage{flag}")
+            if len(untracked) > SHOW:
+                lines.append(f"…and {len(untracked) - SHOW} more untracked")
+            lines.append("_Reply-to-lead timing rules: 24h after welcome, 3-day spacing. Stamps update automatically when you send via /api/send-email._")
+            _post_to_slack_async(SLACK_SUSAN_CHANNEL, "\n".join(lines))
+
+            escal = [d for d in due if d["overdue_days"] >= FOLLOWUP_ESCALATE_DAYS]
+            if escal:
+                _post_to_slack_async(SLACK_MATT_CHANNEL,
+                    f"⚠️ *{len(escal)} lead follow-up(s) ≥{FOLLOWUP_ESCALATE_DAYS}d overdue* "
+                    f"(worst: {escal[0]['name']} <{escal[0]['email']}> {escal[0]['overdue_days']}d) — digest in #susan.")
+
+            for u in untracked:
+                _p.save_state("followup_untracked_listed:" + u["email"], True)
+            _p.save_state("followup_digest_last", now.isoformat())
+            print(f"[Followup Scheduler] Digest posted: {len(due)} due, {len(untracked)} untracked")
+        except Exception as e:
+            _report_error("_followup_scheduler", e)
+        _time.sleep(1500)
+
+
+threading.Thread(target=_followup_scheduler, daemon=True).start()
 
 # Daily Briefing thread (7 AM Eastern)
 threading.Thread(target=_daily_briefing_thread, daemon=True).start()
@@ -12223,6 +12399,15 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
             )
             if result.get("ok"):
                 print(f"[Welcome Email] Sent to {to_email} ({lead_name}) via {source}")
+                # S28: stamp welcome time so followup_scheduler can compute
+                # Susan's 24h-then-3d cadence per lead email.
+                try:
+                    import pg_store as _fp
+                    if _fp.enabled():
+                        _fp.save_state("welcome_email_at:" + _clean_to.lower(),
+                                       datetime.now(pytz.timezone(TIMEZONE)).isoformat())
+                except Exception as _sx:
+                    print(f"[Welcome Email] welcome stamp failed (non-fatal): {_sx}")
                 _post_to_slack_async(SLACK_SUSAN_CHANNEL,
                     f"*AUTO — Welcome Email Sent*\n"
                     f"To: {to_email} ({lead_name})\n"
@@ -12248,6 +12433,7 @@ def _send_welcome_email_async(to_email, lead_name, source="form"):
 # missing the endpoint refuses to send instead of accepting a known default.
 SEND_EMAIL_TOKEN = os.getenv("SEND_EMAIL_TOKEN", "")
 LARA_SEND_TOKEN = os.getenv("LARA_SEND_TOKEN", "")  # S26: per-agent token (independent revocation)
+SUSAN_SEND_TOKEN = os.getenv("SUSAN_SEND_TOKEN", "")  # S28: Susan's per-agent token (she was on the dead shared default since Jul 16)
 
 def _api_auth_token(data):
     """S26: multi-token auth for the agent endpoints (/api/send-email,
@@ -12266,6 +12452,8 @@ def _api_auth_token(data):
         return True, "master"
     if LARA_SEND_TOKEN and supplied == LARA_SEND_TOKEN:
         return True, "lara"
+    if SUSAN_SEND_TOKEN and supplied == SUSAN_SEND_TOKEN:
+        return True, "susan"  # S28
     return False, None
 
 
@@ -12293,7 +12481,7 @@ def api_send_wa_media():
     """
     try:
         data = request.get_json(force=True)
-        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN:
+        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN and not SUSAN_SEND_TOKEN:
             return jsonify({"success": False, "error": "endpoint disabled: no server token configured"}), 503
         _auth_ok, _via = _api_auth_token(data)
         if not _auth_ok:
@@ -12373,10 +12561,10 @@ def api_send_email():
         data = request.get_json(force=True)
 
         # Auth check (S24 fail-closed; S26 multi-token + Bearer-header transport)
-        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN:
+        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN and not SUSAN_SEND_TOKEN:
             _report_error("send_email_token_missing",
                           "no send tokens set — /api/send-email is disabled",
-                          "set SEND_EMAIL_TOKEN (and optionally LARA_SEND_TOKEN) in Railway Variables")
+                          "set SEND_EMAIL_TOKEN (and optionally LARA_SEND_TOKEN / SUSAN_SEND_TOKEN) in Railway Variables")
             return jsonify({"success": False, "error": "send-email disabled: no server token configured"}), 503
         _auth_ok, _via = _api_auth_token(data)
         if not _auth_ok:
@@ -12420,6 +12608,18 @@ def api_send_email():
 
         if result["ok"]:
             print(f"[SEND-EMAIL API] Sent to {to_email} — msgId: {result['message_id']}")
+            # S28: stamp per-recipient follow-up time so followup_scheduler
+            # knows this lead was touched (any via — master/lara/susan).
+            try:
+                import pg_store as _fp
+                if _fp.enabled():
+                    _fp.save_state("followup_sent:" + to_email.lower(), {
+                        "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                        "via": _via,
+                        "subject": subject[:120],
+                    })
+            except Exception as _sx:
+                print(f"[SEND-EMAIL API] followup stamp failed (non-fatal): {_sx}")
             return jsonify({
                 "success": True,
                 "message_id": result["message_id"],
@@ -12788,7 +12988,7 @@ def studio_availability():
             singleEvents=True,
             orderBy="startTime",
             maxResults=2500,
-        ).execute()
+        ).execute(num_retries=3)
         _sa_items = _sa_events.get("items", [])
         _sa_by_date = {}
         for _sa_i in range(_sa_days):
@@ -12890,7 +13090,7 @@ def studio_booking_webhook():
                         "start": {"dateTime": f"{date}T{start}:00", "timeZone": TIMEZONE},
                         "end": {"dateTime": f"{date}T{end}:00", "timeZone": TIMEZONE},
                     }
-                    _sb_created = _sb_svc.events().insert(calendarId=CALENDAR_ID, body=_sb_body).execute()
+                    _sb_created = _sb_svc.events().insert(calendarId=CALENDAR_ID, body=_sb_body).execute(num_retries=3)
                     _sbpg.save_state(f"studio_booking_gcal:{bid}", {"event_id": _sb_created.get("id", "")})
                     gcal_note = "calendar ✅"
                 except Exception as _sb_e:
@@ -12907,7 +13107,7 @@ def studio_booking_webhook():
                     _sb_rec = _sbpg.load_state(f"studio_booking_gcal:{bid}") or {}
                     _sb_gid = _sb_rec.get("event_id") if isinstance(_sb_rec, dict) else _sb_rec
                     if _sb_gid:
-                        get_calendar_service().events().delete(calendarId=CALENDAR_ID, eventId=_sb_gid).execute()
+                        get_calendar_service().events().delete(calendarId=CALENDAR_ID, eventId=_sb_gid).execute(num_retries=3)
                         gcal_note = "calendar event removed ✅"
                     else:
                         gcal_note = "no calendar event on file (booked pre-S12?)"
@@ -14086,7 +14286,7 @@ def _read_leads_from_sheets():
     try:
         svc = get_sheets_service()
         meta = _sheets_execute_with_retry(
-            lambda: svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(),
+            lambda: svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(num_retries=3),
             "spreadsheet metadata read")
         tabs = [s["properties"]["title"] for s in meta["sheets"]]
         month_order = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,
@@ -14108,7 +14308,7 @@ def _read_leads_from_sheets():
                     lambda t=tab: svc.spreadsheets().values().get(
                         spreadsheetId=SHEETS_LEADS_ID,
                         range=f"'{t}'!A1:T",
-                    ).execute(),
+                    ).execute(num_retries=3),
                     f"tab '{tab}' read")
                 rows = result.get("values", [])
                 if len(rows) < 2:
@@ -14641,9 +14841,9 @@ def _calendar_write_selftest():
             "start": {"dateTime": start.isoformat()},
             "end": {"dateTime": (start + timedelta(minutes=5)).isoformat()},
         }
-        ev = service.events().insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none").execute()
+        ev = service.events().insert(calendarId=CALENDAR_ID, body=body, sendUpdates="none").execute(num_retries=3)
         _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
-        service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"], sendUpdates="none").execute()
+        service.events().delete(calendarId=CALENDAR_ID, eventId=ev["id"], sendUpdates="none").execute(num_retries=3)
         print(f"[CAL-SELFTEST] PASS — SA {sa} has write access to {CALENDAR_ID}")
         _post_to_slack_async(
             SLACK_DEV_CHANNEL,
@@ -15192,7 +15392,7 @@ def meeting_report_meetings():
                     singleEvents=True,
                     orderBy="startTime",
                     timeZone="America/New_York",
-                ).execute()
+                ).execute(num_retries=3)
                 events = result.get("items", [])
             except Exception:
                 events = []
@@ -15653,7 +15853,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
         result = svc.spreadsheets().values().get(
             spreadsheetId=sheet_id,
             range=f"'{month_tab}'!A:T"
-        ).execute()
+        ).execute(num_retries=3)
         rows = result.get("values", [])
     except Exception:
         # Try without quotes
@@ -15661,7 +15861,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
             result = svc.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
                 range=f"{month_tab}!A:T"
-            ).execute()
+            ).execute(num_retries=3)
             rows = result.get("values", [])
         except Exception as e:
             print(f"[MEETING REPORT] Could not read tab '{month_tab}': {e}")
@@ -15691,7 +15891,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
                 result = svc.spreadsheets().values().get(
                     spreadsheetId=sheet_id,
                     range=f"'{tab_name}'!A:T"
-                ).execute()
+                ).execute(num_retries=3)
                 rows = result.get("values", [])
                 for i, row in enumerate(rows):
                     if _mr_row_match(row):
@@ -15724,7 +15924,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
             range=f"'{month_tab}'!H{target_row}",
             valueInputOption="RAW",
             body={"values": [[new_status]]}
-        ).execute()
+        ).execute(num_retries=3)
 
         # Append to Notes column (J)
         existing_notes = ""
@@ -15737,7 +15937,7 @@ def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
             range=f"'{month_tab}'!J{target_row}",
             valueInputOption="RAW",
             body={"values": [[updated_notes]]}
-        ).execute()
+        ).execute(num_retries=3)
 
         print(f"[MEETING REPORT] Updated '{name}' in '{month_tab}' row {target_row}: status={new_status}")
     except Exception as e:
@@ -15800,7 +16000,7 @@ def _lookup_lead_phone(name):
             result = svc.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
                 range=f"'{tab_name}'!A:T"
-            ).execute()
+            ).execute(num_retries=3)
             rows = result.get("values", [])
         except Exception:
             continue
@@ -16478,7 +16678,7 @@ def _migrate_ig_source_backfill():
         if _pg.enabled() and _pg.load_state("s64_ig_backfill_done", False):
             return
         svc = get_sheets_service()
-        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute()
+        meta = svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(num_retries=3)
         fixed = 0
         for sheet in meta.get("sheets", []):
             title = sheet["properties"]["title"]
@@ -16489,7 +16689,7 @@ def _migrate_ig_source_backfill():
             result = svc.spreadsheets().values().get(
                 spreadsheetId=SHEETS_LEADS_ID,
                 range=f"'{title}'!A:M",
-            ).execute()
+            ).execute(num_retries=3)
             rows = result.get("values", [])
             data = []
             for i, row in enumerate(rows[1:], start=2):
@@ -16506,7 +16706,7 @@ def _migrate_ig_source_backfill():
                 svc.spreadsheets().values().batchUpdate(
                     spreadsheetId=SHEETS_LEADS_ID,
                     body={"valueInputOption": "RAW", "data": data},
-                ).execute()
+                ).execute(num_retries=3)
                 fixed += len(data)
         print(f"[S6.4] IG source backfill complete — retro-tagged {fixed} rows as 'Instagram DM'")
         if _pg.enabled():
