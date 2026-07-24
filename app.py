@@ -4593,6 +4593,7 @@ SHEET_HEADERS = [
     "Source", "Last Contact Date", "Outreach Channel",
     "Outreach Message Sent", "WhatsApp Status",
     "Conversation Summary", "Appointment Booked", "Lead Temperature",
+    "Ad ID", "Ad Campaign", "CTWA Click ID",
 ]
 
 def get_sheets_service():
@@ -5073,9 +5074,14 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
         # Try to find an existing row by phone number and UPDATE it
         result = svc.spreadsheets().values().get(
             spreadsheetId=SHEETS_LEADS_ID,
-            range=f"'{tab_name}'!A:T",
+            range=f"'{tab_name}'!A:W",  # S27: widened for attribution cols U/V/W
         ).execute()
         rows = result.get("values", [])
+        # S27: pull ad-attribution fields captured at inbound time
+        _attr = lead_data.get(sender, {}) if isinstance(lead_data.get(sender), dict) else {}
+        _ad_id = _attr.get("ad_id", "")
+        _ad_campaign = _attr.get("utm_campaign", "")
+        _ctwa = _attr.get("ctwa_clid", "")
 
         # ── Migrate headers: add missing columns to existing tabs ──
         if rows and len(rows[0]) < len(SHEET_HEADERS):
@@ -5113,7 +5119,11 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                     {"range": f"'{tab_name}'!N{row_number}", "values": [[now.strftime("%Y-%m-%d")]]},
                     {"range": f"'{tab_name}'!Q{row_number}", "values": [["Active"]]},
                     {"range": f"'{tab_name}'!R{row_number}", "values": [[transcript[:500] if transcript else ""]]},
-                ]},
+                ] + ([
+                    {"range": f"'{tab_name}'!U{row_number}", "values": [[_ad_id]]},
+                    {"range": f"'{tab_name}'!V{row_number}", "values": [[_ad_campaign]]},
+                    {"range": f"'{tab_name}'!W{row_number}", "values": [[_ctwa]]},
+                ] if _ad_id or _ctwa else [])},
             ).execute()
             print(f"â Lead row updated in Sheets (row {row_number}): {clean_phone}")
         else:
@@ -5136,6 +5146,9 @@ def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
                 "",                       # R: Conversation Summary
                 "N",                      # S: Appointment Booked
                 "Warm",                   # T: Lead Temperature
+                _ad_id,                   # U: Ad ID (S27 attribution)
+                _ad_campaign,             # V: Ad Campaign
+                _ctwa,                    # W: CTWA Click ID
             ]
             svc.spreadsheets().values().append(
                 spreadsheetId=SHEETS_LEADS_ID,
@@ -6734,7 +6747,14 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 lead_data[sender]["utm_campaign"] = _wa_referral.get("headline", "")
                 lead_data[sender]["utm_content"] = _wa_referral.get("body", "")
                 lead_data[sender]["ad_referral"] = True
-                print(f"[UTM] WhatsApp ad referral detected for {sender}: {_wa_referral.get('headline', 'N/A')}")
+                # S27: capture the IDs ERIC needs for ad->revenue attribution.
+                # source_id = the Meta ad ID; ctwa_clid = the click-to-WhatsApp
+                # click ID that ties this conversation to a specific ad click.
+                lead_data[sender]["ad_id"] = _wa_referral.get("source_id", "")
+                lead_data[sender]["ctwa_clid"] = _wa_referral.get("ctwa_clid", "")
+                print(f"[UTM] WhatsApp ad referral: ad_id={_wa_referral.get('source_id','N/A')} "
+                      f"clid={(_wa_referral.get('ctwa_clid','') or '')[:12]} "
+                      f"headline={_wa_referral.get('headline', 'N/A')}")
         except Exception as _utm_err:
             print(f"⚠️ UTM tracking error (non-fatal, Maya still responds): {_utm_err}")
 
@@ -7087,6 +7107,26 @@ def webhook_instagram():
             # Skip delivery/read receipts
             if "delivery" in messaging_event or "read" in messaging_event:
                 continue
+
+            # S27: capture click-to-Instagram-DM ad referral for attribution.
+            # IG delivers it as messaging_event["referral"] (or message.referral)
+            # with ref (=ctwa_clid equivalent), ad_id, source, ads_context_data.
+            try:
+                _ig_ref = messaging_event.get("referral", {}) or messaging_event.get("message", {}).get("referral", {})
+                if _ig_ref and (_ig_ref.get("ad_id") or _ig_ref.get("ref")):
+                    _ig_sender = f"instagram:{sender_id}"
+                    if _ig_sender not in lead_data:
+                        lead_data[_ig_sender] = {}
+                    _ig_ctx = _ig_ref.get("ads_context_data", {}) or {}
+                    lead_data[_ig_sender]["utm_source"] = _ig_ref.get("source", "ad")
+                    lead_data[_ig_sender]["utm_campaign"] = _ig_ctx.get("ad_title", "")
+                    lead_data[_ig_sender]["ad_id"] = _ig_ref.get("ad_id", "")
+                    lead_data[_ig_sender]["ctwa_clid"] = _ig_ref.get("ref", "")
+                    lead_data[_ig_sender]["ad_referral"] = True
+                    print(f"[UTM] Instagram ad referral: ad_id={_ig_ref.get('ad_id','N/A')} "
+                          f"ref={(_ig_ref.get('ref','') or '')[:12]}")
+            except Exception as _ig_utm_err:
+                print(f"⚠️ IG UTM tracking error (non-fatal): {_ig_utm_err}")
 
             # Extract message content
             message = messaging_event.get("message", {})
