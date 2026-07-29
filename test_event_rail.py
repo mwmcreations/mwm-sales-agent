@@ -150,5 +150,80 @@ healthy = {
 }
 check("healthy event flags nothing", audit_event(healthy), [])
 
-print(f"\n{'=' * 60}\n  {_passed} passed, {_failed} failed\n{'=' * 60}")
+print(f"\n--- Patch #30 section: {_passed} passed, {_failed} failed ---")
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #31 — classification, client filter, confirmation plan
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import (classify_event, is_client_event, due_stages,
+                        KIND_STUDIO_VISIT, KIND_STRATEGY_CALL,
+                        KIND_PRODUCTION_SHOOT, KIND_PORTAL_BOOKING,
+                        KIND_INTERNAL, KIND_UNKNOWN)
+
+print("\n== S-3 · client vs non-client (the 69-flag blast radius) ==")
+# The 16 real client events from the Jul 29 dry run
+check_true("Studio Visit — Priti Verma is a client event",
+           is_client_event({"summary": "Studio Visit — Priti Verma (Pretty_dangles)"}))
+check_true("Strategy Call — Jorge Pabon is a client event",
+           is_client_event({"summary": "Strategy Call — Jorge Pabon (JP Missions)"}))
+check_true("portal booking is a client event",
+           is_client_event({"summary": "🎬 Studio: Todd Berger (rental) (1.00h)"}))
+check_true("production shoot is a client event",
+           is_client_event({"summary": "MWM Creations — Video Shoot w/ Rafael Madeira"}))
+
+print("\n== the 53 that MUST NOT be repaired ==")
+for title in ["TREINO EMS Vida Fit",
+              "BLOQUEADO — Campeonato da Juliane em Tampa",
+              "SEND WEEKLY UPDATE E-MAIL - VICTORY TV",
+              "SM write self-test (auto-deleted)"]:
+    check_false(f"NOT repaired: {title[:38]}", is_client_event({"summary": title}))
+
+print("\n== the court hearing — ambiguous, must be SKIPPED not guessed ==")
+hearing = {
+    "summary": "0844538-85.2024.8.19.0002 04ªVRCNI",
+    "attendees": [{"email": "michellmoraes@gmail.com", "responseStatus": "needsAction"},
+                  {"email": "pedrosouza@tjrj.jus.br", "responseStatus": "needsAction"}],
+}
+kind, is_client, why = classify_event(hearing)
+check_false("court hearing is NOT treated as a client event", is_client)
+check("...and it is classified ambiguous, not internal", kind, KIND_UNKNOWN)
+check_true("...with a stated reason (skipped, never guessed)", "AMBIGUOUS" in why)
+
+print("\n== S-3 · confirmation plan is event-type aware ==")
+check("studio visit at T-24 -> client confirmation",
+      due_stages(KIND_STUDIO_VISIT, 24.0), [("client", 24)])
+check("studio visit has NO T-48 crew stage",
+      due_stages(KIND_STUDIO_VISIT, 48.0), [])
+check("production shoot at T-48 -> CREW confirmation",
+      due_stages(KIND_PRODUCTION_SHOOT, 48.0), [("crew", 48)])
+check("production shoot at T-24 -> CLIENT confirmation",
+      due_stages(KIND_PRODUCTION_SHOOT, 24.0), [("client", 24)])
+check_true("production shoot at T-2 covers client AND crew",
+           set(due_stages(KIND_PRODUCTION_SHOOT, 2.0)) == {("client", 2), ("crew", 2)})
+check("nothing is due at T-12", due_stages(KIND_PRODUCTION_SHOOT, 12.0), [])
+
+print("\n== SPEC §5 CRITERION 7 — RAFAEL REPLAY, ALL THREE CATCHES ==")
+rafael = {
+    "id": "99tpbuekbnr3fsebv6o8e2enog",
+    "summary": "MWM Creations — Video Shoot w/ Rafael Madeira",
+    "description": "Testimonial shoot at FastLine Group, 2-6 PM",
+    "location": "",
+    "start": {"dateTime": "2026-07-28T14:00:00-04:00"},
+    "attendees": [{"email": "rafamade@hotmail.com", "responseStatus": "needsAction"}],
+    "reminders": {"useDefault": True},
+}
+_found = audit_event(rafael)
+check_true("catch 1/3 — empty location caught at creation",
+           any("location" in i for i in _found))
+check_true("catch 2/3 — client confirmation at T-24 is scheduled",
+           ("client", 24) in due_stages(KIND_PRODUCTION_SHOOT, 24.0))
+check_true("catch 3/3 — crew confirmation at T-48 is scheduled",
+           ("crew", 48) in due_stages(KIND_PRODUCTION_SHOOT, 48.0))
+check_true("...and the event is correctly typed as a production shoot",
+           classify_event(rafael)[0] == KIND_PRODUCTION_SHOOT)
+check_true("...and the stale RSVP is still caught",
+           any("needsAction" in i for i in _found))
+print("  >>> CRITERION #7 MET — all three catches present. <<<")
+
+print(f"\n{'=' * 60}\n  PATCH #31 TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

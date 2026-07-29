@@ -668,6 +668,88 @@ def _resolve_mwm_clients_tab(svc):
     return None
 
 
+def diagnose_mwm_clients():
+    """Patch #31 — WHY is the MWM Clients sheet reading zero rows?
+
+    On Jul 28 LARA reported the sheet came back empty and correctly REFUSED to
+    write Dr. Scott Robinson's tracker record into it, blocking a $1,200/mo
+    client. She was right to refuse — and the reason she could not resolve it
+    herself is the actual bug:
+
+    `_get_all_clients()` returns a bare `[]` through FOUR different paths, and
+    `get_production_overview()` reported all four as
+    "MWM Clients sheet is empty — no clients found."
+    That message is TRUE in exactly one of the four cases:
+
+        1. LEADS_SHEET_ID unset ............ config problem
+        2. tab renamed or deleted .......... someone edited the spreadsheet
+        3. genuinely zero data rows ........ the only case the message fits
+        4. header row changed .............. aliases match nothing, every row dropped
+
+    Case 4 is the quiet one. Alias matching is exact-lowercase-string, so
+    "name" matches and "client" matches but "client name" matches NOTHING —
+    a one-word header edit silently empties the entire roster with no error.
+
+    An agent must never be told "empty" when the truth is "I could not read it."
+    Returns a dict; never raises.
+    """
+    out = {"ok": False, "case": None, "detail": "", "tabs_found": [],
+           "headers_found": [], "headers_recognised": [], "data_rows": 0}
+    if not LEADS_SHEET_ID:
+        out.update(case="no_sheet_id",
+                   detail="GOOGLE_SHEETS_LEADS_ID is not set — this is a config problem, "
+                          "not an empty sheet.")
+        return out
+    try:
+        svc = _get_sheets_service()
+        meta = svc.spreadsheets().get(spreadsheetId=LEADS_SHEET_ID).execute()
+        out["tabs_found"] = [s["properties"]["title"] for s in meta["sheets"]]
+        tab = _resolve_mwm_clients_tab(svc)
+        if tab is None:
+            out.update(case="tab_missing",
+                       detail=(f"No tab named '{MWM_CLIENTS_TAB}' or "
+                               f"'{MWM_CLIENTS_TAB_LEGACY}'. Tabs that DO exist: "
+                               f"{out['tabs_found']}. The tab was renamed or deleted — "
+                               f"the client data is almost certainly intact under a "
+                               f"different name."))
+            return out
+        rows = svc.spreadsheets().values().get(
+            spreadsheetId=LEADS_SHEET_ID, range=f"'{tab}'!A1:J").execute().get("values", [])
+        if not rows:
+            out.update(case="sheet_blank", detail=f"Tab '{tab}' exists but has no rows at all.")
+            return out
+        out["headers_found"] = [h.strip() for h in rows[0]]
+        recognised = [h for h in (x.strip().lower() for x in rows[0])
+                      if h in _MWM_CLIENTS_HEADER_ALIASES]
+        out["headers_recognised"] = recognised
+        out["data_rows"] = max(0, len(rows) - 1)
+        if not recognised:
+            out.update(case="headers_unrecognised",
+                       detail=(f"Tab '{tab}' has {len(rows) - 1} data row(s), but NONE of its "
+                               f"headers are recognised: {out['headers_found']}. Every row is "
+                               f"therefore dropped and the sheet reports as empty. Matching is "
+                               f"exact-lowercase — e.g. 'Name' works, 'Client Name' does not. "
+                               f"Recognised names: {sorted(set(_MWM_CLIENTS_HEADER_ALIASES))}"))
+            return out
+        if len(rows) < 2:
+            out.update(case="truly_empty", ok=True,
+                       detail=f"Tab '{tab}' has headers but genuinely zero data rows.")
+            return out
+        parsed = len(_get_all_clients())
+        if parsed == 0:
+            out.update(case="rows_filtered_out",
+                       detail=(f"Tab '{tab}' has {len(rows) - 1} data row(s) and recognised "
+                               f"headers {recognised}, but every row was dropped for having "
+                               f"neither a name nor a phone. Check the name/phone columns."))
+            return out
+        out.update(case="healthy", ok=True,
+                   detail=f"Tab '{tab}' is healthy — {parsed} client(s) readable.")
+        return out
+    except Exception as e:
+        out.update(case="api_error", detail=f"Sheets API error (NOT an empty sheet): {e}")
+        return out
+
+
 def _get_all_clients():
     """Read all clients from the MWM Clients tab (Session 30.11).
 
@@ -677,6 +759,10 @@ def _get_all_clients():
 
     Works with both the canonical 10-col schema and the legacy 6-col schema
     via header aliasing.
+
+    NOTE (Patch #31): a bare [] from this function is AMBIGUOUS — see
+    diagnose_mwm_clients() for which of the four causes actually applies.
+    Never report [] to a human as "the sheet is empty".
     """
     if not LEADS_SHEET_ID:
         return []
@@ -754,7 +840,14 @@ def get_production_overview(text):
     try:
         clients = _get_all_clients()
         if not clients:
-            return "📋 *MWM Clients sheet is empty* — no clients found."
+            # Patch #31: never report "empty" when the truth may be
+            # "renamed tab" / "changed headers" / "could not read it".
+            d = diagnose_mwm_clients()
+            if d.get("case") in ("truly_empty",):
+                return "📋 *MWM Clients sheet is genuinely empty* — headers present, zero data rows."
+            return ("⚠️ *MWM Clients sheet could not be read — this is NOT necessarily an empty sheet.*\n"
+                    f"*Diagnosis:* `{d.get('case')}`\n{d.get('detail')}\n"
+                    "_Do not write client records until this is resolved._")
 
         lines = [f"📋 *MWM Clients Overview* — {len(clients)} clients\n"]
 

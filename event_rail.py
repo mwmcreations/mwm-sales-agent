@@ -343,6 +343,114 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
     return body, issues
 
 
+# ── Patch #31 · S-3/S-5 · EVENT CLASSIFICATION ───────────────────────
+# The Jul 29 backfill dry run scanned 69 future events and flagged all 69.
+# Only 16 were client events. The other 53 were TREINO EMS gym sessions,
+# BLOQUEADO travel blocks and VICTORY TV admin reminders — flagged by the
+# same rules, but not client events at all.
+#
+# That is why REPAIR and NUDGE need a filter and AUDIT does not:
+#   audit everything      -> over-auditing is noise
+#   repair only clients   -> over-repairing is DATA CORRUPTION
+# Running ?apply=1 without this would have stamped the studio's postal
+# address onto 53 of Michael's gym sessions and personal blocks.
+#
+# The asymmetry is deliberate and anything ambiguous is SKIPPED, NEVER GUESSED.
+
+KIND_STUDIO_VISIT = "studio_visit"
+KIND_STRATEGY_CALL = "strategy_call"
+KIND_PRODUCTION_SHOOT = "production_shoot"
+KIND_PORTAL_BOOKING = "portal_booking"
+KIND_INTERNAL = "internal"
+KIND_UNKNOWN = "unknown"
+
+# Client-event titles, as actually written by the four creation paths.
+_TITLE_PATTERNS = [
+    (KIND_STUDIO_VISIT, re.compile(r"^\s*studio visit\s*[—\-]", re.I)),
+    (KIND_STRATEGY_CALL, re.compile(r"^\s*strategy call\s*[—\-]", re.I)),
+    (KIND_PORTAL_BOOKING, re.compile(r"studio:\s", re.I)),
+    (KIND_PRODUCTION_SHOOT, re.compile(r"(video shoot|filmagem|production shoot|depoimento)", re.I)),
+]
+
+# Recurring personal / admin blocks. These are NEVER client events and must
+# never be repaired. Matched anywhere in the title, case-insensitive.
+_INTERNAL_MARKERS = [
+    "treino", "ems", "bloqueado", "send weekly update", "victory tv",
+    "campeonato", "aniversário", "aniversario", "férias", "ferias",
+    "holiday", "dentist", "medico", "médico", "self-test",
+]
+
+# Addresses that belong to us, not to a client.
+_INTERNAL_EMAIL_DOMAINS = ("mwmcreations.com", "mwmscreens.com")
+
+
+def classify_event(ev):
+    """Classify a calendar event. Returns (kind, is_client, why).
+
+    is_client is True ONLY when we are confident. Ambiguous events come back
+    False with a reason — the caller must skip them rather than guess.
+    """
+    summary = str(ev.get("summary") or "")
+    desc = str(ev.get("description") or "")
+    low = summary.lower()
+
+    for marker in _INTERNAL_MARKERS:
+        if marker in low:
+            return KIND_INTERNAL, False, f"internal/recurring block (matched {marker!r})"
+
+    for kind, pat in _TITLE_PATTERNS:
+        if pat.search(summary):
+            return kind, True, f"title matches {kind}"
+
+    # Created by one of our own paths? The rail stamps this at creation.
+    if "Booked by: Maya" in desc or "Studio Package portal booking" in desc:
+        return KIND_PORTAL_BOOKING, True, "created by a known machine write-path"
+
+    # An external attendee is suggestive but NOT sufficient on its own —
+    # Michael's court hearing has two external attendees and is not a client.
+    ext = [a.get("email", "") for a in (ev.get("attendees") or [])
+           if isinstance(a, dict) and a.get("email")
+           and not str(a["email"]).lower().endswith(_INTERNAL_EMAIL_DOMAINS)]
+    if ext:
+        return KIND_UNKNOWN, False, (
+            f"has {len(ext)} external attendee(s) but no recognised client-event title — "
+            f"AMBIGUOUS, skipped rather than guessed")
+
+    return KIND_UNKNOWN, False, "no client-event signal"
+
+
+def is_client_event(ev):
+    """True only for events we are confident are client-facing."""
+    return classify_event(ev)[1]
+
+
+# ── Patch #31 · S-3 · what each event type is owed ───────────────────
+# Spec S-3: production shoots get crew T-48 hard yes/no, client T-24 explicit
+# yes, and T-2h day-of to all. Studio visits keep the rail that already works.
+# "Do not build a second reminder system for shoots" — this is the same job,
+# made event-type aware.
+CONFIRMATION_PLAN = {
+    KIND_STUDIO_VISIT:     [("client", 24), ("client", 2)],
+    KIND_STRATEGY_CALL:    [("client", 24), ("client", 2)],
+    KIND_PORTAL_BOOKING:   [("client", 24), ("client", 2)],
+    KIND_PRODUCTION_SHOOT: [("crew", 48), ("client", 24), ("client", 2), ("crew", 2)],
+}
+
+
+def due_stages(kind, hours_until, tolerance=1.0):
+    """Which confirmation stages are due right now for this event?
+
+    Returns a list of (audience, hours_before) tuples. Tolerance is half the
+    poll window — the caller de-duplicates with a persistent marker, so a
+    generous window is safe and a narrow one silently misses sends.
+    """
+    out = []
+    for audience, h in CONFIRMATION_PLAN.get(kind, []):
+        if (h - tolerance) <= hours_until <= (h + tolerance):
+            out.append((audience, h))
+    return out
+
+
 def audit_event(ev):
     """Read-only check of an EXISTING Google Calendar event.
 

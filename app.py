@@ -35,7 +35,9 @@ import event_rail
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
                         reminder_channel_for, EventRailRejected,
-                        STANDARD_REMINDERS)
+                        STANDARD_REMINDERS,
+                        classify_event, is_client_event, due_stages,
+                        CONFIRMATION_PLAN, KIND_PRODUCTION_SHOOT)
 from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
 
 load_dotenv()
@@ -8523,13 +8525,72 @@ def _noshow_detector():
 threading.Thread(target=_noshow_detector, daemon=True).start()
 
 
+def _event_rail_client_email(event):
+    """Best available client address for this event: attendee first, then the
+    'Email:' line the creation paths write into the description."""
+    for a in (event.get("attendees") or []):
+        if not isinstance(a, dict):
+            continue
+        em = str(a.get("email") or "")
+        if em and not em.lower().endswith(("mwmcreations.com", "mwmscreens.com")):
+            return em
+    for line in str(event.get("description") or "").split("\n"):
+        if line.strip().lower().startswith("email:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _post_assignment(channel, title, owner, deadline, exact_text, why, event_when=""):
+    """S-4 · NEVER post a generic alert. Post an ASSIGNMENT.
+
+    The 22-hour Bruno bug was not a people problem: LARA posted 'here is the
+    draft to send' and it sat unowned for 22 hours because no human was named
+    and no time was given. MATT's own correction: *when a step cannot be
+    executed by the person holding the task, name the human who will do it and
+    the time by which they must, in the same message.* 'Here is the draft' is
+    not delegation.
+
+    Michael is currently the only human in the process, so every escalation
+    terminates with him by design — but the deadline and the exact text are
+    what make it actionable rather than another notification to scroll past.
+    """
+    _post_to_slack_async(channel, (
+        f"📋 *ASSIGNMENT — {title}*\n"
+        f"*Owner:* {owner}   *By:* {deadline}\n"
+        f"*Why this is manual:* {why}\n"
+        + (f"*Event:* {event_when}\n" if event_when else "")
+        + f"\n*Send exactly this:*\n```{exact_text}```\n"
+        f"_If this is still unacknowledged at the deadline it is raised again in #matt._"
+    ))
+
+
 def _lead_reminder_thread():
-    """S2.3 + S24b: WhatsApp reminders to LEADS at T-24h and T-2h before Studio Visit / Strategy Call.
-    Free-form send when the lead has an open 24h session; when the window is closed the
-    approved UTILITY template mwm_lara_shoot_reminder goes out instead (window-exempt).
-    Only if BOTH fail does #matt get a manual-touch alert."""
+    """S-3/S-4/S-5/S-6 (Patch #31) — ONE event-type-aware confirmation job.
+
+    Spec design principle, stated so it is not missed: *do not build a second
+    reminder system for shoots.* Path A (Maya studio visits) already worked —
+    Anderson got two reminders with no human involved. This is that same job,
+    generalised, not a replacement rail beside it.
+
+    What changed from the T-24/T-2 lead reminder it grew out of:
+      S-3  event-type aware. Production shoots get crew T-48 hard yes/no,
+           client T-24 explicit yes, and T-2h day-of to all. Studio visits and
+           strategy calls keep exactly the cadence that already works.
+      S-6  a real fallback ladder. Free-form -> approved template -> EMAIL ->
+           named assignment. Previously an IG-sourced lead with no phone had
+           no rail at all and the failure was invisible.
+      S-4  when nothing can be automated, post an ASSIGNMENT with a named
+           human and a deadline, never a generic alert.
+      S-5  RSVP watcher: a client-facing event still `needsAction` at T-24 is
+           raised in #lara and #matt. Anderson sat 8 days, Rafael 12,
+           Dondrique 8. Nobody should have to remember to look at that field.
+
+    Non-client events are skipped entirely — the same filter the backfill
+    repair path uses. Without it this job would chase Michael's gym sessions
+    and nudge a Brazilian court clerk for an RSVP.
+    """
     import time as _t
-    print("[REMINDERS] Lead reminder thread started (polls every 15 min)")
+    print("[EVENT-RAIL] Confirmation job started (event-type aware, polls every 15 min)")
     _t.sleep(720)
     while True:
         try:
@@ -8540,80 +8601,148 @@ def _lead_reminder_thread():
             events_result = service.events().list(
                 calendarId=CALENDAR_ID,
                 timeMin=now.isoformat(),
-                timeMax=(now + timedelta(hours=26)).isoformat(),
+                # 50h horizon so the T-48 crew stage is reachable at all.
+                timeMax=(now + timedelta(hours=50)).isoformat(),
                 singleEvents=True,
-                orderBy="startTime"
+                orderBy="startTime",
             ).execute(num_retries=3)
+
             for event in events_result.get("items", []):
                 event_id = event.get("id", "")
                 summary = event.get("summary", "")
-                if not any(kw in summary for kw in ["Studio Visit", "Strategy Call"]):
-                    continue
                 start_info = event.get("start", {})
                 if "dateTime" not in start_info:
                     continue
+
+                kind, is_client, why_class = classify_event(event)
+                if not is_client:
+                    continue
+
                 event_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
                 hours_until = (event_start - now).total_seconds() / 3600
-                stage = None
-                if 23.0 <= hours_until <= 25.0:
-                    stage = "24h"
-                elif 1.5 <= hours_until <= 2.5:
-                    stage = "2h"
-                if not stage:
-                    continue
-                mark = f"{event_id}:{stage}"
-                if mark in _lead_reminder_sent:
-                    continue
-                _lead_reminder_sent.add(mark)
-                _ln, _lp = "", ""
-                for line in event.get("description", "").split("\n"):
-                    if line.startswith("Lead:"):
-                        _ln = line.replace("Lead:", "").strip()
-                    elif line.startswith("Phone:"):
-                        _lp = re.sub(r"\D", "", line.replace("Phone:", ""))
-                if not _lp and _ln:
-                    for _k, _v in list(lead_data.items()):
-                        if _k.startswith("whatsapp:") and _v.get("name", "").strip().lower() == _ln.strip().lower():
-                            _lp = re.sub(r"\D", "", _k)
-                            break
                 when = event_start.strftime("%A at %I:%M %p")
-                if not _lp:
-                    _post_to_slack_async(SLACK_MATT_CHANNEL, (
-                        f"\u23f0 Reminder due ({stage} before): *{_ln or 'Unknown'}* — {summary}, {when}. "
-                        f"No phone on file — manual reminder required."
-                    ))
-                    continue
-                _fn = (_ln or "there").split()[0]
-                if stage == "24h":
-                    msg = (f"Hi {_fn}! Maya from MWM Creations here \U0001f60a Just a friendly reminder about your "
-                           f"session tomorrow — {when}. We're excited to see you! Reply here if you need "
-                           f"anything or need to reschedule.")
-                else:
-                    msg = (f"Hi {_fn}! See you soon — your session with Michael starts at "
-                           f"{event_start.strftime('%I:%M %p')} today. Reply here if you need anything!")
-                result = send_whatsapp_meta(f"whatsapp:+{_lp}", body=msg)
-                if result:
-                    _post_to_slack_async(SLACK_PIPELINE_CHANNEL, f"\u23f0 \U0001f916 {stage} reminder sent to *{_ln}* — {summary}, {when}.")
-                else:
-                    # S24b: window closed (or send refused) -> approved utility template.
-                    # mwm_lara_shoot_reminder body: "Hello {{1}}, ... appointment with {{2}} on {{3}} at {{4}}."
-                    _tpl = send_wa_utility_template(
-                        f"whatsapp:+{_lp}", "mwm_lara_shoot_reminder",
-                        [_fn, "MWM Creations & Studios",
-                         event_start.strftime("%A, %B %d"),
-                         event_start.strftime("%I:%M %p")])
-                    if _tpl:
+
+                # ── S-5 · RSVP watcher ──────────────────────────────
+                if 23.0 <= hours_until <= 25.0:
+                    pending = [a.get("email", "?") for a in (event.get("attendees") or [])
+                               if isinstance(a, dict)
+                               and a.get("responseStatus") == "needsAction"
+                               and not str(a.get("email", "")).lower().endswith(
+                                   ("mwmcreations.com", "mwmscreens.com"))]
+                    rsvp_mark = f"{event_id}:rsvp24"
+                    if pending and rsvp_mark not in _lead_reminder_sent:
+                        _lead_reminder_sent.add(rsvp_mark)
+                        _msg = (f"🔔 *RSVP UNANSWERED AT T-24* — {summary}, {when}\n"
+                                f"Still `needsAction`: {', '.join(pending)}\n"
+                                f"_Anderson sat 8 days, Rafael 12, Dondrique 8. "
+                                f"This is the field nobody was watching._")
+                        _post_to_slack_async(SLACK_LARA_CHANNEL, _msg)
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
+
+                # ── S-3 · which confirmations are due right now ─────
+                for audience, stage_h in due_stages(kind, hours_until):
+                    mark = f"{event_id}:{audience}:{stage_h}h"
+                    if mark in _lead_reminder_sent:
+                        continue
+                    _lead_reminder_sent.add(mark)
+
+                    _ln = ""
+                    _lp = ""
+                    for line in str(event.get("description") or "").split("\n"):
+                        if line.startswith("Lead:"):
+                            _ln = line.replace("Lead:", "").strip()
+                        elif line.startswith("Phone:"):
+                            _lp = re.sub(r"\D", "", line.replace("Phone:", ""))
+                    if not _lp and _ln:
+                        for _k, _v in list(lead_data.items()):
+                            if _k.startswith("whatsapp:") and \
+                                    _v.get("name", "").strip().lower() == _ln.strip().lower():
+                                _lp = re.sub(r"\D", "", _k)
+                                break
+                    _fn = (_ln or "there").split()[0] if _ln else "there"
+                    _email = _event_rail_client_email(event)
+
+                    # ── CREW stage: always an assignment ────────────
+                    # Crew contacts are not structured anywhere the machine can
+                    # read (they live on LARA's call sheet), so per S-4 this is
+                    # posted as an assignment rather than pretended to be
+                    # automated. Honest beats silent.
+                    if audience == "crew":
+                        _post_assignment(
+                            SLACK_LARA_CHANNEL,
+                            f"Crew confirmation T-{stage_h}h — {summary}",
+                            owner="MICHAEL",
+                            deadline=(now + timedelta(hours=4)).strftime("%A %I:%M %p ET"),
+                            exact_text=(
+                                f"Confirming {when} — {summary}. "
+                                f"Please reply YES or NO so I can lock the call sheet."),
+                            why="crew contacts are not machine-readable (call sheet is manual)",
+                            event_when=when,
+                        )
+                        continue
+
+                    # ── CLIENT stage: automated ladder, S-6 ─────────
+                    _sent_via = None
+                    if _lp and is_dialable("+" + _lp):
+                        if stage_h >= 24:
+                            body = (f"Hi {_fn}! Maya from MWM Creations here 😊 Reminder about your "
+                                    f"session tomorrow — {when}. Could you reply YES to confirm? "
+                                    f"Reply here if you need to reschedule.")
+                        else:
+                            body = (f"Hi {_fn}! See you soon — your session starts at "
+                                    f"{event_start.strftime('%I:%M %p')} today. Reply here if you need anything!")
+                        if send_whatsapp_meta(f"whatsapp:+{_lp}", body=body):
+                            _sent_via = "WhatsApp (free-form)"
+                        elif send_wa_utility_template(
+                                f"whatsapp:+{_lp}", "mwm_lara_shoot_reminder",
+                                [_fn, "MWM Creations & Studios",
+                                 event_start.strftime("%A, %B %d"),
+                                 event_start.strftime("%I:%M %p")]):
+                            _sent_via = "WhatsApp (approved template)"
+
+                    # S-6 email fallback — the half that was missing. An
+                    # IG-sourced booking whose only identifier is an IGSID can
+                    # never receive a WhatsApp message; before this it simply
+                    # got nothing and nobody was told.
+                    if not _sent_via and _email and ascii_email(_email)[1]:
+                        try:
+                            if send_gmail(
+                                ascii_email(_email)[0],
+                                f"Confirming your session — {event_start.strftime('%A, %B %d')}",
+                                (f"Hi {_fn},<br><br>Confirming your session with MWM Creations "
+                                 f"on <b>{when}</b>.<br>Location: {event.get('location') or STUDIO_ADDRESS}"
+                                 f"<br><br>Could you reply to confirm you're coming?<br><br>"
+                                 f"— MWM Creations &amp; Studios"),
+                            ):
+                                _sent_via = "email (WhatsApp unavailable)"
+                        except Exception as _mail_err:
+                            _report_error("event_rail.email_fallback", _mail_err, f"event={event_id}")
+
+                    if _sent_via:
                         _post_to_slack_async(SLACK_PIPELINE_CHANNEL, (
-                            f"\u23f0 \U0001f916 {stage} reminder sent via TEMPLATE to *{_ln}* — {summary}, {when} "
-                            f"(free-form window closed; utility template used)."
-                        ))
+                            f"⏰ 🤖 T-{stage_h}h {audience} confirmation sent to *{_ln or _email or 'client'}* "
+                            f"via {_sent_via} — {summary}, {when}."))
                     else:
+                        # S-4: every rail failed. Name a human, give a deadline,
+                        # supply the exact text. Never a bare alert.
+                        _rchan, _rwhy = reminder_channel_for("+" + _lp if _lp else None, _email)
+                        _post_assignment(
+                            SLACK_LARA_CHANNEL,
+                            f"Client confirmation T-{stage_h}h — {summary}",
+                            owner="MICHAEL",
+                            deadline=(event_start - timedelta(hours=max(1, stage_h // 2))
+                                      ).strftime("%A %I:%M %p ET"),
+                            exact_text=(f"Hi {_fn}, confirming {when} — {summary}. "
+                                        f"Please reply to confirm."),
+                            why=f"no automated rail could reach this client ({_rwhy})",
+                            event_when=when,
+                        )
                         _post_to_slack_async(SLACK_MATT_CHANNEL, (
-                            f"\u26a0\ufe0f {stage} reminder to *{_ln}* FAILED (window closed AND template send failed). "
-                            f"Please remind them manually — {summary}, {when}."
-                        ))
+                            f"⚠️ *UNREACHABLE CLIENT* — {summary}, {when}. "
+                            f"T-{stage_h}h confirmation could not be automated: {_rwhy}. "
+                            f"Assignment posted in #lara with Michael named."))
         except Exception as e:
-            _report_error("Lead reminder thread (S2.3)", e)
+            _report_error("Event confirmation rail (S-3/S-4/S-5/S-6)", e)
         _t.sleep(900)
 
 
@@ -11766,6 +11895,162 @@ def slack_events():
 # ── ADMIN: Send a proactive Maya message to a lead ──────────────────
 # Used when Maya needs to follow up after a technical error or re-engage
 # a lead who might not message back. Protected by UPLOAD_SECRET.
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #31 · SCHEDULED-TASK IDEMPOTENCY (MATT's scheduler ticket, modes 1+2)
+#
+# MATT characterised a three-mode defect and assigned it to DEV:
+#   1. SKIPPED runs      — Jul 25/26/28, MATT + ERIC both, silently
+#   2. MULTI-FIRE        — same task ID, 3 fires in 12 min
+#                          (ad06-morning-check 07:52 -> 08:04)
+#   3. DELIVERY DUPES    — every outbound posting 2x, content-independent
+#
+# Modes 1 and 2 live in the Cowork scheduler, which we do not control — but we
+# DO control what our tasks do when they wake up. So we fix them at the
+# consumer instead of the producer:
+#
+#   mode 2 -> a task CLAIMS its run before doing any work. The first fire wins,
+#             the second and third get already_claimed and exit silently. The
+#             scheduler may fire ten times; exactly one run does work.
+#   mode 1 -> because runs are claimed, a watchdog knows what SHOULD have
+#             claimed by now. A skip stops being invisible.
+#
+# Mode 3 is downstream of everything we control and is NOT fixed here. It goes
+# to Anthropic with the evidence log. Do not pretend otherwise.
+#
+# Claims live in pg (survives restarts) and fall back to memory if pg is off.
+# ══════════════════════════════════════════════════════════════════════
+
+def _admin_secret_ok(provided):
+    """Patch #31 — admin auth that FAILS CLOSED.
+
+    Every `/admin/*` route used to read `os.getenv("UPLOAD_SECRET", "mwm-media-2026")`.
+    The env var was unset in Railway, so prod silently fell back to a default string
+    that is committed in this file: repo access equalled prod admin access. Setting
+    the env var fixed the instance; removing the fallback fixes the CLASS. If the
+    variable is ever unset again — new environment, typo, deleted variable — every
+    admin route refuses rather than quietly reopening the door.
+    """
+    expected = os.getenv("UPLOAD_SECRET", "")
+    if not expected:
+        print("[ADMIN-AUTH] REFUSED — UPLOAD_SECRET is not set. Failing closed by design.")
+        return False
+    return hmac.compare_digest(str(provided or ""), expected)
+
+
+_task_claims_mem = {}
+_task_claim_lock = threading.Lock()
+
+# name -> (hour, minute, grace_minutes) in ET. A task that has not claimed by
+# its deadline + grace gets raised in #dev. Keep this list in sync with the
+# real scheduled tasks; an entry that no longer exists will cry wolf daily,
+# and a report that cries wolf gets ignored.
+EXPECTED_DAILY_TASKS = {
+    "ad06-morning-check":        (8, 0, 90),
+    "maya-instagram-dm-check":   (10, 0, 90),
+    "maya-24h-followup":         (18, 0, 90),
+}
+
+
+def _task_claim(task, date_str, ttl_days=7):
+    """Claim one (task, date). Returns (claimed: bool, detail: str).
+
+    claimed=True  -> you are the first fire; do the work.
+    claimed=False -> a previous fire already did it; exit WITHOUT posting.
+    """
+    key = f"task_claim:{task}:{date_str}"
+    with _task_claim_lock:
+        try:
+            import pg_store as _pg_tc
+            if _pg_tc.enabled():
+                existing = _pg_tc.load_state(key)
+                if existing:
+                    return False, f"already claimed at {existing.get('at', '?')}"
+                _pg_tc.save_state(key, {"at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                                        "task": task, "date": date_str})
+                return True, "claimed (pg)"
+        except Exception as e:
+            print(f"[TASK-CLAIM] pg unavailable, falling back to memory: {e}")
+        # Memory fallback — still kills a 12-minute triple-fire, which is the
+        # observed failure. It does not survive a restart; that is acceptable
+        # because a restart between fires would have re-run the task anyway.
+        if key in _task_claims_mem:
+            return False, f"already claimed at {_task_claims_mem[key]} (memory)"
+        _task_claims_mem[key] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+        return True, "claimed (memory)"
+
+
+@app.route("/admin/task-claim", methods=["GET", "POST"])
+def admin_task_claim():
+    """Idempotency gate for scheduled tasks.
+
+        GET /admin/task-claim?secret=...&task=ad06-morning-check
+        -> {"claimed": true}   first fire  — DO THE WORK
+        -> {"claimed": false}  later fire  — STOP, POST NOTHING
+
+    Optional &date=YYYY-MM-DD; defaults to today in ET (NOT UTC — the
+    scheduled-run environment reports UTC and that is what produced the
+    phantom "Jul 28" stamp; every date here is resolved in Eastern).
+    """
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "unauthorized"}), 403
+    task = (request.values.get("task") or "").strip()
+    if not task:
+        return jsonify({"error": "task required"}), 400
+    date_str = (request.values.get("date") or "").strip() or \
+        datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+    claimed, detail = _task_claim(task, date_str)
+    if not claimed:
+        print(f"[TASK-CLAIM] DUPLICATE FIRE SUPPRESSED: {task} {date_str} — {detail}")
+    return jsonify({"claimed": claimed, "task": task, "date": date_str, "detail": detail})
+
+
+def _missed_run_watchdog():
+    """MATT ticket mode 1: a scheduled task that never fires must not be silent.
+
+    Because every task claims its run, absence of a claim past the deadline is
+    positive evidence of a skip. Raises once per task per day in #dev.
+    """
+    import time as _t
+    _t.sleep(600)
+    while True:
+        try:
+            _heartbeat("missed_run_watchdog")
+            tz = pytz.timezone(TIMEZONE)
+            now = datetime.now(tz)
+            today = now.strftime("%Y-%m-%d")
+            for task, (hh, mm, grace) in EXPECTED_DAILY_TASKS.items():
+                deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0) \
+                    + timedelta(minutes=grace)
+                if now < deadline:
+                    continue
+                claim_key = f"task_claim:{task}:{today}"
+                alert_key = f"task_missed_alerted:{task}:{today}"
+                try:
+                    import pg_store as _pg_w
+                    if not _pg_w.enabled():
+                        continue      # cannot distinguish missed from unknown — say nothing
+                    if _pg_w.load_state(claim_key):
+                        continue      # it ran
+                    if _pg_w.load_state(alert_key):
+                        continue      # already raised today
+                    _pg_w.save_state(alert_key, {"at": now.isoformat()})
+                except Exception:
+                    continue
+                _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                    f"🔕 *SCHEDULED TASK DID NOT RUN* — `{task}`\n"
+                    f"Expected by {hh:02d}:{mm:02d} ET (+{grace}m grace); no claim recorded for {today}.\n"
+                    f"This is the silent-skip failure mode from MATT's scheduler ticket. "
+                    f"A missed run is now visible the same day instead of being noticed "
+                    f"as a hole in the history days later."
+                ))
+        except Exception as e:
+            _report_error("missed_run_watchdog", e)
+        _t.sleep(1800)
+
+
+threading.Thread(target=_missed_run_watchdog, daemon=True).start()
+
+
 @app.route("/admin/event-rail-backfill", methods=["GET", "POST"])
 def admin_event_rail_backfill():
     """S-1 backfill — audit every future-dated event on the MWM calendar.
@@ -11780,8 +12065,7 @@ def admin_event_rail_backfill():
         GET  /admin/event-rail-backfill?secret=...&apply=1    -> repair
         &days=90                                              -> horizon
     """
-    secret = request.values.get("secret", "")
-    if secret != os.getenv("UPLOAD_SECRET", "mwm-media-2026"):
+    if not _admin_secret_ok(request.values.get("secret", "")):
         return jsonify({"error": "unauthorized"}), 403
 
     apply_changes = request.values.get("apply", "") in ("1", "true", "yes")
@@ -11803,9 +12087,10 @@ def admin_event_rail_backfill():
         _report_error("event_rail.backfill_list", e)
         return jsonify({"error": f"calendar list failed: {e}"}), 500
 
-    scanned = clean = flagged = repaired = failed = 0
+    scanned = clean = flagged = repaired = failed = skipped = 0
     report_lines = []
     detail = []
+    skipped_detail = []
 
     for ev in items:
         # All-day blocks (BLOQUEADO, travel) are not client events — skip.
@@ -11823,6 +12108,23 @@ def admin_event_rail_backfill():
         report_lines.append(f"• *{title}* — {when}\n    " + "\n    ".join(f"– {i}" for i in issues))
 
         if not apply_changes:
+            continue
+
+        # ── PATCH #31 · CLIENT-EVENT FILTER — audit everything, repair only clients ──
+        # The Jul 29 dry run flagged 69 of 69 future events, but only 16 were
+        # client events. The other 53 were TREINO EMS sessions, BLOQUEADO travel
+        # blocks and VICTORY TV admin reminders. Repairing those would have
+        # written the studio's postal address into 53 of Michael's personal
+        # calendar entries — a self-inflicted data-corruption incident caused by
+        # the repair tool, not by any of the bugs it exists to fix.
+        #
+        # Over-auditing is noise. Over-repairing is corruption. Hence the
+        # asymmetry, and hence: anything AMBIGUOUS is skipped, never guessed.
+        _kind, _is_client, _why = classify_event(ev)
+        if not _is_client:
+            skipped += 1
+            skipped_detail.append({"summary": title, "start": when,
+                                   "kind": _kind, "reason": _why})
             continue
 
         # ── repair, conservatively ──
@@ -11856,7 +12158,13 @@ def admin_event_rail_backfill():
     mode = "APPLY" if apply_changes else "DRY RUN"
     header = (f"🛠️ *Event Rail backfill — {mode}* (next {horizon_days}d)\n"
               f"scanned *{scanned}* timed events · ✅ clean *{clean}* · ⚠️ flagged *{flagged}*"
-              + (f" · 🔧 repaired *{repaired}* · ❌ patch failed *{failed}*" if apply_changes else ""))
+              + (f" · 🔧 repaired *{repaired}* · ⏭️ skipped as non-client *{skipped}* "
+                 f"· ❌ patch failed *{failed}*" if apply_changes else ""))
+    if apply_changes and skipped:
+        # NO SILENT CAPS. What the repair declined to touch is stated out loud,
+        # so "repaired 16" can never be misread as "fixed everything".
+        header += (f"\n_Skipped {skipped} non-client event(s) — personal blocks, recurring "
+                   f"admin, and anything ambiguous. Audited, deliberately not written to._")
     body = header + ("\n\n" + "\n".join(report_lines) if report_lines else "\n\nNothing flagged.")
     try:
         # Slack truncates hard; keep the post readable and let JSON carry the rest.
@@ -11868,14 +12176,15 @@ def admin_event_rail_backfill():
         "mode": mode, "horizon_days": horizon_days,
         "scanned": scanned, "clean": clean, "flagged": flagged,
         "repaired": repaired, "patch_failed": failed,
+        "skipped_non_client": skipped,
         "events": detail,
+        "skipped_events": skipped_detail,
     })
 
 
 @app.route("/admin/send-maya-message", methods=["POST"])
 def admin_send_maya_message():
-    secret = request.form.get("secret", "")
-    if secret != os.getenv("UPLOAD_SECRET", "mwm-media-2026"):
+    if not _admin_secret_ok(request.form.get("secret", "")):
         return jsonify({"error": "unauthorized"}), 403
     phone = request.form.get("phone", "").strip()
     message = request.form.get("message", "").strip()
@@ -11899,7 +12208,7 @@ def admin_send_maya_message():
 # Resumable Upload API (server-side, no CORS issues), then edits the
 # template to attach the media header.  Remove after templates are set.
 
-UPLOAD_SECRET = os.getenv("UPLOAD_SECRET", "mwm-media-2026")
+UPLOAD_SECRET = os.getenv("UPLOAD_SECRET", "")   # Patch #31: no committed fallback
 GRAPH_APP_ID = "1506472514232143"
 
 @app.route("/upload-template-media", methods=["POST", "OPTIONS"])
@@ -11913,7 +12222,7 @@ def upload_template_media():
         return resp
 
     secret = request.headers.get("X-Upload-Secret", "") or request.form.get("secret", "")
-    if secret != UPLOAD_SECRET:
+    if not _admin_secret_ok(secret):
         return jsonify({"ok": False, "error": "unauthorized"}), 403
 
     if not META_ACCESS_TOKEN:
@@ -12041,6 +12350,7 @@ button:disabled{opacity:.5}
 <input type="file" accept="image/png,image/jpeg" id="f2"><div class="status" id="s2"></div></div>
 <div class="card"><h3>4. maya_reengagement_6 (IMAGE)</h3>
 <input type="file" accept="image/png,image/jpeg" id="f3"><div class="status" id="s3"></div></div>
+<div class="card"><h3>Admin secret</h3><input type="password" id="sec" placeholder="paste UPLOAD_SECRET" style="width:100%;padding:8px;border-radius:6px;border:1px solid #444;background:#0f1626;color:#eee"><div class="status">Patch #31: the secret is no longer baked into this page. On the Mac: <code>cat ~/.mwm_upload_secret</code></div></div>
 <br><button onclick="uploadAll()" id="btn" style="font-size:18px;padding:14px 36px">Upload All</button>
 <div id="ov" style="margin-top:12px;font-size:16px"></div>
 <script>
@@ -12051,7 +12361,10 @@ async function up(i){
  if(!fi){s.innerHTML='<span class="err">No file selected</span>';return false}
  s.innerHTML='<span class="loading">Uploading '+fi.name+' ('+((fi.size/1048576)|0)+' MB)...</span>';
  const fd=new FormData();fd.append("file",fi);fd.append("template_name",T[i].n);
- fd.append("media_type",T[i].t);fd.append("secret","mwm-media-2026");
+ fd.append("media_type",T[i].t);
+ const sec=document.getElementById("sec").value.trim();
+ if(!sec){s.innerHTML='<span class="err">Enter the admin secret first</span>';return false}
+ fd.append("secret",sec);
  try{const r=await fetch("/upload-template-media",{method:"POST",body:fd});
  const d=await r.json();
  if(d.ok){s.innerHTML='<span class="ok">Done! Template updated.</span>';return true}
