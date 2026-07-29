@@ -340,5 +340,78 @@ check("Priti studio visit still gets the studio address",
       location_repair_for(KIND_STUDIO_VISIT, STUDIO, VIRTUAL)[0], STUDIO)
 check_true("Ehmcke IGSID still refused", is_ig_scoped("+1046947537903616"))
 
+print(f"\n--- Patch #33 section: {_passed} passed, {_failed} failed ---")
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #34 — canvas stage ladder (Robinson P0) and the RSVP-NOTE parser.
+# These mirror the app.py logic exactly; app.py itself needs Flask + Google
+# libs to import, so the logic is asserted here against the same rules.
+# ══════════════════════════════════════════════════════════════════════
+
+def canvas_stage(ld):
+    """Mirror of the Patch #34 stage ladder in _sync_pipeline_canvas."""
+    _status = (ld.get("status") or "").lower()
+    _wa = (ld.get("wa_status") or "").lower()
+    _outcome = (ld.get("outcome") or "").lower()
+    _product = (ld.get("product") or "").strip()
+    if ("client" in _status or _outcome == "won" or bool(_product)):
+        return "Client"
+    if ld.get("appt_booked"):
+        return "Booked"
+    if "contacted" in _status or "active" in _wa:
+        return "Contacted"
+    if ld.get("email") or "new" in _status.lower():
+        return "New"
+    return "Contacted"
+
+
+print("\n== ROBINSON STAGE-SYNC P0 ==")
+# His real shape on Jul 29: paid Jul 27, Aug 20 shoot booked.
+robinson = {"name": "Dr. Scott Robinson", "email": "healer2bsure@gmail.com",
+            "status": "Client — Studio Package", "outcome": "Won",
+            "product": "Studio Package", "appt_booked": True}
+check("Robinson reads CLIENT, not Booked", canvas_stage(robinson), "Client")
+
+check("outcome=Won alone is enough",
+      canvas_stage({"outcome": "Won", "appt_booked": True}), "Client")
+check("product alone is enough",
+      canvas_stage({"product": "Studio Package", "appt_booked": True}), "Client")
+check("sheet status alone is enough",
+      canvas_stage({"status": "Client — Studio Package", "appt_booked": True}), "Client")
+
+print("\n== and the ladder below Client is UNCHANGED ==")
+check("booked-but-not-a-client still reads Booked",
+      canvas_stage({"appt_booked": True, "status": "Contacted"}), "Booked")
+check("contacted still reads Contacted",
+      canvas_stage({"status": "Contacted"}), "Contacted")
+check("a form lead still reads New",
+      canvas_stage({"email": "x@y.com"}), "New")
+check("no signal at all still reads Contacted", canvas_stage({}), "Contacted")
+
+print("\n== the exact regression: a paying client WITH a booking ==")
+# Before #34 this returned "Booked" forever — that was the P0.
+check_true("a paid client with a future booking is never 'Booked' again",
+           canvas_stage({"outcome": "Won", "appt_booked": True}) != "Booked")
+
+
+def rsvp_note(description):
+    """Mirror of the Patch #34 RSVP-NOTE parser."""
+    for line in str(description or "").split("\n"):
+        if line.strip().upper().startswith("RSVP-NOTE:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+print("\n== S-5 RSVP-NOTE travels with the flag (MATT's request) ==")
+check("note is extracted",
+      rsvp_note("Studio session\nRSVP-NOTE: confirmed on WhatsApp Jul 29 — RSVP stale"),
+      "confirmed on WhatsApp Jul 29 — RSVP stale")
+check("lowercase marker also works",
+      rsvp_note("rsvp-note: client confirmed by phone"), "client confirmed by phone")
+check("no note returns empty, not an error", rsvp_note("Just a description"), "")
+check("empty description is safe", rsvp_note(""), "")
+check("a note containing a colon keeps its full text",
+      rsvp_note("RSVP-NOTE: confirmed 10:30 by WhatsApp"), "confirmed 10:30 by WhatsApp")
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

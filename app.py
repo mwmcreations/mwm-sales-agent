@@ -800,6 +800,26 @@ def _normalize_phone(raw):
     return re.sub(r"\D", "", str(raw))
 
 
+def _find_lead_by_name(name_raw):
+    """Patch #34 — find a lead by name. Returns (key, rec) or (None, None).
+
+    Used ONLY as a fallback when a Stripe payment cannot be matched by email,
+    because a paid client whose stage never updates is worse than a slightly
+    fuzzy match that gets reported. Exact case-insensitive match on the full
+    name only — no fuzzy matching, no first-name-only. An ambiguous match
+    returns nothing and the caller escalates to a human, because guessing which
+    lead a payment belongs to would write revenue onto the wrong record.
+    """
+    want = (name_raw or "").strip().lower()
+    if not want or len(want) < 4:
+        return None, None
+    hits = [(k, v) for k, v in list(lead_data.items())
+            if (v.get("name") or "").strip().lower() == want]
+    if len(hits) != 1:
+        return None, None       # zero or ambiguous -> refuse, do not guess
+    return hits[0]
+
+
 def _find_lead_by_phone(phone_raw):
     """Search lead_data for a matching phone, regardless of key format.
     Returns (key, data_dict) or (None, None)."""
@@ -8646,10 +8666,36 @@ def _lead_reminder_thread():
                     rsvp_mark = f"{event_id}:rsvp24"
                     if pending and rsvp_mark not in _lead_reminder_sent:
                         _lead_reminder_sent.add(rsvp_mark)
+                        # ── PATCH #34 · the note travels WITH the flag ──────
+                        # MATT's request, from the Bolfer case: he confirmed the
+                        # Aug 15 move on WhatsApp ("blz") but the calendar RSVP
+                        # never caught up, so S-5 will flag a client who is
+                        # actually coming. Without context that flag reads as a
+                        # no-show risk and gets escalated to Michael for nothing.
+                        #
+                        # Anyone who knows the context writes a line on the event:
+                        #     RSVP-NOTE: confirmed on WhatsApp Jul 29 — RSVP stale
+                        # and it is carried on every future alert for that event.
+                        # Self-service by design: no code change per client, and
+                        # the context lives on the artifact rather than in someone's
+                        # memory of a Slack thread.
+                        _rsvp_note = ""
+                        for _dl in str(event.get("description") or "").split("\n"):
+                            if _dl.strip().upper().startswith("RSVP-NOTE:"):
+                                _rsvp_note = _dl.split(":", 1)[1].strip()
+                                break
                         _msg = (f"🔔 *RSVP UNANSWERED AT T-24* — {summary}, {when}\n"
-                                f"Still `needsAction`: {', '.join(pending)}\n"
-                                f"_Anderson sat 8 days, Rafael 12, Dondrique 8. "
-                                f"This is the field nobody was watching._")
+                                f"Still `needsAction`: {', '.join(pending)}\n")
+                        if _rsvp_note:
+                            _msg += (f"📝 *Note on this event:* {_rsvp_note}\n"
+                                     f"_Context travels with the flag — check this "
+                                     f"before escalating._\n")
+                        else:
+                            _msg += (f"_No RSVP-NOTE on this event. If you resolve this "
+                                     f"out-of-band, add a line `RSVP-NOTE: …` to the event "
+                                     f"description so the next alert carries the answer._\n")
+                        _msg += (f"_Anderson sat 8 days, Rafael 12, Dondrique 8. "
+                                 f"This is the field nobody was watching._")
                         _post_to_slack_async(SLACK_LARA_CHANNEL, _msg)
                         _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
 
@@ -11962,7 +12008,19 @@ EXPECTED_DAILY_TASKS = {
     "ad06-morning-check":        (8, 0, 90),
     "maya-instagram-dm-check":   (10, 0, 90),
     "maya-24h-followup":         (18, 0, 90),
+    # Patch #34 — added on MATT's instruction. An unlisted scheduled task still
+    # fails SILENTLY, which is the whole failure this watchdog exists to end.
+    # `sales-auto-outcome-sweep` is the 24h no-report marker; it is scheduled,
+    # so it can skip without anyone noticing.
+    "client-zero-daily-run":     (8, 0, 90),
+    "matt-morning-briefing":     (8, 0, 90),
+    "lara-morning-sheet-sync":   (8, 0, 90),
+    "sales-auto-outcome-sweep":  (22, 0, 90),
 }
+# NOTE for MATT: these four are taken from your message verbatim. If any is not
+# the scheduler's actual task ID, the watchdog will report it missing EVERY DAY
+# and become the cry-wolf report we keep warning about. Confirm the exact IDs,
+# or tell DEV to re-map them.
 
 
 def _task_claim(task, date_str, ttl_days=7):
@@ -12102,7 +12160,7 @@ def admin_event_rail_backfill():
         return jsonify({"error": f"calendar list failed: {e}"}), 500
 
     scanned = clean = flagged = repaired = failed = skipped = needs_human = 0
-    would_repair = 0
+    would_consider = would_change = 0
     report_lines = []
     detail = []
     skipped_detail = []
@@ -12163,9 +12221,28 @@ def admin_event_rail_backfill():
                     "needs": "location", "reason": _loc_why})
 
         if not apply_changes:
-            would_repair += 1
+            # PATCH #34 — honest counters. `would_repair` counted every client
+            # event CONSIDERED, so the dry run said 10 and the apply repaired 5:
+            # the other five already had everything and needed no write. The
+            # number was right and the label was wrong, which is how a false
+            # alarm gets born. Now both are reported: what we looked at, and
+            # what would actually change.
+            would_consider += 1
+            _would_change = bool(_loc)
+            _rem_now = ev.get("reminders") or {}
+            if _rem_now.get("useDefault") or not _rem_now.get("overrides"):
+                _would_change = True
+            if not (ev.get("attendees") or []):
+                _found_em = [f for f in re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+",
+                                                  ev.get("description") or "")
+                             if not f.lower().endswith("mwmcreations.com")]
+                if _found_em:
+                    _would_change = True
+            if _would_change:
+                would_change += 1
             would_repair_detail.append({"summary": title, "start": when, "kind": _kind,
-                                        "location_fill": _loc or None})
+                                        "location_fill": _loc or None,
+                                        "would_change": _would_change})
             continue
 
         # ── repair, conservatively ──
@@ -12201,7 +12278,8 @@ def admin_event_rail_backfill():
               f"scanned *{scanned}* timed events · ✅ clean *{clean}* · ⚠️ flagged *{flagged}*"
               + (f" · 🔧 repaired *{repaired}* · ⏭️ skipped as non-client *{skipped}* "
                  f"· ❌ patch failed *{failed}*" if apply_changes
-                 else f" · 🔧 *would repair {would_repair}* · ⏭️ would skip *{skipped}* "
+                 else f" · 👀 *considered {would_consider}* · ✏️ *would actually change "
+                      f"{would_change}* · ⏭️ would skip *{skipped}* "
                       f"· 📋 need a human address *{needs_human}*"))
     if needs_human:
         # S-4 shape: a named human, not a generic notice. These cannot be
@@ -12226,12 +12304,13 @@ def admin_event_rail_backfill():
         "scanned": scanned, "clean": clean, "flagged": flagged,
         "repaired": repaired, "patch_failed": failed,
         "skipped_non_client": skipped,
-        "would_repair": would_repair,
+        "would_consider": would_consider,
+        "would_change": would_change,
         "needs_human_location": needs_human,
         "events": detail,
         "skipped_events": skipped_detail,
         "needs_human_events": needs_human_detail,
-        "would_repair_events": would_repair_detail,
+        "would_consider_events": would_repair_detail,
     })
 
 
@@ -15000,6 +15079,11 @@ def _read_leads_from_sheets():
                         "temperature": _val("Lead Temperature"),
                         "last_contact": _val("Last Contact Date"),
                         "date": _val("Date"),
+                        # Patch #34 — the canvas could not see that a lead had
+                        # become a paying CLIENT, because these two fields were
+                        # never projected. See the stage ladder below.
+                        "outcome": _val("Outcome"),
+                        "product": _val("Product"),
                     })
             except Exception as tab_err:
                 print(f"[CANVAS SYNC] Error reading tab '{tab}' (after retries): {tab_err}")
@@ -15063,6 +15147,8 @@ def _sync_pipeline_canvas():
                 "temperature": ld.get("temperature", ""),
                 "last_contact": "",
                 "date": "",
+                "outcome": ld.get("outcome", ""),
+                "product": ld.get("product", ""),
             })
 
     total = len(leads)
@@ -15200,7 +15286,27 @@ def _sync_pipeline_canvas():
         name = (ld.get("name") or "Unknown")[:20]
         source = (ld.get("source") or "WhatsApp")[:15]
         lead_type = "Form" if ld.get("email") else "WhatsApp"
-        if ld.get("appt_booked"):
+        # ── PATCH #34 · ROBINSON STAGE-SYNC P0 ──────────────────────────
+        # Dr. Scott Robinson bought a Studio Package on Jul 27 and the canvas
+        # still read "Booked" two days later. The payment path was NOT at fault
+        # — studio_package.py correctly writes outcome="Won", product=…, and
+        # pushes "Client — Studio Package" to the sheet.
+        #
+        # The canvas simply never looked. `appt_booked` was tested FIRST and
+        # won over everything, so ANY paying client who also has a future
+        # booking reads "Booked" forever. Robinson has an Aug 20 shoot, so he
+        # was permanently mislabelled — and every automation reading this canvas
+        # inherited that. A reminder fired against this stale state on Jul 29.
+        #
+        # Client is now checked BEFORE booked, because being a client outranks
+        # having an appointment. Driven by three independent signals so it works
+        # whether the data arrived via the sheet or in memory.
+        _outcome = (ld.get("outcome") or "").lower()
+        _product = (ld.get("product") or "").strip()
+        _is_client = ("client" in _status or _outcome == "won" or bool(_product))
+        if _is_client:
+            stage = "Client"
+        elif ld.get("appt_booked"):
             stage = "Booked"
         elif "contacted" in _status or "active" in _wa_status:
             stage = "Contacted"
@@ -15238,7 +15344,14 @@ def _sync_pipeline_canvas():
     if not row_strs:
         row_strs = ["(no active leads)"]
 
-    _lhdr = f"{'Name':<20} {'Stage':<9} {'Score':<6} {'Phone':<16} {'Email':<25} {'Business':<15} {'Last Act':<10} {'Days in Stage':>4}"
+    # PATCH #34 — this column was labelled "Days in Stage" but computes
+    # (today - the lead's ORIGINAL created date). Robinson's alarming
+    # "Booked / 50 days" was never 50 days stuck in a stage; it was 50 days
+    # since he first became a lead. The number was right, the header was wrong,
+    # and the wrong header is what made it look like a stuck pipeline.
+    # We do not store a stage-entry timestamp, so rather than invent one the
+    # label now says what the number actually is.
+    _lhdr = f"{'Name':<20} {'Stage':<9} {'Score':<6} {'Phone':<16} {'Email':<25} {'Business':<15} {'Last Act':<10} {'Lead Age (d)':>4}"
     leads_md = "```\n" + _lhdr + "\n" + "-" * len(_lhdr) + "\n" + "\n".join(row_strs)
     if hidden_count:
         leads_md += f"\n\n{hidden_count} older leads not shown (newest {CANVAS_MAX_LEAD_ROWS}) — full list in Google Sheets."
@@ -15378,15 +15491,12 @@ import studio_package as _studio
 import rob_stripe as _rob_stripe
 
 
-def _find_lead_by_email(email):
-    """Scan lead_data for a record matching this email (case-insensitive)."""
-    _e = (email or "").strip().lower()
-    if not _e:
-        return None, None
-    for _k, _r in lead_data.items():
-        if (_r.get("email") or "").strip().lower() == _e:
-            return _k, _r
-    return None, None
+# Patch #34 — a SECOND, byte-for-byte equivalent `_find_lead_by_email` used to
+# live here, silently shadowing the one defined near the top of this file.
+# Verified identical (case-insensitive exact email match over lead_data), so
+# this was dead code rather than a behaviour bug — but two lookups with one name
+# is how a future edit to one of them produces a mystery nobody can reproduce.
+# Removed; the canonical definition is the earlier one.
 
 
 _studio.configure(
@@ -15398,6 +15508,8 @@ _studio.configure(
     pg_load=_pg.load_state,
     pg_save=_pg.save_state,
     lead_lookup_by_email=_find_lead_by_email,
+    lead_lookup_by_name=_find_lead_by_name,       # Patch #34 fallback
+    lead_lookup_by_phone=_find_lead_by_phone,
     update_sheet_status=lambda name, status: _update_lead_sheet_status(name, status, "", "", ""),
     heartbeat=_heartbeat,
     matt_channel=SLACK_MATT_CHANNEL,

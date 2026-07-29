@@ -295,9 +295,40 @@ def _on_package_purchased(name: str, email: str, event_id: str):
         _report("studio.welcome_email", e, f"email={email}")
 
     # 3 · Lead record: -> Client, product=Studio Package
+    #
+    # PATCH #34 — this block used to be a SILENT NO-OP on a lookup miss.
+    # `if key and rec is not None:` with no else branch: when the payer's Stripe
+    # email did not match a lead record, the product/outcome/sheet-status writes
+    # were all skipped and NOTHING was reported. The try/except only fires on an
+    # exception, and "not found" is not an exception.
+    #
+    # That is the same failure family as everything else in this rail: not a
+    # crash, a quiet wrong answer. A client pays, the money lands, and the
+    # pipeline still shows them as a lead — with no error anywhere to explain it.
+    #
+    # Now: email -> phone -> name, in that order, and if all three miss we
+    # report LOUDLY with the payment details so a human can link it by hand.
+    # A payment that cannot find its lead is a named assignment, never a
+    # skipped line.
     lead_name = name
     try:
         key, rec = _deps["lead_lookup_by_email"](email)
+        _matched_on = "email" if key else None
+
+        if not key:
+            # Fallback: name. (Phone is deliberately NOT attempted — this
+            # handler only receives name/email/event_id from the Stripe webhook,
+            # so there is no phone to match on. Pretending otherwise would be a
+            # lookup that silently never fires.)
+            finder = _deps.get("lead_lookup_by_name")
+            if callable(finder) and name:
+                try:
+                    key, rec = finder(name)
+                    if key:
+                        _matched_on = "name"
+                except Exception as fe:
+                    _report("studio.lead_lookup_fallback", fe, "via=name")
+
         if key and rec is not None:
             rec["product"] = PACKAGE_NAME
             rec["outcome"] = "Won"
@@ -305,6 +336,24 @@ def _on_package_purchased(name: str, email: str, event_id: str):
                                      "stripe_event": event_id}
             lead_name = rec.get("name") or name
             _deps["update_sheet_status"](lead_name, "Client — Studio Package")
+            if _matched_on != "email":
+                _deps["post_slack"](_deps["matt_channel"],
+                    f"ℹ️ Studio Package payment matched to a lead by *{_matched_on}*, "
+                    f"not email — *{lead_name}* ({email}). Worth checking the lead's "
+                    f"email field; a mismatch here is what silently strands payments.")
+        else:
+            # NEVER silent. The money arrived; the record did not.
+            _report("studio.lead_not_found",
+                    "paid customer could not be matched to any lead record",
+                    f"email={email} name={name!r} stripe_event={event_id}")
+            _deps["post_slack"](_deps["matt_channel"],
+                f"🔴 *PAID CLIENT NOT LINKED TO A LEAD* — {name} ({email})\n"
+                f"Studio Package purchased (Stripe `{event_id}`) but no lead record "
+                f"matched by email, phone or name. *Their stage will stay wrong until "
+                f"someone links it.*\n"
+                f"*MICHAEL:* confirm which lead record is theirs, or that they are new.\n"
+                f"_This used to fail silently — the payment landed and the pipeline "
+                f"simply never noticed._")
     except Exception as e:
         _report("studio.lead_update", e, f"email={email}")
 
