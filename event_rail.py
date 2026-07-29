@@ -437,6 +437,59 @@ CONFIRMATION_PLAN = {
 }
 
 
+# ── Patch #32 · WHERE does each event kind actually happen? ──────────
+# The #31 repair path wrote STUDIO_ADDRESS into ANY empty client location.
+# That is wrong, and wrong in the dangerous direction:
+#
+#   · a PRODUCTION SHOOT happens at the CLIENT's site. Rafael Madeira's was at
+#     FastLine Group, 5047 W Colonial Dr. Stamping the studio address on it
+#     would have sent the crew to the wrong side of Orlando on shoot day.
+#   · a STRATEGY CALL is a phone call. There is no address. Stamping the studio
+#     on it tells a client to drive across town for a phone call.
+#     (Jorge Pabon Aug 5, Carolina Rodriguez Aug 6 — both empty, both calls.)
+#
+# An empty location is OBVIOUSLY missing and someone asks. A WRONG location is
+# confidently misleading and someone drives to it. Wrong beats empty only in
+# the sense that it is worse.
+#
+# So the repair defaults a location ONLY where we actually know the answer.
+# Where we do not, we REFUSE TO GUESS and hand it to a human by name.
+
+VENUE_STUDIO = "studio"      # happens at our address — safe to auto-fill
+VENUE_VIRTUAL = "virtual"    # phone/video — safe to fill with a non-postal note
+VENUE_CLIENT_SITE = "client" # only Michael/LARA know where — NEVER guess
+
+EVENT_VENUE = {
+    KIND_STUDIO_VISIT:     VENUE_STUDIO,
+    KIND_PORTAL_BOOKING:   VENUE_STUDIO,
+    KIND_STRATEGY_CALL:    VENUE_VIRTUAL,
+    KIND_PRODUCTION_SHOOT: VENUE_CLIENT_SITE,
+}
+
+
+def venue_of(kind):
+    """Where this kind of event happens. Unknown kinds are treated as
+    client-site, i.e. never auto-filled — the conservative default."""
+    return EVENT_VENUE.get(kind, VENUE_CLIENT_SITE)
+
+
+def location_repair_for(kind, studio_address, virtual_note):
+    """What may the backfill safely write into an empty location?
+
+    Returns (value_or_None, reason). None means DO NOT WRITE — report it to a
+    human instead. This is the same skip-rather-than-guess rule the client
+    filter uses, applied one level deeper: it is not enough to know the event
+    is a client event, we also have to know where it happens.
+    """
+    v = venue_of(kind)
+    if v == VENUE_STUDIO:
+        return studio_address, "studio-based event — our own address is correct"
+    if v == VENUE_VIRTUAL:
+        return virtual_note, "virtual event — non-postal note, not a street address"
+    return None, ("event happens at the CLIENT's site — only a human knows the "
+                  "address. Guessing here would send the crew to the wrong place.")
+
+
 def due_stages(kind, hours_until, tolerance=1.0):
     """Which confirmation stages are due right now for this event?
 

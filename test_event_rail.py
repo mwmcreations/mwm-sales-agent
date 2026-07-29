@@ -225,5 +225,50 @@ check_true("...and the stale RSVP is still caught",
            any("needsAction" in i for i in _found))
 print("  >>> CRITERION #7 MET — all three catches present. <<<")
 
-print(f"\n{'=' * 60}\n  PATCH #31 TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
+print(f"\n--- Patch #31 section: {_passed} passed, {_failed} failed ---")
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #32 — venue awareness. The repair must not write our address onto
+# an event that happens somewhere else.
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import (location_repair_for, venue_of,
+                        VENUE_STUDIO, VENUE_VIRTUAL, VENUE_CLIENT_SITE)
+
+STUDIO = "1500 Park Center Dr, Suite 230, Orlando, FL 32835"
+VIRTUAL = "Phone / WhatsApp call — Michael will dial the number on this booking"
+
+print("\n== S-1b · WHERE does each kind happen? ==")
+check("studio visit is studio-based", venue_of(KIND_STUDIO_VISIT), VENUE_STUDIO)
+check("portal booking is studio-based", venue_of(KIND_PORTAL_BOOKING), VENUE_STUDIO)
+check("strategy call is virtual", venue_of(KIND_STRATEGY_CALL), VENUE_VIRTUAL)
+check("production shoot is at the CLIENT site", venue_of(KIND_PRODUCTION_SHOOT), VENUE_CLIENT_SITE)
+check("an unknown kind defaults to client-site (conservative)",
+      venue_of("something_new"), VENUE_CLIENT_SITE)
+
+print("\n== the bug this patch fixes ==")
+loc, why = location_repair_for(KIND_PRODUCTION_SHOOT, STUDIO, VIRTUAL)
+check("production shoot location is NOT auto-filled", loc, None)
+check_true("...and the refusal explains itself", "wrong place" in why)
+
+loc, why = location_repair_for(KIND_STRATEGY_CALL, STUDIO, VIRTUAL)
+check("strategy call gets the virtual note, NOT a street address", loc, VIRTUAL)
+check_false("...and that note is not address-shaped", looks_like_address(loc))
+
+loc, why = location_repair_for(KIND_STUDIO_VISIT, STUDIO, VIRTUAL)
+check("studio visit DOES get the studio address", loc, STUDIO)
+check_true("...and that one IS a real postal address", looks_like_address(loc))
+
+print("\n== the concrete events from the Jul 29 dry run ==")
+# Rafael's shoot was at FastLine Group, 5047 W Colonial Dr — NOT our studio.
+rafael_kind = classify_event({"summary": "MWM Creations — Video Shoot w/ Rafael Madeira"})[0]
+check_true("Rafael's shoot would NOT have our address written on it",
+           location_repair_for(rafael_kind, STUDIO, VIRTUAL)[0] is None)
+jorge_kind = classify_event({"summary": "Strategy Call — Jorge Pabon (JP Missions)"})[0]
+check_false("Jorge's strategy call does NOT get a street address",
+            looks_like_address(location_repair_for(jorge_kind, STUDIO, VIRTUAL)[0]))
+priti_kind = classify_event({"summary": "Studio Visit — Priti Verma (Pretty_dangles)"})[0]
+check("Priti's studio visit DOES get the studio address",
+      location_repair_for(priti_kind, STUDIO, VIRTUAL)[0], STUDIO)
+
+print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

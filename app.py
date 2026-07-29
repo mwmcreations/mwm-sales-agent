@@ -37,7 +37,9 @@ from event_rail import (harden_event_body, audit_event, resolve_channel,
                         reminder_channel_for, EventRailRejected,
                         STANDARD_REMINDERS,
                         classify_event, is_client_event, due_stages,
-                        CONFIRMATION_PLAN, KIND_PRODUCTION_SHOOT)
+                        CONFIRMATION_PLAN, KIND_PRODUCTION_SHOOT,
+                        location_repair_for, venue_of,
+                        VENUE_STUDIO, VENUE_VIRTUAL, VENUE_CLIENT_SITE)
 from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
 
 load_dotenv()
@@ -12087,10 +12089,11 @@ def admin_event_rail_backfill():
         _report_error("event_rail.backfill_list", e)
         return jsonify({"error": f"calendar list failed: {e}"}), 500
 
-    scanned = clean = flagged = repaired = failed = skipped = 0
+    scanned = clean = flagged = repaired = failed = skipped = needs_human = 0
     report_lines = []
     detail = []
     skipped_detail = []
+    needs_human_detail = []
 
     for ev in items:
         # All-day blocks (BLOQUEADO, travel) are not client events — skip.
@@ -12130,7 +12133,19 @@ def admin_event_rail_backfill():
         # ── repair, conservatively ──
         patch = {}
         if not (ev.get("location") or "").strip():
-            patch["location"] = STUDIO_ADDRESS
+            # PATCH #32 — do NOT blanket-fill with the studio address.
+            # A production shoot happens at the CLIENT's site (Rafael's was at
+            # FastLine Group) and a strategy call has no address at all. Writing
+            # our address onto either is worse than leaving it blank: an empty
+            # location gets questioned, a wrong one gets driven to.
+            _loc, _loc_why = location_repair_for(_kind, STUDIO_ADDRESS, STRATEGY_CALL_LOCATION)
+            if _loc:
+                patch["location"] = _loc
+            else:
+                needs_human += 1
+                needs_human_detail.append({
+                    "summary": title, "start": when, "kind": _kind,
+                    "needs": "location", "reason": _loc_why})
         rem = ev.get("reminders") or {}
         if rem.get("useDefault") or not rem.get("overrides"):
             patch["reminders"] = {"useDefault": False,
@@ -12160,6 +12175,12 @@ def admin_event_rail_backfill():
               f"scanned *{scanned}* timed events · ✅ clean *{clean}* · ⚠️ flagged *{flagged}*"
               + (f" · 🔧 repaired *{repaired}* · ⏭️ skipped as non-client *{skipped}* "
                  f"· ❌ patch failed *{failed}*" if apply_changes else ""))
+    if apply_changes and needs_human:
+        # S-4 shape: a named human, not a generic notice. These cannot be
+        # repaired by any machine — only Michael or LARA know the address.
+        header += (f"\n\n📋 *{needs_human} event(s) need a HUMAN address — MICHAEL/LARA:*\n"
+                   + "\n".join(f"• *{d['summary']}* — {d['start']}  _({d['kind']})_"
+                                for d in needs_human_detail[:10]))
     if apply_changes and skipped:
         # NO SILENT CAPS. What the repair declined to touch is stated out loud,
         # so "repaired 16" can never be misread as "fixed everything".
@@ -12177,8 +12198,10 @@ def admin_event_rail_backfill():
         "scanned": scanned, "clean": clean, "flagged": flagged,
         "repaired": repaired, "patch_failed": failed,
         "skipped_non_client": skipped,
+        "needs_human_location": needs_human,
         "events": detail,
         "skipped_events": skipped_detail,
+        "needs_human_events": needs_human_detail,
     })
 
 
