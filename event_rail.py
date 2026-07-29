@@ -361,19 +361,54 @@ KIND_STUDIO_VISIT = "studio_visit"
 KIND_STRATEGY_CALL = "strategy_call"
 KIND_PRODUCTION_SHOOT = "production_shoot"
 KIND_PORTAL_BOOKING = "portal_booking"
+# Patch #33 — two kinds the Jul 29 backfill proved were missing.
+KIND_STUDIO_PRODUCTION = "studio_production"   # a SHOOT, but at OUR studio
+KIND_CLIENT_CALL = "client_call"               # Zoom/Calendly client meeting
 KIND_INTERNAL = "internal"
 KIND_UNKNOWN = "unknown"
 
-# Client-event titles, as actually written by the four creation paths.
+# Client-event titles, as actually written by the four creation paths AND as
+# Michael types them by hand.
+#
+# PATCH #33 — WHY THIS LIST GREW. The Jul 29 backfill repaired 10 of 69 events
+# and skipped 6 as AMBIGUOUS. Skipping was the correct behaviour given what the
+# classifier knew — but two of those six were PAYING CLIENTS sitting off the
+# reminder rail entirely:
+#     "STUDIO RECORDING | Dr. Luiz Bolfer — Educational Videos"   Sat Aug 15
+#     "STUDIO SHOOT - NO LINES with Dr. Scott Robinson"           Thu Aug 20
+# Robinson is a $1,200/mo Studio Package client. Bolfer is a $2,497 client.
+# Neither title matched anything, so neither gets a confirmation or a reminder.
+#
+# The fix is MORE POSITIVE SIGNALS, never a looser rule. Skip-rather-than-guess
+# stays exactly as it is; we are teaching the classifier to recognise real
+# client events, not lowering the bar for what counts as one.
 _TITLE_PATTERNS = [
     (KIND_STUDIO_VISIT, re.compile(r"^\s*studio visit\s*[—\-]", re.I)),
     (KIND_STRATEGY_CALL, re.compile(r"^\s*strategy call\s*[—\-]", re.I)),
     (KIND_PORTAL_BOOKING, re.compile(r"studio:\s", re.I)),
-    (KIND_PRODUCTION_SHOOT, re.compile(r"(video shoot|filmagem|production shoot|depoimento)", re.I)),
+    # A shoot AT our studio. Distinct from a production shoot on location:
+    # same crew+client confirmation needs, but the venue IS our address.
+    # Matches "STUDIO RECORDING | …", "STUDIO SHOOT - …", "Studio Session w/ …".
+    (KIND_STUDIO_PRODUCTION,
+     re.compile(r"^\s*studio\s+(recording|shoot|session|filming)\b", re.I)),
+    (KIND_PRODUCTION_SHOOT,
+     re.compile(r"(video shoot|filmagem|production shoot|depoimento|on[- ]location)", re.I)),
+    # Client calls. "Zoom call …" is typed by hand; "<Name> and Michael Moraes"
+    # is Calendly's default event title, which is how the ROADMAP calls land.
+    (KIND_CLIENT_CALL, re.compile(r"^\s*(zoom|google meet|meet|teams)\b.*\bcall\b", re.I)),
+    (KIND_CLIENT_CALL, re.compile(r"^\s*zoom call\b", re.I)),
+    (KIND_CLIENT_CALL, re.compile(r"\band\s+michael\s+moraes\s*$", re.I)),
 ]
 
 # Recurring personal / admin blocks. These are NEVER client events and must
 # never be repaired. Matched anywhere in the title, case-insensitive.
+# Patch #33: a Brazilian court case number (0844538-85.2024.8.19.0002) is a
+# LEGAL matter on Michael's own calendar, not a client booking. It was landing
+# in AMBIGUOUS because it has two external attendees — which meant every
+# backfill and every S-5 nudge had to re-consider it. Naming it explicitly
+# stops the rail from ever nudging a court clerk for an RSVP.
+_LEGAL_CASE_RE = re.compile(r"\b\d{6,7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
+
 _INTERNAL_MARKERS = [
     "treino", "ems", "bloqueado", "send weekly update", "victory tv",
     "campeonato", "aniversário", "aniversario", "férias", "ferias",
@@ -393,6 +428,9 @@ def classify_event(ev):
     summary = str(ev.get("summary") or "")
     desc = str(ev.get("description") or "")
     low = summary.lower()
+
+    if _LEGAL_CASE_RE.search(summary):
+        return KIND_INTERNAL, False, "legal case number — Michael's own matter, not a client booking"
 
     for marker in _INTERNAL_MARKERS:
         if marker in low:
@@ -432,7 +470,12 @@ def is_client_event(ev):
 CONFIRMATION_PLAN = {
     KIND_STUDIO_VISIT:     [("client", 24), ("client", 2)],
     KIND_STRATEGY_CALL:    [("client", 24), ("client", 2)],
+    KIND_CLIENT_CALL:      [("client", 24), ("client", 2)],
     KIND_PORTAL_BOOKING:   [("client", 24), ("client", 2)],
+    # A studio production needs the SAME crew rail as an on-location shoot —
+    # Robinson's podcast has guests and an audience, Bolfer's is a 3h session.
+    # Only the venue differs, not the confirmation obligation.
+    KIND_STUDIO_PRODUCTION: [("crew", 48), ("client", 24), ("client", 2), ("crew", 2)],
     KIND_PRODUCTION_SHOOT: [("crew", 48), ("client", 24), ("client", 2), ("crew", 2)],
 }
 
@@ -460,10 +503,12 @@ VENUE_VIRTUAL = "virtual"    # phone/video — safe to fill with a non-postal no
 VENUE_CLIENT_SITE = "client" # only Michael/LARA know where — NEVER guess
 
 EVENT_VENUE = {
-    KIND_STUDIO_VISIT:     VENUE_STUDIO,
-    KIND_PORTAL_BOOKING:   VENUE_STUDIO,
-    KIND_STRATEGY_CALL:    VENUE_VIRTUAL,
-    KIND_PRODUCTION_SHOOT: VENUE_CLIENT_SITE,
+    KIND_STUDIO_VISIT:      VENUE_STUDIO,
+    KIND_PORTAL_BOOKING:    VENUE_STUDIO,
+    KIND_STUDIO_PRODUCTION: VENUE_STUDIO,     # a shoot, but at OUR address
+    KIND_STRATEGY_CALL:     VENUE_VIRTUAL,
+    KIND_CLIENT_CALL:       VENUE_VIRTUAL,
+    KIND_PRODUCTION_SHOOT:  VENUE_CLIENT_SITE,
 }
 
 

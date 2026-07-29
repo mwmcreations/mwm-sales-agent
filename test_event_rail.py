@@ -186,8 +186,22 @@ hearing = {
 }
 kind, is_client, why = classify_event(hearing)
 check_false("court hearing is NOT treated as a client event", is_client)
-check("...and it is classified ambiguous, not internal", kind, KIND_UNKNOWN)
-check_true("...with a stated reason (skipped, never guessed)", "AMBIGUOUS" in why)
+# SUPERSEDED BY PATCH #33: this was asserted as KIND_UNKNOWN (ambiguous). #33
+# recognises the Brazilian case-number format and classifies it INTERNAL, which
+# is strictly better — an ambiguous event gets re-considered by every backfill
+# and every S-5 pass, an internal one is settled. Behaviour change is intended.
+check("court hearing is now classified INTERNAL (Patch #33)", kind, KIND_INTERNAL)
+
+# The AMBIGUOUS path still needs coverage, so exercise it with an event that is
+# genuinely unclear: a real external attendee, no recognisable client title.
+ambiguous = {
+    "summary": "BACK TO SCHOOL BASH - KIDS",
+    "attendees": [{"email": "vidafit.juliane@gmail.com", "responseStatus": "needsAction"}],
+}
+a_kind, a_client, a_why = classify_event(ambiguous)
+check_false("a genuinely ambiguous event is NOT treated as a client event", a_client)
+check("...and it is classified ambiguous", a_kind, KIND_UNKNOWN)
+check_true("...with a stated reason (skipped, never guessed)", "AMBIGUOUS" in a_why)
 
 print("\n== S-3 · confirmation plan is event-type aware ==")
 check("studio visit at T-24 -> client confirmation",
@@ -269,6 +283,62 @@ check_false("Jorge's strategy call does NOT get a street address",
 priti_kind = classify_event({"summary": "Studio Visit — Priti Verma (Pretty_dangles)"})[0]
 check("Priti's studio visit DOES get the studio address",
       location_repair_for(priti_kind, STUDIO, VIRTUAL)[0], STUDIO)
+
+print(f"\n--- Patch #32 section: {_passed} passed, {_failed} failed ---")
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #33 — the six events the Jul 29 backfill skipped as ambiguous.
+# Two were PAYING CLIENTS sitting off the reminder rail entirely.
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import KIND_STUDIO_PRODUCTION, KIND_CLIENT_CALL
+
+print("\n== the two paying clients that were NOT on the rail ==")
+bolfer = {"summary": "STUDIO RECORDING | Dr. Luiz Bolfer — Educational Videos"}
+robinson = {"summary": "STUDIO SHOOT - NO LINES with Dr. Scott Robinson"}
+for label, ev in [("Bolfer Aug 15", bolfer), ("Robinson Aug 20", robinson)]:
+    k, is_c, _w = classify_event(ev)
+    check_true(f"{label} is now a CLIENT event", is_c)
+    check(f"{label} classified as studio production", k, KIND_STUDIO_PRODUCTION)
+    check(f"{label} venue is OUR studio", venue_of(k), VENUE_STUDIO)
+    check(f"{label} location auto-fills to the studio",
+          location_repair_for(k, STUDIO, VIRTUAL)[0], STUDIO)
+
+print("\n== a studio production owes the SAME crew rail as an on-location shoot ==")
+check("crew confirmation at T-48", due_stages(KIND_STUDIO_PRODUCTION, 48.0), [("crew", 48)])
+check("client confirmation at T-24", due_stages(KIND_STUDIO_PRODUCTION, 24.0), [("client", 24)])
+check_true("client AND crew at T-2",
+           set(due_stages(KIND_STUDIO_PRODUCTION, 2.0)) == {("client", 2), ("crew", 2)})
+
+print("\n== client calls: Zoom typed by hand, and Calendly's default title ==")
+for label, title in [("Zoom COACH FLY", "Zoom call COACH FLY - first session"),
+                     ("Calendly / Gema Hiatt", "Gema Hiatt and Michael Moraes")]:
+    k, is_c, _w = classify_event({"summary": title})
+    check_true(f"{label} is a client event", is_c)
+    check(f"{label} is a client call", k, KIND_CLIENT_CALL)
+    check(f"{label} venue is virtual", venue_of(k), VENUE_VIRTUAL)
+    check_false(f"{label} does NOT get a street address",
+                looks_like_address(location_repair_for(k, STUDIO, VIRTUAL)[0]))
+
+print("\n== the court hearing is now INTERNAL, not ambiguous ==")
+hearing = {"summary": "0844538-85.2024.8.19.0002 04\u00aaVRCNI",
+           "attendees": [{"email": "pedrosouza@tjrj.jus.br", "responseStatus": "needsAction"}]}
+k, is_c, why = classify_event(hearing)
+check_false("court hearing is not a client event", is_c)
+check("...and is classified INTERNAL, so it stops being reconsidered", k, KIND_INTERNAL)
+check_true("...with a legal-case reason", "legal case" in why)
+
+print("\n== nothing that must be skipped became a client event ==")
+for title in ["TREINO EMS Vida Fit", "BLOQUEADO — Campeonato da Juliane em Tampa",
+              "SEND WEEKLY UPDATE E-MAIL - VICTORY TV", "BACK TO SCHOOL BASH - KIDS"]:
+    check_false(f"still skipped: {title[:36]}", is_client_event({"summary": title}))
+
+print("\n== Patch #30/31/32 behaviour is unchanged ==")
+check("Rafael on-location shoot still NOT auto-filled",
+      location_repair_for(classify_event(
+          {"summary": "MWM Creations — Video Shoot w/ Rafael Madeira"})[0], STUDIO, VIRTUAL)[0], None)
+check("Priti studio visit still gets the studio address",
+      location_repair_for(KIND_STUDIO_VISIT, STUDIO, VIRTUAL)[0], STUDIO)
+check_true("Ehmcke IGSID still refused", is_ig_scoped("+1046947537903616"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

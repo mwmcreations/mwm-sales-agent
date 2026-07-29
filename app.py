@@ -529,6 +529,18 @@ TIMEZONE = "America/New_York"  # Orlando, Florida
 # (Anderson, Ehmcke, Rafael, Dondrique, Berger) were created with an empty
 # `location`, so the address existed nowhere on the event and the T-60 calendar
 # email carried no way to find us. Overridable by env for a future second room.
+# Patch #33 — process start, so /health can say how long we have been up.
+# A thread does not appear in the registry until its FIRST heartbeat, and
+# several sleep 10-12 minutes before it (lead_reminder 720s,
+# missed_run_watchdog 600s). So the thread COUNT is meaningless for roughly the
+# first 12 minutes after a boot. That is the entire explanation for the
+# "13 threads vs a baseline of 15" alarm MATT and DEV chased for days — a health
+# check that ran shortly after a deploy was simply counting too early.
+# There was never a defect. A report that cries wolf gets ignored, and an
+# ignored report is worse than no report, so /health now says so itself.
+_PROCESS_START = datetime.now(pytz.timezone(TIMEZONE))
+THREAD_REGISTRY_WARMUP_MIN = 13   # slowest first-heartbeat is lead_reminder at 12m
+
 STUDIO_ADDRESS = os.getenv(
     "STUDIO_ADDRESS",
     "1500 Park Center Dr, Suite 230, Orlando, FL 32835",
@@ -12090,10 +12102,12 @@ def admin_event_rail_backfill():
         return jsonify({"error": f"calendar list failed: {e}"}), 500
 
     scanned = clean = flagged = repaired = failed = skipped = needs_human = 0
+    would_repair = 0
     report_lines = []
     detail = []
     skipped_detail = []
     needs_human_detail = []
+    would_repair_detail = []
 
     for ev in items:
         # All-day blocks (BLOQUEADO, travel) are not client events — skip.
@@ -12109,9 +12123,6 @@ def admin_event_rail_backfill():
         title = ev.get("summary", "(no title)")
         detail.append({"id": ev.get("id"), "summary": title, "start": when, "issues": issues})
         report_lines.append(f"• *{title}* — {when}\n    " + "\n    ".join(f"– {i}" for i in issues))
-
-        if not apply_changes:
-            continue
 
         # ── PATCH #31 · CLIENT-EVENT FILTER — audit everything, repair only clients ──
         # The Jul 29 dry run flagged 69 of 69 future events, but only 16 were
@@ -12130,8 +12141,14 @@ def admin_event_rail_backfill():
                                    "kind": _kind, "reason": _why})
             continue
 
-        # ── repair, conservatively ──
-        patch = {}
+        # ── PATCH #33 · decide the location repair in DRY RUN TOO ──────────
+        # Previously the classifier and the venue decision lived BELOW the
+        # `if not apply_changes: continue` guard, so a dry run always reported
+        # skipped=0 and needs_human=0. That meant the only way to learn what
+        # the repair would actually do was to let it do it — a blind spot
+        # directly in front of a write. Now the decision is computed either
+        # way and only the WRITE is gated.
+        _loc = None
         if not (ev.get("location") or "").strip():
             # PATCH #32 — do NOT blanket-fill with the studio address.
             # A production shoot happens at the CLIENT's site (Rafael's was at
@@ -12139,13 +12156,22 @@ def admin_event_rail_backfill():
             # our address onto either is worse than leaving it blank: an empty
             # location gets questioned, a wrong one gets driven to.
             _loc, _loc_why = location_repair_for(_kind, STUDIO_ADDRESS, STRATEGY_CALL_LOCATION)
-            if _loc:
-                patch["location"] = _loc
-            else:
+            if not _loc:
                 needs_human += 1
                 needs_human_detail.append({
                     "summary": title, "start": when, "kind": _kind,
                     "needs": "location", "reason": _loc_why})
+
+        if not apply_changes:
+            would_repair += 1
+            would_repair_detail.append({"summary": title, "start": when, "kind": _kind,
+                                        "location_fill": _loc or None})
+            continue
+
+        # ── repair, conservatively ──
+        patch = {}
+        if _loc:
+            patch["location"] = _loc
         rem = ev.get("reminders") or {}
         if rem.get("useDefault") or not rem.get("overrides"):
             patch["reminders"] = {"useDefault": False,
@@ -12174,14 +12200,16 @@ def admin_event_rail_backfill():
     header = (f"🛠️ *Event Rail backfill — {mode}* (next {horizon_days}d)\n"
               f"scanned *{scanned}* timed events · ✅ clean *{clean}* · ⚠️ flagged *{flagged}*"
               + (f" · 🔧 repaired *{repaired}* · ⏭️ skipped as non-client *{skipped}* "
-                 f"· ❌ patch failed *{failed}*" if apply_changes else ""))
-    if apply_changes and needs_human:
+                 f"· ❌ patch failed *{failed}*" if apply_changes
+                 else f" · 🔧 *would repair {would_repair}* · ⏭️ would skip *{skipped}* "
+                      f"· 📋 need a human address *{needs_human}*"))
+    if needs_human:
         # S-4 shape: a named human, not a generic notice. These cannot be
         # repaired by any machine — only Michael or LARA know the address.
         header += (f"\n\n📋 *{needs_human} event(s) need a HUMAN address — MICHAEL/LARA:*\n"
                    + "\n".join(f"• *{d['summary']}* — {d['start']}  _({d['kind']})_"
                                 for d in needs_human_detail[:10]))
-    if apply_changes and skipped:
+    if skipped:
         # NO SILENT CAPS. What the repair declined to touch is stated out loud,
         # so "repaired 16" can never be misread as "fixed everything".
         header += (f"\n_Skipped {skipped} non-client event(s) — personal blocks, recurring "
@@ -12198,10 +12226,12 @@ def admin_event_rail_backfill():
         "scanned": scanned, "clean": clean, "flagged": flagged,
         "repaired": repaired, "patch_failed": failed,
         "skipped_non_client": skipped,
+        "would_repair": would_repair,
         "needs_human_location": needs_human,
         "events": detail,
         "skipped_events": skipped_detail,
         "needs_human_events": needs_human_detail,
+        "would_repair_events": would_repair_detail,
     })
 
 
@@ -13764,6 +13794,21 @@ def health_check():
     response = jsonify({
         "status": overall,
         "threads": thread_health,
+        # Patch #33: never let a caller compare this count against a baseline
+        # without knowing whether every thread has had a chance to register.
+        "thread_registry": {
+            "count": len(thread_health),
+            "uptime_minutes": round((datetime.now(pytz.timezone(TIMEZONE))
+                                     - _PROCESS_START).total_seconds() / 60.0, 1),
+            "warmup_complete": (datetime.now(pytz.timezone(TIMEZONE)) - _PROCESS_START)
+                               > timedelta(minutes=THREAD_REGISTRY_WARMUP_MIN),
+            "note": ("count is FINAL — every thread has had time to register"
+                     if (datetime.now(pytz.timezone(TIMEZONE)) - _PROCESS_START)
+                        > timedelta(minutes=THREAD_REGISTRY_WARMUP_MIN)
+                     else f"count is INCOMPLETE — under {THREAD_REGISTRY_WARMUP_MIN}m "
+                          f"since boot, threads register only after their first "
+                          f"heartbeat. DO NOT compare against a baseline yet."),
+        },
         "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
         "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
