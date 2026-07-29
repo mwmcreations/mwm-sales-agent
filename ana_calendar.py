@@ -651,6 +651,29 @@ def _create_event(text):
                 ],
             }
 
+        # ── S-1/S-2 (Patch #30) · Path D, ANA's calendar path ──
+        # Never strict: ANA creates Michael's own personal and internal events
+        # (TREINO EMS, BLOQUEADO, travel), which legitimately have no attendee
+        # and sometimes no street address. Refusing those would make the rail
+        # noise, and noise is how the Action Log came to sit dead for 24 days
+        # under a green health row. We report and move on.
+        try:
+            from event_rail import harden_event_body as _rail_harden
+            event_body, _ana_issues = _rail_harden(
+                event_body,
+                source_identifier=details.get("attendee_email") or details.get("client_phone"),
+                attendee_email=details.get("attendee_email"),
+                context="ana_calendar.create_event",
+                strict=False,
+                default_location=details.get("location") or None,
+                require_attendee=False,
+                require_postal=False,
+            )
+            if _ana_issues:
+                print(f"[ANA][EVENT-RAIL] issues on {details['title']!r}: {_ana_issues}")
+        except Exception as _ana_rail_err:
+            print(f"[ANA][EVENT-RAIL] harden failed (non-fatal): {_ana_rail_err}")
+
         # Create event on MWM CREATIONS calendar ONLY (no fallback to invisible primary)
         try:
             created = service.events().insert(

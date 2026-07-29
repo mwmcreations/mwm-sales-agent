@@ -26,7 +26,29 @@ def _wa_headers():
 
 
 def _send(payload):
-    """Send a WhatsApp payload and return the API response."""
+    """Send a WhatsApp payload and return the API response.
+
+    S-6 (Patch #30) · THIRD refusal layer.
+
+    This module is currently imported by nothing — it is dead code. It is
+    hardened anyway, deliberately, so that it is not a landmine for whoever
+    wires it up next: the shape bug it would otherwise reintroduce is the one
+    that burned a template send at Meta on Jul 27. (Michael's open ruling:
+    delete this module, or adopt it. Until that ruling, it does not get to be
+    the one unguarded door.)
+    """
+    _to = str(payload.get("to", ""))
+    _digits = "".join(c for c in _to if c.isdigit())
+    try:
+        from event_rail import is_ig_scoped as _rail_is_ig
+        _bad_shape = _rail_is_ig(_to) or len(_digits) > 15
+    except Exception:
+        _bad_shape = len(_digits) > 15
+    if _bad_shape:
+        print(f"❌ WhatsApp send REFUSED — '{_digits}' is an Instagram-scoped ID, "
+              f"not an E.164 phone number (Meta 131009). Nothing was sent.")
+        return None
+
     try:
         resp = http_requests.post(WA_API_URL, json=payload, headers=_wa_headers(), timeout=30)
         resp.raise_for_status()

@@ -146,6 +146,30 @@ def send_lara_template(phone, template_name, parameters):
 
     clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
 
+    # ── S-6 (Patch #30) · second refusal layer ────────────────────────
+    # This is the exact line that burned `mwm_lara_shoot_reminder` with Meta
+    # error 131009 on Jul 27: an Instagram-scoped ID (16-17 digits) was
+    # stripped to digits and posted as a WhatsApp `to=`. E.164 permits at most
+    # 15 digits, so anything longer cannot be a phone number and the send can
+    # never succeed on any retry. Refuse it here rather than burn it at Meta.
+    try:
+        from event_rail import is_ig_scoped as _rail_is_ig
+        _bad_shape = _rail_is_ig(phone) or len(clean_phone) > 15
+    except Exception:
+        _bad_shape = len(clean_phone) > 15   # works even if the module is absent
+    if _bad_shape:
+        msg = (f"REFUSED {template_name}: '{clean_phone}' is an Instagram-scoped ID, "
+               f"not a phone number — Meta would reject it with 131009. "
+               f"Use the email fallback or reply in the IG thread.")
+        print(f"[LARA] {msg}")
+        _rep = globals().get("ERROR_REPORTER")
+        if callable(_rep):
+            try:
+                _rep("lara_send_refused_ig_identifier", msg, f"template={template_name}")
+            except Exception:
+                pass
+        return {"ok": False, "error": msg, "refused": True}
+
     url = f"https://graph.facebook.com/v20.0/{lara_pn_id}/messages"
     headers = {
         "Authorization": f"Bearer {meta_token}",

@@ -30,6 +30,13 @@ from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
 from cris_wix import handle_cris_action
 from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block, send_lara_template, LARA_TEMPLATES
+# Patch #30 — Event Confirmation Rail. One gate, four write-sites.
+import event_rail
+from event_rail import (harden_event_body, audit_event, resolve_channel,
+                        is_ig_scoped, is_dialable, ascii_email,
+                        reminder_channel_for, EventRailRejected,
+                        STANDARD_REMINDERS)
+from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
 
 load_dotenv()
 
@@ -231,6 +238,33 @@ def wa_send_eligibility(phone, is_template=False):
     """
     if _wa_is_suppressed(phone):
         return False, "suppressed"
+
+    # ── S-6 (Patch #30) · SHAPE GATE ──────────────────────────────────
+    # Placed ABOVE the template short-circuit ON PURPOSE. The Ehmcke burn was
+    # a TEMPLATE send (mwm_lara_shoot_reminder, Meta 131009): an Instagram-
+    # scoped ID was fed into the WhatsApp `to=` field. A gate placed below the
+    # short-circuit would not have seen it, which is why this one is here.
+    #
+    # This is the only place in the gate that fails CLOSED. It refuses ONLY
+    # what is provably impossible — an identifier that is affirmatively
+    # Instagram-scoped (explicit marker, or more digits than E.164 permits).
+    # Short or unusual numbers still fail open, per the docstring above.
+    if is_ig_scoped(phone):
+        try:
+            _tail = _wa_tail(phone)
+        except Exception:
+            _tail = str(phone)[-4:]
+        print(f"[WA-SHAPE-GATE] REFUSED — {_tail} is an Instagram-scoped ID, not a phone number")
+        try:
+            _report_error(
+                "wa_send_refused_ig_identifier",
+                "Instagram-scoped ID cannot receive a WhatsApp message",
+                f"to={_tail} template={is_template} — refused pre-flight; "
+                f"Meta would return 131009. Use the email fallback (S-4) or an IG DM reply.",
+            )
+        except Exception:
+            pass
+        return False, "ig_scoped_identifier"
 
     if is_template:
         return True, "ok"   # templates are valid outside the 24h window
@@ -486,6 +520,28 @@ MICHAEL_EMAIL = os.getenv("MICHAEL_EMAIL", "michael@mwmcreations.com")
 BRIEFING_TOKEN = os.getenv("BRIEFING_TOKEN", "")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 TIMEZONE = "America/New_York"  # Orlando, Florida
+
+# Patch #30 / S-1: the studio's postal address. Five consecutive client events
+# (Anderson, Ehmcke, Rafael, Dondrique, Berger) were created with an empty
+# `location`, so the address existed nowhere on the event and the T-60 calendar
+# email carried no way to find us. Overridable by env for a future second room.
+STUDIO_ADDRESS = os.getenv(
+    "STUDIO_ADDRESS",
+    "1500 Park Center Dr, Suite 230, Orlando, FL 32835",
+)
+# Strategy calls have no street address. They still need a NON-EMPTY location,
+# but must not be graded against a postal-address shape (see require_postal).
+STRATEGY_CALL_LOCATION = os.getenv(
+    "STRATEGY_CALL_LOCATION",
+    "Phone / WhatsApp call — Michael will dial the number on this booking",
+)
+# S-1 says "reject at creation." Strict rejection is enabled ONLY on the
+# production-shoot path. Paid portal bookings and live Maya conversations
+# create-and-report instead: refusing a booking a client has already paid for,
+# over an unparseable address, is the worse outcome. Every issue is reported
+# either way — this flag only decides whether we also stop. Michael can flip it
+# with EVENT_RAIL_STRICT_SHOOTS=0 without a deploy.
+EVENT_RAIL_STRICT_SHOOTS = os.getenv("EVENT_RAIL_STRICT_SHOOTS", "1") == "1"
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -3106,9 +3162,17 @@ def get_available_slots():
         return []
 
 
-def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via="WhatsApp"):
+def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None):
     """
     Create a 1-hour Google Calendar event on the MWM Creations calendar.
+
+    PATCH #30 / SPEC §2.4 — `booked_via` no longer defaults to "WhatsApp".
+    It was a DEFAULT PARAMETER VALUE, not a typed label and not stored data:
+    every caller that omitted the argument stamped "WhatsApp" on the event
+    regardless of the real thread, which is how Instagram-sourced bookings
+    came to be structurally unremindable while looking healthy in the data.
+    It is now a HINT only. The true channel is resolved from `lead_phone`
+    (the identifier), and when the two disagree the identifier wins.
     Tries three strategies in order, using the first that succeeds:
 
       1. MWM Creations calendar  + attendees + send invites
@@ -3199,6 +3263,12 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             event_title = f"Studio Visit — {lead_name} ({lead_business})"
             event_desc_header = "Studio Visit with Michael Moraes / MWM Creations Studios"
 
+        # ── S-1/S-2 (Patch #30): resolve the channel, then harden the body ──
+        # Description now reads "Booked by: Maya" (the AGENT) and carries the
+        # source CHANNEL separately, resolved from the identifier. The old
+        # single line "Booked via: Maya (WhatsApp)" conflated the two, which
+        # is what made the mislabel invisible for months.
+        _true_channel = resolve_channel(lead_phone, hint=booked_via)
         event_base = {
             "summary": event_title,
             "description": (
@@ -3206,18 +3276,36 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 f"Lead: {lead_name}\n"
                 f"Business: {lead_business}\n"
                 f"Email: {lead_email}\n"
-                f"Booked via: Maya ({booked_via})"
+                f"Booked by: Maya\n"
+                f"Booked via: {_true_channel}"
             ),
             "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
-            "reminders": {
-                "useDefault": False,
-                "overrides": [
-                    {"method": "email",  "minutes": 60},
-                    {"method": "popup",  "minutes": 30}
-                ]
-            }
+            "location": (STRATEGY_CALL_LOCATION if appointment_type == "strategy_call"
+                         else STUDIO_ADDRESS),
         }
+        _is_call = (appointment_type == "strategy_call")
+
+        # S-1 gate. strict=False here on purpose: this is a live Maya
+        # conversation and a lead who has just said yes should not be refused
+        # over an address. Every issue is still reported to #dev.
+        try:
+            event_base, _rail_issues = harden_event_body(
+                event_base,
+                source_identifier=lead_phone,
+                attendee_email=lead_email,
+                context="book_appointment",
+                strict=False,
+                reporter=_report_error,
+                default_location=(STRATEGY_CALL_LOCATION if _is_call else STUDIO_ADDRESS),
+                channel_hint=booked_via,
+                require_postal=not _is_call,
+            )
+            if _rail_issues:
+                print(f"[EVENT-RAIL] book_appointment issues: {_rail_issues}")
+        except Exception as _rail_err:
+            # The rail must never be the reason a booking fails.
+            print(f"[EVENT-RAIL] harden failed (non-fatal): {_rail_err}")
 
         # ── Race condition guard: re-check availability right before booking ──
         # Between get_available_slots showing the slot and the lead confirming,
@@ -3280,12 +3368,19 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         used_send_updates = "none"
         used_calendar = CALENDAR_ID
 
+        # harden_event_body() has already put the ASCII-folded attendee on
+        # event_base. Capture it here so the no-attendee fallback can strip it
+        # cleanly — without this, attempt 3 would still carry attendees and the
+        # fallback that exists for non-DWD setups would silently stop working.
+        _rail_attendees = event_base.pop("attendees", None)
+
         for cal_id, with_attendees, send_upd, label in attempts:
             event = dict(event_base)
             if with_attendees:
-                event["attendees"] = [
-                    {"email": lead_email}
-                ]
+                event["attendees"] = ([dict(a) for a in _rail_attendees]
+                                      if _rail_attendees else [{"email": lead_email}])
+            else:
+                event.pop("attendees", None)
             try:
                 created = service.events().insert(
                     calendarId=cal_id,
@@ -3323,7 +3418,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 _slot_str = f"{start_dt.strftime('%B %d, %Y at %I:%M %p')} ET"
                 _interest = appointment_type.replace("_", " ").title()
                 _contact = lead_phone or lead_email or "N/A"
-                _source_label = f" · via {booked_via}" if booked_via != "WhatsApp" else ""
+                # Use the RESOLVED channel, not the caller's hint. booked_via
+                # may now be None (Patch #30 removed its "WhatsApp" default).
+                _source_label = f" · via {_true_channel}" if _true_channel != CH_WHATSAPP_LABEL else ""
                 _notify_appointment_booked(lead_name or "Prospect", _contact + _source_label, _slot_str, _interest, lead_email=lead_email)
                 # ── Update Google Sheet: mark as booked ──
                 try:
@@ -3714,7 +3811,12 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             lead_email=tool_input["lead_email"],
             lead_business=tool_input["lead_business"],
             lead_phone=sender,
-            appointment_type=tool_input.get("appointment_type", "studio_visit")
+            appointment_type=tool_input.get("appointment_type", "studio_visit"),
+            # Patch #30: pass the resolved channel explicitly. This is THE
+            # call-site that produced every mislabelled event — it omitted the
+            # argument, so the old default stamped "WhatsApp" on Instagram
+            # bookings. `sender` is "instagram:<IGSID>" for IG threads.
+            booked_via=resolve_channel(sender),
         )
         if event_id:
             # Update Google Sheets row with booking status
@@ -4392,10 +4494,47 @@ def handle_command_tool_call(tool_name, tool_input):
                     "summary": title,
                     "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
                     "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
-                    "reminders": {"useDefault": False, "overrides": [{"method": "popup", "minutes": 30}]},
                 }
                 if location:
                     event_body["location"] = location
+
+                # ── S-1/S-2 (Patch #30) · Path B, Maya command path ──
+                # This is the path that creates production shoots. It had a
+                # popup-only reminder — no email at T-24, no email at T-60 —
+                # which is why Rafael Madeira received nothing and Michael had
+                # to text him by hand. strict is configurable: the LARA
+                # production-shoot path is the one place we refuse rather than
+                # create-and-report (see EVENT_RAIL_STRICT_SHOOTS).
+                _mc_attendee = (tool_input.get("attendee_email")
+                                or tool_input.get("client_email") or "").strip()
+                # handle_command_tool_call() has no `sender` in scope — this is
+                # Michael's own command path, not a lead thread. Take the
+                # identifier from the tool input, or fall back to the attendee
+                # address so the channel still resolves to something honest.
+                _mc_identifier = (tool_input.get("client_phone")
+                                  or tool_input.get("attendee_phone")
+                                  or _mc_attendee or None)
+                try:
+                    event_body, _mc_issues = harden_event_body(
+                        event_body,
+                        source_identifier=_mc_identifier,
+                        attendee_email=_mc_attendee or None,
+                        context="maya_command.create_calendar_event",
+                        strict=EVENT_RAIL_STRICT_SHOOTS,
+                        reporter=_report_error,
+                        require_attendee=bool(_mc_attendee),
+                    )
+                    if _mc_issues:
+                        print(f"[EVENT-RAIL] create_calendar_event issues: {_mc_issues}")
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                            f"⚠️ *Event created with rail issues* — `{title}` on {date_str}\n"
+                            + "\n".join(f"• {i}" for i in _mc_issues)
+                        ))
+                except EventRailRejected as _rej:
+                    return {"error": (
+                        "Event REFUSED by the Event Rail (S-1). Fix and retry:\n"
+                        + "\n".join(f"- {i}" for i in _rej.issues)
+                    )}
                 # Get calendar service with DWD
                 delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
                 try:
@@ -11627,6 +11766,112 @@ def slack_events():
 # ── ADMIN: Send a proactive Maya message to a lead ──────────────────
 # Used when Maya needs to follow up after a technical error or re-engage
 # a lead who might not message back. Protected by UPLOAD_SECRET.
+@app.route("/admin/event-rail-backfill", methods=["GET", "POST"])
+def admin_event_rail_backfill():
+    """S-1 backfill — audit every future-dated event on the MWM calendar.
+
+    DRY-RUN BY DEFAULT. Pass ?apply=1 to write repairs. It NEVER deletes an
+    event and never touches start/end times: the only fields it will write are
+    `location`, `attendees` and `reminders`, and only when they are missing or
+    unusable. Posts its full report to #dev either way, because a rail that
+    cannot report its own failure is worse than no rail.
+
+        GET  /admin/event-rail-backfill?secret=...            -> dry run
+        GET  /admin/event-rail-backfill?secret=...&apply=1    -> repair
+        &days=90                                              -> horizon
+    """
+    secret = request.values.get("secret", "")
+    if secret != os.getenv("UPLOAD_SECRET", "mwm-media-2026"):
+        return jsonify({"error": "unauthorized"}), 403
+
+    apply_changes = request.values.get("apply", "") in ("1", "true", "yes")
+    horizon_days = int(request.values.get("days", "90") or 90)
+
+    try:
+        service = get_calendar_service()
+        tz = pytz.timezone(TIMEZONE)
+        now = datetime.now(tz)
+        items = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=horizon_days)).isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=2500,
+        ).execute(num_retries=3).get("items", [])
+    except Exception as e:
+        _report_error("event_rail.backfill_list", e)
+        return jsonify({"error": f"calendar list failed: {e}"}), 500
+
+    scanned = clean = flagged = repaired = failed = 0
+    report_lines = []
+    detail = []
+
+    for ev in items:
+        # All-day blocks (BLOQUEADO, travel) are not client events — skip.
+        if "dateTime" not in (ev.get("start") or {}):
+            continue
+        scanned += 1
+        issues = audit_event(ev)
+        if not issues:
+            clean += 1
+            continue
+        flagged += 1
+        when = (ev.get("start", {}).get("dateTime") or "")[:16].replace("T", " ")
+        title = ev.get("summary", "(no title)")
+        detail.append({"id": ev.get("id"), "summary": title, "start": when, "issues": issues})
+        report_lines.append(f"• *{title}* — {when}\n    " + "\n    ".join(f"– {i}" for i in issues))
+
+        if not apply_changes:
+            continue
+
+        # ── repair, conservatively ──
+        patch = {}
+        if not (ev.get("location") or "").strip():
+            patch["location"] = STUDIO_ADDRESS
+        rem = ev.get("reminders") or {}
+        if rem.get("useDefault") or not rem.get("overrides"):
+            patch["reminders"] = {"useDefault": False,
+                                  "overrides": [dict(r) for r in STANDARD_REMINDERS]}
+        # Attendee recovery: pull the client's address out of description text
+        # (the Berger case) and promote it to a real attendee.
+        if not (ev.get("attendees") or []):
+            found = re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", ev.get("description") or "")
+            found = [f for f in found if not f.lower().endswith("mwmcreations.com")]
+            if found:
+                folded, ok, _note = ascii_email(found[0])
+                if ok:
+                    patch["attendees"] = [{"email": folded}]
+        if not patch:
+            continue
+        try:
+            service.events().patch(
+                calendarId=CALENDAR_ID, eventId=ev["id"], body=patch, sendUpdates="none"
+            ).execute(num_retries=3)
+            repaired += 1
+        except Exception as pe:
+            failed += 1
+            _report_error("event_rail.backfill_patch", pe, f"event={ev.get('id')}")
+
+    mode = "APPLY" if apply_changes else "DRY RUN"
+    header = (f"🛠️ *Event Rail backfill — {mode}* (next {horizon_days}d)\n"
+              f"scanned *{scanned}* timed events · ✅ clean *{clean}* · ⚠️ flagged *{flagged}*"
+              + (f" · 🔧 repaired *{repaired}* · ❌ patch failed *{failed}*" if apply_changes else ""))
+    body = header + ("\n\n" + "\n".join(report_lines) if report_lines else "\n\nNothing flagged.")
+    try:
+        # Slack truncates hard; keep the post readable and let JSON carry the rest.
+        _post_to_slack_async(SLACK_DEV_CHANNEL, body[:3800])
+    except Exception:
+        pass
+
+    return jsonify({
+        "mode": mode, "horizon_days": horizon_days,
+        "scanned": scanned, "clean": clean, "flagged": flagged,
+        "repaired": repaired, "patch_failed": failed,
+        "events": detail,
+    })
+
+
 @app.route("/admin/send-maya-message", methods=["POST"])
 def admin_send_maya_message():
     secret = request.form.get("secret", "")
@@ -13089,8 +13334,38 @@ def studio_booking_webhook():
                         ),
                         "start": {"dateTime": f"{date}T{start}:00", "timeZone": TIMEZONE},
                         "end": {"dateTime": f"{date}T{end}:00", "timeZone": TIMEZONE},
+                        "location": STUDIO_ADDRESS,
                     }
-                    _sb_created = _sb_svc.events().insert(calendarId=CALENDAR_ID, body=_sb_body).execute(num_retries=3)
+                    # ── S-1/S-2/S-2b (Patch #30) · Path C, the PAID portal ──
+                    # This write-site was not in the original S-1/S-2 scope and
+                    # is the worst of the four: Todd Berger's booking #56 had
+                    # NO overrideReminders at all, and the client's email lived
+                    # only in the description text, so he was not an attendee
+                    # and no calendar mail could reach him even in principle.
+                    # NEVER strict here — the client has already paid.
+                    _sb_email = (evt.get("client_email") or "").strip()
+                    try:
+                        _sb_body, _sb_issues = harden_event_body(
+                            _sb_body,
+                            source_identifier=(evt.get("client_phone") or _sb_email),
+                            attendee_email=_sb_email or None,
+                            context="studio_booking_webhook",
+                            strict=False,
+                            reporter=_report_error,
+                            default_location=STUDIO_ADDRESS,
+                            channel_hint="Portal",
+                            require_attendee=True,
+                        )
+                        if _sb_issues:
+                            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                                f"⚠️ *Portal booking #{bid} created with rail issues* — {name}\n"
+                                + "\n".join(f"• {i}" for i in _sb_issues)
+                            ))
+                    except Exception as _sb_rail_err:
+                        print(f"[EVENT-RAIL] portal harden failed (non-fatal): {_sb_rail_err}")
+                    _sb_created = _sb_svc.events().insert(
+                        calendarId=CALENDAR_ID, body=_sb_body, sendUpdates="all"
+                    ).execute(num_retries=3)
                     _sbpg.save_state(f"studio_booking_gcal:{bid}", {"event_id": _sb_created.get("id", "")})
                     gcal_note = "calendar ✅"
                 except Exception as _sb_e:
