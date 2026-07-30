@@ -12008,19 +12008,45 @@ EXPECTED_DAILY_TASKS = {
     "ad06-morning-check":        (8, 0, 90),
     "maya-instagram-dm-check":   (10, 0, 90),
     "maya-24h-followup":         (18, 0, 90),
-    # Patch #34 — added on MATT's instruction. An unlisted scheduled task still
-    # fails SILENTLY, which is the whole failure this watchdog exists to end.
-    # `sales-auto-outcome-sweep` is the 24h no-report marker; it is scheduled,
-    # so it can skip without anyone noticing.
+    # Patch #34 added four names MATT supplied; Patch #35 verified them against
+    # the actual scheduler and they DO NOT EXIST as cloud tasks. See the note
+    # below — this list is now safe to hold aspirational entries because the
+    # never-claimed gate keeps them silent until instrumented.
     "client-zero-daily-run":     (8, 0, 90),
     "matt-morning-briefing":     (8, 0, 90),
     "lara-morning-sheet-sync":   (8, 0, 90),
     "sales-auto-outcome-sweep":  (22, 0, 90),
+    # Verified cloud scheduled tasks (enumerated Jul 30):
+    "rob-daily-ring-fence":      (8, 0, 90),   # trig_01VHBxdVcTiVdiSNrhhEPdWZ
+    "susan-daily-followup-run":  (9, 0, 90),   # trig_01CBKSUeFwFP8FjKehjbyYEX
 }
-# NOTE for MATT: these four are taken from your message verbatim. If any is not
-# the scheduler's actual task ID, the watchdog will report it missing EVERY DAY
-# and become the cry-wolf report we keep warning about. Confirm the exact IDs,
-# or tell DEV to re-map them.
+# ══════════════════════════════════════════════════════════════════════
+# SCHEDULER INVENTORY — verified Jul 30, 2026. READ THIS BEFORE EDITING.
+#
+# There are only FOUR cloud scheduled tasks on the account, and only TWO are
+# enabled:
+#     ROB — Daily Ring-Fence Check   0 12 * * 1-5 UTC (8:00 ET)  ENABLED
+#     susan-daily-followup-run       0 13 * * 1-5 UTC (9:00 ET)  ENABLED
+#     Victory NIGHT OF CHAMPIONS     one-shot, fired, disabled
+#     send_later #853316             one-shot, fired, disabled
+#
+# NONE of the seven names in EXPECTED_DAILY_TASKS above is a cloud task —
+# including the three from Patch #34 (`ad06-morning-check`,
+# `maya-instagram-dm-check`, `maya-24h-followup`). They demonstrably RUN, so
+# they are **stored locally by the Cowork desktop app**, which is a separate
+# registry the API cannot see.
+#
+# THE CONSEQUENCE, which matters more than the naming: a desktop-local task
+# **only runs while Michael's Mac is on.** The tasks that drive the business
+# (IG DM check, 24h follow-up, Client Zero, the morning briefing, LARA's sheet
+# sync) are all in that registry. That is a real availability constraint, not a
+# labelling detail, and it is the likely explanation for the Jul 25/26/28
+# "skipped runs" MATT logged.
+#
+# These names are the CLAIM STRINGS the watchdog matches — whatever a task
+# passes as ?task=<name>. Entries stay silent until that task claims once, so
+# an aspirational entry is harmless and self-activating.
+# ══════════════════════════════════════════════════════════════════════
 
 
 def _task_claim(task, date_str, ttl_days=7):
@@ -12039,6 +12065,12 @@ def _task_claim(task, date_str, ttl_days=7):
                     return False, f"already claimed at {existing.get('at', '?')}"
                 _pg_tc.save_state(key, {"at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
                                         "task": task, "date": date_str})
+                # PATCH #35 — permanent "this task is instrumented" marker. The
+                # watchdog uses it to tell "never called the claim endpoint"
+                # apart from "was supposed to run today and didn't". Without it,
+                # absence of a claim proves nothing.
+                _pg_tc.save_state(f"task_ever_claimed:{task}",
+                                  {"first": datetime.now(pytz.timezone(TIMEZONE)).isoformat()})
                 return True, "claimed (pg)"
         except Exception as e:
             print(f"[TASK-CLAIM] pg unavailable, falling back to memory: {e}")
@@ -12103,6 +12135,25 @@ def _missed_run_watchdog():
                         continue      # cannot distinguish missed from unknown — say nothing
                     if _pg_w.load_state(claim_key):
                         continue      # it ran
+                    # ── PATCH #35 · THE GATE THAT STOPS THIS CRYING WOLF ──────
+                    # A task only claims its run if its PROMPT calls
+                    # /admin/task-claim. Nothing does yet. So on the day #34
+                    # shipped, every entry in EXPECTED_DAILY_TASKS was
+                    # guaranteed to look "missed" — seven false alarms in #dev
+                    # by mid-morning, from the very watchdog built to make real
+                    # skips visible. Absence of a claim from an UNINSTRUMENTED
+                    # task is not evidence of anything.
+                    #
+                    # So: stay silent until a task has claimed at least once.
+                    # Each task's watchdog switches itself on the first time it
+                    # calls the endpoint — no config, no flag day. Discoverable
+                    # in the log rather than in Slack, because an alert nobody
+                    # can act on is worse than no alert.
+                    if not _pg_w.load_state(f"task_ever_claimed:{task}"):
+                        print(f"[WATCHDOG] {task}: not instrumented yet (never called "
+                              f"/admin/task-claim) — staying silent. Add the claim call to "
+                              f"this task's prompt to activate monitoring.")
+                        continue
                     if _pg_w.load_state(alert_key):
                         continue      # already raised today
                     _pg_w.save_state(alert_key, {"at": now.isoformat()})

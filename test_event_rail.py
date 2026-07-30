@@ -413,5 +413,49 @@ check("empty description is safe", rsvp_note(""), "")
 check("a note containing a colon keeps its full text",
       rsvp_note("RSVP-NOTE: confirmed 10:30 by WhatsApp"), "confirmed 10:30 by WhatsApp")
 
+print(f"\n--- Patch #34 section: {_passed} passed, {_failed} failed ---")
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #35 — the watchdog must not cry wolf at an uninstrumented task.
+# Mirrors the app.py gate; app.py needs Flask+Google libs to import.
+# ══════════════════════════════════════════════════════════════════════
+
+def watchdog_should_alert(*, past_deadline, claimed_today, ever_claimed, already_alerted):
+    """Mirror of the Patch #35 missed-run watchdog decision."""
+    if not past_deadline:      return False
+    if claimed_today:          return False   # it ran
+    if not ever_claimed:       return False   # NOT INSTRUMENTED — prove nothing
+    if already_alerted:        return False   # once per task per day
+    return True
+
+
+print("\n== the bug #35 fixes: 7 guaranteed false alarms ==")
+check_false("uninstrumented task past deadline -> SILENT",
+            watchdog_should_alert(past_deadline=True, claimed_today=False,
+                                  ever_claimed=False, already_alerted=False))
+check_true("instrumented task that skipped -> ALERT",
+           watchdog_should_alert(past_deadline=True, claimed_today=False,
+                                 ever_claimed=True, already_alerted=False))
+
+print("\n== and the rest of the ladder still holds ==")
+check_false("before the deadline -> silent",
+            watchdog_should_alert(past_deadline=False, claimed_today=False,
+                                  ever_claimed=True, already_alerted=False))
+check_false("it ran -> silent",
+            watchdog_should_alert(past_deadline=True, claimed_today=True,
+                                  ever_claimed=True, already_alerted=False))
+check_false("already alerted today -> silent (no repeat spam)",
+            watchdog_should_alert(past_deadline=True, claimed_today=False,
+                                  ever_claimed=True, already_alerted=True))
+
+print("\n== self-activation: a task switches its own monitoring on ==")
+# Day 1: task gets instrumented and claims. Day 2: it skips -> now alertable.
+check_false("day 1, never claimed before deadline -> silent",
+            watchdog_should_alert(past_deadline=True, claimed_today=False,
+                                  ever_claimed=False, already_alerted=False))
+check_true("day 2, after one successful claim, a skip DOES alert",
+           watchdog_should_alert(past_deadline=True, claimed_today=False,
+                                 ever_claimed=True, already_alerted=False))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
