@@ -600,5 +600,89 @@ check_true("...but May's tab still EXISTS — nothing was deleted", "May 2026" i
 check("window is always 3 tabs", len(rolling_window(_aug)), 3)
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #38 — Do Not Contact enforced SERVER-SIDE, invalid addresses
+# refused before send, and a rail that sends nothing says so itself.
+# Mirrors app.py; app.py needs Flask+Google libs to import.
+# ══════════════════════════════════════════════════════════════════════
+
+MIRROR_DNC = {"yasminfmoraes@icloud.com", "ediasm@icloud.com"}
+MIRROR_INTERNAL = {"michael@mwmcreations.com", "yasminfmoraes@icloud.com"}
+
+
+def email_is_suppressed(addr, dynamic=None, dynamic_available=True):
+    """Mirror of the Patch #38 endpoint gate. Fails CLOSED."""
+    e = str(addr or "").strip().lower()
+    if not e or "@" not in e:
+        return True, "unparseable address"
+    if e in MIRROR_DNC:
+        return True, "do-not-contact list"
+    if e in MIRROR_INTERNAL or e.endswith("@mwmcreations.com"):
+        return True, "internal address"
+    if not dynamic_available:
+        return True, "suppression check unavailable"
+    if (dynamic or set()) and e in dynamic:
+        return True, "suppressed (dynamic list)"
+    return False, ""
+
+
+print("\n== #38: the two names MATT asked about — the answer WAS no ==")
+check("Yasmin Moraes (Michael's daughter) is suppressed",
+      email_is_suppressed("yasminfmoraes@icloud.com"), (True, "do-not-contact list"))
+check("Marcia Cardim (now a client) is suppressed",
+      email_is_suppressed("ediasm@icloud.com"), (True, "do-not-contact list"))
+check_true("suppression is case-insensitive",
+           email_is_suppressed("YasminFMoraes@iCloud.com")[0])
+check_true("...and whitespace-insensitive",
+           email_is_suppressed("  ediasm@icloud.com  ")[0])
+
+print("\n== #38: internal addresses can never be emailed as leads ==")
+check_true("michael@ is suppressed", email_is_suppressed("michael@mwmcreations.com")[0])
+check_true("any @mwmcreations.com is suppressed", email_is_suppressed("info@mwmcreations.com")[0])
+
+print("\n== #38: it FAILS CLOSED — a broken check never allows a send ==")
+check("suppression store unreachable -> refuse, do not send",
+      email_is_suppressed("stranger@example.com", dynamic_available=False),
+      (True, "suppression check unavailable"))
+check_true("empty address -> refuse", email_is_suppressed("")[0])
+check_true("garbage address -> refuse", email_is_suppressed("not-an-email")[0])
+check_true("None -> refuse", email_is_suppressed(None)[0])
+
+print("\n== #38: a real lead is still sendable — the gate is not a wall ==")
+check("ordinary lead passes", email_is_suppressed("krista@example.com"), (False, ""))
+check("dynamic list suppresses without a deploy",
+      email_is_suppressed("later@example.com", dynamic={"later@example.com"}),
+      (True, "suppressed (dynamic list)"))
+
+print("\n== #38: Anderson Brito Baez — a guaranteed bounce, caught before send ==")
+_folded, _ok, _note = ascii_email("Andersonbritobáez@gmail.com")
+check("accented address folds to a deliverable ASCII form",
+      (_folded, _ok), ("Andersonbritobaez@gmail.com", True))
+check_true("...and the fold is REPORTED, never silent", _note != "")
+check_false("a bare accent string is NOT a valid address", ascii_email("áéí")[1])
+check("a normal address is untouched and reports nothing",
+      ascii_email("krista@example.com"), ("krista@example.com", True, ""))
+
+
+def zero_send_alarm(due_count, dry_days, already_alerted_today, threshold=2):
+    """Mirror of the Patch #38 zero-send alarm."""
+    if not due_count:            return False   # nothing due -> quiet is correct
+    if dry_days is None:         return False   # unknown -> do not cry wolf
+    if dry_days < threshold:     return False
+    if already_alerted_today:    return False   # once per day
+    return True
+
+
+print("\n== #38: five weekdays of zero sends should have paged, and didn't ==")
+check_true("SUSAN's actual case: 7 due, 5 days dry -> PAGE",
+           zero_send_alarm(7, 5.0, False))
+check_true("never sent since instrumentation -> PAGE", zero_send_alarm(7, 999, False))
+check_false("due work but sent yesterday -> silent", zero_send_alarm(7, 1.0, False))
+check_false("nothing due -> silent even if dry for weeks", zero_send_alarm(0, 30.0, False))
+check_false("already paged today -> no repeat spam", zero_send_alarm(7, 5.0, True))
+check_false("unknown last-send -> silent, never guess", zero_send_alarm(7, None, False))
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

@@ -9308,6 +9308,7 @@ FOLLOWUP_FIRST_HOURS = 24      # welcome -> first personalized follow-up
 FOLLOWUP_SPACING_DAYS = 3      # spacing between subsequent touches
 FOLLOWUP_ESCALATE_DAYS = 7     # overdue this long -> #matt escalation
 FOLLOWUP_DIGEST_GAP_HOURS = 6  # min hours between digests
+FOLLOWUP_DRY_ALARM_DAYS = 2    # Patch #38 — due work + no sends this long = the rail is DOWN
 
 INTERNAL_EMAILS = {
     e.strip().lower() for e in
@@ -9315,6 +9316,55 @@ INTERNAL_EMAILS = {
               "michael@mwmcreations.com,yasminfmoraes@icloud.com").split(",")
     if e.strip()
 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #38 — DO NOT CONTACT, ENFORCED SERVER-SIDE.
+#
+# MATT asked a yes/no on Aug 1: are Yasmin Moraes and Marcia Cardim actually
+# suppressed, or is DNC just prose in SUSAN.md? The answer was NO.
+#   - INTERNAL_EMAILS above filtered the DIGEST LISTING only. It decided who
+#     got *mentioned*, never who could be *emailed*.
+#   - /api/send-email had NO suppression check of any kind. Auth, field
+#     validation, send. Nothing stood between a token and a delivered email.
+#   - ediasm@icloud.com (Marcia Cardim, now a CLIENT) was not on any list.
+#
+# So the failure mode MATT named was real and one token away: unblock
+# automated sending and the scheduler emails Michael's daughter as a lead.
+#
+# Suppression must hold with ZERO agent discipline involved. It is enforced
+# at the ENDPOINT, so it applies to every caller, every agent, every token,
+# forever — not to whoever remembered to read a memory file.
+# ═══════════════════════════════════════════════════════════════════════════
+EMAIL_DNC = {
+    e.strip().lower() for e in
+    os.getenv("EMAIL_DNC",
+              # Yasmin Moraes — Michael's daughter, a TEST lead.
+              # Marcia Cardim — now a client; must not receive lead follow-ups.
+              "yasminfmoraes@icloud.com,ediasm@icloud.com").split(",")
+    if e.strip()
+}
+
+
+def email_is_suppressed(addr):
+    """(suppressed: bool, reason: str). Fail CLOSED — anything unparseable
+    is treated as suppressed rather than sent."""
+    e = str(addr or "").strip().lower()
+    if not e or "@" not in e:
+        return True, "unparseable address"
+    if e in EMAIL_DNC:
+        return True, "do-not-contact list"
+    if e in INTERNAL_EMAILS or e.endswith("@mwmcreations.com"):
+        return True, "internal address"
+    # pg-backed dynamic list so an address can be suppressed WITHOUT a deploy.
+    try:
+        import pg_store as _dp
+        if _dp.enabled() and _dp.load_state("email_suppressed:" + e, False):
+            return True, "suppressed (dynamic list)"
+    except Exception as _de:
+        # A suppression check that fails must NOT quietly allow the send.
+        print(f"[DNC] dynamic check failed for {e} — failing closed: {_de}")
+        return True, "suppression check unavailable"
+    return False, ""
 
 
 def _followup_scheduler():
@@ -9339,7 +9389,9 @@ def _followup_scheduler():
                 if email in seen_emails:
                     continue
                 seen_emails.add(email)
-                if email in INTERNAL_EMAILS or email.endswith("@mwmcreations.com"):
+                # Patch #38 — one predicate for "must never be emailed", shared
+                # with the endpoint. Two lists that can disagree WILL disagree.
+                if email_is_suppressed(email)[0]:
                     continue
                 if _is_internal_number(phone):
                     continue
@@ -9402,7 +9454,11 @@ def _followup_scheduler():
                      "* _(auto — followup_scheduler S28)_"]
             SHOW = 15
             for d in due[:SHOW]:
-                flag = " 📅booked" if d["booked"] else ""
+                # Patch #38 — this flag is set at booking CREATION and is never
+                # cleared on a no-show or a cancellation, so "booked" has meant
+                # "had an appointment once, may not have attended". SUSAN used it
+                # four days running as "nothing is being lost". Say what it is.
+                flag = " 📅booked (flag only — not calendar-verified)" if d["booked"] else ""
                 biz = f" ({d['biz']})" if d["biz"] else ""
                 od = f" — *{d['overdue_days']}d overdue*" if d["overdue_days"] >= 1 else ""
                 lines.append(f"• {d['name']}{biz} <{d['email']}> — {d['kind']}{od}{flag}")
@@ -9411,11 +9467,48 @@ def _followup_scheduler():
             for u in untracked[:SHOW]:
                 biz = f" ({u['biz']})" if u["biz"] else ""
                 flag = " 📅booked" if u["booked"] else ""
-                lines.append(f"• [untracked] {u['name']}{biz} <{u['email']}> — no send history on record; triage{flag}")
+                # Patch #38 — "[untracked]" read as "safe to email". It only ever
+                # meant "no stamp on record", which is not the same claim.
+                lines.append(f"• [no-send-record] {u['name']}{biz} <{u['email']}> — "
+                             f"NOT verified as un-emailed; means only that no stamp exists "
+                             f"(pre-S28 leads may already have been contacted). Triage before sending.{flag}")
             if len(untracked) > SHOW:
                 lines.append(f"…and {len(untracked) - SHOW} more untracked")
             lines.append("_Reply-to-lead timing rules: 24h after welcome, 3-day spacing. Stamps update automatically when you send via /api/send-email._")
             _post_to_slack_async(SLACK_SUSAN_CHANNEL, "\n".join(lines))
+
+            # PATCH #38 — ZERO-SEND ALARM. Work is due and the rail has sent
+            # nothing for days: that is the rail being DOWN, not busy, and it
+            # must page on its own rather than wait for a human to go looking.
+            try:
+                _last_send = _p.load_state("followup_last_send_at", None)
+                _dry_days = None
+                if _last_send:
+                    # Parsed inline on purpose: `_parse` above is a loop-local
+                    # and relying on it leaking out of the loop is exactly the
+                    # kind of thing that NameErrors on an edge path in prod.
+                    try:
+                        _ls = datetime.fromisoformat(str(_last_send))
+                        if _ls.tzinfo is None:
+                            _ls = pytz.timezone(TIMEZONE).localize(_ls)
+                        _dry_days = (now - _ls).total_seconds() / 86400
+                    except Exception:
+                        _dry_days = None
+                else:
+                    _dry_days = 999    # never sent since instrumentation
+                if due and _dry_days is not None and _dry_days >= FOLLOWUP_DRY_ALARM_DAYS:
+                    if not _p.load_state("followup_dry_alarm:" + now.strftime("%Y-%m-%d"), False):
+                        _p.save_state("followup_dry_alarm:" + now.strftime("%Y-%m-%d"), True)
+                        _dry_txt = ("never (since instrumentation)" if _dry_days >= 999
+                                    else f"{_dry_days:.1f} days ago")
+                        _post_to_slack_async(SLACK_MATT_CHANNEL,
+                            f":rotating_light: *ZERO-SEND ALARM — the follow-up rail is not sending.*\n"
+                            f"{len(due)} follow-up(s) are DUE and the last successful send via "
+                            f"`/api/send-email` was *{_dry_txt}*.\n"
+                            f"Due work plus no sends means the rail is DOWN, not busy. "
+                            f"Check the send token and the scheduled run before assuming a quiet week.")
+            except Exception as _za:
+                print(f"[Followup Scheduler] zero-send alarm check failed (non-fatal): {_za}")
 
             escal = [d for d in due if d["overdue_days"] >= FOLLOWUP_ESCALATE_DAYS]
             if escal:
@@ -13378,6 +13471,32 @@ def api_send_email():
         if not html_body and not plain_body:
             return jsonify({"success": False, "error": "Missing 'html_body' or 'body' field"}), 400
 
+        # PATCH #38 — DNC gate. Before auth-adjacent work, before Drive, before
+        # send. 409 is the documented suppression code in SUSAN's playbook.
+        _sup, _sup_reason = email_is_suppressed(to_email)
+        if _sup:
+            print(f"[SEND-EMAIL API] SUPPRESSED {to_email} — {_sup_reason} (via={_via})")
+            _report_error("email_send_suppressed",
+                          f"send to {to_email} refused: {_sup_reason}",
+                          f"via={_via} subject={subject[:80]!r} — PREVENTED, not burned")
+            return jsonify({"success": False, "error": f"suppressed: {_sup_reason}",
+                            "suppressed": True, "to": to_email}), 409
+
+        # PATCH #38 — an address that cannot be delivered must fail LOUDLY here,
+        # not silently bounce hours later. Live case: Anderson Brito Baez,
+        # recorded as `AndersonbritoBaez@gmail.com` with an accented a. Gmail
+        # rejects non-ASCII local parts, so every send to him was guaranteed to
+        # bounce and nothing ever said so.
+        _folded, _addr_ok, _addr_note = ascii_email(to_email)
+        if not _addr_ok:
+            _report_error("email_address_invalid", f"{to_email!r} is not deliverable",
+                          f"{_addr_note} — refused before send (via={_via})")
+            return jsonify({"success": False, "error": f"invalid recipient address: {_addr_note}",
+                            "to": to_email}), 400
+        if _folded != to_email.strip():
+            print(f"[SEND-EMAIL API] non-ASCII address folded: {to_email!r} -> {_folded!r}")
+            to_email = _folded
+
         # If only plain text provided, use it as HTML too
         if not html_body:
             html_body = plain_body.replace("\n", "<br>")
@@ -13408,11 +13527,15 @@ def api_send_email():
             try:
                 import pg_store as _fp
                 if _fp.enabled():
+                    _now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                     _fp.save_state("followup_sent:" + to_email.lower(), {
-                        "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
-                        "via": _via,
-                        "subject": subject[:120],
+                        "at": _now_iso, "via": _via, "subject": subject[:120],
                     })
+                    # Patch #38 — fleet-wide last-send stamp. SUSAN's rail sent
+                    # ZERO emails for five straight weekdays and nothing paged;
+                    # it surfaced only because Michael went looking. A rail that
+                    # produces nothing must say so itself.
+                    _fp.save_state("followup_last_send_at", _now_iso)
             except Exception as _sx:
                 print(f"[SEND-EMAIL API] followup stamp failed (non-fatal): {_sx}")
             return jsonify({
