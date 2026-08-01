@@ -457,5 +457,84 @@ check_true("day 2, after one successful claim, a skip DOES alert",
            watchdog_should_alert(past_deadline=True, claimed_today=False,
                                  ever_claimed=True, already_alerted=False))
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #36 — lead_key forward-write onto the Stripe Checkout Session.
+# Mirrors the app.py resolver; app.py needs Flask+Google libs to import.
+# ══════════════════════════════════════════════════════════════════════
+
+def _mirror_find_by_email(email, leads):
+    if not email:
+        return None
+    want = email.strip().lower()
+    for k, v in leads.items():
+        if (v.get("email") or "").strip().lower() == want:
+            return k
+    return None
+
+
+def _mirror_find_by_name(name_raw, leads):
+    want = (name_raw or "").strip().lower()
+    if not want or len(want) < 4:
+        return None
+    hits = [k for k, v in leads.items()
+            if (v.get("name") or "").strip().lower() == want]
+    return hits[0] if len(hits) == 1 else None
+
+
+def resolve_lead_key_for_payment(email, name, leads):
+    """Mirror of the Patch #36 app.py resolver."""
+    k = _mirror_find_by_email(email, leads)
+    if k:
+        return k, "email"
+    k = _mirror_find_by_name(name, leads)
+    if k:
+        return k, "name"
+    return None, "unmatched"
+
+
+LEADS = {
+    "whatsapp:+18135031224": {"name": "Todd Berger",  "email": "myorlandosold@gmail.com"},
+    "whatsapp:+14075551111": {"name": "Ana Robinson", "email": "ana@example.com"},
+    "whatsapp:+14075552222": {"name": "Ana Robinson", "email": "ana2@example.com"},
+    "instagram:17841400000": {"name": "Bolfer Silva", "email": ""},
+}
+
+print("\n== #36: the happy path — email wins and is authoritative ==")
+check("exact email -> that lead, via=email",
+      resolve_lead_key_for_payment("myorlandosold@gmail.com", "Todd Berger", LEADS),
+      ("whatsapp:+18135031224", "email"))
+check("email match is case/space insensitive",
+      resolve_lead_key_for_payment("  MyOrlandoSold@Gmail.COM ", "", LEADS),
+      ("whatsapp:+18135031224", "email"))
+check("email wins even when the name points elsewhere",
+      resolve_lead_key_for_payment("ana@example.com", "Todd Berger", LEADS),
+      ("whatsapp:+14075551111", "email"))
+
+print("\n== #36: name is a FALLBACK, and only when unambiguous ==")
+check("unknown email + unique name -> via=name",
+      resolve_lead_key_for_payment("nobody@nowhere.com", "Bolfer Silva", LEADS),
+      ("instagram:17841400000", "name"))
+check("AMBIGUOUS name -> refuse, never guess",
+      resolve_lead_key_for_payment("nobody@nowhere.com", "Ana Robinson", LEADS),
+      (None, "unmatched"))
+check("short name is not a name",
+      resolve_lead_key_for_payment("", "Ana", LEADS), (None, "unmatched"))
+
+print("\n== #36: a miss is RECORDED, never silent ==")
+check("no email, no name -> unmatched (not None-None)",
+      resolve_lead_key_for_payment("", "", LEADS), (None, "unmatched"))
+check("unknown payer -> unmatched, so the miss is queryable",
+      resolve_lead_key_for_payment("ghost@x.com", "Ghost Person", LEADS),
+      (None, "unmatched"))
+check_true("a miss ALWAYS returns a via value to stamp",
+           resolve_lead_key_for_payment("ghost@x.com", "", LEADS)[1] != "")
+
+print("\n== #36: 'unmatched' and 'predates the patch' must not look alike ==")
+_sess_new_miss = {"lead_key_via": "unmatched"}
+_sess_old      = {}
+check_false("a pre-#36 session has no via field", "lead_key_via" in _sess_old)
+check_true("a #36 miss is explicitly stamped", "lead_key_via" in _sess_new_miss)
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

@@ -855,6 +855,35 @@ def _find_lead_by_email(email):
     return None, None
 
 
+def _resolve_lead_key_for_payment(email, name):
+    """Patch #36 — resolve the lead_key to stamp on a Stripe object AT CREATION.
+
+    This is the whole point of the forward-write. Once this ships, every new
+    payment carries its own lead_key in Stripe metadata, so nothing downstream
+    ever has to re-derive it from email/name again. Deriving it after the fact
+    is exactly what stranded Robinson's stage, and what the Aug 3 backfill
+    exists to clean up for the payments that came before this patch.
+
+    Returns (lead_key_or_None, via) where via is one of:
+      "email"      matched on email — authoritative
+      "name"       matched on an exact, UNAMBIGUOUS full name
+      "unmatched"  nothing matched — DO NOT GUESS
+
+    `via` is returned and stamped even on a miss, and that is deliberate. A
+    session carrying lead_key_via="unmatched" is a KNOWN miss we can query for
+    and fix by hand. A session carrying neither field simply predates this
+    patch. Those are different facts about the world and must not look alike —
+    an absent field that could mean either is how a silent wrong answer starts.
+    """
+    key, _ = _find_lead_by_email(email)
+    if key:
+        return key, "email"
+    key, _ = _find_lead_by_name(name)
+    if key:
+        return key, "name"
+    return None, "unmatched"
+
+
 # Shadow Mode: mirror every agent's WhatsApp conversations into dedicated
 # Slack channels as threads-per-phone. Gives Michael oversight so he can
 # intervene if an agent makes a mistake. Each channel is set via Railway env
@@ -13460,6 +13489,14 @@ def studio_checkout():
     label = f"{int(hours)}h Studio + Editing" if editing else f"{int(hours)}h Podcast Studio"
     desc  = f"{date} at {start_time} — 1500 Park Center Dr, Suite 230, Orlando FL"
 
+    # Patch #36 — forward-write the lead_key. Enrichment, never a gate: a
+    # resolver failure must never stop a paying customer from checking out.
+    try:
+        _lead_key, _lead_key_via = _resolve_lead_key_for_payment(email, name)
+    except Exception as _lkx:
+        _lead_key, _lead_key_via = None, "error"
+        _report_error("studio_checkout.lead_key", _lkx, f"booking={booking_id}")
+
     try:
         # Stripe Checkout Session (form-encoded; rob_stripe._stripe_post pattern)
         payload = {
@@ -13486,8 +13523,14 @@ def studio_checkout():
             "metadata[editing]": "1" if editing else "0",
             "metadata[name]": name,
             "metadata[email]": email,
+            "metadata[lead_key_via]": _lead_key_via,
             "expires_at": str(int(time.time()) + max(STUDIO_RENTAL_HOLD_MIN, 30) * 60),
         }
+        # Only written when we actually resolved one. An empty metadata value
+        # would be indistinguishable from "we never tried".
+        if _lead_key:
+            payload["metadata[lead_key]"] = _lead_key
+
         import rob_stripe as _rs
         res = _rs._stripe_post("checkout/sessions", payload)
         if not res or res.get("error") or not res.get("url"):
@@ -13503,12 +13546,14 @@ def studio_checkout():
                     "booking_id": booking_id, "date": date, "start_time": start_time,
                     "hours": int(hours), "editing": editing, "name": name,
                     "email": email, "amount_cents": amount,
+                    "lead_key": _lead_key, "lead_key_via": _lead_key_via,
                     "created": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
                 })
             except Exception as _px:
                 _report_error("studio_checkout.persist", _px, f"booking={booking_id}")
 
         print(f"[RENTAL] checkout created booking={booking_id} {label} ${amount/100:.2f} "
+              f"lead_key={_lead_key or '-'} via={_lead_key_via} "
               f"session={str(res.get('id'))[-8:]}")
         return jsonify({"ok": True, "url": res.get("url"),
                         "session_id": res.get("id"), "amount_cents": amount}), 200
@@ -13594,8 +13639,10 @@ def handle_studio_rental_paid(event):
 
     paid = session.get("payment_status") == "paid"
     amount = session.get("amount_total", 0)
+    _rk = meta.get("lead_key", "")
+    _rk_via = meta.get("lead_key_via", "")
     print(f"[RENTAL] checkout.session.completed booking={booking_id} "
-          f"paid={paid} amount={amount}")
+          f"paid={paid} amount={amount} lead_key={_rk or '-'} via={_rk_via or 'pre-#36'}")
 
     if not paid:
         # S22: delayed-settlement method (e.g. ACH) slipped through — the money
@@ -13631,6 +13678,7 @@ def handle_studio_rental_paid(event):
             _post_to_slack_async(
                 "#matt",
                 f":moneybag: *Studio rental PAID* — {meta.get('name','?')} "
+                f"{('`' + _rk + '`') if _rk else ('(lead unmatched)' if _rk_via == 'unmatched' else '')} "
                 f"({meta.get('email','?')})\n"
                 f"{meta.get('hours','?')}h "
                 f"{'Studio + Editing' if meta.get('editing')=='1' else 'Podcast Studio'} · "
