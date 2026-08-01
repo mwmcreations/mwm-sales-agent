@@ -5044,25 +5044,50 @@ def ensure_monthly_tab(service, sheet_id: str, tab_name: str):
         body={"values": [SHEET_HEADERS]},
     ).execute(num_retries=3)
 
-    # Format header (bold, dark background, white text)
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=sheet_id,
-        body={"requests": [
-            {"repeatCell": {
-                "range": {"sheetId": gid, "startRowIndex": 0, "endRowIndex": 1},
-                "cell": {"userEnteredFormat": {
-                    "textFormat": {"bold": True},
-                    "backgroundColor": {"red": 0.18, "green": 0.18, "blue": 0.18},
-                    "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+    # Format header (bold, dark background, white text).
+    #
+    # PATCH #37 — TWO bugs fixed here, and the second one is the important one.
+    #
+    # 1. `foregroundColor` is NOT a field of CellFormat. Text colour lives at
+    #    userEnteredFormat.textFormat.foregroundColor. The old payload put it
+    #    one level too high, so the Sheets API rejected the whole batchUpdate
+    #    with HTTP 400 "Unknown name foregroundColor".
+    #
+    # 2. That 400 propagated out of this function and killed the CALLER. This
+    #    runs on the first lead of a new month, so every month, the first
+    #    person to message us was silently dropped from the CRM: addSheet had
+    #    already succeeded, so the tab existed and every LATER lead that month
+    #    worked fine — which is exactly why a once-a-month data loss went
+    #    unnoticed. Confirmed Aug 1 2026: Carlos Suarez, 02:46:27, never
+    #    reached the sheet.
+    #
+    # A header's colour is COSMETIC. It must never be able to lose a lead.
+    # It gets its own try/except and reports without raising.
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": [
+                {"repeatCell": {
+                    "range": {"sheetId": gid, "startRowIndex": 0, "endRowIndex": 1},
+                    "cell": {"userEnteredFormat": {
+                        "textFormat": {
+                            "bold": True,
+                            "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                        },
+                        "backgroundColor": {"red": 0.18, "green": 0.18, "blue": 0.18},
+                    }},
+                    "fields": "userEnteredFormat(textFormat,backgroundColor)",
                 }},
-                "fields": "userEnteredFormat(textFormat,backgroundColor,foregroundColor)",
-            }},
-            {"autoResizeDimensions": {"dimensions": {
-                "sheetId": gid, "dimension": "COLUMNS",
-                "startIndex": 0, "endIndex": len(SHEET_HEADERS),
-            }}},
-        ]},
-    ).execute(num_retries=3)
+                {"autoResizeDimensions": {"dimensions": {
+                    "sheetId": gid, "dimension": "COLUMNS",
+                    "startIndex": 0, "endIndex": len(SHEET_HEADERS),
+                }}},
+            ]},
+        ).execute(num_retries=3)
+    except Exception as _fmt_err:
+        _report_error("ensure_monthly_tab.header_format", _fmt_err,
+                      f"tab={tab_name} — COSMETIC ONLY. The tab exists and the "
+                      f"lead write continues; nothing is lost.")
     print(f"â Created new monthly tab: {tab_name}")
     return gid
 
@@ -15086,6 +15111,7 @@ def _delete_canvas_orphan_header():
 # pipeline stats twice (Jul 5: 204→1, Jul 8: 209→27→209).
 _last_good_leads = []
 _last_good_leads_at = None
+_last_tabs_read = []        # Patch #37 — which monthly tabs the last read covered
 
 
 def _sheets_execute_with_retry(request_fn, what, attempts=3, base_delay=2):
@@ -15113,7 +15139,7 @@ def _read_leads_from_sheets():
     S8.6: per-call retry w/ backoff; on partial/failed read returns the
     last-known-good snapshot instead of a shrunken/empty set.
     """
-    global _last_good_leads, _last_good_leads_at
+    global _last_good_leads, _last_good_leads_at, _last_tabs_read
     if not SHEETS_LEADS_ID:
         print("[CANVAS SYNC] SHEETS_LEADS_ID not set — cannot read leads")
         return []
@@ -15131,7 +15157,15 @@ def _read_leads_from_sheets():
                 return (int(parts[1]), month_order[parts[0]])
             return (0, 0)
         tabs.sort(key=tab_sort_key, reverse=True)
+        # PATCH #37 — this is a ROLLING 3-MONTH WINDOW, and it was silent.
+        # On the 1st of each month a new tab appears and the OLDEST of the
+        # four falls out, so the reported lead total drops by a whole month
+        # in one sync with no explanation. On Aug 1 2026 that read as
+        # "102 leads vanished overnight" and was escalated as a CRITICAL data
+        # -loss incident. Nothing was lost; May 2026 left the window.
+        # Record what was actually read so the number explains itself.
         monthly_tabs = [t for t in tabs if tab_sort_key(t) != (0, 0)][:3]
+        _last_tabs_read = list(monthly_tabs)
 
         leads = []
         seen_phones = set()
@@ -15319,6 +15353,15 @@ def _sync_pipeline_canvas():
         "converted_this_month": converted_month,
         "timestamp": now.isoformat(),
         "source": "google_sheets",
+        # Patch #37 — self-annotating, same principle as the thread-registry
+        # warmup note: a number that can move for a benign reason must say so
+        # itself, or someone will read the move as a defect. They did.
+        "tabs_read": list(_last_tabs_read),
+        "window_note": (
+            "rolling 3-month window, deduped by phone — the total DROPS by a "
+            "full month on the 1st as the oldest tab rotates out. That is not "
+            "lead loss. Compare against /health lead_count for the real store."
+        ),
     }
 
     # ── 1. Update status line ──

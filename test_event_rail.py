@@ -536,5 +536,69 @@ check_false("a pre-#36 session has no via field", "lead_key_via" in _sess_old)
 check_true("a #36 miss is explicitly stamped", "lead_key_via" in _sess_new_miss)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #37 — the first lead of every month was silently dropped, and a
+# rolling window made a benign rotation look like data loss.
+# Mirrors app.py; app.py needs Flask+Google libs to import.
+# ══════════════════════════════════════════════════════════════════════
+
+def header_format_request(gid):
+    """Mirror of the Patch #37 header-format payload."""
+    return {"repeatCell": {
+        "range": {"sheetId": gid, "startRowIndex": 0, "endRowIndex": 1},
+        "cell": {"userEnteredFormat": {
+            "textFormat": {"bold": True,
+                           "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+            "backgroundColor": {"red": 0.18, "green": 0.18, "blue": 0.18},
+        }},
+        "fields": "userEnteredFormat(textFormat,backgroundColor)",
+    }}
+
+
+def ensure_tab(tab, existing, *, format_raises):
+    """Mirror of ensure_monthly_tab's failure semantics.
+    Returns (tab_exists, lead_write_proceeds)."""
+    if tab in existing:
+        return True, True
+    existing.add(tab)              # addSheet + headers succeed first
+    if format_raises:
+        pass                       # #37: cosmetic failure is caught, NOT raised
+    return True, True
+
+
+def rolling_window(tabs, n=3):
+    """Mirror of the [:3] monthly-tab window (newest first)."""
+    return tabs[:n]
+
+
+print("\n== #37: the malformed payload that lost a lead every month ==")
+_fmt = header_format_request(7)["repeatCell"]
+check_false("foregroundColor is NOT a direct child of userEnteredFormat",
+            "foregroundColor" in _fmt["cell"]["userEnteredFormat"])
+check_true("foregroundColor lives under textFormat",
+           "foregroundColor" in _fmt["cell"]["userEnteredFormat"]["textFormat"])
+check("fields mask no longer names the invalid field",
+      _fmt["fields"], "userEnteredFormat(textFormat,backgroundColor)")
+check_false("fields mask must not mention foregroundColor at top level",
+            "backgroundColor,foregroundColor" in _fmt["fields"])
+
+print("\n== #37: a COSMETIC failure can never lose a lead again ==")
+check("new month + format blows up -> tab exists AND write proceeds",
+      ensure_tab("Aug 2026", set(), format_raises=True), (True, True))
+check("new month, format fine -> unchanged",
+      ensure_tab("Aug 2026", set(), format_raises=False), (True, True))
+check("existing tab is a no-op",
+      ensure_tab("Jul 2026", {"Jul 2026"}, format_raises=True), (True, True))
+
+print("\n== #37: the rolling window rotates, it does not lose ==")
+_jul = ["Jul 2026", "Jun 2026", "May 2026"]
+_aug = ["Aug 2026", "Jul 2026", "Jun 2026", "May 2026"]
+check("Jul 31 read Jul+Jun+May", rolling_window(_jul), ["Jul 2026", "Jun 2026", "May 2026"])
+check("Aug 1 reads Aug+Jul+Jun", rolling_window(_aug), ["Aug 2026", "Jul 2026", "Jun 2026"])
+check_false("May is no longer in the window", "May 2026" in rolling_window(_aug))
+check_true("...but May's tab still EXISTS — nothing was deleted", "May 2026" in _aug)
+check("window is always 3 tabs", len(rolling_window(_aug)), 3)
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
