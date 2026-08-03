@@ -41,6 +41,8 @@ from event_rail import (harden_event_body, audit_event, resolve_channel,
                         location_repair_for, venue_of,
                         VENUE_STUDIO, VENUE_VIRTUAL, VENUE_CLIENT_SITE)
 from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
+from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
+                        STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 
 load_dotenv()
 
@@ -16510,6 +16512,37 @@ def meeting_report_submit():
         return jsonify({"ok": False, "message": "Missing required fields."}), 400
 
     oc = OUTCOME_LABELS[outcome]
+
+    # ── PATCH #39 · what should the machine do about this outcome? ──────
+    # Resolve the lead FIRST so the plan is built from what we actually know
+    # about reaching them, not from what we would prefer. Michael does not
+    # have to tell us the channel — the machine already knows it from the
+    # identifier, and it knows it more reliably than he does.
+    _p39_key, _p39_rec = _find_lead_by_name(name)
+    if not _p39_key:
+        _p39_emails = extract_emails(notes)
+        for _e in _p39_emails:
+            _p39_key, _p39_rec = _find_lead_by_email(_e)
+            if _p39_key:
+                break
+    _p39_rec = _p39_rec or {}
+    _p39_email = (_p39_rec.get("email") or "").strip()
+    if not _p39_email:
+        _p39_any = extract_emails(notes)
+        _p39_email = sorted(_p39_any)[0] if _p39_any else ""
+    _p39_channel = resolve_channel(_p39_key or "", _p39_rec.get("source") or "")
+    _p39_hours = None
+    try:
+        _lm = _p39_rec.get("last_message_time")
+        if _lm:
+            _lm = _lm if isinstance(_lm, datetime) else datetime.fromisoformat(str(_lm))
+            if _lm.tzinfo is None:
+                _lm = pytz.timezone(TIMEZONE).localize(_lm)
+            _p39_hours = (datetime.now(pytz.timezone(TIMEZONE)) - _lm).total_seconds() / 3600
+    except Exception:
+        _p39_hours = None
+    _plan = outcome_plan(outcome, _p39_channel, bool(_p39_email), _p39_hours)
+
     et = pytz.timezone("US/Eastern")
     now = datetime.now(et)
     date_str = now.strftime("%A, %B %d, %Y at %I:%M %p ET")
@@ -16542,15 +16575,23 @@ def meeting_report_submit():
     try:
         _edit_text = f"{next_steps} {notes}".lower()
         _edit_hits = [k for k in ("edit", "editar", "edicao", "edição", "deliver") if k in _edit_text]
-        if _edit_hits and outcome in ("completed", "client_won"):
+        # PATCH #39 — Michael, Aug 3: "all our shoots require editing."
+        # The old gate ALSO required a keyword in the notes, so writing
+        # "went great" silently routed nothing. A keyword match pretending
+        # to be a rule. `completed` now routes UNCONDITIONALLY; client_won
+        # keeps the keyword test because a signed client is not always a shoot.
+        _route_edit = (outcome == "completed") or (bool(_edit_hits) and outcome == "client_won")
+        if _route_edit:
             _lara_msg = (
                 f"🎞️ *EDITING PIPELINE — new item from event report*\n"
                 f"*Project:* {name}" + (f" ({business})" if business else "") + "\n"
                 f"*Outcome:* {oc['label']} · {date_str}\n"
                 + (f"*Next steps:* {next_steps}\n" if next_steps else "")
                 + (f"*Notes:* {notes[:300]}\n" if notes else "")
-                + "_Auto-routed (matched: " + ", ".join(_edit_hits) + "). "
-                "LARA: add to EDITING_PIPELINE.json (status AWAITING_EDIT) so the dashboard stays current._"
+                + ("_Auto-routed (every completed shoot goes to editing — Patch #39). "
+                   if outcome == "completed"
+                   else "_Auto-routed (matched: " + ", ".join(_edit_hits) + "). ")
+                + "LARA: add to EDITING_PIPELINE.json (status AWAITING_EDIT) so the dashboard stays current._"
             )
             if not test_mode:
                 post_to_slack(SLACK_LARA_CHANNEL, _lara_msg)
@@ -16592,6 +16633,25 @@ def meeting_report_submit():
                      "Susan's Gmail — confirmation follows. Maya picks up any WhatsApp replies._")
     elif outcome == "not_interested":
         matt_msg = f"{oc['emoji']} *Lead lost:* {name}"
+        # PATCH #39 — "not interested" is the ONE outcome that must never
+        # trigger outreach. But it IS automated: the automation is STOPPING.
+        # Previously it set a status and the lead could still resurface in
+        # Susan's digest and the re-engagement queue.
+        if not test_mode and _p39_email:
+            try:
+                import pg_store as _ni
+                if _ni.enabled():
+                    _ni.save_state("email_suppressed:" + _p39_email.lower(), {
+                        "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                        "reason": "not_interested (event report)",
+                        "by": "meeting_report", "lead": name,
+                    })
+                    print(f"[P39] suppressed {_p39_email} — not_interested")
+            except Exception as _nx:
+                _report_error("p39.suppress", _nx, f"lead={name}")
+        if _p39_rec:
+            _p39_rec["do_not_contact"] = True
+            _p39_rec["cold_fired"] = True
         if business:
             matt_msg += f" ({business})"
         matt_msg += "\n"
@@ -16612,10 +16672,66 @@ def meeting_report_submit():
         matt_msg += " didn't show up for their meeting.\n"
         matt_msg += "\n_Maya — please reach out to reschedule._"
 
+    # ── PATCH #39 · say what was armed and when it ENDS ────────────────
+    # Ezechiel Garcon took four emails across six weeks because no sequence
+    # knew how to stop. Every plan now carries a close condition, and every
+    # report states it, so nobody has to remember.
+    try:
+        _pl = []
+        _pl.append(f"\n\n*Channel on file:* {_p39_channel}"
+                   + (f" · email `{_p39_email}`" if _p39_email else " · *no email on file*"))
+        if _plan.get("suppress"):
+            _pl.append("\n🔇 *SUPPRESSED* — added to do-not-contact. No sequence, "
+                       "no digest, no re-engagement. Nothing further is sent.")
+        elif _plan.get("internal_only"):
+            _pl.append(f"\n⚙️ *Internal automation only* — {_plan['why']}")
+        elif _plan.get("steps"):
+            if plan_is_deliverable(_plan):
+                _steps = " · ".join(
+                    (f"T+{int(h)}h" if h < 48 else f"T+{int(h)//24}d") + f" {k} via {ch}"
+                    for h, ch, k in _plan["steps"])
+                _pl.append(f"\n🤖 *Armed:* {_steps}")
+                if _plan.get("close_after_days"):
+                    _pl.append(f"\n⏹️ *Closes after {_plan['close_after_days']} days* "
+                               f"with no reply — then off the digest, no re-engagement.")
+                _pl.append(f"\n_{_plan['why']}_")
+            else:
+                # S-4: never report a sequence as armed when no step can land.
+                _pl.append(f"\n🔴 *CANNOT REACH THIS LEAD AUTOMATICALLY* — channel is "
+                           f"{_p39_channel}, no email on file"
+                           + (", and the Instagram 24h window is CLOSED"
+                              if _p39_channel == CH_INSTAGRAM_LABEL else "")
+                           + f".\n*{_plan.get('owner') or 'MICHAEL'}: this one needs a human.* "
+                           f"Nothing was armed — reporting it instead of pretending.")
+        if _plan.get("editing"):
+            _pl.append("\n🎞️ Routed to the editing pipeline.")
+        matt_msg += "".join(_pl)
+    except Exception as _px:
+        _report_error("p39.plan_summary", _px, f"lead={name}")
+
     if not test_mode:
         post_to_slack(SLACK_MATT_CHANNEL, matt_msg)
     else:
         test_log.append({"action": "Post to #matt", "channel": "SLACK_MATT_CHANNEL", "message_preview": matt_msg[:200]})
+
+    # PATCH #39 — persist the armed plan on the lead record so the sender
+    # (Patch #40) has a durable, inspectable worklist. Stored, not sent:
+    # nothing in #39 messages a client.
+    try:
+        if _p39_rec and _plan.get("steps") and plan_is_deliverable(_plan):
+            _p39_rec["outcome_seq"] = {
+                "outcome": outcome,
+                "armed_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                "channel": _p39_channel,
+                "email": _p39_email,
+                "steps": [[h, ch, k] for h, ch, k in _plan["steps"]],
+                "next_step": 0,
+                "close_after_days": _plan.get("close_after_days"),
+                "owner": _plan.get("owner"),
+                "done": False,
+            }
+    except Exception as _sx:
+        _report_error("p39.arm", _sx, f"lead={name}")
 
     # Update Google Sheets — find the lead row and update status
     if not test_mode:

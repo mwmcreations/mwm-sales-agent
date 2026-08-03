@@ -590,3 +590,199 @@ def audit_event(ev):
         issues.append("IG-sourced — verify reminder channel is not WhatsApp")
 
     return issues
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PATCH #39 · OUTCOME AUTOMATION POLICY
+#
+# Michael, Aug 3 2026: "I would love all buttons, instead of Not interested,
+# to do an automated task so it goes together with our sales system nicely."
+#
+# Three findings shaped this, and none of them were guesses:
+#
+#  1. EMAIL IS OUR NARROWEST CHANNEL, NOT OUR WIDEST. Measured across 365
+#     dated CRM rows: only 62 carry an email address — 17%. Instagram 29%,
+#     WhatsApp 27%. An email-only design would reach one lead in six.
+#     So: reply on the channel they ARRIVED on (100% coverage by
+#     construction), and treat getting an email as the sequence's first job.
+#
+#  2. INSTAGRAM HAS A DOOR THAT SHUTS. Meta permits a DM only within 24h of
+#     the lead's last inbound message; after that it is a hard 403. A day-2
+#     touch on an IG lead CANNOT SEND. Any plan that ignores this produces
+#     the silent failure we watched fire four times on Aug 2-3.
+#     Email is the only channel that stays open, which is exactly why
+#     capture matters more than channel preference.
+#
+#  3. NOTHING EVER ENDED. Ezechiel Garcon took four emails across six weeks
+#     because no sequence knew how to stop. Every plan below carries a
+#     close_after_days. A sequence without an ending is a nag with a
+#     schedule.
+#
+# This module is PURE: no I/O, no sends, no clock. It answers one question —
+# "given this outcome and what we know about reaching this person, what
+# should happen and when should it stop?" The caller does the sending.
+# ══════════════════════════════════════════════════════════════════════════
+
+# what each step is FOR — the caller maps these to copy
+STEP_NUDGE        = "nudge"          # short "still interested?" touch
+STEP_EMAIL_ASK    = "email_capture"  # ask for an email address, nothing else
+STEP_RECAP        = "recap"          # what we discussed + link
+STEP_VALUE        = "value"          # what the package/hours can do
+STEP_REBOOK       = "rebook"         # offer new times after a no-show
+STEP_REVIEW       = "review"         # ask for a review/testimonial
+STEP_HUMAN        = "human"          # S-4: named assignment, no automation
+
+IG_DM_WINDOW_HOURS = 24
+
+
+def ig_window_open(hours_since_inbound):
+    """Can we still DM this Instagram lead? None = unknown -> assume CLOSED.
+
+    Unknown must mean closed. Assuming open produces a 403 and a lead who
+    silently never hears from us; assuming closed produces an email or a
+    named human, both of which actually reach someone.
+    """
+    if hours_since_inbound is None:
+        return False
+    try:
+        return float(hours_since_inbound) < IG_DM_WINDOW_HOURS
+    except (TypeError, ValueError):
+        return False
+
+
+def outcome_plan(outcome, channel=CH_UNKNOWN, has_email=False,
+                 hours_since_inbound=None):
+    """The whole policy, in one testable place.
+
+    Returns a dict:
+      steps            [(after_hours, channel, step_kind), ...] in order
+      close_after_days when to stop chasing and mark closed, or None
+      suppress         True -> add to do-not-contact, send NOTHING, ever
+      editing          True -> always route to the editing pipeline
+      internal_only    True -> no client-facing automation at all
+      owner            who picks it up if automation cannot reach them
+      why              one line explaining the shape, for the #matt post
+    """
+    plan = {"steps": [], "close_after_days": None, "suppress": False,
+            "editing": False, "internal_only": False, "owner": None, "why": ""}
+
+    # ── NOT INTERESTED — the one Michael explicitly exempted, and correctly.
+    # They said no. Any outreach after a no costs brand and earns complaints.
+    # But it IS automated: the automation is STOPPING, not sending.
+    if outcome == "not_interested":
+        plan["suppress"] = True
+        plan["why"] = ("said no — suppressed from all sequences, digests and "
+                       "re-engagement. No further contact is sent, ever.")
+        return plan
+
+    # ── CLIENT WON — automate hard on the INSIDE, stay human on the outside.
+    # A signed client deserves Michael's voice, not a template. The machine
+    # does the paperwork.
+    if outcome == "client_won":
+        plan["internal_only"] = True
+        plan["editing"] = True
+        plan["owner"] = "LARA"
+        plan["why"] = ("internal onboarding armed (tracker, production record, "
+                       "invoice). No automated client email — this one is "
+                       "Michael's to send.")
+        return plan
+
+    # ── COMPLETED — Michael, Aug 3: "all our shoots require editing."
+    # The old rule only routed when the notes happened to contain the word
+    # "edit". Written "went great"? It silently never routed. That is a
+    # keyword match pretending to be a rule.
+    if outcome == "completed":
+        plan["editing"] = True
+        plan["owner"] = "LARA"
+        plan["close_after_days"] = 14
+        plan["steps"] = [(24 * 7, _reachable(channel, has_email, hours_since_inbound),
+                          STEP_REVIEW)]
+        plan["why"] = ("shoot complete -> editing pipeline ALWAYS (no keyword "
+                       "test), plus one review ask at day 7.")
+        return plan
+
+    # ── NO-SHOW — the proven-broken one. Ezechiel no-showed Jul 22; the
+    # button said "Maya, please reach out" and nothing happened for 8 days.
+    # Speed is the whole value here: a same-day rebook offer converts, a
+    # day-3 one does not.
+    if outcome == "no_show":
+        plan["close_after_days"] = 5
+        plan["owner"] = "MAYA"
+        native = _reachable(channel, has_email, hours_since_inbound)
+        plan["steps"] = [(0, native, STEP_REBOOK)]
+        if has_email:
+            plan["steps"].append((48, CH_WEB, STEP_REBOOK))
+        elif native != CH_WEB:
+            plan["steps"].append((48, native, STEP_EMAIL_ASK))
+        plan["why"] = ("same-day rebook offer, one more at 48h, closed at day 5. "
+                       "Speed is the value — a same-day offer rebooks, a day-3 "
+                       "offer does not.")
+        return plan
+
+    # ── FOLLOW-UP — softer and slower than the pitch. Michael talked to them
+    # but did NOT put the package in front of them, so this must not read as
+    # a chase.
+    if outcome == "follow_up":
+        plan["close_after_days"] = 14
+        plan["owner"] = "MAYA"
+        native = _reachable(channel, has_email, hours_since_inbound)
+        plan["steps"] = [(48, native, STEP_NUDGE)]
+        if has_email:
+            plan["steps"].append((24 * 7, CH_WEB, STEP_VALUE))
+        elif native != CH_WEB:
+            plan["steps"].append((24 * 7, native, STEP_EMAIL_ASK))
+        plan["why"] = ("soft nudge at 48h on their own channel, one value note "
+                       "at day 7, closed at day 14.")
+        return plan
+
+    # ── PACKAGE PITCHED — the existing 3-email rail already works and is
+    # NOT rebuilt here. The only change: it finally has an ENDING.
+    if outcome == "studio_package_pitched":
+        plan["close_after_days"] = 10
+        plan["owner"] = "SUSAN"
+        if has_email:
+            plan["steps"] = [(1, CH_WEB, STEP_RECAP),
+                             (24 * 2, CH_WEB, STEP_VALUE),
+                             (24 * 6, CH_WEB, STEP_NUDGE)]
+            plan["why"] = ("existing T+1h / T+2d / T+6d email rail, now with a "
+                           "close condition at day 10.")
+        else:
+            # 83% of leads have no email. Pitching one of them and then
+            # arming an email sequence is how a pitch evaporates in silence.
+            native = _reachable(channel, has_email, hours_since_inbound)
+            plan["steps"] = [(1, native, STEP_EMAIL_ASK)]
+            plan["why"] = ("PITCHED BUT NO EMAIL ON FILE — the email rail cannot "
+                           "run. Asking for an address on their own channel "
+                           "first; the pitch sequence arms once we have one.")
+        return plan
+
+    plan["why"] = f"no automation defined for outcome {outcome!r}"
+    return plan
+
+
+def _reachable(channel, has_email, hours_since_inbound):
+    """Which channel can ACTUALLY deliver right now — never which we'd prefer.
+
+    Instagram is the trap: outside the 24h window a DM is a guaranteed 403,
+    so we fall to email, and to a named human if there is no email. An
+    unreachable step that looks scheduled is worse than one that never armed.
+    """
+    if channel == CH_INSTAGRAM:
+        if ig_window_open(hours_since_inbound):
+            return CH_INSTAGRAM
+        return CH_WEB if has_email else CH_UNKNOWN
+    if channel == CH_WHATSAPP:
+        return CH_WHATSAPP
+    if has_email:
+        return CH_WEB
+    return CH_UNKNOWN
+
+
+def plan_is_deliverable(plan):
+    """False when every step lands on CH_UNKNOWN — i.e. we have armed nothing
+    that can actually reach a human. The caller must escalate (S-4) rather
+    than report a sequence as armed."""
+    steps = plan.get("steps") or []
+    if not steps:
+        return True          # nothing armed on purpose (suppress / internal)
+    return any(ch != CH_UNKNOWN for _h, ch, _k in steps)

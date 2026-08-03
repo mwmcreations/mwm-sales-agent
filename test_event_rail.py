@@ -684,5 +684,88 @@ check_false("already paged today -> no repeat spam", zero_send_alarm(7, 5.0, Tru
 check_false("unknown last-send -> silent, never guess", zero_send_alarm(7, None, False))
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #39 — outcome automation policy. Every button does something,
+# every sequence ENDS, and nothing is armed that cannot actually land.
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
+                        STEP_REBOOK, STEP_EMAIL_ASK, STEP_REVIEW,
+                        STEP_NUDGE, STEP_VALUE, STEP_RECAP)
+
+print("\n== #39: 'Not interested' is the ONE that must never reach out ==")
+_ni = outcome_plan("not_interested", CH_WHATSAPP, True)
+check_true("not_interested suppresses", _ni["suppress"])
+check("...and arms NOTHING", _ni["steps"], [])
+check_false("...and never routes to editing", _ni["editing"])
+
+print("\n== #39: every other outcome does something (Michael's ask) ==")
+for _oc in ("client_won", "follow_up", "studio_package_pitched",
+            "completed", "no_show"):
+    _p = outcome_plan(_oc, CH_WHATSAPP, True)
+    check_true(f"{_oc} is automated",
+               bool(_p["steps"]) or _p["internal_only"] or _p["editing"])
+
+print("\n== #39: EVERY sequence has an ending (the Ezechiel rule) ==")
+for _oc in ("follow_up", "studio_package_pitched", "completed", "no_show"):
+    check_true(f"{_oc} closes", outcome_plan(_oc, CH_WHATSAPP, True)["close_after_days"] is not None)
+check("no-show closes fastest — speed is the value",
+      outcome_plan("no_show", CH_WHATSAPP, True)["close_after_days"], 5)
+
+print("\n== #39: completed ALWAYS routes to editing, no keyword test ==")
+check_true("completed -> editing", outcome_plan("completed", CH_WHATSAPP, True)["editing"])
+check_true("completed -> editing even with no email",
+           outcome_plan("completed", CH_UNKNOWN, False)["editing"])
+check_true("completed asks for a review", any(k == STEP_REVIEW for _h, _c, k in
+           outcome_plan("completed", CH_WHATSAPP, True)["steps"]))
+
+print("\n== #39: client_won stays HUMAN on the outside ==")
+_cw = outcome_plan("client_won", CH_WHATSAPP, True)
+check_true("client_won is internal-only", _cw["internal_only"])
+check("...no automated client touches", _cw["steps"], [])
+check_true("...but it does route to editing", _cw["editing"])
+
+print("\n== #39: the Instagram 24h door ==")
+check_true("window open at 2h", ig_window_open(2))
+check_false("window shut at 25h", ig_window_open(25))
+check_false("UNKNOWN age must mean SHUT, never open", ig_window_open(None))
+check("IG lead inside the window -> DM them",
+      outcome_plan("no_show", CH_INSTAGRAM, False, 2)["steps"][0][1], CH_INSTAGRAM)
+check("IG lead outside the window + email -> fall to email",
+      outcome_plan("no_show", CH_INSTAGRAM, True, 99)["steps"][0][1], CH_WEB)
+check("IG lead outside the window + NO email -> unreachable",
+      outcome_plan("no_show", CH_INSTAGRAM, False, 99)["steps"][0][1], CH_UNKNOWN)
+
+print("\n== #39: never claim a sequence is armed when nothing can land ==")
+check_false("IG, window shut, no email -> NOT deliverable",
+            plan_is_deliverable(outcome_plan("no_show", CH_INSTAGRAM, False, 99)))
+check_true("IG, window open -> deliverable",
+           plan_is_deliverable(outcome_plan("no_show", CH_INSTAGRAM, False, 2)))
+check_true("suppress plans are 'deliverable' (nothing armed on purpose)",
+           plan_is_deliverable(outcome_plan("not_interested", CH_WHATSAPP, True)))
+
+print("\n== #39: 83% of leads have no email — pitch must not evaporate ==")
+_pn = outcome_plan("studio_package_pitched", CH_WHATSAPP, False)
+check("pitched w/o email -> ask for one FIRST, on their own channel",
+      (_pn["steps"][0][1], _pn["steps"][0][2]), (CH_WHATSAPP, STEP_EMAIL_ASK))
+check("pitched WITH email -> the existing 3-email rail, unchanged",
+      [(h, k) for h, _c, k in outcome_plan("studio_package_pitched", CH_WEB, True)["steps"]],
+      [(1, STEP_RECAP), (48, STEP_VALUE), (144, STEP_NUDGE)])
+
+print("\n== #39: reply on the channel they ARRIVED on ==")
+check("WhatsApp lead is answered on WhatsApp",
+      outcome_plan("follow_up", CH_WHATSAPP, True)["steps"][0][1], CH_WHATSAPP)
+check("no-show gets a SAME-DAY offer (T+0), not a day-3 one",
+      outcome_plan("no_show", CH_WHATSAPP, True)["steps"][0][0], 0)
+check_true("follow_up is slower than no_show",
+           outcome_plan("follow_up", CH_WHATSAPP, True)["steps"][0][0]
+           > outcome_plan("no_show", CH_WHATSAPP, True)["steps"][0][0])
+
+print("\n== #39: every plan explains itself ==")
+for _oc in ("client_won", "follow_up", "studio_package_pitched",
+            "completed", "not_interested", "no_show"):
+    check_true(f"{_oc} carries a 'why'", bool(outcome_plan(_oc, CH_WHATSAPP, True)["why"]))
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
