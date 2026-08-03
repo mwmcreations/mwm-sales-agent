@@ -786,3 +786,94 @@ def plan_is_deliverable(plan):
     if not steps:
         return True          # nothing armed on purpose (suppress / internal)
     return any(ch != CH_UNKNOWN for _h, ch, _k in steps)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PATCH #42 · ONE RECORD, TWO PEOPLE
+#
+# Live case, Aug 3 2026 — Krista Neeley. She and her husband booked a studio
+# visit together, so Maya wrote ONE lead record holding BOTH of them:
+#
+#   name  : "Krista Neeley (with Michael Neeley)"
+#   email : "Kristasky@gmail.com / Michael@michaelneeley.com"
+#
+# The calendar invite carries just `kristasky@gmail.com`. Every lookup we own
+# compares the WHOLE stored field for exact equality, so:
+#   · email lookup: "kristasky@gmail.com" != "Kristasky@gmail.com / Michael@..."
+#   · name  lookup: "Krista Neeley"       != "Krista Neeley (with Michael Neeley)"
+# Both missed. She became invisible to the pitch sequence, to Susan's digest,
+# and — the expensive one — to the STRIPE PAYER MATCH, which is the exact
+# shape of the Robinson defect: money arrives, no lead is found, the stage
+# stays wrong and nobody is told why.
+#
+# A joint booking is not an edge case in this business. Couples, partners and
+# co-founders book studio time together constantly.
+# ══════════════════════════════════════════════════════════════════════════
+
+_EMAIL_SPLIT_RE = re.compile(r"[\s,;/|]+")
+
+
+def emails_in_field(value):
+    """Every address in a CRM email cell. Handles 'a@b.com / c@d.com'.
+
+    Returns a lower-cased list, order preserved. Anything without an '@' is
+    dropped rather than guessed at.
+    """
+    out = []
+    for tok in _EMAIL_SPLIT_RE.split(str(value or "")):
+        tok = tok.strip().strip("<>").strip()
+        if "@" in tok and "." in tok.split("@")[-1]:
+            low = tok.lower()
+            if low not in out:
+                out.append(low)
+    return out
+
+
+def email_field_matches(stored_field, wanted):
+    """True when `wanted` is ANY of the addresses in a (possibly multi-value)
+    stored field. Exact address comparison — never a substring test, which
+    would make 'ana@x.com' match 'susana@x.com'."""
+    w = str(wanted or "").strip().lower()
+    return bool(w) and w in emails_in_field(stored_field)
+
+
+def name_variants(value):
+    """Comparable forms of a stored or submitted name.
+
+    "Krista Neeley (with Michael Neeley)" -> ["krista neeley (with michael neeley)",
+                                              "krista neeley"]
+    The trailing bracket is dropped ONLY when something remains in front of it,
+    so "(Acme)" is never reduced to nothing.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    out = [raw.lower()]
+    before, inside = _split_trailing_parens_er(raw)
+    if inside and before and before.lower() not in out:
+        out.append(before.lower())
+    return out
+
+
+def names_match(stored, wanted):
+    """True when the two names agree on any comparable form."""
+    a, b = name_variants(stored), name_variants(wanted)
+    return bool(a) and bool(b) and bool(set(a) & set(b))
+
+
+def _split_trailing_parens_er(s):
+    """Balanced trailing (...) split — same rule as meeting_report_utils, kept
+    here so event_rail stays import-free of the app's helpers."""
+    s = (s or "").rstrip()
+    if not s.endswith(")"):
+        return s, ""
+    depth = 0
+    for i in range(len(s) - 1, -1, -1):
+        if s[i] == ")":
+            depth += 1
+        elif s[i] == "(":
+            depth -= 1
+            if depth == 0:
+                before, inside = s[:i].rstrip(), s[i + 1:-1].strip()
+                return (before, inside) if (before and inside) else (s, "")
+    return s, ""

@@ -809,5 +809,55 @@ check("nothing before the bracket -> refuse (a business is not a name)",
 check("empty string is safe", _split_trailing_parens(""), ("", ""))
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #42 — one record, two people. Krista Neeley + husband booked
+# together, so name AND email each hold two values. Every lookup missed.
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import emails_in_field, email_field_matches, names_match
+
+KRISTA_EMAIL = "Kristasky@gmail.com / Michael@michaelneeley.com"
+KRISTA_NAME  = "Krista Neeley (with Michael Neeley)"
+
+print("\n== #42: the record that actually broke it ==")
+check("both addresses are found", emails_in_field(KRISTA_EMAIL),
+      ["kristasky@gmail.com", "michael@michaelneeley.com"])
+check_true("the invite address matches", email_field_matches(KRISTA_EMAIL, "kristasky@gmail.com"))
+check_true("...and so does her husband's", email_field_matches(KRISTA_EMAIL, "Michael@michaelneeley.com"))
+check_true("her name matches the plain form", names_match(KRISTA_NAME, "Krista Neeley"))
+
+print("\n== #42: separators people actually use ==")
+for _sep in ("/", ",", ";", "|", " "):
+    check("split on " + repr(_sep), emails_in_field(f"a@b.com{_sep}c@d.com"),
+          ["a@b.com", "c@d.com"])
+check("single address still works", emails_in_field("solo@x.com"), ["solo@x.com"])
+check("duplicates collapse", emails_in_field("a@b.com, A@B.COM"), ["a@b.com"])
+check("empty field", emails_in_field(""), [])
+check("None field", emails_in_field(None), [])
+check("junk is dropped, not guessed at", emails_in_field("not-an-email / real@x.com"), ["real@x.com"])
+
+print("\n== #42: matching stays EXACT — no substring merges ==")
+check_false("ana@ must not match susana@", email_field_matches("susana@x.com", "ana@x.com"))
+check_false("a bare domain is not a match", email_field_matches("a@b.com", "b.com"))
+check_false("empty wanted never matches", email_field_matches("a@b.com", ""))
+check_false("empty stored never matches", email_field_matches("", "a@b.com"))
+
+print("\n== #42: names — reduce, but never merge two different people ==")
+check_true("trailing bracket is optional", names_match("Ann Lee (Acme)", "Ann Lee"))
+check_true("symmetric", names_match("Ann Lee", "Ann Lee (Acme)"))
+check_true("exact still matches", names_match("Ann Lee", "ann lee"))
+check_false("different surnames never match", names_match("Ana Silva (Acme)", "Ana Costa"))
+check_false("a business alone is not a name", names_match("(Acme)", "Acme"))
+check_false("empty never matches", names_match("", "Ann Lee"))
+
+print("\n== #42: why this mattered beyond one report ==")
+# The same helper backs the Stripe payer lookup. A joint-booking client who
+# pays would have produced "PAID CLIENT NOT LINKED TO A LEAD" — the Robinson
+# defect, arriving through a different door.
+check_true("a payer using EITHER address now links to the lead",
+           email_field_matches(KRISTA_EMAIL, "michael@michaelneeley.com")
+           and email_field_matches(KRISTA_EMAIL, "kristasky@gmail.com"))
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

@@ -43,6 +43,8 @@ from event_rail import (harden_event_body, audit_event, resolve_channel,
 from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
 from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
+from event_rail import (emails_in_field, email_field_matches,
+                        names_match)                  # Patch #42
 
 load_dotenv()
 
@@ -815,8 +817,12 @@ def _find_lead_by_name(name_raw):
     want = (name_raw or "").strip().lower()
     if not want or len(want) < 4:
         return None, None
+    # PATCH #42 — a joint booking is stored as "Krista Neeley (with Michael
+    # Neeley)". Compare on both the full string and the name with its trailing
+    # bracket removed. Ambiguity still REFUSES: two people who reduce to the
+    # same base name must never be silently merged.
     hits = [(k, v) for k, v in list(lead_data.items())
-            if (v.get("name") or "").strip().lower() == want]
+            if names_match(v.get("name"), want)]
     if len(hits) != 1:
         return None, None       # zero or ambiguous -> refuse, do not guess
     return hits[0]
@@ -847,12 +853,16 @@ def _find_lead_by_phone(phone_raw):
 
 def _find_lead_by_email(email):
     """Search lead_data for a matching email across all channels.
-    Returns (key, data_dict) or (None, None)."""
+    Returns (key, data_dict) or (None, None).
+
+    PATCH #42 — a CRM email cell can hold MORE THAN ONE address when two
+    people book together ("a@x.com / b@y.com"). Whole-field equality made
+    those leads invisible to every email lookup, including the Stripe payer
+    match. Compare against each address in the field instead."""
     if not email:
         return None, None
-    email_lower = email.strip().lower()
     for key, data in lead_data.items():
-        if (data.get("email") or "").strip().lower() == email_lower:
+        if email_field_matches(data.get("email"), email):
             return key, data
     return None, None
 
