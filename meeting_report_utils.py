@@ -42,13 +42,49 @@ def parse_event_summary(summary: str):
             break
 
     # "Dr. Scott Robinson (There Are No Lines In Heaven)" -> name + business
-    m = _PAREN_RE.match(name)
-    if m and m.group(1).strip():
-        name = m.group(1).strip()
+    #
+    # PATCH #40 — _PAREN_RE uses `\(([^)]+)\)$`, which cannot span a nested
+    # parenthesis, so ANY business name containing brackets defeated it and the
+    # whole title was returned as the person's name. Live case, Aug 3 2026:
+    #   "Studio Visit — Krista Neeley (New Media Cruise (with Michael Neeley
+    #    - Infinite Leads))"
+    # parsed to name="Krista Neeley (New Media Cruise (with Michael Neeley -
+    # Infinite Leads))" and business="". The lead lookup is an EXACT name match,
+    # so it found nothing, and every downstream automation was built on an
+    # empty lead record. Priti Verma (Pretty_dangles) worked; Krista did not.
+    # The difference was one pair of brackets.
+    #
+    # Scan back from the end counting depth instead — brackets nest, regexes
+    # of this shape do not.
+    _before, _inside = _split_trailing_parens(name)
+    if _inside:
+        name = _before
         if not business:
-            business = m.group(2).strip()
+            business = _inside
 
     return name, business
+
+
+def _split_trailing_parens(s: str):
+    """(text_before, text_inside) for a trailing BALANCED (...) group.
+
+    Returns (s, "") when there is no balanced trailing group, so the caller
+    keeps the original string rather than a half-parsed one. Refusing to split
+    beats splitting wrongly: a wrong name silently matches nobody.
+    """
+    s = (s or "").rstrip()
+    if not s.endswith(")"):
+        return s, ""
+    depth = 0
+    for i in range(len(s) - 1, -1, -1):
+        if s[i] == ")":
+            depth += 1
+        elif s[i] == "(":
+            depth -= 1
+            if depth == 0:
+                before, inside = s[:i].rstrip(), s[i + 1:-1].strip()
+                return (before, inside) if (before and inside) else (s, "")
+    return s, ""
 
 
 def extract_emails(text: str):

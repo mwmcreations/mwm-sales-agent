@@ -767,5 +767,47 @@ for _oc in ("client_won", "follow_up", "studio_package_pitched",
     check_true(f"{_oc} carries a 'why'", bool(outcome_plan(_oc, CH_WHATSAPP, True)["why"]))
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #40 — a nested bracket in a business name broke the lead lookup.
+# Found live by Michael, Aug 3, on the FIRST real use of the #39 rail.
+# ══════════════════════════════════════════════════════════════════════
+from meeting_report_utils import parse_event_summary, _split_trailing_parens
+
+print("\n== #40: the title that actually broke it ==")
+check("Krista Neeley — business name contains its own brackets",
+      parse_event_summary(
+          "Studio Visit — Krista Neeley (New Media Cruise (with Michael Neeley - Infinite Leads))"),
+      ("Krista Neeley", "New Media Cruise (with Michael Neeley - Infinite Leads)"))
+check_false("...and the name no longer carries a bracket",
+            "(" in parse_event_summary(
+                "Studio Visit — Krista Neeley (New Media Cruise (with Michael Neeley - Infinite Leads))")[0])
+
+print("\n== #40: everything that already worked still works ==")
+check("simple business", parse_event_summary("Studio Visit — Priti Verma (Pretty_dangles)"),
+      ("Priti Verma", "Pretty_dangles"))
+check("strategy call", parse_event_summary("Strategy Call — Carolina Rodriguez Wilhelm (Carito Music)"),
+      ("Carolina Rodriguez Wilhelm", "Carito Music"))
+check("no separator, no parens", parse_event_summary("Reunião SMILE AMERICAN"),
+      ("Reunião SMILE AMERICAN", ""))
+check("name-first with hyphen", parse_event_summary("Marta Villagra - Coaching Content"),
+      ("Marta Villagra", "Coaching Content"))
+check("calendly-style title is left intact",
+      parse_event_summary("Gema Hiatt and Michael Moraes"),
+      ("Gema Hiatt and Michael Moraes", ""))
+
+print("\n== #40: the splitter refuses rather than guessing ==")
+check("balanced trailing group splits", _split_trailing_parens("Ann Lee (Acme)"), ("Ann Lee", "Acme"))
+check("nested group splits at the OUTER bracket",
+      _split_trailing_parens("Ann Lee (Acme (US))"), ("Ann Lee", "Acme (US)"))
+check("no trailing bracket -> unchanged", _split_trailing_parens("Ann Lee"), ("Ann Lee", ""))
+check("UNBALANCED -> refuse, keep the original",
+      _split_trailing_parens("Ann Lee (Acme))"), ("Ann Lee (Acme))", ""))
+check("empty inside -> refuse", _split_trailing_parens("Ann Lee ()"), ("Ann Lee ()", ""))
+check("nothing before the bracket -> refuse (a business is not a name)",
+      _split_trailing_parens("(Acme)"), ("(Acme)", ""))
+check("empty string is safe", _split_trailing_parens(""), ("", ""))
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

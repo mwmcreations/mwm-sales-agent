@@ -16518,15 +16518,44 @@ def meeting_report_submit():
     # about reaching them, not from what we would prefer. Michael does not
     # have to tell us the channel — the machine already knows it from the
     # identifier, and it knows it more reliably than he does.
-    _p39_key, _p39_rec = _find_lead_by_name(name)
+    # PATCH #40 — resolve from the CALENDAR EVENT first, not from the name.
+    # Michael clicks a meeting button; the form fills the name from the event
+    # title. A title is a display string — it drifts, it carries the business
+    # in brackets, and one nested bracket made the exact-name lookup miss
+    # entirely (Krista Neeley, Aug 3). The event's ATTENDEE EMAIL is a real
+    # key: stable, unique, and already on the invite. Use it.
+    _p39_key = _p39_rec = None
+    _evt_email = ""
+    if event_id:
+        try:
+            _p40_svc = get_calendar_service()
+            _p40_ev = _p40_svc.events().get(calendarId=CALENDAR_ID,
+                                            eventId=event_id).execute(num_retries=2)
+            for _a in (_p40_ev.get("attendees") or []):
+                _ae = str((_a or {}).get("email") or "").strip()
+                _ael = _ae.lower()
+                if (_ae and "@" in _ae
+                        and not _ael.endswith(("mwmcreations.com", "mwmscreens.com"))
+                        and "group.calendar.google.com" not in _ael):
+                    _evt_email = _ae
+                    break
+        except Exception as _p40x:
+            _report_error("p40.event_lookup", _p40x, f"event={event_id}")
+
+    if _evt_email:
+        _p39_key, _p39_rec = _find_lead_by_email(_evt_email)
     if not _p39_key:
-        _p39_emails = extract_emails(notes)
-        for _e in _p39_emails:
+        _p39_key, _p39_rec = _find_lead_by_name(name)
+    if not _p39_key:
+        for _e in extract_emails(notes):
             _p39_key, _p39_rec = _find_lead_by_email(_e)
             if _p39_key:
                 break
     _p39_rec = _p39_rec or {}
-    _p39_email = (_p39_rec.get("email") or "").strip()
+    # The invite address is a deliverable email even when NO lead record
+    # matched — so an unmatched lead is still reachable instead of silently
+    # unautomatable.
+    _p39_email = (_p39_rec.get("email") or "").strip() or _evt_email
     if not _p39_email:
         _p39_any = extract_emails(notes)
         _p39_email = sorted(_p39_any)[0] if _p39_any else ""
