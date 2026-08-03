@@ -16773,28 +16773,36 @@ def meeting_report_submit():
 
     # ── S7: Studio Package pitched -> arm the email-first follow-up sequence ──
     if outcome == "studio_package_pitched":
-        _sp_clean = name.strip().lower()
-        # Jul 8 2026 fix: also match by any email present in the report notes (case-insensitive)
-        _sp_emails = extract_emails(notes)
+        # PATCH #41 — use the lead ALREADY RESOLVED above (#40: calendar
+        # attendee email -> name -> notes) instead of re-deriving it here.
+        #
+        # This block had its own private lookup: exact name match, or an email
+        # that happened to appear in the free-text NOTES. #40 taught the rest
+        # of the handler to resolve from the invite, but this block never
+        # learned — so on Krista Neeley (title carries a nested bracket, notes
+        # empty) it would have found nothing and posted "sequence NOT armed"
+        # while every other part of the same report resolved her correctly.
+        # Two lookups for one lead is how one of them silently rots.
         _sp_found = None
-        for _sp_k, _sp_r in lead_data.items():
-            _sp_rec_email = (_sp_r.get("email") or "").strip().lower()
-            if ((_sp_r.get("name") or "").strip().lower() == _sp_clean
-                    or (_sp_rec_email and _sp_rec_email in _sp_emails)):
-                _sp_found = _sp_k
-                if not test_mode:
-                    _studio.start_pitch_sequence(_sp_k, _sp_r)
-                    post_to_slack(SLACK_MATT_CHANNEL,
-                        f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
-                        f"(lead record: {_sp_k}) — T+1h recap · T+2d value · T+6d nudge.")
-                else:
-                    test_log.append({"action": "Arm studio pitch sequence", "lead": _sp_k})
-                break
+        if _p39_key and _p39_rec:
+            _sp_found = _p39_key
+            if not test_mode:
+                _studio.start_pitch_sequence(_p39_key, _p39_rec)
+                post_to_slack(SLACK_MATT_CHANNEL,
+                    f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
+                    f"(lead record: {_p39_key} · {_p39_email or 'no email'}) — "
+                    f"T+1h recap · T+2d value · T+6d nudge, closes day 10.")
+            else:
+                test_log.append({"action": "Arm studio pitch sequence", "lead": _p39_key})
         if not _sp_found and not test_mode:
             post_to_slack(SLACK_MATT_CHANNEL,
-                f"\U0001F4E6 Studio Package pitched to *{name}* but no matching lead record found — "
-                f"follow-up sequence NOT armed. Add their email to the CRM and re-report, or "
-                f"Susan follows up manually.")
+                f"\U0001F4E6 Studio Package pitched to *{name}* but NO LEAD RECORD MATCHED — "
+                f"follow-up sequence NOT armed.\n"
+                f"_Tried, in order: calendar attendee email"
+                + (f" (`{_evt_email}`)" if _evt_email else " (event had no external attendee)")
+                + f", exact name `{name}`, then any email in the notes._\n"
+                f"*Fix:* add their email to the CRM record and re-report, or Susan follows up "
+                f"manually. The pitch itself is logged either way.")
 
     # ── Post-Visit Follow-Up (WhatsApp template OR IG DM) ──
     # Check lead source: if they came from Instagram, send reschedule via IG DM.
