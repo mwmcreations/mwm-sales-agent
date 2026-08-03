@@ -45,6 +45,8 @@ from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 from event_rail import (emails_in_field, email_field_matches,
                         names_match)                  # Patch #42
+from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
+                        REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
 
 load_dotenv()
 
@@ -8701,8 +8703,12 @@ def _lead_reminder_thread():
             events_result = service.events().list(
                 calendarId=CALENDAR_ID,
                 timeMin=now.isoformat(),
-                # 50h horizon so the T-48 crew stage is reachable at all.
-                timeMax=(now + timedelta(hours=50)).isoformat(),
+                # PATCH #43 — was 50h, which left the crew T-48 stage exactly
+                # TWO HOURS of margin on Dr. Robinson's Aug 20 shoot: one
+                # restart inside that window and the crew tier is missed in
+                # silence. Now 80h, which also makes the new T-72 RSVP tier
+                # reachable at all.
+                timeMax=(now + timedelta(hours=REMINDER_HORIZON_HOURS)).isoformat(),
                 singleEvents=True,
                 orderBy="startTime",
             ).execute(num_retries=3)
@@ -8723,13 +8729,14 @@ def _lead_reminder_thread():
                 when = event_start.strftime("%A at %I:%M %p")
 
                 # ── S-5 · RSVP watcher ──────────────────────────────
-                if 23.0 <= hours_until <= 25.0:
+                _rsvp_tier = due_rsvp_tier(hours_until)
+                if _rsvp_tier:
                     pending = [a.get("email", "?") for a in (event.get("attendees") or [])
                                if isinstance(a, dict)
                                and a.get("responseStatus") == "needsAction"
                                and not str(a.get("email", "")).lower().endswith(
                                    ("mwmcreations.com", "mwmscreens.com"))]
-                    rsvp_mark = f"{event_id}:rsvp24"
+                    rsvp_mark = f"{event_id}:rsvp{_rsvp_tier}"
                     if pending and rsvp_mark not in _lead_reminder_sent:
                         _lead_reminder_sent.add(rsvp_mark)
                         # ── PATCH #34 · the note travels WITH the flag ──────
@@ -8750,8 +8757,11 @@ def _lead_reminder_thread():
                             if _dl.strip().upper().startswith("RSVP-NOTE:"):
                                 _rsvp_note = _dl.split(":", 1)[1].strip()
                                 break
-                        _msg = (f"🔔 *RSVP UNANSWERED AT T-24* — {summary}, {when}\n"
-                                f"Still `needsAction`: {', '.join(pending)}\n")
+                        _msg = (f"🔔 *RSVP UNANSWERED AT T-{_rsvp_tier}* — {summary}, {when}\n"
+                                + ("_At T-72 there is still time to call, rebook or "
+                                   "release the slot. At T-24 the only move left is "
+                                   "eating it._\n" if _rsvp_tier >= 72 else "")
+                                + f"Still `needsAction`: {', '.join(pending)}\n")
                         if _rsvp_note:
                             _msg += (f"📝 *Note on this event:* {_rsvp_note}\n"
                                      f"_Context travels with the flag — check this "
@@ -8779,6 +8789,32 @@ def _lead_reminder_thread():
                             _ln = line.replace("Lead:", "").strip()
                         elif line.startswith("Phone:"):
                             _lp = re.sub(r"\D", "", line.replace("Phone:", ""))
+
+                    # ── PATCH #43 · resolve from the ATTENDEE, not the note ──
+                    # A description is a note somebody typed; an attendee email
+                    # is a real key. Events Maya books carry "Lead:"/"Phone:".
+                    # HAND-MADE events do not — so Dr. Robinson's Aug 20 shoot
+                    # (our largest) was set to be greeted "Hi there" at T-24 and
+                    # T-2, with WhatsApp skipped because no phone was scrapeable.
+                    # Same lookup the meeting-report path learned in #40/#42;
+                    # this rail never learned it. Two lookups for one lead is
+                    # how one of them silently rots.
+                    if not _ln or not _lp:
+                        try:
+                            _a_em = _event_rail_client_email(event)
+                            if _a_em:
+                                _a_key, _a_rec = _find_lead_by_email(_a_em)
+                                if _a_rec:
+                                    _ln = _ln or (_a_rec.get("name") or "").strip()
+                                    if not _lp:
+                                        _cand = re.sub(r"\D", "", str(_a_rec.get("phone") or _a_key or ""))
+                                        # an IGSID is 16-17 digits and is NOT a
+                                        # phone number — never dial one.
+                                        if _cand and not is_ig_scoped(_a_key or ""):
+                                            _lp = _cand
+                        except Exception as _rx:
+                            _report_error("event_rail.attendee_resolve", _rx, f"event={event_id}")
+
                     if not _lp and _ln:
                         for _k, _v in list(lead_data.items()):
                             if _k.startswith("whatsapp:") and \

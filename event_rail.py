@@ -877,3 +877,121 @@ def _split_trailing_parens_er(s):
                 before, inside = s[:i].rstrip(), s[i + 1:-1].strip()
                 return (before, inside) if (before and inside) else (s, "")
     return s, ""
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PATCH #43 · THE REMINDER SYSTEM, MADE STRONG
+#
+# Michael, Aug 3 2026, after Gema Hiatt cancelled THREE MINUTES before her
+# call: "We are having no-show situations, we have clients not coming. Make
+# sure this reminder system really does work and that is strong."
+#
+# What the Robinson trace found, and what it generalises to:
+#
+#   The rail resolves the client by scraping `Lead:` / `Phone:` lines out of
+#   the event DESCRIPTION. Events Maya books carry those lines. Events typed
+#   onto the calendar BY HAND do not — so Dr. Robinson, our largest shoot,
+#   was set to be greeted "Hi there" at T-24 and T-2, with WhatsApp skipped
+#   entirely because no phone could be scraped.
+#
+#   Coach Fly was the same root cause one layer up: no attendee at all, so
+#   invisible to every rail. Robinson is VISIBLE BUT ANONYMOUS — and that is
+#   the harder failure, because nothing errors and nothing alerts.
+#
+# A description is a note somebody typed. An attendee is a real key. Prefer
+# the key.
+# ══════════════════════════════════════════════════════════════════════════
+
+RSVP_TIERS_HOURS = (72, 24)      # #43: 72h added — at 24h the only move left
+                                 # is eating the slot; at 72h LARA can still
+                                 # call, rebook, or release the studio.
+RSVP_TIER_TOLERANCE = 1.5        # poll runs every 15 min; ±1.5h never misses
+
+
+def due_rsvp_tier(hours_until):
+    """Which RSVP tier is due right now, or None. Highest tier first so a
+    single pass can never fire two."""
+    try:
+        h = float(hours_until)
+    except (TypeError, ValueError):
+        return None
+    for tier in RSVP_TIERS_HOURS:
+        if abs(h - tier) <= RSVP_TIER_TOLERANCE:
+            return tier
+    return None
+
+
+# The reminder job must see far enough ahead to reach its own earliest tier.
+# Robinson exposed this: the horizon was 50h and the crew stage fires at 48h,
+# so the entire margin on our largest shoot was TWO HOURS. One restart inside
+# that window and the crew tier is missed in silence.
+REMINDER_HORIZON_HOURS = 80      # 72h RSVP tier + 8h of slack
+
+
+def instrumentation_gaps(ev, resolved_name=None):
+    """What is missing on a FUTURE client event, in plain language.
+
+    This is the durable version of the manual sweep that found Gema and Coach
+    Fly. Read-only. Returns [] when the event is fully instrumented.
+    """
+    gaps = []
+    attendees = [a for a in (ev.get("attendees") or [])
+                 if isinstance(a, dict)]
+    external = [a for a in attendees
+                if a.get("email")
+                and not str(a["email"]).lower().endswith(
+                    ("mwmcreations.com", "mwmscreens.com"))
+                and "group.calendar.google.com" not in str(a["email"]).lower()]
+
+    # ── the Coach Fly failure: nobody was ever invited ──
+    if not external:
+        gaps.append("NO ATTENDEE — no invite was ever sent, no RSVP is possible, "
+                    "and the RSVP watcher filters on attendees so it can never "
+                    "see this event")
+
+    # ── the Robinson failure: reachable, but anonymous ──
+    desc = str(ev.get("description") or "")
+    has_lead_line = any(l.strip().lower().startswith("lead:")
+                        for l in desc.split("\n"))
+    if not has_lead_line and not resolved_name:
+        gaps.append("ANONYMOUS — no 'Lead:' line in the description and no lead "
+                    "record matched the attendee, so reminders address the "
+                    "client as 'there'")
+
+    # ── reminders ──
+    overrides = ev.get("overrideReminders")
+    if overrides is None:
+        overrides = (ev.get("reminders") or {}).get("overrides")
+    mins = {(o.get("method"), o.get("minutes"))
+            for o in (overrides or []) if isinstance(o, dict)}
+    if not mins:
+        gaps.append("NO REMINDERS AT ALL — only Google's calendar defaults")
+    else:
+        if not any(m == 1440 for _meth, m in mins):
+            gaps.append("no 24h reminder")
+        if not any(meth == "email" for meth, _m in mins):
+            gaps.append("no EMAIL reminder — popups reach Michael's devices, "
+                        "never the client")
+
+    # ── RSVP ──
+    pending = [a.get("email", "?") for a in external
+               if a.get("responseStatus") == "needsAction"]
+    if pending:
+        gaps.append("RSVP unanswered: " + ", ".join(pending))
+
+    if not (ev.get("location") or "").strip() and not ev.get("conferenceUrl"):
+        gaps.append("no location and no meeting link")
+
+    return gaps
+
+
+def gap_severity(gaps):
+    """'critical' when the event cannot reach the client at all, 'warn' when
+    it can but is degraded, 'ok' when clean. Drives whether a sweep pages or
+    merely lists."""
+    if not gaps:
+        return "ok"
+    for g in gaps:
+        if g.startswith(("NO ATTENDEE", "NO REMINDERS AT ALL", "ANONYMOUS")):
+            return "critical"
+    return "warn"

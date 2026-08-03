@@ -859,5 +859,74 @@ check_true("a payer using EITHER address now links to the lead",
            and email_field_matches(KRISTA_EMAIL, "kristasky@gmail.com"))
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #43 — the reminder system, made strong. Written the day Gema
+# Hiatt cancelled three minutes before her call.
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
+                        REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)
+
+ROBINSON = {"summary": "STUDIO SHOOT - NO LINES with Dr. Scott Robinson",
+            "description": "2 episodes - In-person Guests",
+            "location": "MWM Creations, 1500 Park Center Dr, Orlando",
+            "attendees": [{"email": "healer2bsure@gmail.com", "responseStatus": "accepted"}]}
+COACHFLY = {"summary": "Call — COACH FLY (Jahari) first session",
+            "description": "", "location": "Phone / WhatsApp call",
+            "overrideReminders": [{"method": "popup", "minutes": 30}]}
+CLEAN    = {"summary": "Studio Visit — Priti Verma (Pretty_dangles)",
+            "description": "Lead: Priti Verma\nPhone: 14075551234\nEmail: p@x.com",
+            "location": "1500 Park Center Dr, Suite 230, Orlando, FL 32835",
+            "attendees": [{"email": "p@x.com", "responseStatus": "accepted"}],
+            "overrideReminders": [{"method": "email", "minutes": 1440},
+                                  {"method": "email", "minutes": 60},
+                                  {"method": "popup", "minutes": 30}]}
+
+print("\n== #43: the horizon that left Robinson 2h of margin ==")
+check_true("horizon now clears the 72h tier", REMINDER_HORIZON_HOURS > 72)
+check_true("...and still clears crew T-48 with real slack",
+           REMINDER_HORIZON_HOURS - 48 >= 24)
+
+print("\n== #43: RSVP tiers — 72h added, because 24h is too late to act ==")
+check("T-72 fires the 72 tier", due_rsvp_tier(72), 72)
+check("T-24 still fires the 24 tier", due_rsvp_tier(24), 24)
+check_true("tolerance covers the 15-min poll", due_rsvp_tier(72.9) == 72 and due_rsvp_tier(23.2) == 24)
+check("nothing fires at T-50", due_rsvp_tier(50), None)
+check("nothing fires at T-12", due_rsvp_tier(12), None)
+check("garbage never fires", due_rsvp_tier(None), None)
+check_true("a single pass can never fire two tiers",
+           all(due_rsvp_tier(h) in (None, 72, 24) for h in range(0, 100)))
+
+print("\n== #43: Robinson — visible but ANONYMOUS (the hard failure) ==")
+_g = instrumentation_gaps(ROBINSON)
+check_true("flagged anonymous", any(x.startswith("ANONYMOUS") for x in _g))
+check_true("flagged as having no reminders", any(x.startswith("NO REMINDERS") for x in _g))
+check("severity is critical", gap_severity(_g), "critical")
+check_false("...but NOT flagged attendee-less — he does have one",
+            any(x.startswith("NO ATTENDEE") for x in _g))
+check_false("resolving him by attendee clears the anonymous flag",
+            any(x.startswith("ANONYMOUS") for x in
+                instrumentation_gaps(ROBINSON, resolved_name="Dr. Scott Robinson")))
+
+print("\n== #43: Coach Fly — nobody was ever invited ==")
+_c = instrumentation_gaps(COACHFLY)
+check_true("flagged attendee-less", any(x.startswith("NO ATTENDEE") for x in _c))
+check_true("popup-only is flagged — popups never reach the client",
+           any("no EMAIL reminder" in x for x in _c))
+check("severity is critical", gap_severity(_c), "critical")
+
+print("\n== #43: a properly instrumented event is SILENT ==")
+check("no gaps on a clean event", instrumentation_gaps(CLEAN), [])
+check("severity ok", gap_severity(instrumentation_gaps(CLEAN)), "ok")
+
+print("\n== #43: degraded but reachable = warn, not critical ==")
+_warn = dict(CLEAN, overrideReminders=[{"method": "email", "minutes": 60}])
+check("missing only the 24h tier -> warn", gap_severity(instrumentation_gaps(_warn)), "warn")
+_rsvp = dict(CLEAN, attendees=[{"email": "p@x.com", "responseStatus": "needsAction"}])
+check_true("unanswered RSVP is reported",
+           any(x.startswith("RSVP unanswered") for x in instrumentation_gaps(_rsvp)))
+check("...as a warning, not a critical", gap_severity(instrumentation_gaps(_rsvp)), "warn")
+
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
