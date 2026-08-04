@@ -546,7 +546,23 @@ TIMEZONE = "America/New_York"  # Orlando, Florida
 # There was never a defect. A report that cries wolf gets ignored, and an
 # ignored report is worse than no report, so /health now says so itself.
 _PROCESS_START = datetime.now(pytz.timezone(TIMEZONE))
-THREAD_REGISTRY_WARMUP_MIN = 13   # slowest first-heartbeat is lead_reminder at 12m
+# PATCH #44E — was 13, with the comment "slowest first-heartbeat is
+# lead_reminder at 12m". That comment was WRONG and the number with it:
+# `_pre_meeting_briefer` sleeps 900s (15 min) BEFORE its first _heartbeat().
+# So at 13 minutes /health flipped warmup_complete to true and announced
+# "count is FINAL — every thread has had time to register" while
+# pre_meeting_briefer had NOT registered. Measured live after the #44 deploy:
+# 17 threads at 13.8m with the FINAL note attached, 18 at 18.0m.
+#
+# Patch #33 built this gate precisely so nobody would compare a thread count
+# too early — and then set its own threshold below the slowest thread, which
+# made the gate assert a completeness it had not earned. 20 gives the 15-minute
+# sleeper five minutes of margin for a slow boot.
+#
+# If a thread is ever added with a first-heartbeat delay above this, RAISE THIS
+# NUMBER. A too-low value here does not merely under-report — it actively
+# certifies a wrong count as final.
+THREAD_REGISTRY_WARMUP_MIN = 20   # slowest first-heartbeat: pre_meeting_briefer at 15m
 
 STUDIO_ADDRESS = os.getenv(
     "STUDIO_ADDRESS",
