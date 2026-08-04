@@ -49,6 +49,15 @@ from event_rail import (emails_in_field, email_field_matches,
 from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         confirmation_copy, is_client_event,   # Patch #45
                         delivery_label,                      # Patch #46B
+                        mask_contact, CH_EMAIL,              # Patch #47
+                        # Patch #47 — /admin/lead-seq answers with the SENDER'S
+                        # verdict, so it must import the very same predicates the
+                        # sender uses rather than re-deriving them here. A second
+                        # implementation of "is this step due" would drift, and a
+                        # diagnostic that disagrees with the thing it diagnoses is
+                        # worse than no diagnostic.
+                        seq_stop_reason, next_due_step, seq_should_close,
+                        within_send_window, CH_WEB,
                         classify_event, KIND_INTERNAL,       # Patch #45E.2
                         REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
 
@@ -17672,6 +17681,142 @@ def _send_post_visit_template(phone, name, outcome, notes=""):
                 severity="WARNING"
             )
         return False
+
+
+@app.route('/admin/lead-seq', methods=['GET'])
+def admin_lead_seq():
+    """PATCH #47 — read-only: what is armed on ONE lead, and when it fires.
+
+    /admin/lead-seq?secret=<UPLOAD_SECRET>&q=<name | email | lead key>
+
+    Exists because `outcome_seq` lives in process memory, so every question
+    about whether a sequence armed has had to be answered by INFERENCE — the
+    lead resolved, the guard passed, therefore the write must have happened.
+    That reasoning has been right so far and it is still not evidence, and this
+    board has been burned six times by the gap between the two.
+
+    The verdict is computed with the SAME pure functions the sender uses, so
+    this reports what the sender will actually do rather than a second opinion
+    that can drift out of step with it.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    _q = (request.args.get("q") or "").strip().lower()
+    if not _q:
+        return jsonify({"ok": False, "error": "q is required (name, email or lead key)"}), 400
+
+    _hits = []
+    for _k, _r in list(lead_data.items()):
+        if not isinstance(_r, dict):
+            continue
+        _hay = " ".join([str(_k), str(_r.get("name") or ""),
+                         str(_r.get("email") or ""), str(_r.get("phone") or "")]).lower()
+        if _q in _hay:
+            _hits.append((_k, _r))
+    if not _hits:
+        return jsonify({"ok": True, "found": 0, "matches": [],
+                        "note": "no lead matched — the sequence cannot be armed on a "
+                                "record that does not exist"}), 200
+    if len(_hits) > 5:
+        return jsonify({"ok": True, "found": len(_hits), "matches": [],
+                        "note": f"{len(_hits)} leads matched — narrow the query"}), 200
+
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz)
+    _out = []
+    for _k, _r in _hits:
+        _entry = {
+            "lead_key": mask_contact(_k),
+            "name": _r.get("name") or "",
+            "business": _r.get("business") or "",
+            "email": mask_contact(_r.get("email")),
+            "booked": bool(_r.get("booked")),
+            "outcome": _r.get("outcome") or "",
+        }
+        _seq = _r.get("outcome_seq")
+        if not isinstance(_seq, dict):
+            _entry["armed"] = False
+            _entry["why"] = ("no outcome_seq on this record — either no event report "
+                             "has been submitted for them, or the outcome was one "
+                             "that arms nothing (not_interested / client_won)")
+            _out.append(_entry)
+            continue
+
+        _entry["armed"] = True
+        _entry["outcome_reported"] = _seq.get("outcome")
+        _entry["armed_at"] = _seq.get("armed_at")
+        _entry["done"] = bool(_seq.get("done"))
+        _entry["closed_reason"] = _seq.get("closed_reason") or ""
+        _entry["sent_so_far"] = _seq.get("sent") or []
+        _entry["has_agreed_next"] = bool(_seq.get("agreed_next"))   # #46A
+        _entry["steps"] = [
+            {"after_hours": _h, "delivered_by": delivery_label(_c), "kind": _kd}
+            for _h, _c, _kd in (_seq.get("steps") or [])
+        ]
+
+        # ── the sender's OWN verdict, not a re-implementation of it ──
+        _stop = seq_stop_reason(_r, _seq)
+        if _stop:
+            _entry["verdict"] = f"STOPPED — {_stop}"
+            _out.append(_entry)
+            continue
+        try:
+            _armed_dt = datetime.fromisoformat(str(_seq.get("armed_at")))
+            if _armed_dt.tzinfo is None:
+                _armed_dt = _tz.localize(_armed_dt)
+            _elapsed_h = (_now - _armed_dt).total_seconds() / 3600.0
+        except Exception:
+            _entry["verdict"] = "BROKEN — armed_at is unparseable; the sender will close this"
+            _out.append(_entry)
+            continue
+
+        _idx, _step, _status = next_due_step(_seq, _elapsed_h)
+        if _status == "finished":
+            _entry["verdict"] = "FINISHED — every step has been taken"
+        elif seq_should_close(_seq, _elapsed_h / 24.0):
+            _entry["verdict"] = "CLOSING — past close_after_days on the next pass"
+        else:
+            _after, _ch, _kind = _step
+            _due_at = _armed_dt + timedelta(hours=float(_after))
+            _entry["next_step"] = {
+                "kind": _kind,
+                "delivered_by": delivery_label(_ch),
+                "due_at": _due_at.strftime("%a %b %d, %I:%M %p %Z"),
+                "status": _status,
+            }
+            if _status == "due" and not within_send_window(_now):
+                _entry["verdict"] = ("DUE — held until 08:00, quiet hours "
+                                     "(the step is held, never skipped)")
+            else:
+                _entry["verdict"] = {
+                    "due": "DUE — goes out on the next pass (within 20 minutes)",
+                    "waiting": "WAITING — armed and counting down",
+                    "stale": "STALE — its window passed; the sender will skip it and report",
+                }.get(_status, _status)
+
+            # The actual words. The whole point of this endpoint is that nobody
+            # has to guess what a client is about to receive.
+            try:
+                _fn = _outcome_seq._first_name(_r.get("name"))
+                _agreed = str(_seq.get("agreed_next") or "").strip()
+                if _ch in (CH_WEB, CH_EMAIL):
+                    _subj, _body = _outcome_seq._email_copy(
+                        _kind, _fn, _r.get("business") or "", _agreed)
+                    _entry["next_step"]["preview"] = {
+                        "subject": _subj,
+                        "body_text": re.sub(r"<[^>]+>", " ", _body).replace("&amp;", "&"),
+                    }
+                else:
+                    _entry["next_step"]["preview"] = {
+                        "message": _outcome_seq._short_copy(
+                            _kind, _fn, _r.get("business") or "", _agreed)}
+            except Exception as _pv:
+                _entry["next_step"]["preview_error"] = str(_pv)[:200]
+        _out.append(_entry)
+
+    return jsonify({"ok": True, "found": len(_out), "as_of": _now.isoformat(),
+                    "matches": _out}), 200
 
 
 @app.route('/admin/submit-post-visit-templates', methods=['POST'])

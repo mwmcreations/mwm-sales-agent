@@ -1217,6 +1217,24 @@ def next_due_step(seq, hours_since_armed):
     return idx, step, "due"
 
 
+def mask_contact(value):
+    """Enough to confirm WHO, never enough to contact them.
+
+    PATCH #47. The inspection endpoint exists so a defect can be diagnosed
+    without a deploy; it must not also become a way to pull contact details out
+    of production if the admin secret ever leaks. "rodolfos@nestseekers.com"
+    -> "rod…@nestseekers.com"; "14075551234" -> "…1234".
+    """
+    v = str(value or "").strip()
+    if not v:
+        return ""
+    if "@" in v:
+        local, _, domain = v.partition("@")
+        head = local[:3] if len(local) > 4 else local[:1]
+        return f"{head}…@{domain}"
+    return "…" + v[-4:] if len(v) > 4 else "…"
+
+
 def seq_should_close(seq, days_since_armed):
     """True when the sequence has outlived its close_after_days window.
 

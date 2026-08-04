@@ -12,6 +12,7 @@ being quietly dropped, so the gate stays visible until it is really met.
 
 import sys
 from event_rail import (stage_horizon_phrase, confirmation_copy, KIND_INTERNAL,
+                        mask_contact,
                         CONFIRMATION_PLAN,
                         harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email, looks_like_address,
@@ -1030,6 +1031,25 @@ check_false("...but she is NOT internal either — so she must still surface",
             classify_event(_coachfly)[0] == KIND_INTERNAL)
 check_true("...and she has no attendee, which is what makes her un-railable",
            not _coachfly["attendees"])
+
+print("\n== #47: the inspection endpoint must not become an exfiltration tool ==")
+# /admin/lead-seq exists so a defect can be diagnosed without a deploy. It must
+# show enough to confirm WHO, and never enough to contact them, in case the
+# admin secret ever leaks.
+check("an email keeps its domain but loses the mailbox",
+      mask_contact("rodolfos@nestseekers.com"), "rod…@nestseekers.com")
+check("a short local part is cut harder",
+      mask_contact("mo@x.com"), "m…@x.com")
+check("a phone keeps only the last four", mask_contact("14075551234"), "…1234")
+check("an IGSID is masked the same way",
+      mask_contact("178901234567890"), "…7890")
+check("empty stays empty", mask_contact(""), "")
+check("None does not crash", mask_contact(None), "")
+check_false("the full address never survives masking",
+            "rodolfos@nestseekers.com" == mask_contact("rodolfos@nestseekers.com"))
+check_false("...nor the full number",
+            "14075551234" in mask_contact("14075551234"))
+
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
