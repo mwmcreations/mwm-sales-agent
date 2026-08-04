@@ -47,6 +47,8 @@ from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
 from event_rail import (emails_in_field, email_field_matches,
                         names_match)                  # Patch #42
 from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
+                        confirmation_copy, is_client_event,   # Patch #45
+                        classify_event, KIND_INTERNAL,       # Patch #45E.2
                         REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
 
 load_dotenv()
@@ -8866,14 +8868,18 @@ def _lead_reminder_thread():
 
                     # ── CLIENT stage: automated ladder, S-6 ─────────
                     _sent_via = None
+                    # PATCH #45B — copy is tier-aware now. This said "session
+                    # tomorrow" for EVERY stage at or above 24h, so #45A's new
+                    # 48h and 168h tiers would each have told the client the
+                    # wrong day. A reminder carrying the wrong date is worse
+                    # than no reminder: they believe it and diary it.
+                    _when_long = event_start.strftime("%A, %B %d")
+                    _time_str = event_start.strftime("%I:%M %p").lstrip("0")
+                    _wa_body, _em_subject, _em_html = confirmation_copy(
+                        stage_h, _fn, _when_long, _time_str,
+                        event.get("location") or "")
                     if _lp and is_dialable("+" + _lp):
-                        if stage_h >= 24:
-                            body = (f"Hi {_fn}! Maya from MWM Creations here 😊 Reminder about your "
-                                    f"session tomorrow — {when}. Could you reply YES to confirm? "
-                                    f"Reply here if you need to reschedule.")
-                        else:
-                            body = (f"Hi {_fn}! See you soon — your session starts at "
-                                    f"{event_start.strftime('%I:%M %p')} today. Reply here if you need anything!")
+                        body = _wa_body
                         if send_whatsapp_meta(f"whatsapp:+{_lp}", body=body):
                             _sent_via = "WhatsApp (free-form)"
                         elif send_wa_utility_template(
@@ -8892,14 +8898,13 @@ def _lead_reminder_thread():
                             # PATCH #44A2 — this was `if send_gmail(...)`, and
                             # send_gmail returns a TRUTHY dict even on failure.
                             # Every failed confirmation was recorded as sent.
+                            # PATCH #45B — same tier-aware copy as WhatsApp,
+                            # so the two channels cannot drift apart.
                             if email_ok(_email_send(
                                 ascii_email(_email)[0],
-                                f"Confirming your session — {event_start.strftime('%A, %B %d')}",
-                                (f"Hi {_fn},<br><br>Confirming your session with MWM Creations "
-                                 f"on <b>{when}</b>.<br>Location: {event.get('location') or STUDIO_ADDRESS}"
-                                 f"<br><br>Could you reply to confirm you're coming?<br><br>"
-                                 f"— MWM Creations &amp; Studios"),
-                                via="confirmation-fallback",
+                                _em_subject,
+                                _em_html,
+                                via=f"confirmation-T{stage_h}h",
                             )):
                                 _sent_via = "email (WhatsApp unavailable)"
                         except Exception as _mail_err:
@@ -16023,7 +16028,7 @@ INSTRUMENTATION_SWEEP_DAYS = int(os.getenv("INSTRUMENTATION_SWEEP_DAYS", "30"))
 
 
 def _instrumentation_sweep_once():
-    """Scan the forward window and return (criticals, degraded) as text lines."""
+    """Scan the forward window. Returns (criticals, degraded, unclassified)."""
     _tz = pytz.timezone(TIMEZONE)
     _now = datetime.now(_tz)
     _svc = get_calendar_service()
@@ -16035,23 +16040,63 @@ def _instrumentation_sweep_once():
         orderBy="startTime",
         maxResults=250,
     ).execute(num_retries=3)
-    _crit, _deg = [], []
+    _crit, _deg, _unknown = [], [], []
     for _ev in _res.get("items", []):
         if _ev.get("transparency") == "transparent":
             continue          # marked Free — not a client commitment
         if "date" in (_ev.get("start") or {}):
             continue          # all-day: birthdays, school events, not sessions
+        # PATCH #45E — the filter that was missing. The first live run (Aug 4,
+        # 07:00) paged #matt AND #lara with 18 "criticals": five TREINO EMS gym
+        # sessions, a kids' Back to School Bash, and a Brazilian court hearing,
+        # burying the two entries that were real. `is_client_event()` already
+        # existed in event_rail and `_lead_reminder_thread` had used it for
+        # weeks — its docstring even says "without it this job would chase
+        # Michael's gym sessions and nudge a Brazilian court clerk for an
+        # RSVP." #44D wrote a second, worse filter by not looking first.
+        #
+        # PATCH #45E.2 — three buckets, not two. A plain `is_client_event()`
+        # gate removes the noise but ALSO removes the one event that started
+        # all of this: "Call — COACH FLY (Jahari) first session" classifies as
+        # UNKNOWN, because it was hand-made with no recognised title and no
+        # `Lead:` line. Filtering on confidence alone would have silently
+        # hidden the exact failure the sweep exists to catch, which is a worse
+        # outcome than the noise.
+        #
+        # classify_event already returns three states. Use all three:
+        #   internal  -> silent (gym, legal matters, recurring blocks)
+        #   client    -> full scoring, criticals page
+        #   unknown   -> surfaced quietly IF it has no attendee, because an
+        #                un-railable event we cannot even identify is exactly
+        #                the Coach Fly shape and one line is cheap.
+        _kind, _is_client, _why = classify_event(_ev)
         _summary = (_ev.get("summary") or "(untitled)").strip()
+        _when = (_ev.get("start", {}).get("dateTime") or "")[:16].replace("T", " ")
+
+        if _kind == KIND_INTERNAL:
+            continue
+
+        if not _is_client:
+            _ext = [a for a in (_ev.get("attendees") or [])
+                    if isinstance(a, dict) and a.get("email")
+                    and not str(a["email"]).lower().endswith(
+                        ("mwmcreations.com", "mwmscreens.com"))
+                    and "group.calendar.google.com" not in str(a["email"]).lower()]
+            if not _ext:
+                _unknown.append(
+                    f"• *{_summary}* — {_when} — unrecognised event with no "
+                    f"attendee. If this is a client, no rail can see it.")
+            continue
+
         _gaps = instrumentation_gaps(_ev)
         if not _gaps:
             continue
-        _when = (_ev.get("start", {}).get("dateTime") or "")[:16].replace("T", " ")
         _line = f"• *{_summary}* — {_when} — {'; '.join(_gaps)}"
         if gap_severity(_gaps) == "critical":
             _crit.append(_line)
         else:
             _deg.append(_line)
-    return _crit, _deg
+    return _crit, _deg, _unknown
 
 
 def _instrumentation_sweep_thread():
@@ -16076,7 +16121,7 @@ def _instrumentation_sweep_thread():
             if datetime.now(_tz) < _target:
                 continue
 
-            _crit, _deg = _instrumentation_sweep_once()
+            _crit, _deg, _unknown = _instrumentation_sweep_once()
             _stamp = datetime.now(_tz).strftime("%a %b %d")
 
             if _crit:
@@ -16085,8 +16130,10 @@ def _instrumentation_sweep_thread():
                         f"{INSTRUMENTATION_SWEEP_DAYS} days)_\n"
                         + "\n".join(_crit[:10])
                         + ("\n_…and more_" if len(_crit) > 10 else "")
-                        + "\n_A critical event cannot reach its client at all: "
-                          "no attendee, or no reminder path. Patch #44D._")
+                        + "\n_CRITICAL = no attendee on the event, so there is no "
+                          "address to remind, no RSVP to read, and the client's "
+                          "own calendar never learns the booking exists. "
+                          "Client events only. Patch #45._")
                 _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
                 _post_to_slack_async(SLACK_LARA_CHANNEL, _msg)
             if _deg:
@@ -16094,7 +16141,16 @@ def _instrumentation_sweep_thread():
                     f":warning: *Instrumentation sweep — {len(_deg)} degraded* "
                     f"_({_stamp})_\n" + "\n".join(_deg[:12])
                     + ("\n_…and more_" if len(_deg) > 12 else "")))
-            if not _crit and not _deg:
+            if _unknown:
+                _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                    f":grey_question: *Unclassified calendar events — "
+                    f"{len(_unknown)}* _({_stamp})_\n" + "\n".join(_unknown[:10])
+                    + ("\n_…and more_" if len(_unknown) > 10 else "")
+                    + "\n_Not scored — the machine cannot tell whether these are "
+                      "client bookings. Coach Fly looked exactly like this. Adding "
+                      "a `Lead: <name>` line to the description, or renaming to "
+                      "'Studio Visit — <name>', puts it on the rail. Patch #45._"))
+            if not _crit and not _deg and not _unknown:
                 print(f"[SWEEP] {_stamp}: clean — no gaps in the "
                       f"{INSTRUMENTATION_SWEEP_DAYS}-day window")
             _t.sleep(3600)      # clear the target minute

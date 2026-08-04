@@ -11,7 +11,9 @@ being quietly dropped, so the gate stays visible until it is really met.
 """
 
 import sys
-from event_rail import (harden_event_body, audit_event, resolve_channel,
+from event_rail import (stage_horizon_phrase, confirmation_copy, KIND_INTERNAL,
+                        CONFIRMATION_PLAN,
+                        harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email, looks_like_address,
                         reminder_channel_for, EventRailRejected, STANDARD_REMINDERS,
                         CH_INSTAGRAM, CH_WHATSAPP, CH_WEB, CH_UNKNOWN)
@@ -206,10 +208,25 @@ check_true("...with a stated reason (skipped, never guessed)", "AMBIGUOUS" in a_
 print("\n== S-3 · confirmation plan is event-type aware ==")
 check("studio visit at T-24 -> client confirmation",
       due_stages(KIND_STUDIO_VISIT, 24.0), [("client", 24)])
-check("studio visit has NO T-48 crew stage",
-      due_stages(KIND_STUDIO_VISIT, 48.0), [])
-check("production shoot at T-48 -> CREW confirmation",
-      due_stages(KIND_PRODUCTION_SHOOT, 48.0), [("crew", 48)])
+# PATCH #45A — a studio visit now DOES have a T-48 stage, but it is a CLIENT
+# touch, not a crew one. The original assertion conflated "no crew at 48" with
+# "nothing at 48"; only the first was ever the rule.
+check("studio visit at T-48 -> CLIENT touch (new in #45A)",
+      due_stages(KIND_STUDIO_VISIT, 48.0), [("client", 48)])
+check_false("...and still NO crew stage — a studio visit has no call sheet",
+            any(a == "crew" for a, _h in due_stages(KIND_STUDIO_VISIT, 48.0)))
+check("studio visit at T-168 -> the week-out touch",
+      due_stages(KIND_STUDIO_VISIT, 168.0), [("client", 168)])
+check("a 30-min strategy call does NOT get a week-out touch",
+      due_stages(KIND_STRATEGY_CALL, 168.0), [])
+check("...but does get T-48", due_stages(KIND_STRATEGY_CALL, 48.0), [("client", 48)])
+# PATCH #45A — T-48 on a shoot now fires BOTH: the crew call-sheet assignment
+# that always existed, and the new client touch. Order matters only for
+# readability; both must be present.
+check_true("production shoot at T-48 still fires the CREW confirmation",
+           ("crew", 48) in due_stages(KIND_PRODUCTION_SHOOT, 48.0))
+check_true("...and now also a CLIENT touch",
+           ("client", 48) in due_stages(KIND_PRODUCTION_SHOOT, 48.0))
 check("production shoot at T-24 -> CLIENT confirmation",
       due_stages(KIND_PRODUCTION_SHOOT, 24.0), [("client", 24)])
 check_true("production shoot at T-2 covers client AND crew",
@@ -304,7 +321,10 @@ for label, ev in [("Bolfer Aug 15", bolfer), ("Robinson Aug 20", robinson)]:
           location_repair_for(k, STUDIO, VIRTUAL)[0], STUDIO)
 
 print("\n== a studio production owes the SAME crew rail as an on-location shoot ==")
-check("crew confirmation at T-48", due_stages(KIND_STUDIO_PRODUCTION, 48.0), [("crew", 48)])
+check_true("crew confirmation at T-48",
+           ("crew", 48) in due_stages(KIND_STUDIO_PRODUCTION, 48.0))
+check_true("...alongside the #45A client touch",
+           ("client", 48) in due_stages(KIND_STUDIO_PRODUCTION, 48.0))
 check("client confirmation at T-24", due_stages(KIND_STUDIO_PRODUCTION, 24.0), [("client", 24)])
 check_true("client AND crew at T-2",
            set(due_stages(KIND_STUDIO_PRODUCTION, 2.0)) == {("client", 2), ("crew", 2)})
@@ -900,8 +920,15 @@ check_true("a single pass can never fire two tiers",
 print("\n== #43: Robinson — visible but ANONYMOUS (the hard failure) ==")
 _g = instrumentation_gaps(ROBINSON)
 check_true("flagged anonymous", any(x.startswith("ANONYMOUS") for x in _g))
-check_true("flagged as having no reminders", any(x.startswith("NO REMINDERS") for x in _g))
-check("severity is critical", gap_severity(_g), "critical")
+# PATCH #45D — the two assertions that used to live here are DELETED, not
+# adjusted, and that is the point of this patch. They asserted that an event
+# without an email reminder override was critical. Calendar reminder overrides
+# are private to the account that wrote them and reach no client, so the old
+# test was pinning a measurement that meant nothing.
+check_false("no longer scored on reminders at all",
+            any(x.startswith("NO REMINDERS") for x in _g))
+check("anonymous alone is a WARN — he still receives the message",
+      gap_severity(_g), "warn")
 check_false("...but NOT flagged attendee-less — he does have one",
             any(x.startswith("NO ATTENDEE") for x in _g))
 check_false("resolving him by attendee clears the anonymous flag",
@@ -911,22 +938,98 @@ check_false("resolving him by attendee clears the anonymous flag",
 print("\n== #43: Coach Fly — nobody was ever invited ==")
 _c = instrumentation_gaps(COACHFLY)
 check_true("flagged attendee-less", any(x.startswith("NO ATTENDEE") for x in _c))
-check_true("popup-only is flagged — popups never reach the client",
-           any("no EMAIL reminder" in x for x in _c))
-check("severity is critical", gap_severity(_c), "critical")
+check_false("popup-vs-email is no longer scored — NEITHER reaches the client",
+            any("EMAIL reminder" in x for x in _c))
+check("still critical, on the attendee — that is the real failure",
+      gap_severity(_c), "critical")
 
 print("\n== #43: a properly instrumented event is SILENT ==")
 check("no gaps on a clean event", instrumentation_gaps(CLEAN), [])
 check("severity ok", gap_severity(instrumentation_gaps(CLEAN)), "ok")
 
 print("\n== #43: degraded but reachable = warn, not critical ==")
+# PATCH #45D — stripping an event down to one 60-minute email override used to
+# be a WARN. It is now OK, because that field was never the safety net. The
+# safety net is the attendee, the name and the RSVP, all of which CLEAN has.
 _warn = dict(CLEAN, overrideReminders=[{"method": "email", "minutes": 60}])
-check("missing only the 24h tier -> warn", gap_severity(instrumentation_gaps(_warn)), "warn")
+check("reminder overrides no longer affect the verdict",
+      gap_severity(instrumentation_gaps(_warn)), "ok")
+_noreminders = dict(CLEAN)
+_noreminders.pop("overrideReminders", None)
+check("an event with NO overrides at all is still OK",
+      gap_severity(instrumentation_gaps(_noreminders)), "ok")
 _rsvp = dict(CLEAN, attendees=[{"email": "p@x.com", "responseStatus": "needsAction"}])
 check_true("unanswered RSVP is reported",
            any(x.startswith("RSVP unanswered") for x in instrumentation_gaps(_rsvp)))
 check("...as a warning, not a critical", gap_severity(instrumentation_gaps(_rsvp)), "warn")
 
+
+print("\n== #45B: tier-aware copy — a reminder must never state the wrong day ==")
+# The old body said "your session tomorrow" for EVERY stage >= 24h. With the
+# new 48h and 168h tiers that is wrong twice, and a client who diaries the
+# wrong date because our reminder told them to is worse off than one we never
+# reminded at all.
+check("a week out reads as a week out", stage_horizon_phrase(168), "a week from now")
+check("two days out does not say tomorrow", stage_horizon_phrase(48), "in a couple of days")
+check("T-24 says tomorrow", stage_horizon_phrase(24), "tomorrow")
+check("T-2 says today", stage_horizon_phrase(2), "today")
+check("garbage degrades safely", stage_horizon_phrase(None), "coming up")
+
+_wa168, _s168, _h168 = confirmation_copy(168, "Jane", "Tuesday, August 11", "10:00 AM")
+check_false("the 7-day WhatsApp message never says 'tomorrow'", "tomorrow" in _wa168)
+check_true("...and carries the DATE, not just a weekday", "August 11" in _wa168)
+check_true("...and the time", "10:00 AM" in _wa168)
+check_true("...greets by first name", _wa168.startswith("Hi Jane!"))
+
+_wa2, _s2, _h2 = confirmation_copy(2, "Jane", "Tuesday, August 11", "10:00 AM")
+check_true("the day-of message says today", "today" in _wa2)
+check_false("...and does not ask them to confirm hours before", "reply YES" in _wa2.lower())
+
+_wa48, _s48, _h48 = confirmation_copy(48, "Jane", "Tuesday, August 11", "10:00 AM",
+                                      location="1500 Park Center Dr")
+check_true("the email carries the location when we have one",
+           "1500 Park Center Dr" in _h48)
+check_true("...and the subject carries the date", "August 11" in _s48)
+_wa48b, _s48b, _h48b = confirmation_copy(48, "", "Tuesday, August 11", "10:00 AM")
+check_true("an empty name degrades to 'there', never to 'Hi !'",
+           _wa48b.startswith("Hi there!"))
+
+print("\n== #45A: the ladder that actually sends ==")
+check_true("the horizon can reach the 168h tier at all", REMINDER_HORIZON_HOURS > 168)
+check_true("...with real slack, not two hours of it", REMINDER_HORIZON_HOURS - 168 >= 6)
+# due_stages matches a WINDOW, not a threshold — this is what makes raising the
+# horizon safe to deploy: an event already 100h out does NOT retro-fire the
+# 168h tier, it simply missed that window.
+check("an event already inside 168h does NOT back-fire the week-out tier",
+      due_stages(KIND_STUDIO_VISIT, 100.0), [])
+check_true("every client stage in every plan is reachable within the horizon",
+           all(h <= REMINDER_HORIZON_HOURS
+               for plan in CONFIRMATION_PLAN.values() for _a, h in plan))
+check_true("no plan fires two stages in one pass",
+           all(len(due_stages(k, float(h))) == len(set(due_stages(k, float(h))))
+               for k in CONFIRMATION_PLAN for h in range(0, 200)))
+
+print("\n== #45E: the sweep filter must drop the gym WITHOUT dropping Coach Fly ==")
+# The whole risk of adding a client filter is that it silences the exact case
+# the sweep exists for. Coach Fly's event was hand-made, has no recognised
+# title and no `Lead:` line — a plain is_client_event() gate would have hidden
+# it. These pin the three-state contract the sweep depends on.
+_coachfly = {"summary": "Call — COACH FLY (Jahari) first session",
+             "description": "", "location": "Phone / WhatsApp call", "attendees": []}
+_gym = {"summary": "TREINO EMS Vida Fit", "description": "", "attendees": []}
+_legal = {"summary": "0844538-85.2024.8.19.0002 04ªVRCNI",
+          "description": "Reunião do Microsoft Teams",
+          "attendees": [{"email": "pedrosouza@tjrj.jus.br", "responseStatus": "needsAction"}]}
+_weekly = {"summary": "SEND WEEKLY UPDATE E-MAIL - VICTORY TV", "description": "", "attendees": []}
+
+check("the gym is INTERNAL — silently skipped", classify_event(_gym)[0], KIND_INTERNAL)
+check("the court hearing is INTERNAL", classify_event(_legal)[0], KIND_INTERNAL)
+check("the weekly block is INTERNAL", classify_event(_weekly)[0], KIND_INTERNAL)
+check_false("Coach Fly is NOT confidently a client event", classify_event(_coachfly)[1])
+check_false("...but she is NOT internal either — so she must still surface",
+            classify_event(_coachfly)[0] == KIND_INTERNAL)
+check_true("...and she has no attendee, which is what makes her un-railable",
+           not _coachfly["attendees"])
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

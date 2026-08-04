@@ -467,16 +467,28 @@ def is_client_event(ev):
 # yes, and T-2h day-of to all. Studio visits keep the rail that already works.
 # "Do not build a second reminder system for shoots" — this is the same job,
 # made event-type aware.
+# PATCH #45A — the 7-day and 48-hour CLIENT tiers are new here, and they are
+# the ones Michael actually asked for after the no-shows. They previously
+# "existed" only as Google Calendar overrideReminders, which are private to
+# whoever wrote them and reached no client (see instrumentation_gaps below).
+# These go out on the rail that genuinely delivers: WhatsApp first, email
+# fallback, a named human when neither works.
+#
+# Deliberately NOT uniform. A 3-hour studio production earns a week's notice;
+# a 30-minute strategy call does not, and a reminder nobody needs is how a
+# useful rail teaches people to ignore it.
 CONFIRMATION_PLAN = {
-    KIND_STUDIO_VISIT:     [("client", 24), ("client", 2)],
-    KIND_STRATEGY_CALL:    [("client", 24), ("client", 2)],
-    KIND_CLIENT_CALL:      [("client", 24), ("client", 2)],
-    KIND_PORTAL_BOOKING:   [("client", 24), ("client", 2)],
+    KIND_STUDIO_VISIT:     [("client", 168), ("client", 48), ("client", 24), ("client", 2)],
+    KIND_PORTAL_BOOKING:   [("client", 168), ("client", 48), ("client", 24), ("client", 2)],
+    KIND_STRATEGY_CALL:    [("client", 48), ("client", 24), ("client", 2)],
+    KIND_CLIENT_CALL:      [("client", 48), ("client", 24), ("client", 2)],
     # A studio production needs the SAME crew rail as an on-location shoot —
     # Robinson's podcast has guests and an audience, Bolfer's is a 3h session.
     # Only the venue differs, not the confirmation obligation.
-    KIND_STUDIO_PRODUCTION: [("crew", 48), ("client", 24), ("client", 2), ("crew", 2)],
-    KIND_PRODUCTION_SHOOT: [("crew", 48), ("client", 24), ("client", 2), ("crew", 2)],
+    KIND_STUDIO_PRODUCTION: [("client", 168), ("crew", 48), ("client", 48),
+                             ("client", 24), ("client", 2), ("crew", 2)],
+    KIND_PRODUCTION_SHOOT:  [("client", 168), ("crew", 48), ("client", 48),
+                             ("client", 24), ("client", 2), ("crew", 2)],
 }
 
 
@@ -533,6 +545,65 @@ def location_repair_for(kind, studio_address, virtual_note):
         return virtual_note, "virtual event — non-postal note, not a street address"
     return None, ("event happens at the CLIENT's site — only a human knows the "
                   "address. Guessing here would send the crew to the wrong place.")
+
+
+def stage_horizon_phrase(stage_h):
+    """How to describe the gap, in the client's words, at this stage.
+
+    PATCH #45B. The confirmation body said "your session tomorrow" for EVERY
+    stage at or above 24h. With #45A adding 48h and 168h tiers that sentence
+    becomes a lie twice over — and a reminder that states the wrong day is
+    worse than none, because the client trusts it and writes down the wrong
+    date.
+    """
+    try:
+        h = float(stage_h)
+    except (TypeError, ValueError):
+        return "coming up"
+    if h >= 144:
+        return "a week from now"
+    if h >= 36:
+        return "in a couple of days"
+    if h >= 12:
+        return "tomorrow"
+    return "today"
+
+
+def confirmation_copy(stage_h, first_name, when_long, time_str, location=""):
+    """(whatsapp_body, email_subject, email_html) for one client tier.
+
+    Pure on purpose: copy is the part most likely to be wrong and the part
+    nobody notices is wrong, so it belongs where a test can read it.
+
+    Early tiers CARRY THE DATE. "Tomorrow at 10" is unambiguous; "in a couple
+    of days at 10" is not, and a client reading it a week out has nothing to
+    write in a calendar.
+    """
+    fn = str(first_name or "there").strip() or "there"
+    phrase = stage_horizon_phrase(stage_h)
+    try:
+        h = float(stage_h)
+    except (TypeError, ValueError):
+        h = 24.0
+
+    if h < 12:
+        wa = (f"Hi {fn}! See you soon — your session with MWM Creations starts "
+              f"at {time_str} today. Reply here if you need anything!")
+        subject = f"Today at {time_str} — MWM Creations & Studios"
+    else:
+        wa = (f"Hi {fn}! Maya from MWM Creations here 😊 Reminder about your "
+              f"session {phrase} — {when_long} at {time_str}. Could you reply "
+              f"YES to confirm? Reply here if you need to reschedule.")
+        subject = f"Confirming your session — {when_long}"
+
+    html = (f"<p>Hi {fn},</p>"
+            f"<p>Confirming your session with MWM Creations &amp; Studios "
+            f"<b>{phrase}</b> — {when_long} at {time_str}.</p>"
+            + (f"<p>Location: {location}</p>" if location else "")
+            + f"<p>Could you reply to confirm you're coming? If you need to "
+              f"move it, just tell me and I'll find another time.</p>"
+              f"<p>— MWM Creations &amp; Studios</p>")
+    return wa, subject, html
 
 
 def due_stages(kind, hours_until, tolerance=1.0):
@@ -925,14 +996,48 @@ def due_rsvp_tier(hours_until):
 # Robinson exposed this: the horizon was 50h and the crew stage fires at 48h,
 # so the entire margin on our largest shoot was TWO HOURS. One restart inside
 # that window and the crew tier is missed in silence.
-REMINDER_HORIZON_HOURS = 80      # 72h RSVP tier + 8h of slack
+# PATCH #45C — was 80, which made the new 168h client tier unreachable: the
+# scan never saw an event a week out, so the tier could never fire. 180 = the
+# 168h tier plus half a day of slack.
+#
+# Safe to widen. due_stages() matches a WINDOW (h ± tolerance), not a
+# threshold, so raising the horizon does NOT retro-fire the new tiers for
+# events already closer than 168h — only events that pass THROUGH the window
+# from now on will trigger them. No blast on deploy.
+REMINDER_HORIZON_HOURS = 180     # 168h client tier + 12h of slack
 
 
 def instrumentation_gaps(ev, resolved_name=None):
     """What is missing on a FUTURE client event, in plain language.
 
-    This is the durable version of the manual sweep that found Gema and Coach
-    Fly. Read-only. Returns [] when the event is fully instrumented.
+    PATCH #45D — CORRECTED, and the correction matters more than the original.
+
+    The #43 version scored an event on its `overrideReminders` and called a
+    missing EMAIL override a critical, client-unreachable failure. That was
+    exactly backwards. Google Calendar reminders are private to the
+    authenticated user — Google's words:
+
+        "Reminders are private information, specific to an authenticated
+         user; they're not shared across multiple users."
+
+    An override our service account writes is a reminder FOR THE SERVICE
+    ACCOUNT. No client has ever received one. There is no mechanism in the API
+    for an organiser to set a reminder that reaches an attendee.
+
+    Demonstrated on our own calendar rather than merely read: the first live
+    sweep (Aug 4, 07:00) reported "NO REMINDERS AT ALL" for precisely the
+    events whose reminders MICHAEL set in his own UI, and reported nothing
+    about reminders on precisely the events our service account had written the
+    night before. The service account can only see its own. That is the
+    per-user model, proved on production data.
+
+    So this function no longer measures reminders at all. It measures what the
+    REAL rail needs in order to reach a human: an attendee address to send to,
+    a name to greet them by, an answered RSVP, and somewhere to go. The rail
+    itself is `_lead_reminder_thread` — WhatsApp first, email fallback, named
+    human last.
+
+    Read-only. Returns [] when the event is fully instrumented.
     """
     gaps = []
     attendees = [a for a in (ev.get("attendees") or [])
@@ -955,23 +1060,17 @@ def instrumentation_gaps(ev, resolved_name=None):
                         for l in desc.split("\n"))
     if not has_lead_line and not resolved_name:
         gaps.append("ANONYMOUS — no 'Lead:' line in the description and no lead "
-                    "record matched the attendee, so reminders address the "
-                    "client as 'there'")
+                    "record matched the attendee, so reminders greet the client "
+                    "as 'there'")
 
-    # ── reminders ──
-    overrides = ev.get("overrideReminders")
-    if overrides is None:
-        overrides = (ev.get("reminders") or {}).get("overrides")
-    mins = {(o.get("method"), o.get("minutes"))
-            for o in (overrides or []) if isinstance(o, dict)}
-    if not mins:
-        gaps.append("NO REMINDERS AT ALL — only Google's calendar defaults")
-    else:
-        if not any(m == 1440 for _meth, m in mins):
-            gaps.append("no 24h reminder")
-        if not any(meth == "email" for meth, _m in mins):
-            gaps.append("no EMAIL reminder — popups reach Michael's devices, "
-                        "never the client")
+    # ── PATCH #45D — the reminder checks that used to live here are GONE.
+    # They asked whether the event carried an email override at 1440 minutes.
+    # That field is private to whoever wrote it and has never reached a
+    # client, so an event could pass this check and still be completely
+    # un-remindable. Scoring on it did not merely fail to help — it produced
+    # false confidence, which is why the ladder went unquestioned for a week.
+    # What replaces it is the attendee check above (that address is what the
+    # email rail actually sends to) and the RSVP check below.
 
     # ── RSVP ──
     pending = [a.get("email", "?") for a in external
@@ -991,8 +1090,15 @@ def gap_severity(gaps):
     merely lists."""
     if not gaps:
         return "ok"
+    # PATCH #45D — only NO ATTENDEE is critical now.
+    #
+    # "NO REMINDERS AT ALL" is gone entirely: it measured a field that reaches
+    # nobody. ANONYMOUS is a WARN, not a critical — a client greeted as "there"
+    # still receives the message, which is a quality defect, not an outage.
+    # Calling both critical is how the first live sweep produced 18 criticals
+    # and buried the one that mattered.
     for g in gaps:
-        if g.startswith(("NO ATTENDEE", "NO REMINDERS AT ALL", "ANONYMOUS")):
+        if g.startswith("NO ATTENDEE"):
             return "critical"
     return "warn"
 
