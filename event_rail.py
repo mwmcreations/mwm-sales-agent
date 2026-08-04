@@ -995,3 +995,136 @@ def gap_severity(gaps):
         if g.startswith(("NO ATTENDEE", "NO REMINDERS AT ALL", "ANONYMOUS")):
             return "critical"
     return "warn"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PATCH #44B · EXECUTING THE PLAN THAT #39 ARMED
+#
+# Patch #39 computed `outcome_plan()` and stored the result on the lead record
+# as `outcome_seq`. It said, in a comment, that "the sender (Patch #40)" would
+# consume it. Patch #40 turned out to be the lead-resolution fix. Nobody built
+# the sender.
+#
+# Verified Aug 3, 2026: `outcome_seq` is WRITTEN in exactly one place
+# (app.py:16797) and READ in zero. Every outcome except studio_package_pitched
+# — which has its own sender in studio_package.py — armed a sequence that was
+# described in Slack, saved to the record, and then never executed. Follow-up
+# nudges, no-show rebooks, the day-7 review ask, and every email-capture step
+# have been dead since #39 shipped on Aug 3.
+#
+# This section is the pure, testable half of the fix: given a stored sequence
+# and a clock, which step is due, and when does the whole thing stop. The
+# sending lives in outcome_sender.py, which imports these and nothing else.
+# ══════════════════════════════════════════════════════════════════════════
+
+# A step whose delay elapsed more than this long ago is not "due" — it is
+# stale. Firing a same-day no-show rebook four days late is worse than not
+# firing it: it reads as a machine that lost track, and #39's own reasoning
+# was that speed IS the value. Stale steps are skipped and reported.
+STEP_STALE_AFTER_HOURS = 72
+
+
+def seq_stop_reason(rec, seq=None):
+    """Why this sequence must stop NOW, or "" to continue.
+
+    Checked before any timing. A lead who booked, paid, replied or asked to be
+    left alone must never receive the next scheduled touch — that is the
+    failure everyone actually notices.
+    """
+    rec = rec or {}
+    seq = seq if seq is not None else (rec.get("outcome_seq") or {})
+    if not isinstance(seq, dict):
+        return "sequence record is malformed"
+    if seq.get("done"):
+        return "already finished"
+    if rec.get("do_not_contact"):
+        return "lead is on do-not-contact"
+    if rec.get("outcome") == "Won" or rec.get("product"):
+        return "lead converted"
+    if rec.get("booked"):
+        return "lead has a booking"
+    # A reply is the loudest possible stop signal: the sequence exists to
+    # provoke one, so continuing after it arrives is talking over the answer.
+    if seq.get("armed_at") and rec.get("last_message_time"):
+        try:
+            if str(rec["last_message_time"]) > str(seq["armed_at"]):
+                return "lead replied after the sequence was armed"
+        except Exception:
+            pass
+    return ""
+
+
+def next_due_step(seq, hours_since_armed):
+    """(index, (after_hours, channel, kind), status) for the step to act on.
+
+    status is one of:
+      'due'      send it
+      'waiting'  the next step exists but its delay has not elapsed
+      'stale'    its delay elapsed too long ago to be worth sending
+      'finished' every step has been taken
+
+    Never skips ahead: only `next_step` is ever considered, so the steps of a
+    sequence always fire in order even if the process was down for a day.
+    """
+    if not isinstance(seq, dict):
+        return None, None, "finished"
+    steps = seq.get("steps") or []
+    try:
+        idx = int(seq.get("next_step", 0))
+    except (TypeError, ValueError):
+        idx = 0
+    if idx < 0 or idx >= len(steps):
+        return None, None, "finished"
+    step = steps[idx]
+    try:
+        after_hours = float(step[0])
+    except (TypeError, ValueError, IndexError):
+        return idx, step, "stale"
+    try:
+        elapsed = float(hours_since_armed)
+    except (TypeError, ValueError):
+        return idx, step, "waiting"
+    if elapsed < after_hours:
+        return idx, step, "waiting"
+    if elapsed - after_hours > STEP_STALE_AFTER_HOURS:
+        return idx, step, "stale"
+    return idx, step, "due"
+
+
+def seq_should_close(seq, days_since_armed):
+    """True when the sequence has outlived its close_after_days window.
+
+    #39 gave every sequence an ending on purpose — the complaint it was
+    written against was rails that chase forever. Closing is a feature.
+    """
+    if not isinstance(seq, dict):
+        return False
+    cad = seq.get("close_after_days")
+    if not cad:
+        return False
+    try:
+        return float(days_since_armed) >= float(cad)
+    except (TypeError, ValueError):
+        return False
+
+
+# Client-facing sends are held outside these hours, local time. Patch #44B
+# shipped at midnight; without this the first pass would have fired a no-show
+# rebook offer at 12:05 AM. A rail that messages people while they sleep reads
+# as a machine that got loose, and undoes the warmth the copy is written for.
+SEND_WINDOW_START_HOUR = 8
+SEND_WINDOW_END_HOUR = 20
+
+
+def within_send_window(dt, start_hour=SEND_WINDOW_START_HOUR,
+                       end_hour=SEND_WINDOW_END_HOUR):
+    """True when it is a civilised hour to message a client, LOCAL time.
+
+    Held, never skipped: a step delayed until morning is still sent, and the
+    72h staleness budget is far wider than the longest possible hold.
+    """
+    try:
+        hour = dt.hour
+    except AttributeError:
+        return False
+    return start_hour <= hour < end_hour

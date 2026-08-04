@@ -25,6 +25,7 @@ from maya_actions import (handle_maya_action, get_reengagement_queue,
 from reengagement_guard import ReengagementGuard, guarded_send  # S8.3
 from susan_mailchimp import handle_susan_action
 from susan_gmail import handle_susan_gmail_action, send_gmail, search_drive_file, SUSAN_SEND_AS
+import susan_gmail as _susan_gmail_mod   # Patch #44A: configure_suppression()
 from victor_yodeck import handle_victor_action
 from eric_meta import handle_eric_action
 from rob_stripe import handle_rob_action
@@ -601,6 +602,10 @@ _THREAD_STALE_OVERRIDES = {
     "pipeline_canvas_sync": 75,
     "push_heartbeat": 75,
     "studio_followup": 130,  # S7: hourly cycle -> 2x + slack
+    # Patch #44D: the sweep sleeps up to 50 min between wakeups, then an hour
+    # after firing. 2x the longest gap, or the watchdog cries THREAD DEAD on a
+    # thread that is merely waiting for 7am.
+    "instrumentation_sweep": 150,
 }
 
 
@@ -8868,14 +8873,18 @@ def _lead_reminder_thread():
                     # got nothing and nobody was told.
                     if not _sent_via and _email and ascii_email(_email)[1]:
                         try:
-                            if send_gmail(
+                            # PATCH #44A2 — this was `if send_gmail(...)`, and
+                            # send_gmail returns a TRUTHY dict even on failure.
+                            # Every failed confirmation was recorded as sent.
+                            if email_ok(_email_send(
                                 ascii_email(_email)[0],
                                 f"Confirming your session — {event_start.strftime('%A, %B %d')}",
                                 (f"Hi {_fn},<br><br>Confirming your session with MWM Creations "
                                  f"on <b>{when}</b>.<br>Location: {event.get('location') or STUDIO_ADDRESS}"
                                  f"<br><br>Could you reply to confirm you're coming?<br><br>"
                                  f"— MWM Creations &amp; Studios"),
-                            ):
+                                via="confirmation-fallback",
+                            )):
                                 _sent_via = "email (WhatsApp unavailable)"
                         except Exception as _mail_err:
                             _report_error("event_rail.email_fallback", _mail_err, f"event={event_id}")
@@ -8988,12 +8997,25 @@ def _notify_cold_lead_pipeline(phone, name, business):
                 f"<p>Just reply to this email or message us anytime — the door stays open.</p>"
                 f"<p>Warmly,<br>Maya — MWM Creations &amp; Studios</p>"
             )
-            send_gmail(_email, _subj, _body)
-            _cold_email_count["n"] += 1
-            _post_to_slack_async(SLACK_SUSAN_CHANNEL, (
-                f"\U0001f916 S2.2 AUTO: farewell email sent to {name} <{_email}> "
-                f"(cold-lead exhaustion). {_cold_email_count['n']}/5 today. No action needed."
-            ))
+            # PATCH #44A — was a bare `send_gmail(...)`: no DNC check and no
+            # result check. A lead on the do-not-contact list got the farewell
+            # anyway, and a hard failure was still announced to #susan as sent.
+            _cold_res = _email_send(_email, _subj, _body, via="cold-farewell")
+            if _cold_res.get("suppressed"):
+                # NOT an error — this is the DNC list doing its job. Log it
+                # quietly instead of paging someone about correct behaviour.
+                print(f"[S2.2] farewell suppressed for {name} <{_email}> — "
+                      f"{_cold_res.get('error', '')}")
+            elif not email_ok(_cold_res):
+                _report_error("cold_lead_farewell", "send failed",
+                              f"lead={name} to={_email} "
+                              f"err={_cold_res.get('error', 'unknown')}")
+            else:
+                _cold_email_count["n"] += 1
+                _post_to_slack_async(SLACK_SUSAN_CHANNEL, (
+                    f"\U0001f916 S2.2 AUTO: farewell email sent to {name} <{_email}> "
+                    f"(cold-lead exhaustion). {_cold_email_count['n']}/5 today. No action needed."
+                ))
     except Exception as e:
         _report_error("Cold-lead auto email (S2.2)", e, f"lead={name}")
 
@@ -9413,6 +9435,116 @@ def email_is_suppressed(addr):
         print(f"[DNC] dynamic check failed for {e} — failing closed: {_de}")
         return True, "suppression check unavailable"
     return False, ""
+
+
+# PATCH #44A — install the predicate at the chokepoint. Without this line
+# susan_gmail refuses every send, which is the intended fail-closed posture:
+# a missing wire must break loudly, not silently resume contacting DNC leads.
+_susan_gmail_mod.configure_suppression(email_is_suppressed)
+
+
+def _dnc_boot_check():
+    """Prove the guard is live at BOOT, not on the first blocked send.
+
+    Fail-closed already makes a missing wire loud — every email stops. But
+    "loud" arriving three hours later, inside a thread, is not the same as
+    knowing at startup. This asserts the wire end-to-end using an address that
+    MUST be suppressed, and pages #dev if the answer is wrong in either
+    direction. Costs one function call per boot.
+    """
+    try:
+        if not _susan_gmail_mod.suppression_configured():
+            return "hook not installed"
+        # Any @mwmcreations.com address is suppressed as internal by the
+        # predicate itself, so this probes the real path without depending
+        # on the contents of EMAIL_DNC.
+        _blocked, _ = _susan_gmail_mod._suppressed("boot-check@mwmcreations.com")
+        if not _blocked:
+            return "predicate installed but did NOT block a known-suppressed address"
+        return ""
+    except Exception as _bc:
+        return f"boot check raised: {str(_bc)[:200]}"
+
+
+_dnc_boot_problem = _dnc_boot_check()
+if _dnc_boot_problem:
+    print(f"🚨 [DNC] BOOT CHECK FAILED — {_dnc_boot_problem}")
+    try:
+        _report_error("dnc.boot_check", _dnc_boot_problem,
+                      "Do-not-contact enforcement is NOT verified at the send "
+                      "chokepoint. Patch #44A. Treat as a live compliance gap.")
+    except Exception:
+        pass
+else:
+    print("[DNC] boot check ok — suppression enforced at send_gmail chokepoint")
+
+
+def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
+                lead_key=None):
+    """PATCH #44A/#44C — the ONE sender every automated path goes through.
+
+    Three jobs the individual call sites kept getting wrong:
+
+      1. SUPPRESSION. Enforced here and again inside send_gmail. Belt and
+         braces on purpose: this wrapper is the path we control, the hook is
+         the backstop for any caller that forgets this wrapper exists.
+
+      2. AN HONEST RETURN. send_gmail returns a dict on success AND failure,
+         and `{"ok": False}` is truthy. Two call sites wrote
+         `if send_gmail(...):` and therefore recorded every failure as a
+         success. This returns the dict unchanged but callers get `ok` via
+         `email_ok()` below, which cannot be fooled by truthiness.
+
+      3. THE SEND STAMP. Patch #38 stamped `followup_last_send_at` only inside
+         /api/send-email — the MANUAL endpoint. Every automated sender bypassed
+         it, so the counter read "never" while email was flowing normally, and
+         the ZERO-SEND ALARM paged MATT three times chasing a sender that was
+         never in that path. The stamp lives here now, so it measures the thing
+         it claims to measure.
+    """
+    _to = str(to or "").strip()
+    _sup, _reason = email_is_suppressed(_to)
+    if _sup:
+        print(f"[EMAIL] suppressed ({_reason}) — not sending to {_to}")
+        return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}"}
+    try:
+        _kw = {}
+        if cc:
+            _kw["cc"] = cc
+        result = send_gmail(_to, subject, html, drive_file_id, **_kw)
+    except Exception as _se:
+        _report_error("_email_send", _se, f"to={_to} via={via}")
+        return {"ok": False, "error": str(_se)[:300]}
+    if not isinstance(result, dict):
+        # Defensive: a non-dict return is unknown, and unknown is NOT success.
+        return {"ok": False, "error": f"send_gmail returned {type(result).__name__}"}
+    if result.get("ok"):
+        try:
+            import pg_store as _fp
+            if _fp.enabled():
+                _now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+                _fp.save_state("followup_sent:" + _to.lower(), {
+                    "at": _now_iso, "via": via, "subject": str(subject)[:120],
+                })
+                _fp.save_state("followup_last_send_at", _now_iso)
+                if lead_key:
+                    _fp.save_state("last_send_lead:" + str(lead_key), _now_iso)
+        except Exception as _sx:
+            print(f"[EMAIL] send stamp failed (non-fatal): {_sx}")
+    return result
+
+
+def email_ok(result):
+    """True only when the send actually happened.
+
+    PATCH #44A2. `send_gmail` returns a dict either way and both dicts are
+    truthy, so `if send_gmail(...)` is ALWAYS true — app.py:8871 and the studio
+    sequence dep both did that, marking failed sends as delivered and making
+    their own error branches unreachable. Never test the raw return again.
+    """
+    if isinstance(result, dict):
+        return bool(result.get("ok"))
+    return bool(result)
 
 
 def _followup_scheduler():
@@ -13565,27 +13697,17 @@ def api_send_email():
                     "error": f"Attachment not found on Drive: '{attachment_filename}'. Make sure it's in _AGENTS > UPLOADS folder."
                 }), 404
 
-        # Send via DWD Gmail API as info@mwmcreations.com
-        result = send_gmail(to_email, subject, html_body, drive_file_id)
+        # Send via DWD Gmail API as info@mwmcreations.com.
+        # PATCH #44C — goes through the shared sender so the follow-up stamps
+        # are written in exactly ONE place for every rail, manual or automatic.
+        result = _email_send(to_email, subject, html_body, drive_file_id,
+                             via=_via)
 
-        if result["ok"]:
+        if result.get("ok"):
             print(f"[SEND-EMAIL API] Sent to {to_email} — msgId: {result['message_id']}")
-            # S28: stamp per-recipient follow-up time so followup_scheduler
-            # knows this lead was touched (any via — master/lara/susan).
-            try:
-                import pg_store as _fp
-                if _fp.enabled():
-                    _now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
-                    _fp.save_state("followup_sent:" + to_email.lower(), {
-                        "at": _now_iso, "via": _via, "subject": subject[:120],
-                    })
-                    # Patch #38 — fleet-wide last-send stamp. SUSAN's rail sent
-                    # ZERO emails for five straight weekdays and nothing paged;
-                    # it surfaced only because Michael went looking. A rail that
-                    # produces nothing must say so itself.
-                    _fp.save_state("followup_last_send_at", _now_iso)
-            except Exception as _sx:
-                print(f"[SEND-EMAIL API] followup stamp failed (non-fatal): {_sx}")
+            # PATCH #44C — the stamping that used to live inline here now lives
+            # in _email_send(), so the automated rails stamp it too. Removing it
+            # from this branch is the whole point: one writer, not two.
             return jsonify({
                 "success": True,
                 "message_id": result["message_id"],
@@ -15816,7 +15938,10 @@ _studio.configure(
     report_error=_report_error,
     post_slack=_post_to_slack_async,
     pipeline_event=_post_pipeline_event,
-    send_email=lambda to, subject, html: send_gmail(to, subject, html),
+    # PATCH #44A/#44C — was `send_gmail(...)` direct: no DNC check, and no
+    # send stamp, which is why followup_last_send_at read 'never' forever.
+    send_email=lambda to, subject, html: _email_send(
+        to, subject, html, via="studio-pitch-seq"),
     stripe_get=_rob_stripe._stripe_get,
     pg_load=_pg.load_state,
     pg_save=_pg.save_state,
@@ -15831,6 +15956,139 @@ _studio.configure(
     lead_data=lead_data,
 )
 threading.Thread(target=_studio.sequence_loop, daemon=True, name="studio_followup").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #44B — OUTCOME SEQUENCE SENDER
+#
+# Patch #39 armed a touch schedule on every event report and stored it as
+# `outcome_seq`. Verified Aug 3: that key was WRITTEN in one place and READ in
+# none. `studio_package_pitched` was fine — it has its own sender — but
+# follow_up nudges, no_show rebooks, the day-7 review ask and every
+# email-capture step have been dead since #39 shipped.
+#
+# The sender goes through `_email_send`, never `send_gmail`, so Patch #44A's
+# do-not-contact guard and the send stamp both apply to it.
+# ══════════════════════════════════════════════════════════════════════
+import outcome_sender as _outcome_seq
+
+_outcome_seq.configure(
+    report_error=_report_error,
+    post_slack=_post_to_slack_async,
+    send_email=lambda to, subject, html: _email_send(
+        to, subject, html, via="outcome-seq"),
+    send_whatsapp=lambda phone, body: send_whatsapp_meta(phone, body),
+    send_instagram=lambda igsid, body: send_instagram_dm(igsid, body),
+    pg_load=_pg.load_state,
+    pg_save=_pg.save_state,
+    heartbeat=_heartbeat,
+    lead_data=lead_data,
+    matt_channel=SLACK_MATT_CHANNEL,
+    maya_channel=SLACK_MAYA_CHANNEL,
+    dev_channel=SLACK_DEV_CHANNEL,
+)
+threading.Thread(target=_outcome_seq.loop, daemon=True, name="outcome_sender").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #44D — DAILY INSTRUMENTATION SWEEP
+#
+# `instrumentation_gaps()` and `gap_severity()` shipped in Patch #43 with 20
+# tests. They were imported at the top of this file and called from nowhere.
+# A #dev post claimed the sweep had been scheduled as `c47d0a8`; that commit
+# does not exist on any branch and origin/main is still 82cb875. The detector
+# was real, the schedule was not. This is the schedule.
+#
+# CRITICAL (no attendee, or no reminder path at all) pages #matt AND #lara.
+# DEGRADED (anonymous, popup-only, unanswered RSVP) goes to the #matt digest.
+# ══════════════════════════════════════════════════════════════════════
+INSTRUMENTATION_SWEEP_HOUR = int(os.getenv("INSTRUMENTATION_SWEEP_HOUR", "7"))
+INSTRUMENTATION_SWEEP_DAYS = int(os.getenv("INSTRUMENTATION_SWEEP_DAYS", "30"))
+
+
+def _instrumentation_sweep_once():
+    """Scan the forward window and return (criticals, degraded) as text lines."""
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz)
+    _svc = get_calendar_service()
+    _res = _svc.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=_now.isoformat(),
+        timeMax=(_now + timedelta(days=INSTRUMENTATION_SWEEP_DAYS)).isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=250,
+    ).execute(num_retries=3)
+    _crit, _deg = [], []
+    for _ev in _res.get("items", []):
+        if _ev.get("transparency") == "transparent":
+            continue          # marked Free — not a client commitment
+        if "date" in (_ev.get("start") or {}):
+            continue          # all-day: birthdays, school events, not sessions
+        _summary = (_ev.get("summary") or "(untitled)").strip()
+        _gaps = instrumentation_gaps(_ev)
+        if not _gaps:
+            continue
+        _when = (_ev.get("start", {}).get("dateTime") or "")[:16].replace("T", " ")
+        _line = f"• *{_summary}* — {_when} — {'; '.join(_gaps)}"
+        if gap_severity(_gaps) == "critical":
+            _crit.append(_line)
+        else:
+            _deg.append(_line)
+    return _crit, _deg
+
+
+def _instrumentation_sweep_thread():
+    import time as _t
+    _tz = pytz.timezone(TIMEZONE)
+    print(f"[SWEEP] Instrumentation sweep started — daily at "
+          f"{INSTRUMENTATION_SWEEP_HOUR}:00 {TIMEZONE}, "
+          f"{INSTRUMENTATION_SWEEP_DAYS}-day window (Patch #44D)")
+    while True:
+        try:
+            _heartbeat("instrumentation_sweep")
+            _now = datetime.now(_tz)
+            _target = _now.replace(hour=INSTRUMENTATION_SWEEP_HOUR, minute=0,
+                                   second=0, microsecond=0)
+            if _now >= _target:
+                _target += timedelta(days=1)
+            _wait = (_target - _now).total_seconds()
+            # Wake at least hourly so the heartbeat stays fresh — a thread that
+            # sleeps 23 hours reads as DEAD to the watchdog, which is how a
+            # daily job becomes invisible.
+            _t.sleep(min(_wait, 3000))
+            if datetime.now(_tz) < _target:
+                continue
+
+            _crit, _deg = _instrumentation_sweep_once()
+            _stamp = datetime.now(_tz).strftime("%a %b %d")
+
+            if _crit:
+                _msg = (f":rotating_light: *INSTRUMENTATION SWEEP — "
+                        f"{len(_crit)} CRITICAL* _({_stamp}, next "
+                        f"{INSTRUMENTATION_SWEEP_DAYS} days)_\n"
+                        + "\n".join(_crit[:10])
+                        + ("\n_…and more_" if len(_crit) > 10 else "")
+                        + "\n_A critical event cannot reach its client at all: "
+                          "no attendee, or no reminder path. Patch #44D._")
+                _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
+                _post_to_slack_async(SLACK_LARA_CHANNEL, _msg)
+            if _deg:
+                _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                    f":warning: *Instrumentation sweep — {len(_deg)} degraded* "
+                    f"_({_stamp})_\n" + "\n".join(_deg[:12])
+                    + ("\n_…and more_" if len(_deg) > 12 else "")))
+            if not _crit and not _deg:
+                print(f"[SWEEP] {_stamp}: clean — no gaps in the "
+                      f"{INSTRUMENTATION_SWEEP_DAYS}-day window")
+            _t.sleep(3600)      # clear the target minute
+        except Exception as _sw:
+            _report_error("_instrumentation_sweep_thread", _sw)
+            _t.sleep(1800)
+
+
+threading.Thread(target=_instrumentation_sweep_thread, daemon=True,
+                 name="instrumentation_sweep").start()
 
 
 def _state_saver_thread():

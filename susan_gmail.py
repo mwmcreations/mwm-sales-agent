@@ -148,6 +148,70 @@ def search_drive_file(filename_query):
         return None
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #44A · DO-NOT-CONTACT, ENFORCED WHERE THE SENDS ACTUALLY HAPPEN
+#
+# Patch #38 (Aug 1) added `email_is_suppressed()` and enforced it at
+# /api/send-email with a 409. That is the endpoint a HUMAN or an agent calls
+# by token. It is not the path the machine uses.
+#
+# Verified in app.py on Aug 3: five call sites reach send_gmail() directly —
+# 4390 (Maya email tool), 8871 (S-6 confirmation fallback), 8991 (cold-lead
+# farewell), 13330 (welcome email), and 15819 (the studio pitch sequence dep).
+# NONE of them checked suppression. The Marcia Cardim failure class was closed
+# on the manual door and left open on every automatic one.
+#
+# The guard belongs HERE, at the single point every send converges on, so that
+# a future caller cannot reintroduce the bypass merely by not knowing it exists.
+#
+# FAIL CLOSED. If app.py has not installed the predicate, we refuse to send at
+# all rather than resume emailing people who asked us to stop. A wiring
+# regression must be total and loud, never a quiet resumption.
+# ══════════════════════════════════════════════════════════════════════
+
+_SUPPRESSION_HOOK = None
+
+
+def configure_suppression(fn):
+    """Install the do-not-contact predicate: fn(addr) -> (blocked: bool, reason: str).
+
+    app.py calls this once at import, next to where `email_is_suppressed` is
+    defined. One predicate, shared — two lists that can disagree WILL disagree.
+    """
+    global _SUPPRESSION_HOOK
+    _SUPPRESSION_HOOK = fn
+
+
+def suppression_configured():
+    """True once app.py has wired the predicate. app.py self-checks this at boot."""
+    return _SUPPRESSION_HOOK is not None
+
+
+def _suppressed(addr):
+    """(blocked, reason). Every failure mode returns BLOCKED."""
+    if _SUPPRESSION_HOOK is None:
+        return True, "suppression hook not configured — failing closed"
+    try:
+        blocked, reason = _SUPPRESSION_HOOK(addr)
+        return bool(blocked), str(reason or "")
+    except Exception as exc:
+        # A suppression check that raises must not quietly allow the send.
+        return True, "suppression check raised: {}".format(str(exc)[:120])
+
+
+def _recipients(to, cc):
+    """Every address this message would reach — CC included.
+
+    A DNC address in CC is still a DNC address receiving mail.
+    """
+    out = [str(to or "").strip()]
+    for part in re.split(r"[,;]+", str(cc or "")):
+        part = part.strip()
+        if part:
+            out.append(part)
+    return [a for a in out if a]
+
+
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
 def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None):
@@ -163,8 +227,19 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
         cc: (optional) comma-separated CC addresses
 
     Returns:
-        dict with 'ok' bool and 'message_id' or 'error' string
+        dict with 'ok' bool and 'message_id' or 'error' string.
+        Patch #44A: a suppressed recipient returns ok=False with suppressed=True
+        and NOTHING is sent. Callers must test result["ok"] — the dict is truthy
+        either way, which is exactly the bug #44A2 fixes at the call sites.
     """
+    # PATCH #44A — before the service, before the MIME, before anything.
+    for _addr in _recipients(to, cc):
+        _blocked, _why = _suppressed(_addr)
+        if _blocked:
+            print("[GMAIL] BLOCKED — refusing send to {}: {}".format(_addr, _why))
+            return {"ok": False, "suppressed": True,
+                    "blocked_address": _addr,
+                    "error": "suppressed: {}".format(_why)}
     try:
         gmail = _get_gmail_service()
 
