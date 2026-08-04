@@ -351,6 +351,57 @@ check("unknown names the human fallback honestly",
       "human" in er.delivery_label(er.CH_UNKNOWN), True)
 
 
+# ══════════════════════════════════════════════════════════════════════
+section("15 · #48B — a booking on a DUPLICATE record must stop the sequence")
+# Live case, Aug 4 2026. /admin/lead-seq?q=rodolfo returned TWO Rodolfo Silva
+# records: one with the business name and booked=true and NO sequence, one
+# thinner with booked=false and the armed sequence. As shipped, he could book
+# on the 7th and still be asked on the 11th where things stand.
+check("a sibling booking stops it",
+      er.sibling_stop_reason({}, [{"booked": True}]),
+      "a duplicate record for this person has a booking")
+check("a sibling conversion stops it",
+      er.sibling_stop_reason({}, [{"outcome": "Won"}]),
+      "a duplicate record for this person has already converted")
+check("a sibling do-not-contact stops it",
+      er.sibling_stop_reason({}, [{"do_not_contact": True}]),
+      "a duplicate record for this person is on do-not-contact")
+check("a clean sibling does not stop it",
+      er.sibling_stop_reason({}, [{"name": "someone"}]), "")
+check("no siblings is fine", er.sibling_stop_reason({}, []), "")
+check("None siblings is fine", er.sibling_stop_reason({}, None), "")
+check("the record never stops itself",
+      er.sibling_stop_reason.__doc__ is not None, True)
+
+# End to end, with the real shape: the sequence sits on the thin copy.
+_thin = lead(name="Rodolfo Silva", business="", booked=False,
+             email="rodolfos@nestseekers.com",
+             outcome_seq=seq([[48, er.CH_WEB, er.STEP_NUDGE]], 50,
+                             email="rodolfos@nestseekers.com"))
+_fat = lead(name="Rodolfo Silva", business="Nest Seekers", booked=True,
+            email="rodolfos@nestseekers.com")
+leads = {"ig_thin": _thin, "ph_fat": _fat}
+h = Harness(leads)
+res = osx._pass(now=NOW)
+check("NOTHING is sent to a lead whose twin has booked", len(h.emails), 0)
+check("...the sequence is stopped, not merely skipped", _thin["outcome_seq"]["done"], True)
+check("...and the reason names the duplicate",
+      "duplicate" in _thin["outcome_seq"]["closed_reason"], True)
+check("...counted as stopped", res["stopped"], 1)
+
+# The email match must be exact — two different people at one company share a
+# domain, not an inbox.
+_other = lead(name="Someone Else", booked=True, email="other@nestseekers.com")
+leads = {"a": lead(name="Rodolfo Silva", email="rodolfos@nestseekers.com",
+                   outcome_seq=seq([[48, er.CH_WEB, er.STEP_NUDGE]], 50,
+                                   email="rodolfos@nestseekers.com")),
+         "b": _other}
+h = Harness(leads)
+res = osx._pass(now=NOW)
+check("a colleague at the same domain is NOT treated as a duplicate",
+      len(h.emails), 1)
+
+
 print("\n" + "=" * 60)
 print(f"  TOTAL: {'FAILED — ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
 for f in FAILS:

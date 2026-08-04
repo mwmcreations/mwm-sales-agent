@@ -1180,6 +1180,36 @@ def seq_stop_reason(rec, seq=None):
     return ""
 
 
+def sibling_stop_reason(rec, siblings):
+    """Why a DIFFERENT record for the same human should stop this sequence.
+
+    PATCH #48B. `seq_stop_reason` reads the record the sequence sits on, which
+    is correct right up until the same person exists twice.
+
+    Live case, Aug 4 2026: /admin/lead-seq returned two Rodolfo Silva records.
+    One carries the business name and `booked: true`. The other is thinner and
+    carries the armed sequence, and it says `booked: false`. So the booking is
+    invisible to the sequence, and he could book on the 7th and still be asked
+    on the 11th where things stand.
+
+    Deduplicating the store is a separate, riskier job. Reading across the
+    duplicates costs nothing and closes the failure today.
+
+    `siblings` is every OTHER record that plausibly refers to the same person.
+    The caller decides that — this stays pure.
+    """
+    for sib in (siblings or []):
+        if not isinstance(sib, dict) or sib is rec:
+            continue
+        if sib.get("do_not_contact"):
+            return "a duplicate record for this person is on do-not-contact"
+        if sib.get("outcome") == "Won" or sib.get("product"):
+            return "a duplicate record for this person has already converted"
+        if sib.get("booked"):
+            return "a duplicate record for this person has a booking"
+    return ""
+
+
 def next_due_step(seq, hours_since_armed):
     """(index, (after_hours, channel, kind), status) for the step to act on.
 

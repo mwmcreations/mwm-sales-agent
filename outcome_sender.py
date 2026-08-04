@@ -48,7 +48,8 @@ from datetime import datetime, timedelta
 from event_rail import (CH_INSTAGRAM, CH_UNKNOWN, CH_WEB, CH_WHATSAPP,
                         STEP_EMAIL_ASK, STEP_NUDGE, STEP_REBOOK, STEP_RECAP,
                         STEP_REVIEW, STEP_VALUE, next_due_step,
-                        seq_should_close, seq_stop_reason, within_send_window)
+                        seq_should_close, seq_stop_reason, within_send_window,
+                        sibling_stop_reason)
 
 HEARTBEAT_NAME = "outcome_sender"
 CYCLE_SECONDS = 20 * 60          # 20 min: finest step granularity is 0h (no-show)
@@ -342,7 +343,19 @@ def _pass(now=None):
             if not isinstance(seq, dict) or seq.get("done"):
                 continue
 
-            stop = seq_stop_reason(rec, seq)
+            # PATCH #48B — a booking recorded on a DUPLICATE record has to
+            # stop this sequence too. Matching on email is deliberate: it is
+            # the field the sequence already sends to, so if two records share
+            # it they are the same inbox and therefore the same person.
+            _my_email = str(seq.get("email") or rec.get("email") or "").strip().lower()
+            _sibs = []
+            if _my_email:
+                for _ok, _orec in lead_data.items():
+                    if _ok == key or not isinstance(_orec, dict):
+                        continue
+                    if str(_orec.get("email") or "").strip().lower() == _my_email:
+                        _sibs.append(_orec)
+            stop = seq_stop_reason(rec, seq) or sibling_stop_reason(rec, _sibs)
             if stop:
                 seq["done"] = True
                 seq["closed_reason"] = stop

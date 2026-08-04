@@ -17683,6 +17683,122 @@ def _send_post_visit_template(phone, name, outcome, notes=""):
         return False
 
 
+# PATCH #48A — the ONLY fields this endpoint may write. An allowlist, not a
+# denylist, so a field added next month is closed until someone opens it on
+# purpose. `outcome_seq`, `do_not_contact`, `booked`, `outcome` and `product`
+# are machine state and stay off this list permanently: an admin route that can
+# clear do_not_contact is a compliance hole with a URL attached.
+LEAD_UPDATE_ALLOWED = ("name", "business", "email", "phone", "title",
+                       "address", "website", "linkedin", "instagram", "note")
+
+
+@app.route('/admin/lead-update', methods=['POST'])
+def admin_lead_update():
+    """PATCH #48A — add contact details to an existing lead. Additive only.
+
+    POST /admin/lead-update?secret=<UPLOAD_SECRET>
+      {"q": "<name|email|key>", "fields": {"phone": "...", "address": "..."}}
+
+    Written because Michael photographed a business card and there was no way
+    to put it on the record: the repo has writers for status, bookings and new
+    contacts, and nothing that adds a phone number to a lead that already
+    exists.
+
+    Applies to EVERY matching record, capped at 3. That is the feature. Rodolfo
+    Silva exists twice, and updating one copy is how you end up with a lead
+    whose phone number depends on which copy you happen to read.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    _payload = request.get_json(silent=True) or {}
+    _q = str(_payload.get("q") or "").strip().lower()
+    _fields = _payload.get("fields") or {}
+    if not _q:
+        return jsonify({"ok": False, "error": "q is required"}), 400
+    if not isinstance(_fields, dict) or not _fields:
+        return jsonify({"ok": False, "error": "fields must be a non-empty object"}), 400
+
+    _refused = [k for k in _fields if k not in LEAD_UPDATE_ALLOWED]
+    if _refused:
+        return jsonify({
+            "ok": False,
+            "error": "refused fields (not on the allowlist)",
+            "refused": _refused,
+            "allowed": list(LEAD_UPDATE_ALLOWED),
+            "why": "outcome_seq / do_not_contact / booked / outcome / product are "
+                   "machine state and are never writable through this route",
+        }), 400
+
+    _hits = []
+    for _k, _r in list(lead_data.items()):
+        if not isinstance(_r, dict):
+            continue
+        _hay = " ".join([str(_k), str(_r.get("name") or ""),
+                         str(_r.get("email") or ""), str(_r.get("phone") or "")]).lower()
+        if _q in _hay:
+            _hits.append((_k, _r))
+    if not _hits:
+        return jsonify({"ok": True, "updated": 0, "note": "no lead matched"}), 200
+    if len(_hits) > 3:
+        return jsonify({"ok": False, "error": f"{len(_hits)} leads matched — "
+                                              f"narrow the query, refusing to "
+                                              f"write that broadly"}), 400
+
+    _changes = []
+    for _k, _r in _hits:
+        _per = {}
+        for _f, _v in _fields.items():
+            _new = str(_v or "").strip()
+            if not _new:
+                continue                      # never blank an existing value
+            _old = str(_r.get(_f) or "").strip()
+            if _old == _new:
+                continue
+            if _f == "phone":
+                _digits = re.sub(r"\D", "", _new)
+                if not _digits:
+                    continue
+                _new = _digits
+                if _old == _new:
+                    continue
+            if _f == "note":
+                # Notes append, never replace. Losing a note to a typo in a
+                # later call is not a trade worth making.
+                _r["notes"] = ((str(_r.get("notes") or "").strip() + "\n" + _new).strip())
+                _per["notes"] = "appended"
+                continue
+            _r[_f] = _new
+            _per[_f] = {"was": _old or "(empty)", "now": _new}
+        if _per:
+            _changes.append({"lead_key": mask_contact(_k),
+                             "name": _r.get("name") or "", "changed": _per})
+
+    if _changes:
+        try:
+            _pg.save_state("leads_snapshot_hint", datetime.now(
+                pytz.timezone(TIMEZONE)).isoformat())
+        except Exception:
+            pass
+        try:
+            _lines = []
+            for _c in _changes:
+                _bits = ", ".join(
+                    f"{_f} {_d['was']} -> {_d['now']}" if isinstance(_d, dict) else f"{_f} {_d}"
+                    for _f, _d in _c["changed"].items())
+                _lines.append(f"• *{_c['name']}* (`{_c['lead_key']}`) — {_bits}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                f":pencil2: *Lead record updated* — {len(_changes)} record(s)\n"
+                + "\n".join(_lines)
+                + "\n_via /admin/lead-update (Patch #48A). Contact fields only; "
+                  "machine state is not writable through this route._"))
+        except Exception as _sx:
+            print(f"[LEAD-UPDATE] slack notice failed (non-fatal): {_sx}")
+
+    return jsonify({"ok": True, "matched": len(_hits),
+                    "updated": len(_changes), "changes": _changes}), 200
+
+
 @app.route('/admin/lead-seq', methods=['GET'])
 def admin_lead_seq():
     """PATCH #47 — read-only: what is armed on ONE lead, and when it fires.
