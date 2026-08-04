@@ -127,6 +127,26 @@ def is_dialable(identifier):
     return 7 <= len(d) <= _E164_MAX_DIGITS
 
 
+# PATCH #46B — CH_WEB's display value is "Website Chat", which is correct as
+# a SOURCE ("this lead arrived via the website chat") and wrong as a
+# DESTINATION. The rail uses CH_WEB for the EMAIL delivery path, so the armed
+# line in Michael's report read "T+2d nudge via Website Chat" for a touch that
+# is an email to the client's inbox. We do not operate a website chat widget.
+# Source labels and delivery labels are different things; keep them apart.
+_DELIVERY_LABELS = {
+    CH_WEB: "email",
+    CH_EMAIL: "email",
+    CH_WHATSAPP: "WhatsApp",
+    CH_INSTAGRAM: "Instagram DM",
+    CH_UNKNOWN: "a named human (no automated channel)",
+}
+
+
+def delivery_label(channel):
+    """How to describe where a step will ACTUALLY land, for a human reader."""
+    return _DELIVERY_LABELS.get(channel, str(channel))
+
+
 def resolve_channel(identifier, hint=None):
     """Resolve the true source channel FROM THE IDENTIFIER.
 

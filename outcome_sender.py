@@ -110,18 +110,59 @@ def _first_name(name):
 # a sequence with an ending outperforms one that hounds.
 # ══════════════════════════════════════════════════════════════════════════
 
-def _email_copy(kind, first, business=""):
+def _escape(text):
+    """Minimal HTML escape. `agreed_next` is free text Michael typed into a
+    form and it is about to appear inside a client-facing email body."""
+    return (str(text or "")
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _short_business(business):
+    """Just the company name. Lead records carry descriptors after a dash —
+    "Nest Seekers — Luxury Real Estate Advisor" — and the whole string reads
+    badly mid-sentence in a client email."""
+    b = str(business or "").strip()
+    for sep in ("—", " - ", "|", "("):
+        if sep in b:
+            b = b.split(sep)[0].strip()
+            break
+    return b
+
+
+def _email_copy(kind, first, business="", agreed_next=""):
     """(subject, html) for an email step."""
-    biz = f" for {business}" if business else ""
+    biz = f" for {_short_business(business)}" if str(business or "").strip() else ""
     sign = ("<p>— Michael<br>"
             "<span style=\"color:#666\">MWM Creations &amp; Studios · Orlando</span></p>")
 
     if kind == STEP_NUDGE:
+        # PATCH #46A — when the report recorded a concrete agreed next step,
+        # say THAT. Rodolfo Silva agreed to send a script on Aug 7 and book an
+        # hour the same day; the old copy would have asked him on Aug 6
+        # whether he was "still thinking it over", which reads as though we
+        # had forgotten our own meeting.
+        if agreed_next:
+            # DO NOT QUOTE THE NOTE. Caught in preview before shipping: Michael
+            # writes his report notes in the THIRD PERSON about the client —
+            # "he will send his script for my approval". Pasting that into an
+            # email to that same client is worse than the generic copy it was
+            # meant to improve. The note changes the FRAME of the message; it
+            # never becomes the message. Michael's actual words stay internal.
+            return (
+                f"{first} — a nudge on our next step",
+                f"<p>Hi {first},</p>"
+                f"<p>Just a gentle nudge on the next step we agreed — whenever "
+                f"you're ready, no rush at all.</p>"
+                f"<p>If you need more time, tell me and I'll move it. If you're "
+                f"set, reply and we'll get it moving.</p>" + sign)
+        # PATCH #46A — the default no longer PRESUMES indecision. "Still
+        # thinking it over?" only fits a lead who is undecided; to one who has
+        # already committed it is mildly insulting. "Checking in" fits both.
         return (
-            f"{first}, still thinking it over?",
+            f"{first} — checking in",
             f"<p>Hi {first},</p>"
-            f"<p>Great talking with you the other day. No pressure at all — just "
-            f"wanted to leave the door open in case you'd like to move forward{biz}.</p>"
+            f"<p>Great talking with you. Just checking in to see where things "
+            f"stand{biz} — no pressure either way.</p>"
             f"<p>If the timing isn't right, tell me and I'll stop following up. "
             f"If it is, reply and I'll hold a slot for you.</p>" + sign)
 
@@ -178,13 +219,22 @@ def _email_copy(kind, first, business=""):
     return (f"{first} — following up", f"<p>Hi {first},</p><p>Following up.</p>" + sign)
 
 
-def _short_copy(kind, first, business=""):
+def _short_copy(kind, first, business="", agreed_next=""):
     """One-message text for WhatsApp / Instagram. Short on purpose: a DM that
     reads like an email is the fastest way to get muted."""
     if kind == STEP_NUDGE:
-        return (f"Hi {first}! Michael from MWM Creations. No rush at all — just "
-                f"leaving the door open if you'd like to move forward. If the "
-                f"timing isn't right, tell me and I'll stop following up 🙂")
+        # PATCH #46A — same rule as email: reference the agreed step when we
+        # have one. Trimmed harder here; a DM carrying a 300-character quote
+        # of Michael's own internal note is not a DM anyone reads.
+        if agreed_next:
+            # Same rule as the email: the internal note sets the FRAME, it is
+            # never pasted to the client. See _email_copy for why.
+            return (f"Hi {first}! Michael from MWM Creations 🙂 Just a nudge on the "
+                    f"next step we agreed — no rush at all, and if you need more "
+                    f"time just tell me and I'll move it.")
+        return (f"Hi {first}! Michael from MWM Creations. Just checking in to see "
+                f"where things stand — no pressure either way. If the timing isn't "
+                f"right, tell me and I'll stop following up 🙂")
     if kind == STEP_REBOOK:
         return (f"Hi {first}, we missed each other today — no problem at all. "
                 f"Want to grab another time? You can pick any slot here: {BOOK_URL} "
@@ -216,11 +266,15 @@ def _deliver(channel, kind, rec, key, seq):
     first = _first_name(rec.get("name"))
     business = str(rec.get("business") or "").strip()
     email = str(seq.get("email") or rec.get("email") or "").strip()
+    # PATCH #46A — sequences armed before #46 have no `agreed_next`; they fall
+    # through to the neutral copy, which is why that default had to be fixed
+    # too rather than only adding the context-aware branch.
+    agreed = str(seq.get("agreed_next") or "").strip()
 
     if channel == CH_WEB:
         if not email:
             return False, "no email on record"
-        subject, html = _email_copy(kind, first, business)
+        subject, html = _email_copy(kind, first, business, agreed)
         res = _deps["send_email"](email, subject, html)
         if isinstance(res, dict):
             if res.get("suppressed"):
@@ -234,14 +288,14 @@ def _deliver(channel, kind, rec, key, seq):
         phone = "".join(ch for ch in str(rec.get("phone") or key or "") if ch.isdigit())
         if not phone:
             return False, "no phone on record"
-        res = _deps["send_whatsapp"](phone, _short_copy(kind, first, business))
+        res = _deps["send_whatsapp"](phone, _short_copy(kind, first, business, agreed))
         return bool(res), "" if res else "whatsapp send returned nothing"
 
     if channel == CH_INSTAGRAM:
         igsid = str(rec.get("igsid") or key or "").strip()
         if not igsid:
             return False, "no IGSID on record"
-        res = _deps["send_instagram"](igsid, _short_copy(kind, first, business))
+        res = _deps["send_instagram"](igsid, _short_copy(kind, first, business, agreed))
         # Outside the 24h window Meta returns a 403 and this comes back None.
         # #39 already routes around a known-closed window; this catches the
         # case where the window closed between arming and sending.

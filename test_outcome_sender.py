@@ -293,6 +293,64 @@ res = osx._pass(now=NIGHT)
 check("DNC stops the sequence even at midnight", res["stopped"], 1)
 
 
+# ══════════════════════════════════════════════════════════════════════
+section("13 · #46A — the nudge must not talk over an agreed next step")
+# Live case, Aug 4 2026: Rodolfo Silva. Michael's report recorded that they
+# AGREED he sends a script on Aug 7 and books an hour the same day. The T+48h
+# nudge fires Aug 6. The old copy would have asked a committed client whether
+# he was "still thinking it over".
+_AGREED = "Aug 7: he sends his script for approval, then books 1h studio + editing."
+
+_s, _h = osx._email_copy(er.STEP_NUDGE, "Rodolfo", "Nest Seekers", _AGREED)
+check("subject references the agreement, not indecision",
+      "a nudge on our next step" in _s, True)
+check("...and never asks if they are still thinking",
+      "still thinking" in (_s + _h).lower(), False)
+# Caught in preview: Michael writes notes in the THIRD PERSON about the client
+# ("he will send his script for my approval"). Pasting that into an email TO
+# that client is worse than the generic copy. The note sets the frame; it never
+# becomes the message.
+check("the internal note is NOT pasted to the client", _AGREED in _h, False)
+check("...and no third-person leak reaches them",
+      " he " in _h.lower() or " his " in _h.lower(), False)
+check("...and they are given an out", "need more time" in _h, True)
+
+# Sequences armed BEFORE #46 carry no agreed_next. The default had to be fixed
+# too, or Rodolfo's own already-armed sequence would still have used it.
+_s0, _h0 = osx._email_copy(er.STEP_NUDGE, "Rodolfo", "Nest Seekers")
+check("the DEFAULT no longer presumes indecision either",
+      "still thinking" in (_s0 + _h0).lower(), False)
+check("...it just checks in", "checking in" in _s0.lower(), True)
+check("...and still offers a way out", "stop following up" in _h0, True)
+
+# Michael types this into a form; it lands inside an HTML email body.
+_evil = 'He said <b>"do it"</b> & sign by 5th'
+_s2, _h2 = osx._email_copy(er.STEP_NUDGE, "Jane", "", _evil)
+check("hostile free text cannot reach the client at all", "do it" in _h2, False)
+check("...nor any markup from it", "<b>" in _h2, False)
+
+# The DM variant must stay short — a 300-char quote is not a DM.
+_long = "x" * 300
+_dm = osx._short_copy(er.STEP_NUDGE, "Jane", "", _long)
+check("the DM stays short regardless of note length", len(_dm) < 250, True)
+check("...and does not paste the note either", "xxx" in _dm, False)
+
+check("long business descriptors are trimmed to the name",
+      osx._short_business("Nest Seekers — Luxury Real Estate Advisor"), "Nest Seekers")
+check("...and a plain name is left alone", osx._short_business("Carito Music"), "Carito Music")
+_dm0 = osx._short_copy(er.STEP_NUDGE, "Jane")
+check("DM default also drops the indecision framing",
+      "still thinking" in _dm0.lower(), False)
+
+section("14 · #46B — say where the message actually lands")
+check("CH_WEB is described as email, not 'Website Chat'",
+      er.delivery_label(er.CH_WEB), "email")
+check("WhatsApp stays WhatsApp", er.delivery_label(er.CH_WHATSAPP), "WhatsApp")
+check("Instagram is named as a DM", er.delivery_label(er.CH_INSTAGRAM), "Instagram DM")
+check("unknown names the human fallback honestly",
+      "human" in er.delivery_label(er.CH_UNKNOWN), True)
+
+
 print("\n" + "=" * 60)
 print(f"  TOTAL: {'FAILED — ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
 for f in FAILS:

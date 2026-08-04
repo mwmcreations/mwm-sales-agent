@@ -48,6 +48,7 @@ from event_rail import (emails_in_field, email_field_matches,
                         names_match)                  # Patch #42
 from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         confirmation_copy, is_client_event,   # Patch #45
+                        delivery_label,                      # Patch #46B
                         classify_event, KIND_INTERNAL,       # Patch #45E.2
                         REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
 
@@ -17092,8 +17093,13 @@ def meeting_report_submit():
             _pl.append(f"\n⚙️ *Internal automation only* — {_plan['why']}")
         elif _plan.get("steps"):
             if plan_is_deliverable(_plan):
+                # PATCH #46B — was `via {ch}`, which printed the raw channel
+                # constant: "via Website Chat" for what is an email. Michael
+                # reads this line to know what the machine will do; it has to
+                # name the thing that actually happens.
                 _steps = " · ".join(
-                    (f"T+{int(h)}h" if h < 48 else f"T+{int(h)//24}d") + f" {k} via {ch}"
+                    (f"T+{int(h)}h" if h < 48 else f"T+{int(h)//24}d")
+                    + f" {k} by {delivery_label(ch)}"
                     for h, ch, k in _plan["steps"])
                 _pl.append(f"\n🤖 *Armed:* {_steps}")
                 if _plan.get("close_after_days"):
@@ -17133,6 +17139,12 @@ def meeting_report_submit():
                 "next_step": 0,
                 "close_after_days": _plan.get("close_after_days"),
                 "owner": _plan.get("owner"),
+                # PATCH #46A — carry what Michael actually agreed with the
+                # client. Without it the T+48h nudge asks "still thinking it
+                # over?" of someone who has already committed to a dated next
+                # step, which reads as though we forgot the meeting. Trimmed
+                # because it goes into a client-facing message.
+                "agreed_next": str(next_steps or "").strip()[:300],
                 "done": False,
             }
     except Exception as _sx:
