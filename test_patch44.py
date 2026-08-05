@@ -16,6 +16,7 @@ SUITES = [
     ("do-not-contact guard (#44A)", "test_send_guard.py"),
     ("outcome sequence sender (#44B)", "test_outcome_sender.py"),
     ("direct booking form (#50)", "test_booking_form.py"),
+    ("studio packages (#53)", "test_studio_packages.py"),
 ]
 
 failures = 0
