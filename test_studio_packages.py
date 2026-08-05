@@ -369,6 +369,50 @@ ok("Podcast Pro" not in sp.PACKAGE_NAMES,
    "an unrelated product does NOT stop the pitch sequence")
 
 
+# ══════════════════════════════════════════════════════════════════
+section("#55 — registering a client who paid with no lead record")
+# ══════════════════════════════════════════════════════════════════
+# Real case: Gema Hiatt / HIS Agents booked herself through Calendly for the
+# MWM ROADMAP 15-min call, so no lead record was ever created — not at booking,
+# not when she cancelled two minutes before start, not when she paid $1,400.
+# The PAID CLIENT NOT LINKED alarm has existed since #34 and told Michael to
+# act; there was no route that could.
+#
+# These pin the pure parts the route depends on. The route itself is exercised
+# against production, not here — but the term maths and the variant lookup are
+# what decide whether the record agrees with WordPress and with the email the
+# client already has in their inbox.
+_kinds = {s["kind"]: s for s in sp.PACKAGES.values()}
+ok("studio_trial_1mo" in _kinds, "the route can resolve the trial by kind")
+ok("studio_3mo" in _kinds, "and the package by kind")
+ok(len(_kinds) == len(sp.PACKAGES), "kind lookup is unambiguous")
+
+# a record registered for the Aug 5 purchase must land on the SAME deadline the
+# client was already told in their welcome email
+_bought = datetime(2026, 8, 5, 13, 29)
+_t55 = sp.package_term(_kinds["studio_trial_1mo"], _bought)
+ok(_t55["booking_deadline"] == date(2026, 9, 4),
+   "a record registered from the real purchase date lands on Sep 4 — the date "
+   "already in the client's inbox")
+ok(_t55["booking_deadline"].strftime("%B %d, %Y") == "September 04, 2026",
+   "and formats identically to the email")
+
+# registering must never make a converted client look sellable
+ok(_kinds["studio_trial_1mo"]["recurring"] is False,
+   "the trial is non-recurring, so the route marks them new_client")
+ok(_kinds["studio_trial_1mo"]["name"] in sp.PACKAGE_NAMES,
+   "and their product stops the cold pitch sequence")
+ok(_kinds["studio_trial_1mo"]["sheet_status"] == "Client — Studio Trial (1 month)",
+   "the sheet status names the trial")
+
+# a backdated registration must not silently extend the term
+_late = sp.package_term(_kinds["studio_trial_1mo"], datetime(2026, 8, 20))
+ok(_late["booking_deadline"] == date(2026, 9, 19),
+   "registering later moves the deadline with the purchase date, not with today")
+ok(_late["booking_deadline"] != _t55["booking_deadline"],
+   "...so a backdated purchase cannot quietly gain extra days")
+
+
 print("\n" + "=" * 62)
 print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 62)

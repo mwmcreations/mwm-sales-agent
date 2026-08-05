@@ -18772,6 +18772,241 @@ def admin_lead_update():
                     "updated": len(_changes), "changes": _changes}), 200
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #55A · POST /admin/register-client
+# ══════════════════════════════════════════════════════════════════════
+# The `PAID CLIENT NOT LINKED TO A LEAD` alarm has existed since #34 and says
+# "MICHAEL: confirm which lead record is theirs, or that they are new." Today
+# it fired for real — Gema Hiatt / HIS Agents paid $1,400 — and the answer was
+# "they are new". At which point there was nothing to act with: #47's route is
+# read-only, and #48A's writer refuses `product`, `outcome` and `studio_package`
+# by allowlist on purpose.
+#
+# So the detector could name the problem and nobody could fix it. That is the
+# same failure shape as the rest of this board, one level up: the alarm was
+# real, the repair path was imaginary.
+#
+# ROOT CAUSE, worth writing down: Gema booked herself through Calendly for the
+# MWM ROADMAP 15-min call. Calendly self-bookings never touch any lead-creation
+# path in this codebase, so the pipeline never learned she existed — not when
+# she booked, not when she cancelled two minutes before start, and not when she
+# paid. This route is the manual repair. The permanent fix is a Calendly
+# webhook, which is blocked on Michael's console access.
+#
+# WHY THIS ROUTE MAY WRITE WHAT #48A REFUSES: because that IS the job. #48A is
+# for contact details and must never be able to flip machine state. This one
+# exists solely to record "this person is a client of package X", requires the
+# variant to be named explicitly, and refuses by default to touch a record that
+# already exists so it cannot quietly create the duplicate problem Rodolfo
+# already has. `do_not_contact` is still not writable here, and suppression is
+# enforced at send time regardless, so registering a client cannot re-open a
+# closed door.
+LEAD_REGISTER_FIELDS = ("name", "email", "phone", "business", "title",
+                        "source", "notes")
+
+
+@app.route('/admin/portal-clients', methods=['GET'])
+def admin_portal_clients():
+    """PATCH #55B — read the WP studio-portal ledger back. READ ONLY.
+
+    The last link in the purchase chain that could not be verified from
+    outside. When a package is bought, WordPress returns an access code — which
+    proves a client row was created, and proves nothing about what the row
+    SAYS. Whether it carries 4 contract hours and the right end date was, until
+    now, only knowable from the value we sent, never from the value stored.
+
+    That is the exact gap that has cost this board six incidents: a write
+    confirmed by the writer rather than re-read from the store. `contract_hours`
+    and `contract_end_date` are what the portal enforces on every booking, so
+    they are the numbers that decide whether a client gets what they paid for.
+
+    Emails are masked. The response is a ledger of active contracts, not a
+    contact list, so a leaked secret does not become an export.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    try:
+        _rows = _studio.wp_list_clients()
+    except Exception as _px:
+        _report_error("admin.portal_clients", _px)
+        return jsonify({"ok": False, "error": "portal read failed"}), 502
+    if _rows is None:
+        return jsonify({"ok": False, "error": "portal ledger unreachable"}), 502
+
+    _q = (request.args.get("q") or "").strip().lower()
+    _out = []
+    for _c in _rows:
+        if not isinstance(_c, dict):
+            continue
+        _hay = " ".join([str(_c.get("name") or ""), str(_c.get("email") or ""),
+                         str(_c.get("package_name") or "")]).lower()
+        if _q and _q not in _hay:
+            continue
+        _out.append({
+            "name": _c.get("name") or "",
+            "email": mask_contact(_c.get("email")),
+            "package_name": _c.get("package_name") or "",
+            "contract_hours": _c.get("contract_hours"),
+            "hours_used": _c.get("hours_used"),
+            "contract_start_date": str(_c.get("contract_start_date") or "")[:10],
+            "contract_end_date": str(_c.get("contract_end_date") or "")[:10],
+            "active": str(_c.get("active", "1")) == "1",
+        })
+    _rec_n, _mrr, _one_n, _one_total = _studio.revenue_split(
+        [c for c in _rows if isinstance(c, dict) and str(c.get("active", "1")) == "1"])
+    return jsonify({"ok": True, "count": len(_out), "clients": _out,
+                    "recurring_contracts": _rec_n, "mrr": _mrr,
+                    "one_off_clients": _one_n, "one_off_total": _one_total,
+                    "as_of": datetime.now(pytz.timezone(TIMEZONE)).isoformat()}), 200
+
+
+@app.route('/admin/register-client', methods=['POST'])
+def admin_register_client():
+    """PATCH #55A — create the lead record for a client who paid without one.
+
+    POST /admin/register-client?secret=<UPLOAD_SECRET>
+      {"name": "...", "email": "...", "phone": "...", "business": "...",
+       "source": "...", "variant": "studio_trial_1mo",
+       "purchased_at": "2026-08-05T13:29:00-04:00",   # optional
+       "stripe_event": "evt_...",                      # optional, for the audit
+       "update_existing": false}                       # must be explicit
+
+    `variant` must be a key in studio_package.PACKAGES. The hours, term and
+    deadline are read from that spec and the SAME package_term() the purchase
+    path uses, so the record cannot disagree with what WordPress enforces or
+    what the client was told in their welcome email.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    _p = request.get_json(silent=True) or {}
+    _name = " ".join(str(_p.get("name") or "").split())
+    _email = str(_p.get("email") or "").strip()
+    _phone_digits = re.sub(r"\D", "", str(_p.get("phone") or ""))
+    _variant = str(_p.get("variant") or "").strip()
+
+    if len(_name) < 2:
+        return jsonify({"ok": False, "error": "name is required"}), 400
+    if not _email or "@" not in _email:
+        return jsonify({"ok": False, "error": "a real email is required"}), 400
+
+    _spec = None
+    for _sp in _studio.PACKAGES.values():
+        if _sp["kind"] == _variant:
+            _spec = _sp
+            break
+    if _spec is None:
+        return jsonify({
+            "ok": False, "error": "unknown variant",
+            "allowed": [s["kind"] for s in _studio.PACKAGES.values()],
+            "why": "the package must be named explicitly — this route will not "
+                   "guess which product someone bought",
+        }), 400
+
+    # ── refuse to duplicate ──
+    _existing_key, _existing = _find_lead_by_email(_email)
+    if not _existing_key and _phone_digits:
+        _existing_key, _existing = _find_lead_by_phone(_phone_digits)
+    if _existing_key and not bool(_p.get("update_existing")):
+        return jsonify({
+            "ok": False, "error": "a lead record already exists",
+            "lead_key": mask_contact(_existing_key),
+            "name": (_existing or {}).get("name") or "",
+            "why": "pass update_existing=true to stamp the package onto it. "
+                   "Refusing by default because a second record for the same "
+                   "person is how a lead's phone number starts depending on "
+                   "which copy you read",
+        }), 409
+
+    # ── the term, from the same maths the purchase path uses ──
+    _tz = pytz.timezone(TIMEZONE)
+    try:
+        _bought = datetime.fromisoformat(str(_p.get("purchased_at") or "").strip())
+        if _bought.tzinfo is None:
+            _bought = _tz.localize(_bought)
+    except Exception:
+        _bought = datetime.now(_tz)
+    _term = _studio.package_term(_spec, _bought)
+
+    _rel = "new_client" if _spec.get("recurring") is False else "existing_client"
+    _box = {
+        "purchased": _bought.isoformat(),
+        "stripe_event": str(_p.get("stripe_event") or "").strip(),
+        "variant": _spec["kind"],
+        "package_name": _spec["name"],
+        "hours": _spec["hours"],
+        "term_days": _spec["term_days"],
+        "recurring": bool(_spec["recurring"]),
+        "mrr": _spec["mrr"],
+        "one_off": _spec.get("one_off", 0),
+        "booking_deadline": _term["booking_deadline"].isoformat(),
+        "registered_by": "admin/register-client (Patch #55A)",
+    }
+
+    if _existing_key:
+        _rec = _existing
+        _key = _existing_key
+        _created = False
+        for _f in LEAD_REGISTER_FIELDS:
+            _v = str(_p.get(_f) or "").strip()
+            if _f == "phone":
+                _v = _phone_digits
+            if _v and not str(_rec.get(_f) or "").strip():
+                _rec[_f] = _v
+    else:
+        # Key convention matches the rest of the store: a dialable number keys
+        # to WhatsApp, otherwise the email keys to the email rail. resolve_channel
+        # reads the KEY, so getting this wrong would route her replies nowhere.
+        _key = _phone_digits or _email.strip().lower()
+        _rec = {}
+        for _f in LEAD_REGISTER_FIELDS:
+            _v = str(_p.get(_f) or "").strip()
+            if _f == "phone":
+                _v = _phone_digits
+            if _v:
+                _rec[_f] = _v
+        _rec.setdefault("source", "Direct — registered by Michael")
+        _rec["first_contact_time"] = _bought
+        _rec["last_message_time"] = _bought
+        lead_data[_key] = _rec
+        _created = True
+
+    _rec["product"] = _spec["name"]
+    _rec["outcome"] = "Won"
+    _rec["status"] = "client"
+    _rec["relationship"] = _rel          # #52 — keeps the sales rail off them
+    _rec["booked"] = True
+    _rec["booked_at"] = _bought.isoformat()   # #49A — a flag with a WHEN
+    _rec["studio_package"] = _box
+
+    try:
+        _update_lead_sheet_status(_rec.get("name") or _name, _spec["sheet_status"])
+    except Exception as _shx:
+        _report_error("register_client.sheet", _shx, f"name={_name}")
+
+    try:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+            f":busts_in_silhouette: *Client record {'created' if _created else 'updated'}* "
+            f"— *{_rec.get('name')}* (`{mask_contact(_key)}`)\n"
+            f"{_spec['name']} · {_spec['hours']}h · books until "
+            f"{_term['booking_deadline'].strftime('%b %d, %Y')}\n"
+            f"relationship=`{_rel}` (sales rail OFF) · "
+            f"{'one-off $' + format(_spec.get('one_off', 0), ',') if not _spec['recurring'] else '$' + format(_spec['mrr'], ',') + '/mo'}\n"
+            f"_via /admin/register-client (Patch #55A) — the repair path the "
+            f"PAID CLIENT NOT LINKED alarm never had._"))
+    except Exception:
+        pass
+
+    return jsonify({
+        "ok": True, "created": _created, "lead_key": mask_contact(_key),
+        "name": _rec.get("name"), "product": _rec["product"],
+        "relationship": _rel,
+        "hours": _spec["hours"],
+        "booking_deadline": _term["booking_deadline"].isoformat(),
+        "sheet_status": _spec["sheet_status"],
+    }), 200
+
+
 @app.route('/admin/lead-seq', methods=['GET'])
 def admin_lead_seq():
     """PATCH #47 — read-only: what is armed on ONE lead, and when it fires.
