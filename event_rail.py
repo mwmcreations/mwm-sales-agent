@@ -650,18 +650,59 @@ BOOKING_TYPE_ORDER = ["studio_visit", "strategy_call",
 # `sells` gates the SALES rail only. Every relationship still gets the full
 # confirmation ladder: a partner shoot needs its reminders exactly as much as
 # a paid one, because not turning up costs the same either way.
+# PATCH #52 — Michael asked whether "Paid" could stand in for "existing
+# client", and the answer is no: money and relationship are different
+# questions, and only one of them decides whether we chase someone. But the
+# second half of his question found a real hole — "maybe a lead that paid me
+# on the spot when they called."
+#
+# That person had no correct answer. `new_lead` created their record and then
+# nurtured them about becoming a client they had already become. And
+# `existing_client` correctly stayed silent but created NO RECORD, because the
+# submit path only ever created one for `new_lead` — so a client who happened
+# not to be in the pipeline yet stayed invisible to it.
+#
+# Two flags now, because they were always two ideas wearing one label:
+#   sells    — may the SALES rail chase this person?
+#   pipeline — should a lead record exist for them at all?
+# A vendor and a partner are real people we book real rooms for; they are just
+# not prospects, and putting them in the sales pipeline would be a lie about
+# what they are.
 RELATIONSHIPS = {
     "new_lead":        {"label": "New lead / referral", "sells": True,
-                        "hint": "Came in cold or by recommendation. Belongs in the pipeline."},
+                        "pipeline": True, "converted": False,
+                        "hint": "Hasn't bought yet. Goes in the pipeline and gets followed up."},
+    "new_client":      {"label": "New client — already paid", "sells": False,
+                        "pipeline": True, "converted": True,
+                        "hint": "Paid on the call, or booked and paid up front. Goes in the pipeline, never pitched again."},
     "existing_client": {"label": "Existing client", "sells": False,
-                        "hint": "Already bought. Remind them, never pitch them."},
+                        "pipeline": True, "converted": True,
+                        "hint": "Already a client. Remind them, never pitch them."},
     "partner":         {"label": "Partner / collaboration", "sells": False,
+                        "pipeline": False, "converted": False,
                         "hint": "A trade or joint project, not a sale."},
     "vendor":          {"label": "Vendor / internal", "sells": False,
+                        "pipeline": False, "converted": False,
                         "hint": "Crew, editor, contractor. Owed time or paid by us."},
 }
 
-RELATIONSHIP_ORDER = ["new_lead", "existing_client", "partner", "vendor"]
+RELATIONSHIP_ORDER = ["new_lead", "new_client", "existing_client",
+                      "partner", "vendor"]
+
+
+def relationship_in_pipeline(rel):
+    """Should this person have a lead record? Unknown: no.
+
+    PATCH #52. Fails closed in the direction of NOT inventing pipeline
+    entries — a missing record is visible the moment someone looks for the
+    lead, whereas a spurious one quietly inflates every count on the board.
+    """
+    return bool((RELATIONSHIPS.get(str(rel or "").strip()) or {}).get("pipeline"))
+
+
+def relationship_converted(rel):
+    """Has this person already bought? Unknown: no."""
+    return bool((RELATIONSHIPS.get(str(rel or "").strip()) or {}).get("converted"))
 
 # PATCH #51 — Michael hit this on his first real use of the form and he was
 # right: "on number four, paid or not — a studio visit, people don't need to

@@ -73,6 +73,8 @@ from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
                         slot_conflicts, slot_buffer_warnings,
                         BOOKING_BUFFER_MIN,
                         billing_options_for, billing_is_asked,
+                        relationship_in_pipeline,
+                        relationship_converted,
                         stage_horizon_phrase)
 
 load_dotenv()
@@ -17635,25 +17637,44 @@ def booking_form_submit():
                            ("phone", re.sub(r"\D", "", _c["phone"] or ""))):
                 if _v and not str(_lr.get(_f) or "").strip():
                     _lr[_f] = _v
+            # PATCH #52 — record WHAT they are, so a later reader does not have
+            # to infer it from the calendar event. Never downgrades: someone
+            # already marked a client is not turned back into a prospect
+            # because this booking happened to be filed as a new lead.
+            _lr["relationship"] = _c["relationship"]
+            if relationship_converted(_c["relationship"]):
+                _lr["status"] = "client"
             _lead_note = "existing lead record updated"
-        elif _c["relationship"] == "new_lead":
+        elif relationship_in_pipeline(_c["relationship"]):
+            # PATCH #52 — was `== "new_lead"`, which meant an existing client
+            # not yet in the store, or a lead who paid on the call, got NO
+            # record at all. The condition is now "does this person belong in
+            # the pipeline", which is what it always meant.
             _key = re.sub(r"\D", "", _c["phone"] or "") or _c["email"].strip().lower()
+            _conv = relationship_converted(_c["relationship"])
             lead_data[_key] = {
                 "name": _c["name"], "email": _c["email"],
                 "phone": re.sub(r"\D", "", _c["phone"] or ""),
                 "business": _c["business"],
                 "source": "Direct — booked by Michael",
-                "status": "booked",
+                # A converted person must not read as an open prospect on the
+                # board. Deliberately NOT writing `outcome: "Won"` or
+                # `product` — those drive revenue reporting, which Rob owns
+                # from Stripe, and a booking is not a payment. Michael records
+                # the package and the money on the Daily Event Report.
+                "status": "client" if _conv else "booked",
+                "relationship": _c["relationship"],
                 "booked": True,
                 "booked_at": datetime.now(_tz).isoformat(),
                 "event_id": _eid,
                 "first_contact_time": datetime.now(_tz),
                 "last_message_time": datetime.now(_tz),
             }
-            _lead_note = "new lead record created"
+            _lead_note = ("new client record created (not a prospect — never pitched)"
+                          if _conv else "new lead record created")
         else:
             _lead_note = (f"no lead record — {RELATIONSHIPS[_c['relationship']]['label'].lower()}"
-                          f", deliberately not added to the pipeline")
+                          f", deliberately not added to the sales pipeline")
     except Exception as _lx:
         _report_error("booking_form.lead_write", _lx, f"email={_c['email'][:40]}")
         _lead_note = "lead record not written (reported)"

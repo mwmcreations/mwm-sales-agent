@@ -26,6 +26,7 @@ from event_rail import (
     billing_options_for, billing_is_asked, BILLING_CONSULTATION,
     booking_title, booking_kind, booking_needs_address,
     relationship_sells, relationship_from_description,
+    relationship_in_pipeline, relationship_converted,
     booking_description, validate_booking, booking_location,
     slot_conflicts, day_is_free, slot_runs_past_midnight,
     slot_buffer_warnings, BOOKING_BUFFER_MIN,
@@ -343,6 +344,89 @@ ok(not slot_runs_past_midnight("bad", 60), "junk does not flag")
 # the honest gap: conflicts are single-day, so the flag is what covers it
 ok(not slot_conflicts("23:00", 180, DAY) and slot_runs_past_midnight("23:00", 180),
    "a midnight-spanning slot reports CLEAR but IS flagged as unchecked")
+
+
+# ══════════════════════════════════════════════════════════════════
+section("#52 — 'sells' and 'belongs in the pipeline' are two questions")
+# ══════════════════════════════════════════════════════════════════
+# Michael: "maybe a lead that paid me on the spot when they called?" That
+# person had no correct answer — new_lead nurtured someone who had already
+# bought, and existing_client created no record because they were not in the
+# store yet.
+EXPECT = {
+    #                  sells  pipeline  converted
+    "new_lead":        (True,  True,    False),
+    "new_client":      (False, True,    True),
+    "existing_client": (False, True,    True),
+    "partner":         (False, False,   False),
+    "vendor":          (False, False,   False),
+}
+ok(set(EXPECT) == set(RELATIONSHIPS), "every relationship is accounted for")
+for rel, (sells, pipe, conv) in EXPECT.items():
+    ok(relationship_sells(rel) is sells, "{}: sells={}".format(rel, sells))
+    ok(relationship_in_pipeline(rel) is pipe, "{}: pipeline={}".format(rel, pipe))
+    ok(relationship_converted(rel) is conv, "{}: converted={}".format(rel, conv))
+
+# THE CASE HE ASKED ABOUT: paid on the call.
+ok(relationship_in_pipeline("new_client"),
+   "a lead who paid on the call DOES get a pipeline record")
+ok(not relationship_sells("new_client"),
+   "...and is never pitched again, because they already bought")
+ok(relationship_converted("new_client"), "...and reads as converted")
+
+# the hole this also closed
+ok(relationship_in_pipeline("existing_client"),
+   "an existing client not yet in the store now gets a record too (was the bug)")
+ok(not relationship_sells("existing_client"), "...and is still never pitched")
+
+# exactly one relationship may be sold to
+ok([r for r in RELATIONSHIPS if relationship_sells(r)] == ["new_lead"],
+   "new_lead is the ONLY relationship the sales rail may act on")
+# everyone converted is unsellable, and vice versa where it matters
+for rel in RELATIONSHIPS:
+    if relationship_converted(rel):
+        ok(not relationship_sells(rel),
+           "{}: converted implies never sold to".format(rel))
+
+# people we book rooms for but who are not prospects
+for rel in ("partner", "vendor"):
+    ok(not relationship_in_pipeline(rel),
+       "{}: stays OUT of the sales pipeline".format(rel))
+
+# fail-closed on every unknown
+for bad in ["", None, "nonsense", "New_Client", "client"]:
+    ok(not relationship_sells(bad), "{!r}: sells fails closed".format(bad))
+    ok(not relationship_in_pipeline(bad), "{!r}: pipeline fails closed".format(bad))
+    ok(not relationship_converted(bad), "{!r}: converted fails closed".format(bad))
+
+# it must survive the write/read round trip through a calendar event
+for rel in RELATIONSHIPS:
+    d = booking_description("Marcus Webb", "m@webbmedia.com",
+                            type_key="studio_recording", relationship=rel,
+                            billing="paid", amount="$1,800")
+    ok(relationship_from_description(d) == rel,
+       "{}: round-trips through the event description".format(rel))
+    ok(relationship_sells(relationship_from_description(d)) == relationship_sells(rel),
+       "{}: and the sales verdict survives with it".format(rel))
+
+# validation accepts the new option, and still refuses junk
+_b52 = {"type": "studio_recording", "name": "Marcus Webb", "email": "m@webbmedia.com",
+        "date": "2026-08-20", "start": "10:00", "minutes": "120", "billing": "paid"}
+for rel in RELATIONSHIPS:
+    errs, clean = validate_booking(dict(_b52, relationship=rel))
+    ok(errs == [], "{}: validates ({})".format(rel, errs))
+    ok(clean["relationship"] == rel, "{}: survives validation".format(rel))
+errs, _ = validate_booking(dict(_b52, relationship="paid"))
+ok(any("sales rail" in e for e in errs),
+   "'paid' is NOT accepted as a relationship — money is not a relationship")
+
+# and the whole point: paid never implies anything about the relationship
+for bl in ("paid", "partnership", "trade", "internal"):
+    for rel in RELATIONSHIPS:
+        d = booking_description("X", "x@y.com", type_key="location_shoot",
+                                relationship=rel, billing=bl)
+        ok(relationship_sells(relationship_from_description(d)) == relationship_sells(rel),
+           "billing={} rel={}: billing never changes the sales verdict".format(bl, rel))
 
 
 # ══════════════════════════════════════════════════════════════════
