@@ -108,7 +108,19 @@ check("no close window set -> never closes", er.seq_should_close({}, 999), False
 
 # ══════════════════════════════════════════════════════════════════════
 section("2 · stop reasons beat timing, always")
-check("booked stops it", er.seq_stop_reason(lead(booked=True), {"steps": []}), "lead has a booking")
+# PATCH #49B — a bare `booked` flag NO LONGER stops a sequence. It is set at
+# booking creation and never cleared, so for a follow_up armed right after a
+# meeting the lead booked, it is true by definition. #48B read it as a current
+# commitment and cancelled Rodolfo Silva's nudge in production.
+check("a bare booked flag does NOT stop it — it only means 'ever booked'",
+      er.seq_stop_reason(lead(booked=True), {"steps": [], "armed_at": "2026-08-04T11:00:00"}), "")
+check("a booking made BEFORE the sequence does not stop it",
+      er.seq_stop_reason(lead(booked=True, booked_at="2026-08-04T10:00:00"),
+                         {"steps": [], "armed_at": "2026-08-04T11:00:00"}), "")
+check("a booking made AFTER the sequence DOES stop it",
+      er.seq_stop_reason(lead(booked=True, booked_at="2026-08-05T09:00:00"),
+                         {"steps": [], "armed_at": "2026-08-04T11:00:00"}),
+      "lead booked again after this sequence was armed")
 check("won stops it", er.seq_stop_reason(lead(outcome="Won"), {"steps": []}), "lead converted")
 check("do_not_contact stops it",
       er.seq_stop_reason(lead(do_not_contact=True), {"steps": []}), "lead is on do-not-contact")
@@ -357,9 +369,14 @@ section("15 · #48B — a booking on a DUPLICATE record must stop the sequence")
 # records: one with the business name and booked=true and NO sequence, one
 # thinner with booked=false and the armed sequence. As shipped, he could book
 # on the 7th and still be asked on the 11th where things stand.
-check("a sibling booking stops it",
-      er.sibling_stop_reason({}, [{"booked": True}]),
-      "a duplicate record for this person has a booking")
+check("a sibling's bare booked flag does NOT stop it (the #48B bug)",
+      er.sibling_stop_reason({}, [{"booked": True}], "2026-08-04T11:00:00"), "")
+check("a sibling booking made AFTER the sequence DOES stop it",
+      er.sibling_stop_reason({}, [{"booked": True, "booked_at": "2026-08-05T09:00:00"}],
+                             "2026-08-04T11:00:00"),
+      "a duplicate record for this person booked after this sequence was armed")
+check("no armed_at means no stop — we cannot tell, so keep the rail running",
+      er.sibling_stop_reason({}, [{"booked": True, "booked_at": "2026-08-05T09:00:00"}]), "")
 check("a sibling conversion stops it",
       er.sibling_stop_reason({}, [{"outcome": "Won"}]),
       "a duplicate record for this person has already converted")
@@ -383,11 +400,25 @@ _fat = lead(name="Rodolfo Silva", business="Nest Seekers", booked=True,
 leads = {"ig_thin": _thin, "ph_fat": _fat}
 h = Harness(leads)
 res = osx._pass(now=NOW)
-check("NOTHING is sent to a lead whose twin has booked", len(h.emails), 0)
-check("...the sequence is stopped, not merely skipped", _thin["outcome_seq"]["done"], True)
+# PATCH #49B — the real Rodolfo shape: the twin's booking is the meeting that
+# was just held, i.e. OLDER than the sequence. It must NOT suppress.
+check("a twin's HISTORICAL booking does not suppress the nudge", len(h.emails), 1)
+check("...and the sequence stays alive", _thin["outcome_seq"]["done"], False)
+
+# Now give the twin a booking made AFTER arming — that one must stop it.
+_thin2 = lead(name="Rodolfo Silva", business="", booked=False,
+              email="rodolfos@nestseekers.com",
+              outcome_seq=seq([[48, er.CH_WEB, er.STEP_NUDGE]], 50,
+                              email="rodolfos@nestseekers.com"))
+_fat2 = lead(name="Rodolfo Silva", booked=True, email="rodolfos@nestseekers.com",
+             booked_at=(NOW - timedelta(hours=1)).isoformat())
+leads2 = {"thin": _thin2, "fat": _fat2}
+h2 = Harness(leads2)
+res2 = osx._pass(now=NOW)
+check("a twin's NEW booking does stop it", len(h2.emails), 0)
 check("...and the reason names the duplicate",
-      "duplicate" in _thin["outcome_seq"]["closed_reason"], True)
-check("...counted as stopped", res["stopped"], 1)
+      "duplicate" in _thin2["outcome_seq"]["closed_reason"], True)
+check("...counted as stopped", res2["stopped"], 1)
 
 # The email match must be exact — two different people at one company share a
 # domain, not an inbox.
@@ -400,6 +431,31 @@ h = Harness(leads)
 res = osx._pass(now=NOW)
 check("a colleague at the same domain is NOT treated as a duplicate",
       len(h.emails), 1)
+
+
+# ══════════════════════════════════════════════════════════════════════
+section("16 · #49C — reopen exactly what #48B wrongly closed")
+_killed = lead(email="jane@example.com",
+               outcome_seq=seq([[48, er.CH_WEB, er.STEP_NUDGE]], 50))
+_killed["outcome_seq"]["done"] = True
+_killed["outcome_seq"]["closed_reason"] = "a duplicate record for this person has a booking"
+leads = {"k": _killed}
+h = Harness(leads)
+res = osx._pass(now=NOW)
+check("a sequence killed by the #48B rule is reopened and sent", len(h.emails), 1)
+check("...and the reopening is recorded on the record",
+      bool(_killed["outcome_seq"].get("reopened")), True)
+
+# Anything closed for a GOOD reason must stay closed.
+for _reason in ("lead is on do-not-contact", "lead converted",
+                "lead replied after the sequence was armed", "all steps sent"):
+    _ok = lead(email="jane@example.com",
+               outcome_seq=seq([[48, er.CH_WEB, er.STEP_NUDGE]], 50))
+    _ok["outcome_seq"]["done"] = True
+    _ok["outcome_seq"]["closed_reason"] = _reason
+    h2 = Harness({"x": _ok})
+    osx._pass(now=NOW)
+    check(f"...but '{_reason}' stays closed", len(h2.emails), 0)
 
 
 print("\n" + "=" * 60)

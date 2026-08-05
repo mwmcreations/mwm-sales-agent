@@ -3951,6 +3951,15 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                 # Mark lead as booked and store event_id + lead details for cancellation support
                 if sender and sender in lead_data:
                     lead_data[sender]["booked"] = True
+                    # PATCH #49A — `booked` alone is unusable as a stop signal.
+                    # It is set here and never cleared on a no-show or a
+                    # cancellation, so it has always meant "booked at some
+                    # point", not "has an appointment coming". #48B read it as
+                    # the latter and silently cancelled a follow-up sequence in
+                    # production. A flag without a timestamp cannot answer
+                    # "did this happen before or after the sequence was armed?"
+                    lead_data[sender]["booked_at"] = datetime.now(
+                        pytz.timezone(TIMEZONE)).isoformat()
                     lead_data[sender]["event_id"] = event_id
                     # Backfill lead name/email/business from booking — fixes "Unknown" leads
                     _book_name = tool_input.get("lead_name", "").strip()

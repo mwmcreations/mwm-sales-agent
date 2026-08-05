@@ -340,7 +340,25 @@ def _pass(now=None):
             break
         try:
             seq = rec.get("outcome_seq")
-            if not isinstance(seq, dict) or seq.get("done"):
+            if not isinstance(seq, dict):
+                continue
+            # PATCH #49C — undo the specific damage #48B did. Between its
+            # deploy and #49 it closed sequences on the strength of a
+            # duplicate's historical booking flag, which was never a valid
+            # signal. The predicate is EXACT — only that reason, not "anything
+            # ever stopped" — so this repairs a known bug rather than
+            # resurrecting decisions that were made correctly.
+            if seq.get("done") and str(seq.get("closed_reason") or "") == (
+                    "a duplicate record for this person has a booking"):
+                seq["done"] = False
+                seq["closed_reason"] = ""
+                seq.setdefault("reopened", []).append(
+                    {"why": "closed by the #48B duplicate-booking rule, which "
+                            "read a historical flag as a current commitment",
+                     "at": now.isoformat()})
+                _report("reopened", "sequence reopened by #49C",
+                        f"lead={rec.get('name') or key}")
+            if seq.get("done"):
                 continue
 
             # PATCH #48B — a booking recorded on a DUPLICATE record has to
@@ -355,7 +373,8 @@ def _pass(now=None):
                         continue
                     if str(_orec.get("email") or "").strip().lower() == _my_email:
                         _sibs.append(_orec)
-            stop = seq_stop_reason(rec, seq) or sibling_stop_reason(rec, _sibs)
+            stop = (seq_stop_reason(rec, seq)
+                    or sibling_stop_reason(rec, _sibs, seq.get("armed_at")))
             if stop:
                 seq["done"] = True
                 seq["closed_reason"] = stop

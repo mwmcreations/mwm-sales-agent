@@ -1150,6 +1150,30 @@ def gap_severity(gaps):
 STEP_STALE_AFTER_HOURS = 72
 
 
+def booked_after(rec, armed_at):
+    """True only when this record's booking provably POSTDATES the sequence.
+
+    PATCH #49B. `booked` is set at booking creation and never cleared, so on
+    its own it means "booked at some point in history" — including the very
+    meeting whose follow-up we just armed. #48B treated it as "has a
+    commitment, leave them alone" and cancelled Rodolfo Silva's Thursday nudge
+    in production within ten minutes of shipping.
+
+    No `booked_at` means NO STOP. That is deliberate. Legacy records have no
+    timestamp, and the two failure modes are not symmetrical: a wrongly SENT
+    nudge is one warm email that says "checking in", while a wrongly STOPPED
+    sequence is permanent, silent, and indistinguishable from the automation
+    never having existed. When we cannot tell, keep the rail running.
+    """
+    at = str((rec or {}).get("booked_at") or "").strip()
+    if not at or not armed_at:
+        return False
+    try:
+        return at > str(armed_at)
+    except Exception:
+        return False
+
+
 def seq_stop_reason(rec, seq=None):
     """Why this sequence must stop NOW, or "" to continue.
 
@@ -1167,8 +1191,13 @@ def seq_stop_reason(rec, seq=None):
         return "lead is on do-not-contact"
     if rec.get("outcome") == "Won" or rec.get("product"):
         return "lead converted"
-    if rec.get("booked"):
-        return "lead has a booking"
+    # PATCH #49B — was `if rec.get("booked")`, which stopped the sequence for
+    # anyone who had EVER booked. Since a follow_up sequence is armed straight
+    # after a meeting the lead booked, that condition is true almost by
+    # definition, and it fails silently. Now it must be a booking made SINCE
+    # the sequence was armed.
+    if rec.get("booked") and booked_after(rec, seq.get("armed_at")):
+        return "lead booked again after this sequence was armed"
     # A reply is the loudest possible stop signal: the sequence exists to
     # provoke one, so continuing after it arrives is talking over the answer.
     if seq.get("armed_at") and rec.get("last_message_time"):
@@ -1180,7 +1209,7 @@ def seq_stop_reason(rec, seq=None):
     return ""
 
 
-def sibling_stop_reason(rec, siblings):
+def sibling_stop_reason(rec, siblings, armed_at=None):
     """Why a DIFFERENT record for the same human should stop this sequence.
 
     PATCH #48B. `seq_stop_reason` reads the record the sequence sits on, which
@@ -1205,8 +1234,12 @@ def sibling_stop_reason(rec, siblings):
             return "a duplicate record for this person is on do-not-contact"
         if sib.get("outcome") == "Won" or sib.get("product"):
             return "a duplicate record for this person has already converted"
-        if sib.get("booked"):
-            return "a duplicate record for this person has a booking"
+        # PATCH #49B — this line, as written in #48B, cancelled Rodolfo Silva's
+        # Thursday nudge. His twin record carries `booked: true` from the very
+        # studio visit whose follow-up we had just armed. A duplicate's booking
+        # only counts if it happened SINCE the sequence started.
+        if sib.get("booked") and booked_after(sib, armed_at):
+            return "a duplicate record for this person booked after this sequence was armed"
     return ""
 
 
