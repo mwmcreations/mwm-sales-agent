@@ -413,6 +413,64 @@ ok(_late["booking_deadline"] != _t55["booking_deadline"],
    "...so a backdated purchase cannot quietly gain extra days")
 
 
+# ══════════════════════════════════════════════════════════════════
+section("#56 — lead_data WRAPS what you assign to it")
+# ══════════════════════════════════════════════════════════════════
+# The bug #55A shipped, pinned so it cannot come back. LeadData.__setitem__
+# wraps a plain dict in a LeadRecord, so `lead_data[k] = d` does NOT store `d`.
+# Mutating `d` afterwards writes to an orphan: no reader sees it, no flusher
+# persists it, and nothing raises. #55A did that, then reported the unstored
+# values in its own success response — Gema Hiatt's record read back with
+# outcome="" and booked=false while the API had answered ok:true with a product.
+#
+# The rule this encodes: after assigning into lead_data, RE-FETCH by key before
+# mutating, and answer from the store rather than from intent.
+import leads_db
+
+_ld = leads_db.LeadData()
+_plain = {"name": "Wrap Test", "email": "w@example.com"}
+_ld["wrapkey"] = _plain
+
+ok(not (_ld["wrapkey"] is _plain),
+   "lead_data[k] = d does NOT store the same object — it wraps it")
+ok(isinstance(_ld["wrapkey"], leads_db.LeadRecord),
+   "what is stored is a LeadRecord")
+
+# the exact mistake
+_plain["product"] = "Studio Trial — 1 Month"
+_plain["booked"] = True
+ok(_ld["wrapkey"].get("product") is None,
+   "mutating the ORIGINAL dict after assignment is silently lost (the #55A bug)")
+ok(not _ld["wrapkey"].get("booked"), "...including booked, exactly as seen in production")
+
+# the fix
+_fetched = _ld["wrapkey"]
+_fetched["product"] = "Studio Trial — 1 Month"
+_fetched["booked"] = True
+ok(_ld["wrapkey"].get("product") == "Studio Trial — 1 Month",
+   "re-fetching by key first makes the write land")
+ok(_ld["wrapkey"].get("booked") is True, "...and booked lands too")
+
+# a record taken OUT of the store is safe to mutate directly — which is why the
+# original purchase path never hit this
+_ld["existing"] = {"name": "Already There"}
+_out = _ld["existing"]
+_out["outcome"] = "Won"
+ok(_ld["existing"].get("outcome") == "Won",
+   "mutating a record read out of the store works — the purchase path's pattern")
+
+# and the verification idea itself: intent must be checked against the store
+_intended = {"product": "Studio Trial — 1 Month", "outcome": "Won", "booked": True}
+_ld["verify"] = {"name": "V"}
+ok(any(_ld["verify"].get(k) != v for k, v in _intended.items()),
+   "an unverified write is detectable by reading the store back")
+_vr = _ld["verify"]
+for _k, _v in _intended.items():
+    _vr[_k] = _v
+ok(all(_ld["verify"].get(k) == v for k, v in _intended.items()),
+   "...and a verified write reads back identical to the intent")
+
+
 print("\n" + "=" * 62)
 print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 62)

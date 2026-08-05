@@ -18958,17 +18958,32 @@ def admin_register_client():
         # to WhatsApp, otherwise the email keys to the email rail. resolve_channel
         # reads the KEY, so getting this wrong would route her replies nowhere.
         _key = _phone_digits or _email.strip().lower()
-        _rec = {}
+        _new = {}
         for _f in LEAD_REGISTER_FIELDS:
             _v = str(_p.get(_f) or "").strip()
             if _f == "phone":
                 _v = _phone_digits
             if _v:
-                _rec[_f] = _v
-        _rec.setdefault("source", "Direct — registered by Michael")
-        _rec["first_contact_time"] = _bought
-        _rec["last_message_time"] = _bought
-        lead_data[_key] = _rec
+                _new[_f] = _v
+        _new.setdefault("source", "Direct — registered by Michael")
+        _new["first_contact_time"] = _bought
+        _new["last_message_time"] = _bought
+        lead_data[_key] = _new
+        # ── PATCH #56 — RE-FETCH. This line is the whole fix. ──
+        # `lead_data` is a LeadData, and its __setitem__ WRAPS a plain dict in a
+        # LeadRecord (leads_db.py:258). So `lead_data[k] = _new` does not store
+        # `_new` — it stores a different object built from it. Mutating `_new`
+        # afterwards writes to an orphan that nothing will ever read or persist.
+        #
+        # #55A did exactly that, and the consequence was worse than the lost
+        # fields: the route RETURNED product/relationship/hours in its success
+        # response, so it reported values it had not stored. Gema Hiatt's record
+        # came back from /admin/lead-seq with outcome="" and booked=false while
+        # the API had answered {"ok": true, "product": "Studio Trial — 1 Month"}.
+        #
+        # The existing purchase path never hit this because its `rec` comes OUT
+        # of lead_data already wrapped. Only create-then-mutate is affected.
+        _rec = lead_data[_key]
         _created = True
 
     _rec["product"] = _spec["name"]
@@ -18997,12 +19012,34 @@ def admin_register_client():
     except Exception:
         pass
 
+    # PATCH #56 — report what the STORE says, never what we intended. Read the
+    # record back out of lead_data by key and answer from that. #55A answered
+    # from local variables and therefore claimed a write that had not landed;
+    # a route that cannot tell the difference is worse than no route, because
+    # its success response is the thing a human trusts instead of checking.
+    _stored = lead_data.get(_key) or {}
+    _sbox = _stored.get("studio_package") or {}
+    _verified = (_stored.get("product") == _spec["name"]
+                 and _stored.get("outcome") == "Won"
+                 and bool(_stored.get("booked"))
+                 and _sbox.get("variant") == _spec["kind"])
+    if not _verified:
+        _report_error("register_client.write_not_verified",
+                      "the record does not read back as written",
+                      f"key={mask_contact(_key)} product={_stored.get('product')!r} "
+                      f"outcome={_stored.get('outcome')!r} booked={_stored.get('booked')!r}")
     return jsonify({
-        "ok": True, "created": _created, "lead_key": mask_contact(_key),
-        "name": _rec.get("name"), "product": _rec["product"],
-        "relationship": _rel,
-        "hours": _spec["hours"],
-        "booking_deadline": _term["booking_deadline"].isoformat(),
+        "ok": True, "created": _created, "verified": _verified,
+        "lead_key": mask_contact(_key),
+        # every field below is read back out of the store, not from our intent
+        "name": _stored.get("name"),
+        "product": _stored.get("product"),
+        "outcome": _stored.get("outcome"),
+        "booked": bool(_stored.get("booked")),
+        "relationship": _stored.get("relationship"),
+        "status": _stored.get("status"),
+        "hours": _sbox.get("hours"),
+        "booking_deadline": _sbox.get("booking_deadline"),
         "sheet_status": _spec["sheet_status"],
     }), 200
 
