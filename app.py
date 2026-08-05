@@ -60,6 +60,19 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         within_send_window, CH_WEB,
                         classify_event, KIND_INTERNAL,       # Patch #45E.2
                         REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
+# Patch #50 — the direct-booking vocabulary. The form is a thin shell over
+# these; every rule about titles, venues and who may be sold to lives in
+# event_rail where the test suite can reach it.
+from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
+                        RELATIONSHIPS, RELATIONSHIP_ORDER,
+                        BILLING, BILLING_ORDER,
+                        booking_title, booking_kind, booking_location,
+                        booking_needs_address, booking_description,
+                        validate_booking, relationship_sells,
+                        relationship_from_description,
+                        slot_conflicts, slot_buffer_warnings,
+                        BOOKING_BUFFER_MIN,
+                        stage_horizon_phrase)
 
 load_dotenv()
 
@@ -8643,6 +8656,34 @@ def _noshow_detector():
                     for line in event.get("description", "").split("\n"):
                         if line.startswith("Lead:"):
                             _ao_name = line.replace("Lead:", "").strip()
+
+                    # ── PATCH #50B — do not sell to people who are not buying ──
+                    # This branch marks ANY unreported meeting `follow_up` and
+                    # hands the person to Maya's nurture. For a referral that is
+                    # right. For the two bookings Michael made by hand this week
+                    # it is not: Enzo Auto Service is an ACTIVE CLIENT, and
+                    # Natalia Tavares is an editor owed $500 who is taking it in
+                    # studio time. Nurturing either is selling to someone who is
+                    # not a prospect, and the "just checking in" copy would land
+                    # on a person we owe money to.
+                    #
+                    # The /book form records this as a `Relationship:` line, so
+                    # the answer is on the event itself. Absent — every event
+                    # made before #50, and anything still typed by hand — the
+                    # behaviour is UNCHANGED, because silently going quiet on
+                    # legacy events would be a second, opposite bug.
+                    _ao_rel = relationship_from_description(event.get("description", ""))
+                    if _ao_rel and not relationship_sells(_ao_rel):
+                        _mr_reported_events[event_id] = "no_sell_" + _ao_rel
+                        print(f"[AUTO-OUTCOME] {_ao_name or 'Unknown'} ({summary}) "
+                              f"-> SKIPPED, relationship={_ao_rel} is not a sales prospect")
+                        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+                            f"\U0001f91d No auto-follow-up for *{_ao_name or 'Unknown'}* "
+                            f"({summary}) — booked as "
+                            f"*{RELATIONSHIPS[_ao_rel]['label']}*, so the sales rail "
+                            f"stays off. Reminders were unaffected."))
+                        continue
+
                     _mr_reported_events[event_id] = "follow_up_auto"
                     print(f"[AUTO-OUTCOME] {_ao_name or 'Unknown'} ({summary}) -> follow_up (no report in 24h)")
                     try:
@@ -16749,6 +16790,867 @@ def _mr_verify_token(token):
         ).hexdigest()[:32]
         return hmac.compare_digest(sig, expected_y)
     return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #50A · DIRECT BOOKING FORM  —  /book
+# ══════════════════════════════════════════════════════════════════════
+# Referrals call Michael directly. He books them by hand in Google Calendar,
+# and a hand-typed title is a coin flip on whether any rail can see the event.
+# Both of this week's hand-made bookings failed, differently:
+#
+#   FILM SHOOT — ENZO AUTO SERVICE (On Location)  — classified correctly, but
+#       no attendee, no address. Sat on the CRITICAL list, unreachable.
+#   GRAVAÇÃO Natalia Tavares — matched no pattern at all. Unclassified, and
+#       therefore invisible to every rail we have.
+#
+# He asked for this himself, and the reason is the design brief: "I might not
+# remember how to do it anymore, I just have too many things in my head." A
+# naming convention that depends on recall fails on the busy week — which is
+# the week the booking matters. So he never types a title again. He answers
+# questions; the server computes the title, the venue, and the description
+# block, and event_rail's own vocabulary is the single source of truth for all
+# three. test_booking_form.py asserts the round trip through classify_event,
+# so a future tidy-up of a title template breaks the suite instead of
+# silently un-instrumenting a client.
+#
+# Auth reuses MEETING_REPORT_PIN deliberately: same person, same trust level,
+# same phone, and no new Railway variable to set before this works.
+
+BOOKING_FORM_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MWM — Book a Direct Client</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: #f8fafc; color: #1f2937; min-height: 100vh; padding-bottom: 40px; }
+.container { max-width: 540px; margin: 0 auto; padding: 20px; }
+.logo { text-align: center; margin: 18px 0 6px; }
+.logo-text { font-size: 22px; font-weight: 700; color: #1e40af; }
+.logo-sub { font-size: 12px; color: #6b7280; margin-top: 2px; }
+h1 { font-size: 20px; text-align: center; margin: 14px 0 4px; }
+.subtitle { font-size: 13px; color: #6b7280; text-align: center; margin-bottom: 18px; line-height: 1.5; }
+.card { background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        border: 1px solid #e5e7eb; margin-bottom: 14px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+           color: #6b7280; margin-bottom: 12px; font-weight: 700; }
+.field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
+label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+.req { color: #dc2626; }
+input, textarea, select {
+  width: 100%; padding: 11px 12px; border: 1.5px solid #e5e7eb; border-radius: 8px;
+  font-size: 16px; font-family: inherit; background: #fff; color: #1f2937; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: #1e40af; }
+textarea { min-height: 80px; resize: vertical; }
+.hint { font-size: 12px; color: #6b7280; margin-top: 5px; line-height: 1.45; }
+.pick { display: block; width: 100%; text-align: left; padding: 13px 14px; margin-bottom: 8px;
+        border: 1.5px solid #e5e7eb; border-radius: 10px; background: #fff; cursor: pointer;
+        font-family: inherit; font-size: 15px; color: #1f2937; }
+.pick:last-child { margin-bottom: 0; }
+.pick.on { border-color: #1e40af; background: #eff6ff; }
+.pick .t { font-weight: 700; display: block; }
+.pick .h { font-size: 12px; color: #6b7280; margin-top: 3px; display: block; line-height: 1.45; }
+.row { display: flex; gap: 10px; }
+.row .field { flex: 1; }
+button.go { width: 100%; padding: 15px; background: #1e40af; color: #fff; border: none;
+            border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; font-family: inherit; }
+button.go:disabled { background: #9ca3af; cursor: not-allowed; }
+.msg { padding: 13px 14px; border-radius: 9px; font-size: 14px; margin-bottom: 14px; line-height: 1.55; display: none; }
+.msg.show { display: block; }
+.msg.bad { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.msg.good { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.msg ul { margin: 6px 0 0 18px; }
+.screen { display: none; }
+.screen.show { display: block; }
+.preview { background: #f9fafb; border: 1px dashed #d1d5db; border-radius: 9px; padding: 12px;
+           font-size: 13px; color: #374151; white-space: pre-wrap; line-height: 1.5;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.plink { display: inline-block; margin-top: 8px; color: #1e40af; font-weight: 600; font-size: 14px; }
+.strip { display: flex; gap: 7px; overflow-x: auto; padding: 2px 2px 10px; margin-bottom: 12px;
+         -webkit-overflow-scrolling: touch; }
+.day { flex: 0 0 auto; width: 58px; border: 1.5px solid #e5e7eb; border-radius: 10px; background: #fff;
+       padding: 7px 4px; text-align: center; cursor: pointer; font-family: inherit; }
+.day.on { border-color: #1e40af; background: #eff6ff; }
+.day.past { opacity: .4; }
+.day .dw { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; }
+.day .dn { font-size: 17px; font-weight: 700; color: #1f2937; line-height: 1.25; }
+.day .dm { font-size: 9px; color: #9ca3af; text-transform: uppercase; }
+.day .db { font-size: 10px; margin-top: 3px; font-weight: 700; }
+.day .db.free { color: #16a34a; }
+.day .db.busy { color: #b45309; }
+.daybox { border-top: 1px solid #f3f4f6; margin-top: 14px; padding-top: 12px; }
+.dayhdr { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
+.slot { display: flex; gap: 9px; font-size: 13px; padding: 6px 0; border-bottom: 1px dashed #f3f4f6; }
+.slot:last-child { border-bottom: none; }
+.slot .tm { flex: 0 0 96px; color: #6b7280; font-variant-numeric: tabular-nums; font-size: 12px; }
+.slot .nm { color: #1f2937; }
+.slot.mine .nm { color: #9ca3af; font-style: italic; }
+.clash { margin-top: 12px; padding: 11px 12px; border-radius: 9px; font-size: 13px;
+         line-height: 1.5; display: none; }
+.clash.show { display: block; }
+.clash.bad { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.clash.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.clash.good { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="logo"><div class="logo-text">MWM CREATIONS</div>
+  <div class="logo-sub">&amp; STUDIOS · Orlando</div></div>
+
+  <div id="pinScreen" class="screen">
+    <h1>Book a Direct Client</h1>
+    <p class="subtitle">Enter your PIN to continue.</p>
+    <div class="card"><div class="field">
+      <label>PIN</label>
+      <input type="password" id="pinInput" inputmode="numeric" autocomplete="off">
+    </div></div>
+    <div id="pinMsg" class="msg bad"></div>
+    <button class="go" onclick="doPin()">Unlock</button>
+  </div>
+
+  <div id="formScreen" class="screen">
+    <h1>Book a Direct Client</h1>
+    <p class="subtitle">For anyone who reaches you directly — a referral, a client,
+      a partner. Fill this in instead of Google Calendar and the event lands
+      already wired to every reminder.</p>
+
+    <div id="msg" class="msg"></div>
+
+    <div class="card">
+      <h2>1 · What kind of booking</h2>
+      <div id="types"></div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Who is it for</h2>
+      <div class="field">
+        <label>Name <span class="req">*</span></label>
+        <input type="text" id="name" placeholder="Enzo Auto Service" autocomplete="off">
+        <div class="hint">Exactly how the reminder should greet them.</div>
+      </div>
+      <div class="field">
+        <label>Email <span class="req">*</span></label>
+        <input type="email" id="email" placeholder="contact@enzoauto.com" autocomplete="off">
+        <div class="hint">Required. Without it nothing can reach them and no RSVP can be read.</div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Phone</label>
+          <input type="tel" id="phone" placeholder="407 555 1234" autocomplete="off"></div>
+        <div class="field"><label>Business</label>
+          <input type="text" id="business" placeholder="Enzo Auto Service" autocomplete="off"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Who are they to us</h2>
+      <div id="rels"></div>
+      <div class="hint" style="margin-top:10px">This decides whether the sales side
+        may follow up. Everyone gets reminders either way.</div>
+    </div>
+
+    <div class="card">
+      <h2>4 · Paid or not</h2>
+      <div id="bills"></div>
+      <div class="field" id="amtWrap" style="display:none;margin-top:12px">
+        <label>Amount</label>
+        <input type="text" id="amount" placeholder="$2,400" autocomplete="off">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>5 · When</h2>
+      <div class="strip" id="strip"></div>
+      <div class="row">
+        <div class="field"><label>Date <span class="req">*</span></label>
+          <input type="date" id="date"></div>
+        <div class="field"><label>Start <span class="req">*</span></label>
+          <input type="time" id="start"></div>
+      </div>
+      <div class="field"><label>How long (minutes)</label>
+        <input type="number" id="minutes" min="15" step="15" placeholder="60"></div>
+      <div class="daybox">
+        <div class="dayhdr" id="dayhdr">Pick a day to see what is already booked.</div>
+        <div id="daylist"></div>
+      </div>
+      <div class="clash" id="clash"></div>
+    </div>
+
+    <div class="card">
+      <h2>6 · Where</h2>
+      <div class="field">
+        <label id="locLabel">Location</label>
+        <input type="text" id="location" placeholder="" autocomplete="off">
+        <div class="hint" id="locHint">Leave blank to use the studio address.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>7 · Anything else</h2>
+      <div class="field"><textarea id="notes"
+        placeholder="What they want, what you agreed, anything the crew needs to know."></textarea></div>
+    </div>
+
+    <div class="card">
+      <h2>This will create</h2>
+      <div class="preview" id="preview">Pick a booking type and enter a name.</div>
+    </div>
+
+    <button class="go" id="submitBtn" onclick="doSubmit()">Create the booking</button>
+  </div>
+</div>
+
+<script>
+var TOKEN = "", TYPES = {}, ORDER = [], RELS = {}, RELORDER = [], BILLS = {}, BILLORDER = [];
+var pick = { type: "", relationship: "", billing: "" };
+var AVAIL = {}, AVDAYS = [];
+
+function hhmm2min(v){ var p = String(v||"").split(":");
+  var h = parseInt(p[0],10), m = parseInt(p[1]||"0",10);
+  if (isNaN(h)||isNaN(m)||h<0||h>24||m<0||m>59) return null; return h*60+m; }
+
+// Mirrors event_rail.slot_conflicts EXACTLY, including the strict inequality
+// that lets back-to-back bookings touch without colliding. This is a UI hint;
+// the server re-checks nothing here, so it must never be MORE permissive than
+// what Michael would see on the calendar itself.
+function conflictsFor(dateStr, startStr, mins) {
+  var blocks = AVAIL[dateStr] || [];
+  var s0 = hhmm2min(startStr), d = parseInt(mins,10);
+  if (s0 === null || !d || d <= 0) return [];
+  var s1 = s0 + d, out = [];
+  blocks.forEach(function(b){
+    var b0 = hhmm2min(b.start), b1 = hhmm2min(b.end);
+    if (b0 === null || b1 === null || b1 <= b0) return;
+    if (s0 < b1 && b0 < s1) out.push(b);
+  });
+  return out;
+}
+
+// Mirrors event_rail.slot_buffer_warnings, including the rule that a genuine
+// overlap is excluded here and reported by conflictsFor instead — otherwise
+// one booking would be named twice, once in red and once in amber.
+var BUFFER_MIN = 30;
+function buffersFor(dateStr, startStr, mins) {
+  var blocks = AVAIL[dateStr] || [];
+  var s0 = hhmm2min(startStr), d = parseInt(mins,10);
+  if (s0 === null || !d || d <= 0) return [];
+  var s1 = s0 + d, out = [];
+  blocks.forEach(function(b){
+    var b0 = hhmm2min(b.start), b1 = hhmm2min(b.end);
+    if (b0 === null || b1 === null || b1 <= b0) return;
+    if (s0 < b1 && b0 < s1) return;
+    var gap, side;
+    if (b1 <= s0) { gap = s0 - b1; side = "before"; }
+    else { gap = b0 - s1; side = "after"; }
+    if (gap >= 0 && gap < BUFFER_MIN) out.push({block: b, gap: gap, side: side});
+  });
+  out.sort(function(a,b){ return a.gap - b.gap; });
+  return out;
+}
+
+function fmt12(hhmm) {
+  var m = hhmm2min(hhmm); if (m === null) return hhmm;
+  if (m >= 1440) return "midnight";
+  var h = Math.floor(m/60), mm = m%60, ap = h < 12 ? "AM" : "PM";
+  var h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + (mm ? ":" + (mm<10?"0":"") + mm : "") + " " + ap;
+}
+
+function paintStrip() {
+  var host = document.getElementById("strip"); host.innerHTML = "";
+  var sel = document.getElementById("date").value;
+  var today = new Date(); today.setHours(0,0,0,0);
+  AVDAYS.forEach(function(ds){
+    var parts = ds.split("-");
+    var dt = new Date(+parts[0], +parts[1]-1, +parts[2]);
+    var blocks = (AVAIL[ds]||[]).filter(function(b){ return !b.mine; });
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "day" + (ds === sel ? " on" : "") + (dt < today ? " past" : "");
+    b.innerHTML =
+      '<div class="dw">' + ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()] + '</div>' +
+      '<div class="dn">' + dt.getDate() + '</div>' +
+      '<div class="dm">' + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][dt.getMonth()] + '</div>' +
+      '<div class="db ' + (blocks.length ? "busy" : "free") + '">' +
+        (blocks.length ? blocks.length + (blocks.length === 1 ? " job" : " jobs") : "free") + '</div>';
+    b.onclick = function(){ document.getElementById("date").value = ds; paintStrip(); paintDay(); };
+    host.appendChild(b);
+    // Michael usually types the date, or picks it from the native picker. If
+    // the chosen day sits off the right-hand edge the strip silently shows a
+    // different week's availability, which is worse than showing none.
+    if (ds === sel) { setTimeout(function(){
+      host.scrollLeft = Math.max(0, b.offsetLeft - host.offsetWidth / 2 + b.offsetWidth / 2);
+    }, 0); }
+  });
+}
+
+function paintDay() {
+  var ds = document.getElementById("date").value;
+  var hdr = document.getElementById("dayhdr"), list = document.getElementById("daylist");
+  list.innerHTML = "";
+  if (!ds) { hdr.textContent = "Pick a day to see what is already booked."; return; }
+  var blocks = AVAIL[ds];
+  if (blocks === undefined) {
+    hdr.textContent = "That date is outside the range I loaded — I cannot check it for clashes.";
+  } else if (!blocks.length) {
+    hdr.textContent = "Nothing booked that day.";
+  } else {
+    hdr.textContent = "Already on the calendar that day:";
+    blocks.forEach(function(b){
+      var row = document.createElement("div");
+      row.className = "slot" + (b.mine ? " mine" : "");
+      row.innerHTML = '<div class="tm">' + esc(b.all_day ? "all day"
+                          : fmt12(b.start) + " – " + fmt12(b.end)) + '</div>' +
+                      '<div class="nm">' + esc(b.title) + '</div>';
+      list.appendChild(row);
+    });
+  }
+  paintClash();
+}
+
+function paintClash() {
+  var el = document.getElementById("clash");
+  var ds = document.getElementById("date").value;
+  var st = document.getElementById("start").value;
+  var mn = document.getElementById("minutes").value ||
+           ((TYPES[pick.type]||{}).default_minutes || 0);
+  el.className = "clash"; el.innerHTML = "";
+  if (!ds || !st || !mn) return;
+  if (AVAIL[ds] === undefined) {
+    el.className = "clash warn show";
+    el.innerHTML = "<b>Not checked.</b> That date is outside the window I loaded, so I cannot tell you whether it clashes.";
+    return;
+  }
+  var hits = conflictsFor(ds, st, mn);
+  var tight = buffersFor(ds, st, mn);
+  var s0 = hhmm2min(st), past = s0 !== null && (s0 + parseInt(mn,10)) > 1440;
+  if (hits.length) {
+    el.className = "clash bad show";
+    el.innerHTML = "<b>That time is already taken.</b><ul>" + hits.map(function(b){
+      return "<li>" + esc(b.title) + " — " +
+             esc(b.all_day ? "all day" : fmt12(b.start) + " to " + fmt12(b.end)) + "</li>";
+    }).join("") + "</ul>You can still book it, but check first.";
+  } else if (tight.length) {
+    el.className = "clash warn show";
+    el.innerHTML = "<b>No overlap, but tight.</b><ul>" + tight.map(function(w){
+      return "<li>" + (w.gap === 0
+          ? "runs straight " + (w.side === "before" ? "after" : "into")
+          : w.gap + " min " + (w.side === "before" ? "after" : "before")) +
+        " " + esc(w.block.title) + "</li>";
+    }).join("") + "</ul>You asked for " + BUFFER_MIN +
+      " minutes to reset between jobs. Bookable either way.";
+  } else if (past) {
+    el.className = "clash warn show";
+    el.innerHTML = "<b>Runs past midnight.</b> The slot is clear on this day, but I have not checked the following morning.";
+  } else {
+    el.className = "clash good show";
+    el.innerHTML = "<b>That slot is clear.</b> " + fmt12(st) + " for " + mn +
+      " minutes, with at least " + BUFFER_MIN + " min either side.";
+  }
+}
+
+async function loadAvail() {
+  try {
+    var r = await fetch("/book/availability?days=21", { headers: {"X-MR-Token": TOKEN} });
+    var d = await r.json();
+    if (d.ok) {
+      AVAIL = d.by_date;
+      AVDAYS = Object.keys(d.by_date).sort();
+      paintStrip(); paintDay();
+    } else {
+      document.getElementById("dayhdr").textContent =
+        "Could not read the calendar just now — the date box still works.";
+    }
+  } catch(e) {
+    document.getElementById("dayhdr").textContent =
+      "Could not reach the calendar — the date box still works.";
+  }
+}
+
+function esc(s){
+  var M = {"&":"&amp;","<":"&lt;",">":"&gt;"}; M[String.fromCharCode(34)] = "&quot;";
+  return String(s||"").replace(/[&<>"]/g, function(c){ return M[c]; }); }
+
+function paintPicks(hostId, data, order, field) {
+  var h = document.getElementById(hostId); h.innerHTML = "";
+  order.forEach(function(k){
+    var d = data[k];
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "pick" + (pick[field] === k ? " on" : "");
+    b.innerHTML = '<span class="t">' + esc(d.label) + '</span>' +
+                  (d.hint ? '<span class="h">' + esc(d.hint) + '</span>' : "");
+    b.onclick = function(){ pick[field] = k; paintPicks(hostId, data, order, field); onChange(); };
+    h.appendChild(b);
+  });
+}
+
+function onChange() {
+  var t = TYPES[pick.type];
+  if (t) {
+    var m = document.getElementById("minutes");
+    if (!m.value) m.value = t.default_minutes;
+    var needs = t.needs_address;
+    document.getElementById("locLabel").innerHTML =
+      needs ? 'Street address <span class="req">*</span>' : "Location";
+    document.getElementById("locHint").textContent = needs
+      ? "Required. This is where the crew drives on the day — nobody but you knows it."
+      : (t.default_location
+          ? "Leave blank and it uses: " + t.default_location
+          : "Leave blank to use the studio address.");
+  }
+  document.getElementById("amtWrap").style.display =
+    (pick.billing === "paid") ? "block" : "none";
+
+  var nm = document.getElementById("name").value.trim();
+  var p = document.getElementById("preview");
+  if (t && nm) {
+    var title = t.title.replace("{name}", nm.replace(/\s+/g, " "));
+    var lines = ["Title:  " + title, "Ladder: " + t.ladder];
+    if (pick.relationship && RELS[pick.relationship]) {
+      lines.push("Sales:  " + (RELS[pick.relationship].sells
+        ? "ON — goes into the pipeline as a prospect"
+        : "OFF — " + RELS[pick.relationship].label + ", never pitched"));
+    }
+    p.textContent = lines.join("\n");
+  } else {
+    p.textContent = "Pick a booking type and enter a name.";
+  }
+  paintClash();
+}
+
+async function doPin() {
+  var pin = document.getElementById("pinInput").value;
+  var m = document.getElementById("pinMsg");
+  try {
+    var r = await fetch("/book/verify", { method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({pin:pin}) });
+    var d = await r.json();
+    if (d.ok) { TOKEN = d.token; try { localStorage.setItem("mwm_bk", TOKEN); } catch(e){}
+                await boot(); return; }
+  } catch(e) {}
+  m.textContent = "That PIN was not accepted."; m.classList.add("show");
+}
+
+async function boot() {
+  var r = await fetch("/book/types", { headers: {"X-MR-Token": TOKEN} });
+  var d = await r.json();
+  if (!d.ok) { return; }
+  TYPES = d.types; ORDER = d.type_order;
+  RELS = d.relationships; RELORDER = d.relationship_order;
+  BILLS = d.billing; BILLORDER = d.billing_order;
+  if (typeof d.buffer_min === "number") BUFFER_MIN = d.buffer_min;
+  paintPicks("types", TYPES, ORDER, "type");
+  paintPicks("rels", RELS, RELORDER, "relationship");
+  paintPicks("bills", BILLS, BILLORDER, "billing");
+  document.getElementById("name").addEventListener("input", onChange);
+  ["date","start","minutes"].forEach(function(id){
+    document.getElementById(id).addEventListener("change", function(){
+      if (id === "date") paintStrip();
+      paintDay();
+    });
+    document.getElementById(id).addEventListener("input", paintClash);
+  });
+  document.getElementById("pinScreen").classList.remove("show");
+  document.getElementById("formScreen").classList.add("show");
+  onChange();
+  loadAvail();
+}
+
+async function doSubmit() {
+  var btn = document.getElementById("submitBtn");
+  var m = document.getElementById("msg");
+  m.className = "msg"; m.innerHTML = "";
+  btn.disabled = true; btn.textContent = "Creating…";
+  var body = {
+    token: TOKEN, type: pick.type, relationship: pick.relationship, billing: pick.billing,
+    name: document.getElementById("name").value,
+    email: document.getElementById("email").value,
+    phone: document.getElementById("phone").value,
+    business: document.getElementById("business").value,
+    amount: document.getElementById("amount").value,
+    date: document.getElementById("date").value,
+    start: document.getElementById("start").value,
+    minutes: document.getElementById("minutes").value,
+    location: document.getElementById("location").value,
+    notes: document.getElementById("notes").value
+  };
+  try {
+    var r = await fetch("/book/submit", { method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    var d = await r.json();
+    if (d.ok) {
+      m.className = "msg good show";
+      m.innerHTML = "<b>Booked.</b><br>" + esc(d.title) + "<br>" + esc(d.when) +
+        "<br>" + esc(d.confirmations) +
+        (d.link ? '<br><a class="plink" href="' + d.link + '" target="_blank">Open in Google Calendar</a>' : "");
+      ["name","email","phone","business","amount","notes","location","minutes"]
+        .forEach(function(i){ document.getElementById(i).value = ""; });
+      onChange();
+      await loadAvail();          // the day we just filled is no longer free
+      window.scrollTo(0,0);
+    } else {
+      m.className = "msg bad show";
+      m.innerHTML = "<b>" + esc(d.message || "Not created.") + "</b>" +
+        (d.errors && d.errors.length
+          ? "<ul>" + d.errors.map(function(e){ return "<li>" + esc(e) + "</li>"; }).join("") + "</ul>"
+          : "");
+      window.scrollTo(0,0);
+    }
+  } catch(e) {
+    m.className = "msg bad show"; m.textContent = "Network error — nothing was created.";
+  }
+  btn.disabled = false; btn.textContent = "Create the booking";
+}
+
+(async function(){
+  var t = null; try { t = localStorage.getItem("mwm_bk"); } catch(e){}
+  if (t) {
+    try {
+      var r = await fetch("/book/verify", { method:"POST",
+        headers:{"Content-Type":"application/json"}, body: JSON.stringify({token:t}) });
+      var d = await r.json();
+      if (d.ok) { TOKEN = d.token; await boot(); return; }
+    } catch(e) {}
+  }
+  document.getElementById("pinScreen").classList.add("show");
+  document.getElementById("pinInput").focus();
+})();
+</script>
+</body>
+</html>"""
+
+
+@app.route('/book', methods=['GET'])
+def booking_form_page():
+    """PATCH #50A — serve the direct-booking form."""
+    if not MEETING_REPORT_PIN:
+        return ("<h2>Direct Booking not configured.</h2>"
+                "<p>Set MEETING_REPORT_PIN on Railway.</p>"), 503
+    return BOOKING_FORM_HTML, 200, {'Content-Type': 'text/html'}
+
+
+@app.route('/book/verify', methods=['POST'])
+def booking_form_verify():
+    """Same PIN and the same day-token as the report form. One person, one PIN."""
+    data = request.get_json(silent=True) or {}
+    token = data.get('token')
+    if token and _mr_verify_token(token):
+        return jsonify({"ok": True, "token": token})
+    if MEETING_REPORT_PIN and hmac.compare_digest(data.get('pin', ''), MEETING_REPORT_PIN):
+        return jsonify({"ok": True, "token": _mr_make_token()})
+    return jsonify({"ok": False}), 401
+
+
+@app.route('/book/types', methods=['GET'])
+def booking_form_types():
+    """The taxonomy, served from event_rail so the form cannot drift from it.
+
+    The alternative — hard-coding the four types in JavaScript — would put a
+    second copy of the vocabulary in a file no test imports. It would agree
+    with event_rail on the day it shipped and quietly stop agreeing later.
+    """
+    if not _mr_verify_token(request.headers.get('X-MR-Token', '')):
+        return jsonify({"ok": False, "error": "auth"}), 401
+
+    _types = {}
+    for _k in BOOKING_TYPE_ORDER:
+        _s = BOOKING_TYPES[_k]
+        _plan = CONFIRMATION_PLAN.get(_s["kind"]) or []
+        _client_h = sorted({h for who, h in _plan if who == "client"}, reverse=True)
+        _crew_h = sorted({h for who, h in _plan if who == "crew"}, reverse=True)
+        _lead_time = lambda h: (f"{int(h // 24)}d" if h >= 168 else f"{int(h)}h")
+        _bits = []
+        if _client_h:
+            _bits.append("client " + " · ".join(_lead_time(h) for h in _client_h))
+        if _crew_h:
+            _bits.append("crew " + " · ".join(_lead_time(h) for h in _crew_h))
+        _types[_k] = {
+            "label": _s["label"], "hint": _s["hint"],
+            "title": _s["title"], "default_minutes": _s["default_minutes"],
+            "needs_address": booking_needs_address(_k),
+            "default_location": booking_location(_k, "", STUDIO_ADDRESS,
+                                                 STRATEGY_CALL_LOCATION),
+            "ladder": "; ".join(_bits) or "no reminders",
+        }
+    return jsonify({
+        "ok": True,
+        "types": _types, "type_order": list(BOOKING_TYPE_ORDER),
+        "relationships": {k: {"label": v["label"], "hint": v["hint"],
+                              "sells": v["sells"]}
+                          for k, v in RELATIONSHIPS.items()},
+        "relationship_order": list(RELATIONSHIP_ORDER),
+        "billing": {k: {"label": v} for k, v in BILLING.items()},
+        "billing_order": list(BILLING_ORDER),
+        # One number, defined in event_rail, governing both the browser hint
+        # and anything server-side that ever needs it. A 30 hard-coded in the
+        # JavaScript would drift the first time Michael changes his mind.
+        "buffer_min": BOOKING_BUFFER_MIN,
+    }), 200
+
+
+@app.route('/book/availability', methods=['GET'])
+def booking_form_availability():
+    """PATCH #50D — what is already on the calendar, for the form's day strip.
+
+    Michael asked for this and gave the reason: he is on the phone, the client
+    asks for Thursday afternoon, and until now answering meant leaving the form
+    and opening Google Calendar — the habit this whole patch exists to replace.
+    A booking form that cannot answer "is that free?" sends him straight back to
+    the tool that was losing the instrumentation.
+
+    Deliberately NOT /studio-availability. That route is the WordPress portal's
+    public-facing feed: it is authed by WP_PORTAL_SECRET, and it returns opaque
+    busy blocks with no titles because a member of the public must not learn
+    who is in our studio. Michael needs the opposite — he needs to see that the
+    09:00 block is Bolfer's shoot so he can tell the client what is actually
+    happening. Same calendar query, different audience, different auth.
+
+    Titles only. No attendee address is ever serialised here.
+    """
+    if not _mr_verify_token(request.headers.get('X-MR-Token', '')):
+        return jsonify({"ok": False, "error": "auth"}), 401
+
+    _tz = pytz.timezone(TIMEZONE)
+    _from = (request.args.get("from") or "").strip()
+    try:
+        _d0 = _tz.localize(datetime.strptime(_from, "%Y-%m-%d"))
+    except Exception:
+        _now = datetime.now(_tz)
+        _d0 = _tz.localize(datetime(_now.year, _now.month, _now.day))
+    try:
+        _days = int(request.args.get("days", "21"))
+    except Exception:
+        _days = 21
+    _days = max(1, min(60, _days))
+
+    _ck = ("bookform", _d0.strftime("%Y-%m-%d"), _days)
+    _hit = _SA_CACHE.get(_ck)
+    if _hit and (time.time() - _hit[0]) < _SA_CACHE_TTL:
+        return jsonify(_hit[1])
+
+    try:
+        _svc = get_calendar_service()
+        _items = _svc.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=_d0.isoformat(),
+            timeMax=(_d0 + timedelta(days=_days)).isoformat(),
+            singleEvents=True, orderBy="startTime", maxResults=2500,
+        ).execute(num_retries=3).get("items", [])
+    except Exception as _ax:
+        _report_error("booking_form.availability", _ax, f"from={_from}")
+        return jsonify({"ok": False, "error": "calendar unavailable"}), 502
+
+    _by_date = {}
+    for _i in range(_days):
+        _ds = _d0 + timedelta(days=_i)
+        _de = _ds + timedelta(days=1)
+        _blocks = []
+        for _ev in _items:
+            if _ev.get("transparency") == "transparent":
+                continue                       # marked Free — not a real block
+            _st, _en = _ev.get("start", {}), _ev.get("end", {})
+            try:
+                if "dateTime" in _st and "dateTime" in _en:
+                    _bs = datetime.fromisoformat(_st["dateTime"]).astimezone(_tz)
+                    _be = datetime.fromisoformat(_en["dateTime"]).astimezone(_tz)
+                    _allday = False
+                elif "date" in _st and "date" in _en:
+                    _bs = _tz.localize(datetime.strptime(_st["date"], "%Y-%m-%d"))
+                    _be = _tz.localize(datetime.strptime(_en["date"], "%Y-%m-%d"))
+                    _allday = True
+                else:
+                    continue
+            except Exception:
+                continue
+            if _be <= _ds or _bs >= _de:
+                continue
+            _cs, _ce = max(_bs, _ds), min(_be, _de)
+            # S15.1 — a block reaching next midnight must serialise as "24:00";
+            # "00:00" made multi-day events collapse to zero length and vanish.
+            _blocks.append({
+                "start": _cs.strftime("%H:%M"),
+                "end": "24:00" if _ce >= _de else _ce.strftime("%H:%M"),
+                "title": (_ev.get("summary") or "(untitled)")[:60],
+                "all_day": _allday,
+                "mine": classify_event(_ev)[0] == KIND_INTERNAL,
+            })
+        _blocks.sort(key=lambda b: b["start"])
+        _by_date[_ds.strftime("%Y-%m-%d")] = _blocks
+
+    _payload = {"ok": True, "timezone": TIMEZONE,
+                "from": _d0.strftime("%Y-%m-%d"), "days": _days,
+                "by_date": _by_date}
+    _SA_CACHE[_ck] = (time.time(), _payload)
+    if len(_SA_CACHE) > 200:
+        _SA_CACHE.clear()
+    return jsonify(_payload), 200
+
+
+@app.route('/book/submit', methods=['POST'])
+def booking_form_submit():
+    """PATCH #50A — turn form answers into a fully instrumented calendar event.
+
+    Order matters here:
+      1. validate PURELY (event_rail.validate_booking) — no I/O until the
+         answers are known good, so a bad submission never half-creates.
+      2. compute title / location / description from the vocabulary.
+      3. hand the body to harden_event_body(), the SAME S-1 gate the Maya
+         command path uses. This form does not get its own weaker rail.
+      4. only then write.
+
+    sendUpdates="none" matches every other insert in this file: Google's own
+    invite mail is not our confirmation rail, and firing both would double up
+    on the client.
+    """
+    _data = request.get_json(silent=True) or {}
+    if not _mr_verify_token(_data.get('token', '')):
+        return jsonify({"ok": False, "error": "auth"}), 401
+
+    _errs, _c = validate_booking(_data)
+    if _errs:
+        return jsonify({"ok": False, "message": "Nothing was created — fix these:",
+                        "errors": _errs}), 400
+
+    _tz = pytz.timezone(TIMEZONE)
+    try:
+        _start = _tz.localize(datetime.strptime(
+            f"{_c['date']} {_c['start']}", "%Y-%m-%d %H:%M"))
+    except Exception:
+        return jsonify({"ok": False, "message": "That date and time did not parse.",
+                        "errors": ["check the date and start time"]}), 400
+    _end = _start + timedelta(minutes=int(_c["minutes"]))
+
+    _title = booking_title(_c["type"], _c["name"])
+    if not _title:
+        return jsonify({"ok": False, "message": "Could not build a title.",
+                        "errors": ["pick a booking type and give a name"]}), 400
+    _loc = booking_location(_c["type"], _c["location"],
+                            STUDIO_ADDRESS, STRATEGY_CALL_LOCATION)
+    _desc = booking_description(
+        _c["name"], _c["email"], phone=_c["phone"], business=_c["business"],
+        type_key=_c["type"], relationship=_c["relationship"],
+        billing=_c["billing"], amount=_c["amount"], notes=_c["notes"])
+
+    _kind = booking_kind(_c["type"])
+    _body = {
+        "summary": _title,
+        "description": _desc,
+        "location": _loc,
+        "start": {"dateTime": _start.isoformat(), "timeZone": TIMEZONE},
+        "end": {"dateTime": _end.isoformat(), "timeZone": TIMEZONE},
+    }
+
+    # The identifier decides the source channel, so prefer the dialable number
+    # — a lead we can WhatsApp is reachable on the rail that works best.
+    _ident = _c["phone"] or _c["email"]
+    try:
+        _body, _issues = harden_event_body(
+            _body,
+            source_identifier=_ident,
+            attendee_email=_c["email"],
+            context="booking_form.create",
+            strict=False,
+            reporter=_report_error,
+            require_attendee=True,
+            require_postal=(venue_of(_kind) != VENUE_VIRTUAL),
+        )
+    except Exception as _hx:
+        return jsonify({"ok": False, "message": "The Event Rail refused this booking.",
+                        "errors": [str(_hx)[:300]]}), 400
+
+    try:
+        _svc = get_calendar_service()
+        _created = _svc.events().insert(
+            calendarId=CALENDAR_ID, body=_body, sendUpdates="none"
+        ).execute(num_retries=3)
+    except Exception as _cx:
+        _report_error("booking_form.insert", _cx, f"title={_title}")
+        return jsonify({"ok": False, "message": "Calendar write failed — nothing created.",
+                        "errors": [str(_cx)[:300]]}), 502
+    try:
+        _SA_CACHE.clear()
+    except Exception:
+        pass
+
+    _eid = _created.get("id", "")
+    _link = _created.get("htmlLink", "")
+
+    # ── put them on the record, but only where that is honest ──
+    # A referral belongs in the pipeline. An existing client is already there,
+    # and a partner or a vendor is not a prospect and must not be turned into
+    # one by a side effect of booking a room.
+    _lead_note = ""
+    try:
+        _lk, _lr = _find_lead_by_email(_c["email"])
+        if _lr:
+            _lr["booked"] = True
+            _lr["booked_at"] = datetime.now(_tz).isoformat()   # #49A
+            _lr["event_id"] = _eid
+            for _f, _v in (("name", _c["name"]), ("business", _c["business"]),
+                           ("phone", re.sub(r"\D", "", _c["phone"] or ""))):
+                if _v and not str(_lr.get(_f) or "").strip():
+                    _lr[_f] = _v
+            _lead_note = "existing lead record updated"
+        elif _c["relationship"] == "new_lead":
+            _key = re.sub(r"\D", "", _c["phone"] or "") or _c["email"].strip().lower()
+            lead_data[_key] = {
+                "name": _c["name"], "email": _c["email"],
+                "phone": re.sub(r"\D", "", _c["phone"] or ""),
+                "business": _c["business"],
+                "source": "Direct — booked by Michael",
+                "status": "booked",
+                "booked": True,
+                "booked_at": datetime.now(_tz).isoformat(),
+                "event_id": _eid,
+                "first_contact_time": datetime.now(_tz),
+                "last_message_time": datetime.now(_tz),
+            }
+            _lead_note = "new lead record created"
+        else:
+            _lead_note = (f"no lead record — {RELATIONSHIPS[_c['relationship']]['label'].lower()}"
+                          f", deliberately not added to the pipeline")
+    except Exception as _lx:
+        _report_error("booking_form.lead_write", _lx, f"email={_c['email'][:40]}")
+        _lead_note = "lead record not written (reported)"
+
+    _plan = CONFIRMATION_PLAN.get(_kind) or []
+    _when = _start.strftime("%A, %B %d at %I:%M %p")
+    _conf = (f"{len(_plan)} confirmation(s) scheduled automatically"
+             if _plan else "no confirmation ladder for this type")
+
+    try:
+        _post_to_slack_async(SLACK_PIPELINE_CHANNEL, (
+            f"\U0001f4c5 *DIRECT BOOKING — {BOOKING_TYPES[_c['type']]['label']}*\n"
+            f"*Client:* {_c['name']}" + (f" ({_c['business']})" if _c['business'] else "") + "\n"
+            f"*When:* {_when}\n*Where:* {_loc}\n"
+            f"*Relationship:* {RELATIONSHIPS[_c['relationship']]['label']}"
+            f"{'' if relationship_sells(_c['relationship']) else '  — sales rail OFF'}\n"
+            f"*Billing:* {BILLING[_c['billing']]}"
+            + (f" — {_c['amount']}" if _c['billing'] == 'paid' and _c['amount'] else "") + "\n"
+            f"*Confirmations:* {_conf}\n"
+            f"_Booked by Michael via /book — {_lead_note}._"
+        ))
+    except Exception:
+        pass
+    if _issues:
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                f":warning: *Direct booking created WITH rail issues* — `{_title}`\n"
+                + "\n".join(f"• {i}" for i in _issues)
+                + "\n_The event exists. These are gaps a human should close._"))
+        except Exception:
+            pass
+
+    return jsonify({
+        "ok": True, "event_id": _eid, "link": _link,
+        "title": _title, "when": _when, "location": _loc,
+        "confirmations": _conf, "lead": _lead_note,
+        "issues": _issues,
+    }), 200
 
 
 @app.route('/meeting-report', methods=['GET'])

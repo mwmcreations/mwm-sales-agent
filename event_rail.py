@@ -411,8 +411,17 @@ _TITLE_PATTERNS = [
     # Matches "STUDIO RECORDING | …", "STUDIO SHOOT - …", "Studio Session w/ …".
     (KIND_STUDIO_PRODUCTION,
      re.compile(r"^\s*studio\s+(recording|shoot|session|filming)\b", re.I)),
+    # PATCH #50C — `gravação` was missing, and its absence had a name.
+    # Michael books in two languages; `filmagem` and `depoimento` were already
+    # here, so the omission read as deliberate when it was just incomplete.
+    # "GRAVAÇÃO Natalia Tavares" (Aug 5, 5–7 PM) matched nothing, classified
+    # `unknown`, and sat in the unclassified bucket where no rail could see it
+    # — a real client-facing booking, invisible for exactly one missing word.
+    # Accent-folded so `gravacao` typed without the cedilla matches too, and
+    # `film shoot` added because that is what he actually types.
     (KIND_PRODUCTION_SHOOT,
-     re.compile(r"(video shoot|filmagem|production shoot|depoimento|on[- ]location)", re.I)),
+     re.compile(r"(video shoot|film shoot|filmagem|grava[çc][ãa]o|production shoot"
+                r"|depoimento|on[- ]location|external shoot)", re.I)),
     # Client calls. "Zoom call …" is typed by hand; "<Name> and Michael Moraes"
     # is Calendly's default event title, which is how the ROADMAP calls land.
     (KIND_CLIENT_CALL, re.compile(r"^\s*(zoom|google meet|meet|teams)\b.*\bcall\b", re.I)),
@@ -565,6 +574,427 @@ def location_repair_for(kind, studio_address, virtual_note):
         return virtual_note, "virtual event — non-postal note, not a street address"
     return None, ("event happens at the CLIENT's site — only a human knows the "
                   "address. Guessing here would send the crew to the wrong place.")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #50 · DIRECT BOOKINGS — the intake form's vocabulary
+# ══════════════════════════════════════════════════════════════════════
+# Referrals phone Michael directly. He books them by hand in Google Calendar,
+# and every hand-typed title is a coin flip on whether any rail can see the
+# event. Two live examples, both his, both from this week:
+#
+#   "FILM SHOOT — ENZO AUTO SERVICE (On Location)"  classified fine, but had
+#       no attendee and no address, so it sat on the CRITICAL list unreachable.
+#   "GRAVAÇÃO Natalia Tavares"                      matched nothing at all and
+#       fell into the unclassified bucket, invisible to every rail.
+#
+# The fix is NOT a naming convention he has to remember. In his own words: "I
+# might not remember how to do it anymore, I just have too many things in my
+# head." A convention that depends on recall is a convention that fails on the
+# busy week — which is exactly the week the booking matters.
+#
+# So the title is COMPUTED here from a picked type, and never typed. The form
+# asks questions; this module turns the answers into the shape the rail
+# already understands. Nothing downstream changes: these titles are chosen to
+# match the EXISTING `_TITLE_PATTERNS` and therefore the existing ladders in
+# CONFIRMATION_PLAN. Verified against classify_event, not assumed.
+
+BOOKING_TYPES = {
+    "studio_visit": {
+        "label": "Studio Visit",
+        "hint": "They come to the studio — tour, consultation, a look at the space.",
+        "kind": KIND_STUDIO_VISIT,
+        "title": "Studio Visit - {name}",
+        "default_minutes": 60,
+    },
+    "strategy_call": {
+        "label": "Strategy Call",
+        "hint": "Phone or video. No address needed.",
+        "kind": KIND_STRATEGY_CALL,
+        "title": "Strategy Call - {name}",
+        "default_minutes": 30,
+    },
+    "studio_recording": {
+        "label": "Studio Recording / Shoot",
+        "hint": "Filming at OUR studio. Crew get their own 48h and 2h confirmations.",
+        "kind": KIND_STUDIO_PRODUCTION,
+        "title": "Studio Recording - {name}",
+        "default_minutes": 120,
+    },
+    "location_shoot": {
+        "label": "Film Shoot — On Location",
+        "hint": "Filming at THEIR site. The address is where the crew drives, so it is required.",
+        "kind": KIND_PRODUCTION_SHOOT,
+        "title": "Film Shoot (On Location) - {name}",
+        "default_minutes": 180,
+    },
+}
+
+# Ordered for display. dicts preserve insertion order, but the form's meaning
+# should not depend on that quietly.
+BOOKING_TYPE_ORDER = ["studio_visit", "strategy_call",
+                      "studio_recording", "location_shoot"]
+
+# ── who is this person to us? ────────────────────────────────────────
+# This is the bucket the machine has never had, and its absence has a cost
+# with a name. The 24h auto-outcome marks ANY unreported meeting `follow_up`
+# and hands the person to Maya's nurture. For a referral that is correct. For
+# Enzo Auto Service — an active client — it is selling to someone who already
+# bought. For Natalia — an editor owed $500, taking it in studio time — it is
+# a "checking in to see where things stand" email to a person we owe money to.
+#
+# `sells` gates the SALES rail only. Every relationship still gets the full
+# confirmation ladder: a partner shoot needs its reminders exactly as much as
+# a paid one, because not turning up costs the same either way.
+RELATIONSHIPS = {
+    "new_lead":        {"label": "New lead / referral", "sells": True,
+                        "hint": "Came in cold or by recommendation. Belongs in the pipeline."},
+    "existing_client": {"label": "Existing client", "sells": False,
+                        "hint": "Already bought. Remind them, never pitch them."},
+    "partner":         {"label": "Partner / collaboration", "sells": False,
+                        "hint": "A trade or joint project, not a sale."},
+    "vendor":          {"label": "Vendor / internal", "sells": False,
+                        "hint": "Crew, editor, contractor. Owed time or paid by us."},
+}
+
+RELATIONSHIP_ORDER = ["new_lead", "existing_client", "partner", "vendor"]
+
+BILLING = {
+    "paid":        "Paid",
+    "partnership": "Unpaid — partnership / collaboration",
+    "trade":       "Unpaid — trade or time already owed",
+    "internal":    "Unpaid — internal / our own cost",
+}
+
+BILLING_ORDER = ["paid", "partnership", "trade", "internal"]
+
+
+def booking_kind(type_key):
+    """Which classify_event KIND this booking type will become."""
+    return (BOOKING_TYPES.get(type_key) or {}).get("kind", KIND_UNKNOWN)
+
+
+def booking_title(type_key, name):
+    """The event title. COMPUTED, never typed.
+
+    The whole patch turns on this function. Each template is chosen so that
+    classify_event() recognises the result and CONFIRMATION_PLAN therefore has
+    a ladder for it. test_booking_form.py asserts that round trip for every
+    type — if someone edits a template into something the classifier no longer
+    recognises, the suite fails rather than production going quiet.
+    """
+    spec = BOOKING_TYPES.get(type_key)
+    if not spec:
+        return ""
+    clean = " ".join(str(name or "").split()).strip(" -—")
+    if not clean:
+        return ""
+    return spec["title"].format(name=clean)
+
+
+def booking_needs_address(type_key):
+    """True when only a human can know where this happens.
+
+    Reuses venue_of() rather than restating it. A studio booking fills from our
+    own address, a call has no address, and a location shoot is the one case
+    where guessing sends the crew to the wrong side of Orlando — Patch #32's
+    lesson, applied at intake instead of at repair time.
+    """
+    return venue_of(booking_kind(type_key)) == VENUE_CLIENT_SITE
+
+
+def booking_location(type_key, custom, studio_address, virtual_note):
+    """The location this event MUST carry. Never returns empty for a valid type.
+
+    PATCH #50. `instrumentation_gaps` counts an empty location as a gap, so an
+    event created without one is degraded from birth — which is how the Enzo
+    shoot ended up on the CRITICAL list with "no location and no meeting link"
+    alongside its missing attendee.
+
+    Delegates to `location_repair_for` rather than restating the venue rules,
+    so the form and the backfill can never drift apart on where an event kind
+    happens. The one case that helper refuses to answer — a shoot at the
+    client's site — is exactly the case the form makes a required field, so
+    the human supplies what the machine must not guess.
+    """
+    kind = booking_kind(type_key)
+    supplied = str(custom or "").strip()
+    if venue_of(kind) == VENUE_CLIENT_SITE:
+        return supplied          # required by validate_booking; never invented
+    auto, _why = location_repair_for(kind, studio_address, virtual_note)
+    # A location Michael typed beats our default — he may be using the second
+    # room, or a client's conference line.
+    return supplied or (auto or "")
+
+
+def relationship_sells(rel):
+    """May the SALES rail act on this person? Unknown relationships: no.
+
+    Fails closed on purpose. A missed nurture is a follow-up Michael can send
+    by hand; an unwanted pitch to a paying client is a relationship problem he
+    cannot unsend.
+    """
+    return bool((RELATIONSHIPS.get(str(rel or "").strip()) or {}).get("sells"))
+
+
+def relationship_from_description(desc):
+    """Read the Relationship: line back off an event. '' when absent.
+
+    Absent means the event predates this patch or was hand-made, and the
+    caller must treat it as unknown rather than assuming new_lead.
+    """
+    for line in str(desc or "").split("\n"):
+        s = line.strip()
+        if s.lower().startswith("relationship:"):
+            val = s.split(":", 1)[1].strip().lower()
+            return val if val in RELATIONSHIPS else ""
+    return ""
+
+
+def booking_description(name, email, phone="", business="",
+                        type_key="", relationship="", billing="",
+                        amount="", notes=""):
+    """The description block, in the shape every existing reader expects.
+
+    `Lead:` and `Email:` are not decoration — instrumentation_gaps() reads the
+    first to decide whether a reminder can greet a human by name, and
+    _event_rail_client_email() reads the second as its fallback when the
+    attendee list fails. Writing them is what makes a hand-booked event
+    indistinguishable from a machine-booked one.
+    """
+    lines = ["Lead: {}".format(" ".join(str(name or "").split()))]
+    if email:
+        lines.append("Email: {}".format(str(email).strip()))
+    if phone:
+        lines.append("Phone: {}".format(str(phone).strip()))
+    if business:
+        lines.append("Business: {}".format(str(business).strip()))
+
+    spec = BOOKING_TYPES.get(type_key) or {}
+    if spec:
+        lines.append("Booking type: {}".format(spec.get("label")))
+    if relationship in RELATIONSHIPS:
+        lines.append("Relationship: {}".format(relationship))
+        if not relationship_sells(relationship):
+            lines.append("Sales rail: OFF — {} is not a sales prospect"
+                         .format(RELATIONSHIPS[relationship]["label"].lower()))
+    if billing in BILLING:
+        bill = BILLING[billing]
+        if billing == "paid" and str(amount or "").strip():
+            bill = "{} — {}".format(bill, str(amount).strip())
+        lines.append("Billing: {}".format(bill))
+
+    lines.append("Booked by: Michael (Direct Booking form)")
+    if notes:
+        lines.append("")
+        lines.append("Notes:")
+        lines.append(str(notes).strip())
+    return "\n".join(lines)
+
+
+def _hhmm_to_min(v):
+    """'14:30' -> 870. '24:00' -> 1440. Anything unparseable -> None.
+
+    "24:00" is not a typo: /studio-availability serialises a block running to
+    or past midnight that way on purpose (S15.1). A block that ended "00:00"
+    collapsed to zero length and got discarded, and a convention showed as
+    open for four days before Michael spotted it. Whatever reads those blocks
+    has to speak the same dialect.
+    """
+    try:
+        h, _, m = str(v).strip().partition(":")
+        h, m = int(h), int(m or 0)
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= h <= 24 and 0 <= m < 60):
+        return None
+    return h * 60 + m
+
+
+def slot_conflicts(start_hhmm, minutes, blocks):
+    """Which existing blocks does this proposed slot collide with?
+
+    PATCH #50D. Michael is on the phone and the client asks for Thursday at
+    two. Until now the answer came from him remembering, or from switching to
+    the Google Calendar app mid-call — which is the exact habit this form was
+    built to replace. A form that lets him book a double-booking has just moved
+    the mistake, not removed it.
+
+    Touching is NOT overlapping: a 09:00–12:00 shoot does not conflict with a
+    12:00 start. Strict inequality on both sides, so back-to-back bookings stay
+    legal — he does them constantly.
+
+    Pure. `blocks` is whatever the availability feed returned; anything
+    malformed is skipped rather than guessed at, because a block we cannot
+    parse must not silently become "free".
+    """
+    s0 = _hhmm_to_min(start_hhmm)
+    try:
+        dur = int(minutes)
+    except (TypeError, ValueError):
+        return []
+    if s0 is None or dur <= 0:
+        return []
+    s1 = s0 + dur
+    hits = []
+    for b in (blocks or []):
+        if not isinstance(b, dict):
+            continue
+        b0 = _hhmm_to_min(b.get("start"))
+        b1 = _hhmm_to_min(b.get("end"))
+        if b0 is None or b1 is None or b1 <= b0:
+            continue
+        if s0 < b1 and b0 < s1:      # strict: touching endpoints do not collide
+            hits.append(b)
+    return hits
+
+
+# PATCH #50E — turnaround between bookings.
+# Michael asked for this after seeing the calendar, and it corrects an
+# assumption I had defended: I built "back-to-back is not a clash" on the
+# reasoning that he books that way constantly. He does — but a gear change
+# between a shoot and the next client is physical, and a form that calls
+# 09:00 clear when a shoot ends at 09:00 is technically right and practically
+# useless. 30 minutes is his number.
+#
+# It is a WARNING, never a refusal. Sometimes back-to-back is exactly what he
+# wants — a second client in a different room, or a call he takes from the
+# car. A form that blocks it teaches him to work around the form.
+BOOKING_BUFFER_MIN = 30
+
+
+def slot_buffer_warnings(start_hhmm, minutes, blocks, buffer_min=None):
+    """Bookings that do not OVERLAP but sit inside the turnaround window.
+
+    Returns a list of {"block", "gap", "side"} — side is "before" when the
+    existing booking ends just before this one starts, "after" when it begins
+    just after this one ends. Anything that genuinely overlaps is excluded and
+    left to `slot_conflicts`, so the two never double-report the same booking.
+
+    Pure. A block that cannot be parsed is skipped rather than assumed clear —
+    same rule as slot_conflicts, for the same reason.
+    """
+    buf = BOOKING_BUFFER_MIN if buffer_min is None else buffer_min
+    s0 = _hhmm_to_min(start_hhmm)
+    try:
+        dur, buf = int(minutes), int(buf)
+    except (TypeError, ValueError):
+        return []
+    if s0 is None or dur <= 0 or buf <= 0:
+        return []
+    s1 = s0 + dur
+    out = []
+    for b in (blocks or []):
+        if not isinstance(b, dict):
+            continue
+        b0 = _hhmm_to_min(b.get("start"))
+        b1 = _hhmm_to_min(b.get("end"))
+        if b0 is None or b1 is None or b1 <= b0:
+            continue
+        if s0 < b1 and b0 < s1:
+            continue                      # a real overlap — not a buffer case
+        if b1 <= s0:
+            gap = s0 - b1
+            side = "before"
+        else:
+            gap = b0 - s1
+            side = "after"
+        if 0 <= gap < buf:
+            out.append({"block": b, "gap": gap, "side": side})
+    out.sort(key=lambda w: w["gap"])
+    return out
+
+
+def slot_runs_past_midnight(start_hhmm, minutes):
+    """True when this slot spills into the next day.
+
+    PATCH #50D. `slot_conflicts` is scoped to ONE day's blocks, so a 23:00
+    start running three hours is checked against nothing after midnight and
+    would report CLEAR while colliding with an 01:00 booking. Rather than
+    silently under-checking, the caller surfaces this and says so — an honest
+    "I did not check the other side of midnight" beats a confident wrong CLEAR.
+    """
+    s0 = _hhmm_to_min(start_hhmm)
+    try:
+        dur = int(minutes)
+    except (TypeError, ValueError):
+        return False
+    return s0 is not None and dur > 0 and (s0 + dur) > 24 * 60
+
+
+def day_is_free(blocks):
+    """True when nothing real is on the day."""
+    return not [b for b in (blocks or [])
+                if isinstance(b, dict)
+                and _hhmm_to_min(b.get("start")) is not None
+                and _hhmm_to_min(b.get("end")) is not None]
+
+
+def validate_booking(payload):
+    """Pure gate on a form submission. Returns (errors, clean).
+
+    Deliberately strict about the four things that have actually gone wrong on
+    this calendar — no type, no name, no address to reach the person, no
+    address for the crew — and silent about everything else. A form that
+    nags about optional fields gets filled with junk to make it stop.
+    """
+    p = payload or {}
+    get = lambda k: str(p.get(k) or "").strip()
+    errors = []
+
+    type_key = get("type")
+    if type_key not in BOOKING_TYPES:
+        errors.append("pick what kind of booking this is")
+
+    name = " ".join(get("name").split())
+    if len(name) < 2:
+        errors.append("the client's name is required — it is what reminders greet them by")
+
+    email = get("email")
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        errors.append("a real email address is required — without one no reminder "
+                      "can reach them and no RSVP can be read")
+
+    date = get("date")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        errors.append("pick a date")
+    start = get("start")
+    if not re.match(r"^\d{2}:\d{2}$", start):
+        errors.append("pick a start time")
+
+    try:
+        minutes = int(float(get("minutes") or 0))
+    except ValueError:
+        minutes = 0
+    if minutes <= 0:
+        minutes = (BOOKING_TYPES.get(type_key) or {}).get("default_minutes", 60)
+    if minutes > 12 * 60:
+        errors.append("that is longer than 12 hours — check the duration")
+
+    location = get("location")
+    if type_key and booking_needs_address(type_key) and not location:
+        errors.append("an on-location shoot needs the full street address — "
+                      "it is where the crew drives on the day, and nobody but "
+                      "you knows it")
+
+    rel = get("relationship")
+    if rel not in RELATIONSHIPS:
+        errors.append("say who this person is to us — it decides whether the "
+                      "sales rail is allowed to touch them")
+
+    billing = get("billing")
+    if billing not in BILLING:
+        errors.append("say whether this is paid")
+
+    clean = {
+        "type": type_key, "name": name, "email": email,
+        "phone": get("phone"), "business": get("business"),
+        "date": date, "start": start, "minutes": minutes,
+        "location": location, "relationship": rel,
+        "billing": billing, "amount": get("amount"),
+        "notes": get("notes"),
+    }
+    return errors, clean
 
 
 def stage_horizon_phrase(stage_h):

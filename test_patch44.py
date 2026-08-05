@@ -15,6 +15,7 @@ SUITES = [
     ("event rail (policy + timing)", "test_event_rail.py"),
     ("do-not-contact guard (#44A)", "test_send_guard.py"),
     ("outcome sequence sender (#44B)", "test_outcome_sender.py"),
+    ("direct booking form (#50)", "test_booking_form.py"),
 ]
 
 failures = 0
