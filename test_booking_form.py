@@ -23,6 +23,7 @@ VIRTUAL = "Phone / WhatsApp call — Michael will dial the number on this bookin
 from event_rail import (
     BOOKING_TYPES, BOOKING_TYPE_ORDER, RELATIONSHIPS, RELATIONSHIP_ORDER,
     BILLING, BILLING_ORDER, CONFIRMATION_PLAN,
+    billing_options_for, billing_is_asked, BILLING_CONSULTATION,
     booking_title, booking_kind, booking_needs_address,
     relationship_sells, relationship_from_description,
     booking_description, validate_booking, booking_location,
@@ -69,7 +70,10 @@ for key in BOOKING_TYPE_ORDER:
 ok(set(BOOKING_TYPE_ORDER) == set(BOOKING_TYPES),
    "every booking type is displayable and every displayed type exists")
 ok(set(RELATIONSHIP_ORDER) == set(RELATIONSHIPS), "relationship order covers all")
-ok(set(BILLING_ORDER) == set(BILLING), "billing order covers all")
+ok(set(BILLING_ORDER) | set(BILLING_CONSULTATION) == set(BILLING),
+   "every billing value is reachable through either the delivery list or the consultation list")
+ok("no_charge" not in BILLING_ORDER,
+   "no_charge is never offered as a free choice — it is only ever filled in for a consultation")
 
 # A name with awkward spacing must not break the match.
 for messy in ["  Rodolfo   Silva ", "Dr. Luiz Bolfer", "Enzo Auto Service",
@@ -244,8 +248,14 @@ errs, _ = validate_booking(dict(good, type=""))
 ok(any("kind of booking" in e for e in errs), "no type is refused")
 errs, _ = validate_booking(dict(good, relationship=""))
 ok(any("sales rail" in e for e in errs), "no relationship is refused")
+# `good` is a studio_visit, which since #51 is not asked about money at all —
+# so the "must answer" case has to be asserted against DELIVERED work.
+errs, _ = validate_booking(dict(good, type="studio_recording", billing=""))
+ok(any("paid" in e for e in errs),
+   "no billing answer is refused — for work that is actually delivered")
 errs, _ = validate_booking(dict(good, billing=""))
-ok(any("paid" in e for e in errs), "no billing answer is refused")
+ok(errs == [],
+   "...but a free studio visit needs no answer, which is the #51 fix")
 errs, _ = validate_booking(dict(good, date="20/08/2026"))
 ok(any("date" in e for e in errs), "a non-ISO date is refused")
 errs, _ = validate_booking(dict(good, start="10am"))
@@ -333,6 +343,79 @@ ok(not slot_runs_past_midnight("bad", 60), "junk does not flag")
 # the honest gap: conflicts are single-day, so the flag is what covers it
 ok(not slot_conflicts("23:00", 180, DAY) and slot_runs_past_midnight("23:00", 180),
    "a midnight-spanning slot reports CLEAR but IS flagged as unchecked")
+
+
+# ══════════════════════════════════════════════════════════════════
+section("#51 — do not ask a free sales meeting whether it is paid")
+# ══════════════════════════════════════════════════════════════════
+# Michael, on his first real use of the form: "on number four, paid or not —
+# a studio visit, people don't need to pay to come for a visit." He was right,
+# and none of the four answers fitted, so the form was forcing a wrong one.
+CONSULT = ["studio_visit", "strategy_call"]
+DELIVER = ["studio_recording", "location_shoot"]
+
+for k in CONSULT:
+    ok(not billing_is_asked(k), "{}: the form does NOT ask about money".format(k))
+    ok(billing_options_for(k) == ["no_charge"],
+       "{}: the only honest answer is 'no charge'".format(k))
+for k in DELIVER:
+    ok(billing_is_asked(k), "{}: delivered work IS asked about money".format(k))
+    ok("paid" in billing_options_for(k), "{}: can be paid".format(k))
+    ok("partnership" in billing_options_for(k), "{}: can be a partnership".format(k))
+    ok("no_charge" not in billing_options_for(k),
+       "{}: cannot be 'no charge' — free delivered work is a partnership or a trade".format(k))
+
+_base = {"name": "Marcus Webb", "email": "m@webbmedia.com", "date": "2026-08-20",
+         "start": "10:00", "minutes": "60", "relationship": "new_lead"}
+
+# THE BUG HE HIT: a studio visit with the billing question unanswered.
+for k in CONSULT:
+    errs, clean = validate_booking(dict(_base, type=k, billing=""))
+    ok(errs == [], "{}: submits CLEAN with no billing answer ({})".format(k, errs))
+    ok(clean["billing"] == "no_charge", "{}: filled in as no_charge".format(k))
+
+# ...and a wrong answer is overwritten rather than stored
+for bad in ["paid", "partnership", "trade", "internal", "nonsense"]:
+    errs, clean = validate_booking(dict(_base, type="studio_visit", billing=bad))
+    ok(errs == [] and clean["billing"] == "no_charge",
+       "studio_visit: {!r} is coerced to no_charge, never stored".format(bad))
+errs, clean = validate_booking(dict(_base, type="studio_visit",
+                                    billing="paid", amount="$2,400"))
+ok(clean["billing"] == "no_charge",
+   "a stale tab cannot stamp a price on a free studio visit")
+
+# delivered work still MUST answer, and refuses the consultation-only value
+for k in DELIVER:
+    errs, _ = validate_booking(dict(_base, type=k, billing="",
+                                    location="1200 W Colonial Dr"))
+    ok(any("paid" in e for e in errs), "{}: still demands an answer".format(k))
+    errs, _ = validate_booking(dict(_base, type=k, billing="no_charge",
+                                    location="1200 W Colonial Dr"))
+    ok(any("event report" in e for e in errs),
+       "{}: 'no charge' is REFUSED, not guessed at".format(k))
+
+# the description has to say where the money actually lives
+_d = booking_description("Marcus Webb", "m@webbmedia.com", type_key="studio_visit",
+                         relationship="new_lead", billing="no_charge")
+ok("No charge" in _d, "a consultation records that there is no charge")
+ok("Event Report" in _d, "...and points at where the price will be recorded")
+ok("$" not in _d, "...and carries no amount")
+
+# billing must not have leaked into the thing that decides follow-up
+for b in BILLING:
+    _dd = booking_description("X", "x@y.com", type_key="studio_visit",
+                              relationship="new_lead", billing=b)
+    ok(relationship_sells(relationship_from_description(_dd)),
+       "billing={}: a new lead is STILL followed up — money never gates the sales rail".format(b))
+_dd = booking_description("X", "x@y.com", type_key="studio_recording",
+                          relationship="existing_client", billing="paid", amount="$5,000")
+ok(not relationship_sells(relationship_from_description(_dd)),
+   "and a paying client is still never pitched")
+
+ok(billing_options_for("garbage") == list(BILLING_ORDER),
+   "an unknown type gets the full list...")
+ok(validate_booking(dict(_base, type="garbage", billing="paid"))[0],
+   "...but an unknown type is refused outright anyway")
 
 
 # ══════════════════════════════════════════════════════════════════

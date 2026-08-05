@@ -606,6 +606,7 @@ BOOKING_TYPES = {
         "kind": KIND_STUDIO_VISIT,
         "title": "Studio Visit - {name}",
         "default_minutes": 60,
+        "billable": False,
     },
     "strategy_call": {
         "label": "Strategy Call",
@@ -613,6 +614,7 @@ BOOKING_TYPES = {
         "kind": KIND_STRATEGY_CALL,
         "title": "Strategy Call - {name}",
         "default_minutes": 30,
+        "billable": False,
     },
     "studio_recording": {
         "label": "Studio Recording / Shoot",
@@ -620,6 +622,7 @@ BOOKING_TYPES = {
         "kind": KIND_STUDIO_PRODUCTION,
         "title": "Studio Recording - {name}",
         "default_minutes": 120,
+        "billable": True,
     },
     "location_shoot": {
         "label": "Film Shoot — On Location",
@@ -627,6 +630,7 @@ BOOKING_TYPES = {
         "kind": KIND_PRODUCTION_SHOOT,
         "title": "Film Shoot (On Location) - {name}",
         "default_minutes": 180,
+        "billable": True,
     },
 }
 
@@ -659,7 +663,22 @@ RELATIONSHIPS = {
 
 RELATIONSHIP_ORDER = ["new_lead", "existing_client", "partner", "vendor"]
 
+# PATCH #51 — Michael hit this on his first real use of the form and he was
+# right: "on number four, paid or not — a studio visit, people don't need to
+# pay to come for a visit." Asking whether a free sales meeting is paid is a
+# category error, and none of the four answers fitted, so the form was forcing
+# a wrong one.
+#
+# He also named where that information actually belongs: "I just put that
+# information after on my event report about the payment situation, because
+# I'm gonna be reporting what kind of package did I offer." Correct — at
+# booking time there is no price yet, only an intention to quote one. The
+# money is an OUTCOME of the meeting, and the Daily Event Report already
+# captures it.
+#
+# So the question is now asked only of work being delivered.
 BILLING = {
+    "no_charge":   "No charge — sales meeting",
     "paid":        "Paid",
     "partnership": "Unpaid — partnership / collaboration",
     "trade":       "Unpaid — trade or time already owed",
@@ -667,6 +686,34 @@ BILLING = {
 }
 
 BILLING_ORDER = ["paid", "partnership", "trade", "internal"]
+
+# What a consultation is allowed to be: exactly one thing, so the form can
+# answer for him instead of asking.
+BILLING_CONSULTATION = ["no_charge"]
+
+
+def billing_options_for(type_key):
+    """Which billing answers make sense for this booking type.
+
+    A studio visit or a strategy call is how a lead becomes a client — the fee
+    does not exist yet, so the only honest answer is "no charge", and the form
+    fills it in rather than making him choose a wrong one. A shoot or a studio
+    session is delivered work and genuinely can be paid, a partnership, a
+    trade, or on our own cost.
+
+    An unknown type gets the full list, which is the permissive default — but
+    validate_booking still refuses an unknown type outright, so this never
+    becomes a way in.
+    """
+    spec = BOOKING_TYPES.get(type_key)
+    if spec is None:
+        return list(BILLING_ORDER)
+    return list(BILLING_ORDER) if spec.get("billable") else list(BILLING_CONSULTATION)
+
+
+def billing_is_asked(type_key):
+    """False when there is only one honest answer, so the form should not ask."""
+    return len(billing_options_for(type_key)) > 1
 
 
 def booking_kind(type_key):
@@ -783,6 +830,11 @@ def booking_description(name, email, phone="", business="",
         if billing == "paid" and str(amount or "").strip():
             bill = "{} — {}".format(bill, str(amount).strip())
         lines.append("Billing: {}".format(bill))
+        if billing == "no_charge":
+            # PATCH #51 — say where the money actually gets recorded, so the
+            # next person reading this event does not think we forgot to.
+            lines.append("Pricing: decided at the meeting — goes on the Daily "
+                         "Event Report, not on the booking")
 
     lines.append("Booked by: Michael (Direct Booking form)")
     if notes:
@@ -982,9 +1034,28 @@ def validate_booking(payload):
         errors.append("say who this person is to us — it decides whether the "
                       "sales rail is allowed to touch them")
 
+    # PATCH #51 — two different behaviours here, on purpose.
+    #
+    # A consultation is COERCED: there is exactly one honest answer, so the
+    # form does not ask and the server fills it. Anything else that arrives —
+    # a stale tab, a hand-rolled POST — is overwritten rather than rejected,
+    # because "Paid — $2,400" on a free studio visit must never be stored, and
+    # there is no ambiguity about what it should have said.
+    #
+    # A billable type is REFUSED: if a shoot arrives marked "no charge" we
+    # genuinely do not know whether it is a partnership, a trade, or an
+    # oversight, and guessing would put a wrong number next to real work.
     billing = get("billing")
-    if billing not in BILLING:
+    _allowed = billing_options_for(type_key) if type_key in BOOKING_TYPES else []
+    if type_key in BOOKING_TYPES and not billing_is_asked(type_key):
+        billing = _allowed[0]
+    elif billing not in BILLING:
         errors.append("say whether this is paid")
+    elif _allowed and billing not in _allowed:
+        errors.append("{!r} is not a valid answer for a {} — pricing for a sales "
+                      "meeting belongs in the event report, not here"
+                      .format(BILLING.get(billing, billing),
+                              BOOKING_TYPES[type_key]["label"]))
 
     clean = {
         "type": type_key, "name": name, "email": email,

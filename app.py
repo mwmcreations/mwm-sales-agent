@@ -72,6 +72,7 @@ from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
                         relationship_from_description,
                         slot_conflicts, slot_buffer_warnings,
                         BOOKING_BUFFER_MIN,
+                        billing_options_for, billing_is_asked,
                         stage_horizon_phrase)
 
 load_dotenv()
@@ -16953,9 +16954,10 @@ button.go:disabled { background: #9ca3af; cursor: not-allowed; }
         may follow up. Everyone gets reminders either way.</div>
     </div>
 
-    <div class="card">
-      <h2>4 · Paid or not</h2>
+    <div class="card" id="billCard">
+      <h2 id="billHdr">4 · Paid or not</h2>
       <div id="bills"></div>
+      <div class="hint" id="billNote" style="display:none"></div>
       <div class="field" id="amtWrap" style="display:none;margin-top:12px">
         <label>Amount</label>
         <input type="text" id="amount" placeholder="$2,400" autocomplete="off">
@@ -17188,8 +17190,45 @@ function paintPicks(hostId, data, order, field) {
   });
 }
 
+function paintBilling() {
+  var t = TYPES[pick.type];
+  var host = document.getElementById("bills");
+  var note = document.getElementById("billNote");
+  var hdr = document.getElementById("billHdr");
+  if (!t) {
+    hdr.textContent = "4 · Paid or not";
+    note.style.display = "none";
+    paintPicks("bills", BILLS, BILLORDER, "billing");
+    return;
+  }
+  var opts = t.billing_options || BILLORDER;
+  // A studio visit or a strategy call is how a lead BECOMES a client, so there
+  // is no fee yet to record. Asking forced Michael to pick a wrong answer on
+  // his first real booking. Now the form answers it, and says where the money
+  // actually gets captured instead of leaving him to guess.
+  if (!t.billing_asked) {
+    pick.billing = opts[0];
+    host.innerHTML = "";
+    hdr.textContent = "4 · Nothing to charge";
+    note.style.display = "block";
+    note.innerHTML = "<b>" + esc((BILLS[opts[0]] || {}).label || "No charge") +
+      "</b> — a " + esc(t.label.toLowerCase()) + " is how someone becomes a client, " +
+      "so there is no fee to record yet. What you quote them goes on the " +
+      "<b>Daily Event Report</b> after the meeting, with the package.";
+    document.getElementById("amtWrap").style.display = "none";
+    return;
+  }
+  hdr.textContent = "4 · Paid or not";
+  note.style.display = "none";
+  if (opts.indexOf(pick.billing) < 0) pick.billing = "";
+  var subset = {}, order = [];
+  opts.forEach(function(k){ if (BILLS[k]) { subset[k] = BILLS[k]; order.push(k); } });
+  paintPicks("bills", subset, order, "billing");
+}
+
 function onChange() {
   var t = TYPES[pick.type];
+  paintBilling();
   if (t) {
     var m = document.getElementById("minutes");
     if (!m.value) m.value = t.default_minutes;
@@ -17245,7 +17284,7 @@ async function boot() {
   if (typeof d.buffer_min === "number") BUFFER_MIN = d.buffer_min;
   paintPicks("types", TYPES, ORDER, "type");
   paintPicks("rels", RELS, RELORDER, "relationship");
-  paintPicks("bills", BILLS, BILLORDER, "billing");
+  paintBilling();
   document.getElementById("name").addEventListener("input", onChange);
   ["date","start","minutes"].forEach(function(id){
     document.getElementById(id).addEventListener("change", function(){
@@ -17372,6 +17411,8 @@ def booking_form_types():
             "label": _s["label"], "hint": _s["hint"],
             "title": _s["title"], "default_minutes": _s["default_minutes"],
             "needs_address": booking_needs_address(_k),
+            "billing_options": billing_options_for(_k),
+            "billing_asked": billing_is_asked(_k),
             "default_location": booking_location(_k, "", STUDIO_ADDRESS,
                                                  STRATEGY_CALL_LOCATION),
             "ladder": "; ".join(_bits) or "no reminders",
