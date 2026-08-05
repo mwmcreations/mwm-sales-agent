@@ -234,6 +234,41 @@ ok(len(SENT["wp"]) == 1, "...and provisioned nothing")
 
 
 # ══════════════════════════════════════════════════════════════════
+section("#54 — editing is included, and the $1,400 buys no credit")
+# ══════════════════════════════════════════════════════════════════
+ok(TRIAL["includes_note"] == "Post-production editing is included",
+   "the trial records that editing is included")
+ok(PKG["includes_note"] == "",
+   "the 3-month package adds nothing — its live email is unchanged")
+ok(TRIAL["credits_toward_contract"] is False,
+   "the trial buys NO credit toward a 3-month contract")
+ok(PKG["credits_toward_contract"] is False, "and neither does the package")
+ok(all(s["credits_toward_contract"] is False for s in sp.PACKAGES.values()),
+   "nothing in the system may imply a credit — a fresh contract starts at full price")
+
+# the trial email must say it; the package email must not have grown a line
+_tt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ",
+      sp._welcome_email_html("X", "ABC123", TRIAL, sp.package_term(TRIAL, start))))
+_pt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ",
+      sp._welcome_email_html("X", "ABC123", PKG, sp.package_term(PKG, start))))
+ok("editing is included" in _tt, "the trial email states editing is included")
+ok("editing" not in _pt,
+   "the package email is untouched — no deliverables line appeared in it")
+
+_th = sp._welcome_email_html("X", "ABC123", TRIAL, sp.package_term(TRIAL, start))
+_ph = sp._welcome_email_html("X", "ABC123", PKG, sp.package_term(PKG, start))
+ok(_ph.count("<li>") == 5, "the package email still has exactly 5 bullets")
+ok(_th.count("<li>") == 6, "the trial email has 6 — the editing line")
+ok(_th.count("<li>") == _th.count("</li>"), "the trial email's list tags balance")
+ok(_ph.count("<li>") == _ph.count("</li>"), "the package email's list tags balance")
+
+# do not invent deliverables he never named
+for invented in ("short-form", "captions", "logo animation", "short cuts"):
+    ok(invented not in _tt.lower(),
+       "the trial email does NOT promise {!r} — he said 'editing'".format(invented))
+
+
+# ══════════════════════════════════════════════════════════════════
 section("REGRESSION — the 3-month flow must be untouched")
 # ══════════════════════════════════════════════════════════════════
 # This matters more than the new feature. The 3-month package is live and

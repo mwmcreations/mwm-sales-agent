@@ -89,6 +89,11 @@ PACKAGES = {
         "price_label": "$1,200/mo × 3 months",
         "sheet_status": "Client — Studio Package",
         "pace_note": "≈4h/month pace",
+        # Empty on purpose. The 3-month welcome email has never listed
+        # deliverables, and adding a line to a live client-facing template
+        # nobody asked me to change is not a free action.
+        "includes_note": "",
+        "credits_toward_contract": False,
     },
     TRIAL_PRICE_ID: {
         "kind": "studio_trial_1mo",
@@ -103,6 +108,17 @@ PACKAGES = {
         "price_label": "$1,400 one-time",
         "sheet_status": "Client — Studio Trial (1 month)",
         "pace_note": "one 4-hour session, or split it across shorter ones",
+        # PATCH #54 — Michael confirmed editing IS included in the trial. It is
+        # stated in the welcome email because that email is the written record
+        # the client keeps; if what was included is ever in question, this is
+        # the artifact. Deliberately not enumerating short cuts, captions or
+        # logo animation — he said "editing", and inventing the rest of the
+        # package's deliverables would be promising work nobody agreed to.
+        "includes_note": "Post-production editing is included",
+        # No credit toward a 3-month contract. Recorded here so a future upsell
+        # sequence cannot quietly invent one: if they go to the package it is a
+        # fresh $1,200/mo × 3, and the $1,400 stays spent on the trial.
+        "credits_toward_contract": False,
     },
 }
 
@@ -400,9 +416,14 @@ def _welcome_email_html(first_name: str, access_code: str,
                         if deadline_str else ""))
     headline = (f"Your <strong>{spec['name']}</strong> is active — {hours} hours of "
                 f"professional studio time to use over the next {term_phrase(spec)}.")
+    _includes = str(spec.get("includes_note") or "").strip()
     _pace = str(spec.get("pace_note") or "").strip()
     total_li = (f"{hours} hours total across {term_phrase(spec)}"
                 + (f" ({_pace})" if _pace else ""))
+    if _includes:
+        # Appended to the hours line rather than added as a new bullet, so the
+        # 3-month email's list length does not change at all.
+        expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
     return _welcome_email_body(first_name, access_code, headline, total_li, expiry_li)
 
 
