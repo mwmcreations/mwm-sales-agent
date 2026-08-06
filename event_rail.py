@@ -46,6 +46,10 @@ DESIGN NOTES THAT ARE EASY TO GET WRONG
 
 import re
 import unicodedata
+# Patch #58 needs real datetime parsing for approval slots. Stdlib only —
+# this module still imports nothing from app.py, which is the rule that
+# keeps it testable and free of circular imports.
+from datetime import datetime
 
 # ── S-2 · the standard reminder block ────────────────────────────────
 # Every client-facing event gets all three, set at creation, on every path.
@@ -2097,4 +2101,304 @@ def missing_number_note(appointment_type, reason=""):
         "country code, then book again with that number in callback_phone. "
         "Do not confirm any time until you have it. If they will not give a "
         "number, do not book — tell them Michael will follow up by email."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #58 — "I'll check with Michael" was never wired to anything
+#
+# The Andrea Battis thread, Aug 3–6. A lead needed an evening call.
+# check_specific_slot() answered {"available": False, "reason": "outside
+# business hours"} — a WALL, with no path through it. Maya, having no tool
+# that could ask a human anything, improvised: "let me flag this for him",
+# "I'll follow up with Michael tonight". Nothing was created, because
+# nothing existed to create.
+#
+# Then the follow-up rail made it worse than silence. Three automated
+# messages went to Andrea over three days — "still working on pinning
+# down an evening", "I'll have an answer for you shortly" — each one
+# manufacturing the appearance of progress on a request that did not
+# exist anywhere. Michael found it by chance, reading Instagram himself.
+#
+# So this module gives the promise somewhere to land:
+#   · out-of-hours is a REQUEST, not a refusal
+#   · a request Michael has not answered CANNOT be described to a lead
+#     as flagged, pending, or being worked on
+#   · unanswered requests get louder as the slot approaches, and are
+#     visible in the daily health check
+#   · when every option has passed, the lead is told the truth
+# ══════════════════════════════════════════════════════════════════════
+
+# Standard bookable hours, ET. These are not invented here — they are the
+# hours check_specific_slot() already enforces (weekday, 9 <= hour < 17)
+# and the only hours get_available_slots() ever offers (10, 11, 14, 15).
+# Stated once, so the approval path and the booking path cannot drift.
+STANDARD_HOURS_START = 9
+STANDARD_HOURS_END = 17
+
+APPROVAL_PENDING = "pending"
+APPROVAL_APPROVED = "approved"
+APPROVAL_DECLINED = "declined"
+APPROVAL_EXPIRED = "expired"
+
+
+def is_out_of_hours(dt, start_hour=STANDARD_HOURS_START, end_hour=STANDARD_HOURS_END):
+    """True when this datetime falls outside standard bookable hours.
+
+    Weekends are out of hours in full. `dt` must already be in ET — this
+    function does NOT convert, because guessing a timezone here is how the
+    07:55 send happened this morning.
+    """
+    try:
+        if dt.weekday() >= 5:
+            return True
+        return not (start_hour <= dt.hour < end_hour)
+    except AttributeError:
+        return False
+
+
+def out_of_hours_reason(dt):
+    """Why this slot needs a human, in words a lead could be told."""
+    try:
+        if dt.weekday() >= 5:
+            return "weekend"
+        if dt.hour < STANDARD_HOURS_START:
+            return "before standard hours"
+        return "evening — after standard hours"
+    except AttributeError:
+        return "outside standard hours"
+
+
+def build_approval_request(request_id, token, lead_name, lead_email, lead_phone,
+                           slots, business="", note="", channel="",
+                           created_at=None):
+    """A pending approval request. Pure data — no I/O, no clock.
+
+    `slots` is a list of ISO-8601 ET datetime strings, in the order the
+    lead prefers them. `token` is the unguessable half of the one-tap
+    approve link and is never shown to the lead.
+    """
+    return {
+        "id": str(request_id),
+        "token": str(token),
+        "status": APPROVAL_PENDING,
+        "lead_name": lead_name or "",
+        "lead_email": lead_email or "",
+        "lead_phone": lead_phone or "",
+        "business": business or "",
+        "channel": channel or "",
+        "note": note or "",
+        "slots": list(slots or []),
+        "chosen_slot": None,
+        "created_at": created_at,
+        "notified_at": None,
+        "reminders_sent": 0,
+        "resolved_at": None,
+        "lead_told_at": None,
+    }
+
+
+def approval_is_open(req):
+    """True while this request is still waiting on Michael."""
+    try:
+        return req.get("status") == APPROVAL_PENDING
+    except AttributeError:
+        return False
+
+
+def approval_live_slots(req, now):
+    """The requested slots that have not yet passed. `now` must be ET-aware."""
+    out = []
+    for s in (req or {}).get("slots") or []:
+        parsed = _parse_et(s)
+        if parsed is not None and parsed > now:
+            out.append(s)
+    return out
+
+
+def _parse_et(s):
+    """Parse an ISO string, or return None. Never raises, never guesses a tz."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+
+
+def approval_has_expired(req, now):
+    """True when every slot the lead offered is in the past.
+
+    An expired request is not a silent close — the lead must be told, which
+    is what `lead_told_at` tracks.
+    """
+    if not approval_is_open(req):
+        return False
+    if not (req.get("slots") or []):
+        return False
+    return not approval_live_slots(req, now)
+
+
+# Escalating reminder cadence. The point is that a request gets LOUDER as
+# the slot approaches, because the cost of silence rises: three days of
+# quiet is what happened to Andrea, and a 4-hourly nag would have caught
+# it on day one.
+#
+#   soonest slot is >48h away  → remind every 12h
+#   24–48h away                → every 6h
+#   6–24h away                 → every 3h
+#   <6h away                   → every hour
+REMINDER_TIERS = (
+    (48, 12),
+    (24, 6),
+    (6, 3),
+    (0, 1),
+)
+
+
+def approval_reminder_interval_hours(req, now):
+    """How often to re-notify, based on how close the soonest live slot is.
+
+    Returns None when there is nothing left to remind about.
+    """
+    live = approval_live_slots(req, now)
+    if not live:
+        return None
+    soonest = min(d for d in (_parse_et(s) for s in live) if d is not None)
+    hours_out = (soonest - now).total_seconds() / 3600.0
+    for threshold, interval in REMINDER_TIERS:
+        if hours_out > threshold:
+            return interval
+    return REMINDER_TIERS[-1][1]
+
+
+def approval_reminder_due(req, now):
+    """True when Michael should be nudged again about this request."""
+    if not approval_is_open(req):
+        return False
+    interval = approval_reminder_interval_hours(req, now)
+    if interval is None:
+        return False
+    last = _parse_et(req.get("notified_at"))
+    if last is None:
+        return True
+    return (now - last).total_seconds() >= interval * 3600.0
+
+
+# ── the anti-stalling gate ───────────────────────────────────────────
+#
+# This is the half that made the Andrea failure worse than a plain miss.
+# Maya may describe a request to a lead ONLY when a real one exists. No
+# request, no "I've flagged it", no "still working on it", no "as soon as
+# he confirms". The rail must not generate progress updates for work that
+# is not happening.
+
+_STALL_CLAIMS = re.compile(
+    # "flag this for him" / "flagged all three nights for him" — the bare verb
+    # and an arbitrary object between it and the person, both of which the
+    # first version of this pattern missed on Andrea's real messages.
+    r"(flag(g(ed|ing))?\b[^.?!]{0,40}?\b(for|with)\s+(him|her|michael)"
+    # "his personal green light", "it needs his personal OK" — the approval
+    # noun is often nowhere near Michael's name.
+    r"|\b(his|michael'?s?)\s+(own\s+|personal\s+)?"
+    r"(green\s*light|ok|okay|approval|go[- ]ahead|sign[- ]?off|blessing)\b"
+    r"|(check|checking|confirm\w*|clear\w*)\s+with\s+michael"
+    r"|(ask|asking|asked)\s+michael"
+    r"|(as\s+soon\s+as|the\s+second|the\s+moment|once)\s+(he|michael)\s+"
+    r"(picks|confirms|approves|says|gets\s+back|answers|decides)"
+    r"|(still|just)\s+(working|chasing|waiting)\s+on"
+    r"|(i'?ll|i\s+will)\s+(follow\s+up\s+with|get\s+back\s+to\s+you|have\s+an\s+answer)"
+    r"|haven'?t\s+forgotten\s+you"
+    r"|i'?ll\s+(pass|flag)\s+(that|this|it)\s+along"
+    r")",
+    re.I,
+)
+
+
+def claims_pending_approval(text):
+    """True if this outbound message tells a lead a human is deciding.
+
+    Used to gate Maya's own words and the follow-up rail's generated
+    nudges. Every phrase in the pattern was said to Andrea while nothing
+    was pending.
+    """
+    if not text:
+        return False
+    return bool(_STALL_CLAIMS.search(str(text)))
+
+
+def stall_message_allowed(text, open_request):
+    """(allowed, why) — may this message go to the lead?
+
+    A message that claims an approval is pending is allowed ONLY when a
+    real pending request backs it up. Everything else passes untouched:
+    this gate is narrow on purpose, because a false positive silences a
+    legitimate reply.
+    """
+    if not claims_pending_approval(text):
+        return True, ""
+    if open_request and approval_is_open(open_request):
+        return True, f"backed by open request {open_request.get('id')}"
+    return False, (
+        "REFUSED — this message tells the lead that Michael is deciding "
+        "something, and there is no open approval request for them. Either "
+        "file one with request_out_of_hours_approval and then say so, or say "
+        "nothing about Michael deciding. Do not promise a human's answer you "
+        "have not asked for."
+    )
+
+
+def no_approval_tool_note(lead_name=None):
+    """What Maya is told when she hits an out-of-hours wall."""
+    who = f" {lead_name}" if lead_name else ""
+    return (
+        f"That time is outside standard hours (weekdays "
+        f"{STANDARD_HOURS_START}:00–{STANDARD_HOURS_END}:00 ET), so you cannot "
+        "book it yourself — but this is NOT a dead end and you must not tell "
+        f"{who.strip() or 'the lead'} it is unavailable. Ask which evenings or "
+        "times would work, then call request_out_of_hours_approval with those "
+        "slots. That emails Michael a one-tap approval. Only AFTER the tool "
+        "returns a request id may you tell the lead that Michael is looking at "
+        "it. Never say you have flagged something you have not filed."
+    )
+
+
+def approval_filed_note(request_id, slots_display):
+    """What Maya is told once a request really exists."""
+    return (
+        f"Request {request_id} filed with Michael for: {slots_display}. "
+        "You may now tell the lead that Michael is choosing between those "
+        "times and that you will confirm here as soon as he picks one. Do not "
+        "give a deadline for his answer. Do not offer any of these times as "
+        "booked until the approval comes back."
+    )
+
+
+def approval_expiry_note(req):
+    """The honest message when every option has passed unanswered.
+
+    A lead who was told 'shortly' three days ago is owed a real close, not
+    another nudge.
+    """
+    name = (req or {}).get("lead_name") or "there"
+    return (
+        f"Every time {name} offered has now passed without an answer from "
+        "Michael. Tell them plainly that you were not able to get an evening "
+        "confirmed, apologise for the wait, and offer standard hours "
+        f"(weekdays {STANDARD_HOURS_START}:00–{STANDARD_HOURS_END}:00 ET) — or "
+        "offer to take it by email. Do NOT send another 'still working on it'."
+    )
+
+
+def approval_health_line(req, now):
+    """One line for the daily health check, so this cannot go quiet again."""
+    age_h = ""
+    created = _parse_et((req or {}).get("created_at"))
+    if created is not None:
+        age_h = f", {int((now - created).total_seconds() // 3600)}h old"
+    live = approval_live_slots(req or {}, now)
+    return (
+        f"{(req or {}).get('id')} · {(req or {}).get('lead_name') or 'unknown lead'}"
+        f" · {len(live)} of {len((req or {}).get('slots') or [])} slots still live"
+        f"{age_h} · {(req or {}).get('status')}"
     )

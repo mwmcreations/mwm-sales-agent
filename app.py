@@ -3,6 +3,7 @@ import re
 import json
 from meeting_report_utils import parse_event_summary, extract_emails, booking_status_for
 import threading
+import secrets   # Patch #58 — approval tokens and constant-time compare
 import hmac
 import hashlib
 import time
@@ -47,6 +48,16 @@ from event_rail import (barter_signal_in_history, BARTER_YES, BARTER_MAYBE,
                         barter_refusal_note, barter_clarify_note,
                         booking_needs_number, resolve_callback_number,
                         missing_number_note, PARTNERSHIP_INBOX)
+# Patch #58 — "I'll check with Michael" now has somewhere to land.
+from event_rail import (is_out_of_hours, out_of_hours_reason,
+                        build_approval_request, approval_is_open,
+                        approval_live_slots, approval_has_expired,
+                        approval_reminder_due, claims_pending_approval,
+                        stall_message_allowed, no_approval_tool_note,
+                        approval_filed_note, approval_expiry_note,
+                        approval_health_line, digits_of, APPROVAL_PENDING,
+                        APPROVAL_APPROVED, APPROVAL_DECLINED, APPROVAL_EXPIRED,
+                        STANDARD_HOURS_START, STANDARD_HOURS_END)
 from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 from event_rail import (emails_in_field, email_field_matches,
@@ -2421,6 +2432,44 @@ not booking — it puts a promise on the calendar that nobody can keep.
 
 The booking tool enforces this too, and will refuse without a number.
 
+════════════════════════════════════════════════════════════════════
+OUT-OF-HOURS TIMES: FILE A REQUEST, NEVER A PROMISE  (hard rule)
+════════════════════════════════════════════════════════════════════
+Standard bookable hours are weekdays 9:00 AM - 5:00 PM ET. You cannot book
+anything outside that yourself.
+
+Outside those hours is NOT "unavailable" and you must not tell a lead it is.
+It is a request Michael has to approve. The path:
+
+  1. Ask the lead for TWO OR THREE SPECIFIC times — a real day and a real
+     clock time each. "Evenings this week" cannot be approved with one tap.
+  2. Call request_out_of_hours_approval with those times.
+  3. ONLY after it returns a request id may you say Michael is looking at it.
+  4. Then STOP. Do not give a deadline for his answer. Do not offer any of
+     those times as booked. Do not send progress updates.
+
+🔴 NEVER say any of the following unless request_out_of_hours_approval has
+returned an id for THIS lead:
+
+  ✗ "let me flag this for him" / "I've flagged all three nights for him"
+  ✗ "I'll check with Michael" / "I'll ask Michael"
+  ✗ "he needs to give his personal OK" / "his green light"
+  ✗ "as soon as he confirms, I'll message you"
+  ✗ "still working on pinning down an evening"
+  ✗ "I'll have an answer for you shortly"
+  ✗ "I haven't forgotten you"
+
+Those are not phrasings to be careful with — they are the exact sentences a
+real lead was sent over three days while nothing existed anywhere. She was
+being managed by a machine that had asked nobody. If you have not filed it,
+you have not asked him, and saying otherwise is a lie to a customer.
+
+The system enforces this: a message claiming Michael is deciding something,
+sent to a lead with no open request, is BLOCKED before it reaches them.
+
+If you genuinely cannot get specific times out of the lead, say the true
+thing: standard hours are 9-5 weekdays, and ask which of those works.
+
 Step 4.5 — COLLECT CONTACT INFO (before booking)
 Before calling book_appointment, you need the lead's name, email, and business name.
 For a STRATEGY CALL you also need their phone number — see the hard rule above.
@@ -3117,6 +3166,35 @@ TOOLS = [
         }
     },
     {
+        "name": "request_out_of_hours_approval",
+        "description": (
+            "Ask Michael to approve a call outside standard hours (weekdays 9 AM - 5 PM ET). "
+            "Use this the moment a lead needs an evening, early morning or weekend time. "
+            "It emails Michael a one-tap approval and returns a request id. "
+            "You MUST call this before telling a lead that Michael is looking at, "
+            "considering, or deciding anything. Saying you have flagged something you "
+            "have not filed here is the single worst thing you can do in a conversation: "
+            "a lead was strung along for three days that way. "
+            "Collect two or three specific times from the lead first - a vague "
+            "'evenings this week' cannot be approved with one tap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {"type": "string", "description": "The lead's full name."},
+                "lead_email": {"type": "string", "description": "The lead's email address, for the calendar invite."},
+                "slots": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Two or three SPECIFIC times in ISO 8601 Eastern, e.g. ['2026-08-10T19:00:00','2026-08-11T19:00:00']. Most preferred first."
+                },
+                "business": {"type": "string", "description": "The lead's business or what the call is about."},
+                "note": {"type": "string", "description": "One line for Michael: who else is joining, and why it has to be out of hours."}
+            },
+            "required": ["lead_name", "slots"]
+        }
+    },
+    {
         "name": "book_appointment",
         "description": (
             "Book a 1-hour appointment on Michael's Google Calendar. "
@@ -3710,6 +3788,377 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         return None
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #58 — the out-of-hours approval rail
+#
+# Michael found the Andrea Battis thread by chance, reading Instagram on
+# his phone. Maya had told her three times over three days that an answer
+# was coming. No request existed. There was nothing to answer.
+#
+# The whole design goal is ONE TAP. His standing rule is that the machine
+# runs with minimal use of his time, so an approval that costs him a login
+# is a failed approval. He gets an email, taps a time, and the lead is
+# booked and told. Nothing else is asked of him.
+#
+# Notification is EMAIL, deliberately:
+#   · Slack #matt has zero human-authored messages from him — that channel
+#     does not reach him and pretending otherwise is how this failed.
+#   · WhatsApp to his own number is currently bouncing on expired 24h
+#     windows (wa_send_blocked_window_expired, several a day).
+#   · Email demonstrably lands.
+# ══════════════════════════════════════════════════════════════════════
+
+# request id -> request dict (see event_rail.build_approval_request)
+approval_requests = {}
+_approval_lock = threading.Lock()
+
+
+def _approval_base_url():
+    """Public origin for the one-tap links."""
+    dom = os.getenv("RAILWAY_PUBLIC_DOMAIN", "") or ""
+    if dom:
+        return "https://" + dom.rstrip("/").replace("https://", "").replace("http://", "")
+    return (os.getenv("APP_BASE_URL", "") or "").rstrip("/")
+
+
+def _approval_find_open_for(lead_phone=None, lead_email=None):
+    """The open request for this lead, if any. Used by the anti-stall gate."""
+    _p = (lead_phone or "").strip().lower()
+    _e = (lead_email or "").strip().lower()
+    with _approval_lock:
+        for req in approval_requests.values():
+            if not approval_is_open(req):
+                continue
+            if _p and (req.get("lead_phone") or "").strip().lower() == _p:
+                return req
+            if _e and (req.get("lead_email") or "").strip().lower() == _e:
+                return req
+    return None
+
+
+def _approval_slot_display(iso):
+    """'Thursday, August 06 at 7:00 PM ET' — how Michael reads a time."""
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt.strftime("%A, %B %d at %-I:%M %p ET")
+    except (ValueError, TypeError):
+        try:
+            return datetime.fromisoformat(iso).strftime("%A, %B %d at %I:%M %p ET")
+        except Exception:
+            return str(iso)
+
+
+def _approval_email_html(req):
+    """The email. One tap per option, plus a decline. No login, no app.
+
+    Every link is a plain GET so it works from the Mail app on his phone
+    without anything else being open.
+    """
+    base = _approval_base_url()
+    tok = req["token"]
+    rows = []
+    for i, iso in enumerate(req.get("slots") or []):
+        url = f"{base}/approve/{tok}?slot={i}"
+        rows.append(
+            f'<tr><td style="padding:6px 0;">'
+            f'<a href="{url}" style="display:inline-block;padding:12px 20px;'
+            f'background:#14532d;color:#fff;text-decoration:none;border-radius:6px;'
+            f'font-family:Arial,sans-serif;font-size:15px;">'
+            f'Confirm {_approval_slot_display(iso)}</a></td></tr>'
+        )
+    decline = f"{base}/approve/{tok}?decline=1"
+    who = req.get("lead_name") or "A lead"
+    biz = f" — {req['business']}" if req.get("business") else ""
+    note = (f'<p style="margin:14px 0;color:#444;">{req["note"]}</p>'
+            if req.get("note") else "")
+    return (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;'
+        'line-height:1.6;color:#222;max-width:560px;">'
+        f'<p><strong>{who}{biz}</strong> is asking for a time outside your '
+        'standard hours. Maya cannot book it without you.</p>'
+        f'{note}'
+        '<p style="margin:18px 0 6px;"><strong>Tap one and it is done</strong> — '
+        'the event is created, the invite goes out, and Maya tells them:</p>'
+        f'<table cellpadding="0" cellspacing="0">{"".join(rows)}</table>'
+        f'<p style="margin:22px 0 6px;"><a href="{decline}" '
+        'style="color:#991b1b;">None of these work</a> — Maya will offer '
+        'standard hours instead.</p>'
+        f'<p style="margin-top:20px;color:#777;font-size:13px;">'
+        f'Request {req["id"]} · {req.get("channel") or "unknown channel"} · '
+        f'{req.get("lead_email") or "no email on file"}</p>'
+        '</div>'
+    )
+
+
+def _approval_notify_michael(req, is_reminder=False):
+    """Email Michael. Returns True only if the send actually happened."""
+    who = req.get("lead_name") or "a lead"
+    n = len(req.get("slots") or [])
+    subject = (
+        f"{'Still waiting — ' if is_reminder else ''}"
+        f"Approve an out-of-hours call with {who}"
+        f" ({n} option{'' if n == 1 else 's'})"
+    )
+    try:
+        result = _email_send(MICHAEL_EMAIL, subject, _approval_email_html(req),
+                             via="machine")
+        ok = email_ok(result)
+    except Exception as exc:
+        _report_error("approval.notify", exc, f"request={req.get('id')}")
+        ok = False
+    if ok:
+        with _approval_lock:
+            _live = approval_requests.get(req["id"])
+            if _live is not None:
+                _live["notified_at"] = datetime.now(
+                    pytz.timezone(TIMEZONE)).replace(tzinfo=None).isoformat()
+                if is_reminder:
+                    _live["reminders_sent"] = int(_live.get("reminders_sent") or 0) + 1
+    else:
+        # A notification that silently failed is the original bug wearing a
+        # different hat. Make it loud.
+        _notify_error_to_dev(
+            "Approval Email Not Delivered",
+            f"Could not email Michael the approval request {req.get('id')} for "
+            f"{who}. THE LEAD IS WAITING AND NOBODY HAS BEEN ASKED.",
+            lead_info=f"{who} ({req.get('lead_phone') or req.get('lead_email')})",
+            severity="ERROR",
+        )
+    return ok
+
+
+def request_out_of_hours_approval(lead_name, lead_email, lead_phone, slots,
+                                  business="", note="", channel=""):
+    """File a real request and email Michael. Returns the id, or an error.
+
+    This is the ONLY way Maya may claim a human is deciding something.
+    """
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz)
+
+    clean = []
+    for raw in (slots or []):
+        try:
+            dt = _parse_datetime_flexible(raw)
+            if dt.tzinfo is None:
+                dt = _tz.localize(dt)
+            else:
+                dt = dt.astimezone(_tz)
+        except Exception:
+            continue
+        if dt <= _now:
+            continue
+        clean.append(dt.replace(tzinfo=None).isoformat())
+    if not clean:
+        return {"error": "No usable future times. Ask the lead which evenings "
+                         "or weekend times work, then call this again."}
+
+    rid = "AR-" + secrets.token_hex(3).upper()
+    req = build_approval_request(
+        rid, secrets.token_urlsafe(24), lead_name, lead_email, lead_phone,
+        clean, business=business, note=note, channel=channel,
+        created_at=_now.replace(tzinfo=None).isoformat(),
+    )
+    with _approval_lock:
+        approval_requests[rid] = req
+
+    sent = _approval_notify_michael(req)
+    display = ", ".join(_approval_slot_display(s) for s in clean)
+    if not sent:
+        return {"error": "The request was filed but the email to Michael did "
+                         "not go out. Do NOT tell the lead it is with him. Say "
+                         "you will come back to them, and nothing more.",
+                "request_id": rid}
+    return {"ok": True, "request_id": rid, "slots": clean,
+            "instruction": approval_filed_note(rid, display)}
+
+
+def _approval_tell_lead(req, text):
+    """Deliver a message to the lead on the channel they actually used."""
+    ident = (req.get("lead_phone") or "").strip()
+    try:
+        if ident.lower().startswith("instagram:") or is_ig_scoped(ident):
+            return bool(send_instagram_dm(
+                ident.split(":", 1)[-1], body=text))
+        if is_dialable(ident):
+            return bool(send_whatsapp_meta(
+                "whatsapp:+" + digits_of(ident), body=text))
+    except Exception as exc:
+        _report_error("approval.tell_lead", exc, f"request={req.get('id')}")
+    _email = req.get("lead_email")
+    if _email and ascii_email(_email)[1]:
+        try:
+            return email_ok(_email_send(
+                ascii_email(_email)[0],
+                "About your call with Michael",
+                f"<p>{text}</p>", via="machine"))
+        except Exception as exc:
+            _report_error("approval.tell_lead_email", exc,
+                          f"request={req.get('id')}")
+    return False
+
+
+def _approval_sweep():
+    """Nag until answered, and close honestly when every option has passed.
+
+    This thread is the reason a request cannot go quiet for three days.
+    """
+    while True:
+        try:
+            time.sleep(600)
+            _tz = pytz.timezone(TIMEZONE)
+            _now = datetime.now(_tz).replace(tzinfo=None)
+            with _approval_lock:
+                snapshot = list(approval_requests.values())
+            for req in snapshot:
+                if not approval_is_open(req):
+                    continue
+                if approval_has_expired(req, _now):
+                    with _approval_lock:
+                        _live = approval_requests.get(req["id"])
+                        if _live is None or not approval_is_open(_live):
+                            continue
+                        _live["status"] = APPROVAL_EXPIRED
+                        _live["resolved_at"] = _now.isoformat()
+                    _notify_error_to_dev(
+                        "Out-of-Hours Approval EXPIRED",
+                        f"Every time {req.get('lead_name') or 'the lead'} offered "
+                        f"has passed with no answer. Request {req['id']}. "
+                        f"{approval_expiry_note(req)}",
+                        lead_info=f"{req.get('lead_name')} ({req.get('lead_email')})",
+                        severity="WARNING",
+                    )
+                    continue
+                if approval_reminder_due(req, _now):
+                    _approval_notify_michael(req, is_reminder=True)
+        except Exception as exc:
+            try:
+                _report_error("approval.sweep", exc)
+            except Exception:
+                pass
+
+
+threading.Thread(target=_approval_sweep, daemon=True).start()
+
+
+@app.route("/approve/<token>", methods=["GET"])
+def approve_out_of_hours(token):
+    """One tap from Michael's phone. No login — the token IS the credential.
+
+    Deliberately a GET so it works straight from the Mail app. The token is
+    24 bytes of urlsafe entropy, single-purpose, and only ever sent to
+    MICHAEL_EMAIL.
+    """
+    with _approval_lock:
+        req = next((r for r in approval_requests.values()
+                    if secrets.compare_digest(str(r.get("token") or ""), str(token))),
+                   None)
+    if req is None:
+        return "<p>That approval link is not valid.</p>", 404
+
+    if not approval_is_open(req):
+        return (f"<p>Request {req['id']} was already "
+                f"<strong>{req['status']}</strong>. Nothing changed.</p>"), 200
+
+    _tz = pytz.timezone(TIMEZONE)
+    _now_naive = datetime.now(_tz).replace(tzinfo=None)
+
+    if request.args.get("decline"):
+        with _approval_lock:
+            req["status"] = APPROVAL_DECLINED
+            req["resolved_at"] = _now_naive.isoformat()
+        _approval_tell_lead(req, (
+            f"Hi {req.get('lead_name') or 'there'} — I wasn't able to get an "
+            "evening confirmed on Michael's side, and I'm sorry for the wait. "
+            f"He does have standard hours open, weekdays {STANDARD_HOURS_START} "
+            "AM to 5 PM ET — tell me a day that works and I'll get it booked. "
+            "Or if it's easier, we can take it by email."))
+        return "<p>Declined. The lead has been told and offered standard hours.</p>", 200
+
+    try:
+        idx = int(request.args.get("slot", "-1"))
+    except (TypeError, ValueError):
+        idx = -1
+    slots = req.get("slots") or []
+    if not (0 <= idx < len(slots)):
+        return "<p>That time is no longer one of the options.</p>", 400
+
+    chosen = slots[idx]
+    if chosen not in approval_live_slots(req, _now_naive):
+        return ("<p>That time has already passed. Open the most recent email "
+                "for the options that are still live.</p>"), 409
+
+    event_id = book_appointment(
+        slot_id=chosen,
+        lead_name=req.get("lead_name") or "",
+        lead_email=req.get("lead_email") or "",
+        lead_business=req.get("business") or "",
+        lead_phone=req.get("lead_phone"),
+        callback_phone=req.get("lead_phone"),
+        appointment_type="strategy_call",
+        booked_via=req.get("channel") or None,
+    )
+    # Patch #57 refusals come back as a dict, and a dict is truthy.
+    if isinstance(event_id, dict) or not event_id:
+        why = (event_id.get("reason") if isinstance(event_id, dict)
+               else "the calendar write failed")
+        _notify_error_to_dev(
+            "Approved Call Could Not Be Booked",
+            f"You approved {_approval_slot_display(chosen)} for "
+            f"{req.get('lead_name')} but the booking was refused: {why}. "
+            "The request is still open and the lead has NOT been told.",
+            lead_info=f"{req.get('lead_name')} ({req.get('lead_email')})",
+            severity="ERROR",
+        )
+        return (f"<p>Approved, but the booking could not be created: {why}<br>"
+                f"Nothing was sent to the lead. This is in #dev.</p>"), 200
+
+    with _approval_lock:
+        req["status"] = APPROVAL_APPROVED
+        req["chosen_slot"] = chosen
+        req["resolved_at"] = _now_naive.isoformat()
+
+    told = _approval_tell_lead(req, (
+        f"Good news — Michael can do {_approval_slot_display(chosen)}. "
+        "You'll get the calendar invite by email shortly. Talk then!"))
+    with _approval_lock:
+        if told:
+            req["lead_told_at"] = _now_naive.isoformat()
+
+    if not told:
+        _notify_error_to_dev(
+            "Approved But Lead Not Reachable",
+            f"{_approval_slot_display(chosen)} is booked for "
+            f"{req.get('lead_name')}, but the confirmation could not be "
+            "delivered on their channel. They may not know.",
+            lead_info=f"{req.get('lead_name')} ({req.get('lead_email')})",
+            severity="WARNING",
+        )
+
+    return (f"<p><strong>Booked — {_approval_slot_display(chosen)}.</strong><br>"
+            f"{'The lead has been told and the invite is on its way.' if told else 'Booked, but we could not reach the lead — see #dev.'}"
+            "</p>"), 200
+
+
+@app.route("/admin/approvals", methods=["GET"])
+def admin_approvals():
+    """Read-only. What is waiting on Michael right now."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz).replace(tzinfo=None)
+    with _approval_lock:
+        rows = list(approval_requests.values())
+    return jsonify({
+        "ok": True,
+        "as_of": datetime.now(_tz).isoformat(),
+        "open": [approval_health_line(r, _now) for r in rows if approval_is_open(r)],
+        "requests": [
+            {k: v for k, v in r.items() if k != "token"} for r in rows
+        ],
+    }), 200
+
+
 def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date=""):
     """
     Cancel an existing appointment from Michael's Google Calendar.
@@ -3964,11 +4413,31 @@ def check_specific_slot(requested_datetime):
 
         # Must be a weekday between 9 AM and 4:30 PM
         if candidate.weekday() >= 5:
-            print(f"[check_specific_slot] rejected: weekend (weekday={candidate.weekday()})")
-            return {"available": False, "reason": "weekends are not available"}
+            # PATCH #58 — same door as the evening case below.
+            print(f"[check_specific_slot] weekend (weekday={candidate.weekday()}) — approval path offered")
+            return {
+                "available": False,
+                "reason": "weekends are outside standard hours",
+                "needs_approval": True,
+                "out_of_hours_reason": "weekend",
+                "slot_id": candidate.isoformat(),
+                "instruction": no_approval_tool_note(),
+            }
         if not (9 <= candidate.hour < 17) or (candidate.hour == 16 and candidate.minute > 0):
-            print(f"[check_specific_slot] rejected: outside business hours (hour={candidate.hour})")
-            return {"available": False, "reason": "outside business hours (9 AM – 5 PM EST)"}
+            # PATCH #58 — this used to be a WALL. It returned "not available"
+            # and nothing else, so Maya, with no tool that could ask a human
+            # anything, invented one: "let me flag this for Michael". Nothing
+            # was ever filed. Andrea Battis was strung along for three days.
+            # It is now a DOOR: the answer names the path through it.
+            print(f"[check_specific_slot] out of hours (hour={candidate.hour}) — approval path offered")
+            return {
+                "available": False,
+                "reason": f"outside standard hours ({STANDARD_HOURS_START} AM – 5 PM ET)",
+                "needs_approval": True,
+                "out_of_hours_reason": out_of_hours_reason(candidate),
+                "slot_id": candidate.isoformat(),
+                "instruction": no_approval_tool_note(),
+            }
         # Must be in the future
         now_et = datetime.now(tz)
         if candidate <= now_et:
@@ -4034,6 +4503,17 @@ def handle_tool_call(tool_name, tool_input, sender=None):
 
     elif tool_name == "check_specific_slot":
         return check_specific_slot(tool_input["requested_datetime"])
+
+    elif tool_name == "request_out_of_hours_approval":
+        return request_out_of_hours_approval(
+            lead_name=tool_input.get("lead_name", ""),
+            lead_email=tool_input.get("lead_email", ""),
+            lead_phone=sender,
+            slots=tool_input.get("slots") or [],
+            business=tool_input.get("business", ""),
+            note=tool_input.get("note", ""),
+            channel=resolve_channel(sender),
+        )
 
     elif tool_name == "book_appointment":
         # ── PATCH #57 gate 1: exchange proposals are not booked ──
@@ -7476,6 +7956,32 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"\u274c Maya error: {e}")
                 clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
                 send_photos = False
+
+                # ── PATCH #58 anti-stall gate ──────────────────────────
+                # Maya may not tell a lead that Michael is deciding
+                # something unless a real approval request exists. Andrea
+                # Battis was told this three times over three days with
+                # nothing on file anywhere.
+                try:
+                    _ar_open = _approval_find_open_for(
+                        lead_phone=sndr,
+                        lead_email=(lead_data.get(sndr) or {}).get("email"))
+                    _ar_ok, _ar_why = stall_message_allowed(clean_reply, _ar_open)
+                    if not _ar_ok:
+                        print(f"[APPROVAL-GATE] blocked a stall claim to sndr")
+                        _notify_error_to_dev(
+                            "Blocked an Unbacked 'Asking Michael' Message",
+                            "Maya tried to tell a lead that Michael is deciding "
+                            "something, with no approval request on file. Held.\n\n"
+                            f"Would have sent:\n{clean_reply[:600]}",
+                            lead_info=str(sndr),
+                            severity="WARNING")
+                        clean_reply = (
+                            "Let me check on that properly and come back to you "
+                            "with a real answer rather than keep you waiting.")
+                except Exception as _ar_err:
+                    _report_error("approval.stall_gate", _ar_err)
+
             # S16: humanized pacing (John's feature) — no-op unless MAYA_PACING=on
             try:
                 _maya_pacing_delay(clean_reply,
@@ -7850,6 +8356,27 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             print(f"❌ IG DM Maya error: {e}")
             clean_reply = "Sorry, I'm having a technical issue right now. Please try again in a moment."
             send_photos = False
+
+        # ── PATCH #58 anti-stall gate (Instagram) ──────────────────────
+        # This is the exact channel the Andrea Battis failure happened on.
+        try:
+            _ar_open = _approval_find_open_for(
+                lead_phone=sndr,
+                lead_email=(lead_data.get(sndr) or {}).get("email"))
+            _ar_ok, _ar_why = stall_message_allowed(clean_reply, _ar_open)
+            if not _ar_ok:
+                print(f"[APPROVAL-GATE] blocked a stall claim to {sndr}")
+                _notify_error_to_dev(
+                    "Blocked an Unbacked 'Asking Michael' Message [IG]",
+                    "Maya tried to tell a lead that Michael is deciding "
+                    "something, with no approval request on file. Held.\n\n"
+                    f"Would have sent:\n{clean_reply[:600]}",
+                    lead_info=str(sndr), severity="WARNING")
+                clean_reply = (
+                    "Let me check on that properly and come back to you "
+                    "with a real answer rather than keep you waiting.")
+        except Exception as _ar_err:
+            _report_error("approval.stall_gate_ig", _ar_err)
 
         # Send reply via Instagram DM
         # S16: humanized pacing (John's feature) — no-op unless MAYA_PACING=on
@@ -13113,6 +13640,45 @@ async function uploadAll(){
 MAYA_WEB_SYSTEM_PROMPT = """You are Maya, the AI sales and support assistant for MWM Creations & Studios, a video production company based in Orlando, Florida.
 
 ════════════════════════════════════════════════════════════════════
+OUT-OF-HOURS TIMES: FILE A REQUEST, NEVER A PROMISE  (hard rule)
+════════════════════════════════════════════════════════════════════
+Standard bookable hours are weekdays 9:00 AM - 5:00 PM ET. You cannot book
+anything outside that yourself.
+
+Outside those hours is NOT "unavailable" and you must not tell a lead it is.
+It is a request Michael has to approve. The path:
+
+  1. Ask the lead for TWO OR THREE SPECIFIC times — a real day and a real
+     clock time each. "Evenings this week" cannot be approved with one tap.
+  2. Call request_out_of_hours_approval with those times.
+  3. ONLY after it returns a request id may you say Michael is looking at it.
+  4. Then STOP. Do not give a deadline for his answer. Do not offer any of
+     those times as booked. Do not send progress updates.
+
+🔴 NEVER say any of the following unless request_out_of_hours_approval has
+returned an id for THIS lead:
+
+  ✗ "let me flag this for him" / "I've flagged all three nights for him"
+  ✗ "I'll check with Michael" / "I'll ask Michael"
+  ✗ "he needs to give his personal OK" / "his green light"
+  ✗ "as soon as he confirms, I'll message you"
+  ✗ "still working on pinning down an evening"
+  ✗ "I'll have an answer for you shortly"
+  ✗ "I haven't forgotten you"
+
+Those are not phrasings to be careful with — they are the exact sentences a
+real lead was sent over three days while nothing existed anywhere. She was
+being managed by a machine that had asked nobody. If you have not filed it,
+you have not asked him, and saying otherwise is a lie to a customer.
+
+The system enforces this: a message claiming Michael is deciding something,
+sent to a lead with no open request, is BLOCKED before it reaches them.
+
+If you genuinely cannot get specific times out of the lead, say the true
+thing: standard hours are 9-5 weekdays, and ask which of those works.
+
+
+════════════════════════════════════════════════════════════════════
 PARTNERSHIPS AND EXCHANGES ARE NOT BOOKED  (hard rule — no exceptions)
 ════════════════════════════════════════════════════════════════════
 If a lead proposes ANY arrangement where MWM is paid in something other
@@ -13257,6 +13823,35 @@ WEB_CHAT_TOOLS = [
         }
     },
     {
+        "name": "request_out_of_hours_approval",
+        "description": (
+            "Ask Michael to approve a call outside standard hours (weekdays 9 AM - 5 PM ET). "
+            "Use this the moment a lead needs an evening, early morning or weekend time. "
+            "It emails Michael a one-tap approval and returns a request id. "
+            "You MUST call this before telling a lead that Michael is looking at, "
+            "considering, or deciding anything. Saying you have flagged something you "
+            "have not filed here is the single worst thing you can do in a conversation: "
+            "a lead was strung along for three days that way. "
+            "Collect two or three specific times from the lead first - a vague "
+            "'evenings this week' cannot be approved with one tap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "lead_name": {"type": "string", "description": "The lead's full name."},
+                "lead_email": {"type": "string", "description": "The lead's email address, for the calendar invite."},
+                "slots": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Two or three SPECIFIC times in ISO 8601 Eastern, e.g. ['2026-08-10T19:00:00','2026-08-11T19:00:00']. Most preferred first."
+                },
+                "business": {"type": "string", "description": "The lead's business or what the call is about."},
+                "note": {"type": "string", "description": "One line for Michael: who else is joining, and why it has to be out of hours."}
+            },
+            "required": ["lead_name", "slots"]
+        }
+    },
+    {
         "name": "book_appointment",
         "description": (
             "Book a 1-hour appointment on Michael's Google Calendar. "
@@ -13336,6 +13931,17 @@ def _handle_web_tool_call(tool_name, tool_input):
         return {"slots": slots} if slots else {"error": "No slots found. Ask the lead to suggest a day/time."}
     elif tool_name == "check_specific_slot":
         return check_specific_slot(tool_input["requested_datetime"])
+    elif tool_name == "request_out_of_hours_approval":
+        return request_out_of_hours_approval(
+            lead_name=tool_input.get("lead_name", ""),
+            lead_email=tool_input.get("lead_email", ""),
+            lead_phone=tool_input.get("lead_phone"),
+            slots=tool_input.get("slots") or [],
+            business=tool_input.get("business", ""),
+            note=tool_input.get("note", ""),
+            channel="Website Chat",
+        )
+
     elif tool_name == "book_appointment":
         _web_lead_name = tool_input["lead_name"]
         _web_lead_email = tool_input["lead_email"]
