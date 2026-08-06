@@ -15265,6 +15265,24 @@ def health_check():
     import uuid as _uuid_health
     response = jsonify({
         "status": overall,
+        # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
+        #
+        # The standing rule on this board is "no deploy claims without a commit
+        # hash plus prod evidence", and until now there has been no way to get
+        # the second half. Every "shipped" claim has rested on the watcher
+        # saying it pushed, which is a claim about the Mac, not about Railway.
+        # Twice a fix was reported as live and was not (#49, the SKILL.md
+        # thread count). Railway injects the SHA it built; this simply reports
+        # it, so anyone — human or agent — can settle it with one curl.
+        "build": {
+            "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA", "")
+                       or os.getenv("SOURCE_COMMIT", "") or "unknown")[:12],
+            "branch": os.getenv("RAILWAY_GIT_BRANCH", "") or "unknown",
+            "deployed_at": os.getenv("RAILWAY_DEPLOYMENT_CREATED_AT", "") or "unknown",
+            "booted_at": _PROCESS_START.isoformat(),
+            "note": ("compare `commit` against the hash in DEPLOY_RESULT.json — "
+                     "if they differ, the patch is committed but NOT running"),
+        },
         "threads": thread_health,
         # Patch #33: never let a caller compare this count against a baseline
         # without knowing whether every thread has had a chance to register.
@@ -19263,8 +19281,27 @@ def meeting_report_submit():
     return jsonify({"ok": True, "actions": actions})
 
 
-def _update_lead_sheet_status(name, outcome, notes, service, next_steps):
-    """Find the lead by name in Google Sheets and update their status + notes."""
+def _update_lead_sheet_status(name, outcome, notes="", service="", next_steps=""):
+    """Find the lead by name in Google Sheets and update their status + notes.
+
+    PATCH #62 — the last three arguments are OPTIONAL, and that is the fix.
+
+    This function grew from two parameters to five. One caller was updated,
+    one was wrapped in a lambda that pads the missing three, and one —
+    `/admin/register-client`, shipped in #55A — was not. It failed twice on
+    Aug 5 (13:56 and 14:06) with:
+
+        _update_lead_sheet_status() missing 3 required positional arguments:
+        'notes', 'service', 'next_steps'                    name=Gema Hiatt
+
+    The client record was created and the Leads-sheet write was lost, both
+    times. The repair path repaired the record and left the sheet behind it —
+    a paid client whose row still reads as an unconverted lead.
+
+    Defaults rather than a fixed call site, deliberately: a call site can be
+    fixed and the next one written wrong. Three fields that are optional in
+    the sheet should have been optional in the signature.
+    """
     sheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
     if not sheet_id:
         return
@@ -19887,7 +19924,19 @@ def admin_register_client():
     _rec["studio_package"] = _box
 
     try:
-        _update_lead_sheet_status(_rec.get("name") or _name, _spec["sheet_status"])
+        # PATCH #62 — pass the three fields explicitly rather than lean on the
+        # new defaults. A paid client's row should say what they bought and
+        # what happens next; "" would have satisfied the signature and told
+        # the sheet nothing.
+        _update_lead_sheet_status(
+            _rec.get("name") or _name,
+            _spec["sheet_status"],
+            notes=(f"{_spec['name']} — {_spec['hours']}h, purchased "
+                   f"{_bought.strftime('%b %d, %Y')}; books until "
+                   f"{_term['booking_deadline'].strftime('%b %d, %Y')}"),
+            service=_spec["name"],
+            next_steps="Client onboarded — portal access issued; LARA owns delivery",
+        )
     except Exception as _shx:
         _report_error("register_client.sheet", _shx, f"name={_name}")
 

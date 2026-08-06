@@ -471,6 +471,64 @@ ok(all(_ld["verify"].get(k) == v for k, v in _intended.items()),
    "...and a verified write reads back identical to the intent")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# #62 — the signature that broke /admin/register-client
+#
+# On Aug 5 a real paying client (Gema Hiatt) was registered twice and the
+# Leads-sheet write failed both times:
+#
+#   _update_lead_sheet_status() missing 3 required positional arguments:
+#   'notes', 'service', 'next_steps'
+#
+# app.py cannot be imported from a test harness — it builds a Flask app and
+# starts background threads at import time, which is precisely why a plain
+# signature mismatch reached production twice. So this reads the SOURCE. An
+# AST check is not a substitute for running the code, but it is exactly the
+# right shape of test for "the caller and the callee disagree", and it costs
+# nothing.
+print("\n" + "=" * 62)
+print("  #62 — _update_lead_sheet_status: callers must satisfy the callee")
+print("=" * 62)
+import ast as _ast62
+
+_tree62 = _ast62.parse(open("app.py").read())
+_fn62 = None
+for _n in _ast62.walk(_tree62):
+    if isinstance(_n, _ast62.FunctionDef) and _n.name == "_update_lead_sheet_status":
+        _fn62 = _n
+        break
+
+ok(_fn62 is not None, "_update_lead_sheet_status is defined in app.py")
+if _fn62 is not None:
+    _params62 = [a.arg for a in _fn62.args.args]
+    _required62 = len(_params62) - len(_fn62.args.defaults)
+    ok(_params62[:2] == ["name", "outcome"],
+       "name and outcome are still the leading, required arguments")
+    ok(_required62 == 2,
+       "notes/service/next_steps are OPTIONAL — a caller that omits them "
+       "must not raise ({} required)".format(_required62))
+
+    _sites62, _short62 = 0, []
+    for _n in _ast62.walk(_tree62):
+        if isinstance(_n, _ast62.Call) and getattr(_n.func, "id", "") == "_update_lead_sheet_status":
+            _sites62 += 1
+            _given = len(_n.args) + len(_n.keywords)
+            if _given < _required62:
+                _short62.append((_n.lineno, _given))
+    ok(_sites62 >= 4, "every call site is being checked ({} found)".format(_sites62))
+    ok(not _short62,
+       "no call site passes fewer arguments than the signature requires{}".format(
+           "" if not _short62 else " — offenders: {}".format(_short62)))
+
+    # The register-client site specifically: it must say what was bought.
+    _reg62 = [_n for _n in _ast62.walk(_tree62)
+              if isinstance(_n, _ast62.Call)
+              and getattr(_n.func, "id", "") == "_update_lead_sheet_status"
+              and any(_k.arg == "service" for _k in _n.keywords)]
+    ok(len(_reg62) >= 1,
+       "the paid-client path names the SERVICE on the sheet row, not just a status")
+
+
 print("\n" + "=" * 62)
 print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 62)
