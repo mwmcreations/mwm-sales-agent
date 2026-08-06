@@ -16378,43 +16378,49 @@ def _replace_table_section(name, markdown):
         if CANVAS_DELETE_SPACING_S:
             time.sleep(CANVAS_DELETE_SPACING_S)
 
-    # ── PATCH #64 — SAY THE NUMBER, AND SAY WHAT YOU CANNOT SEE ──
+    # ── PATCH #65 — SAY THE NUMBER. #64 GUESSED, AND GUESSED WRONG. ──
     #
-    # #63 shipped with a drain report that could only count what the lookup
-    # returned. On the first run after deploy it removed a batch, found
-    # `remaining == 0`, and said nothing — while the canvas plainly still
-    # had hundreds of blocks on it. `canvases.sections.lookup` returns a
-    # BOUNDED page, so `len(_stale)` is a floor, never a total.
+    # #64 was written on the belief that `canvases.sections.lookup` returns a
+    # bounded page, so every count had to be hedged as "a floor, not a total".
+    # That belief came from checking #dev twice, seeing no drain message, and
+    # concluding the report was blind. The report was not blind. It posted
+    # two minutes after I stopped looking:
     #
-    # That is the same failure as the bug it was written to fix: a report
-    # that cannot distinguish "finished" from "cannot see the rest". So the
-    # word "clear" is only ever used when the evidence supports it — a
-    # lookup that came back under the cap, fully deleted. Anything else is
-    # reported as a floor, out loud, with the number.
+    #   19:15  active_leads: removed 120 duplicate block(s), 272 still queued
     #
-    # This is also the instrument the board has been missing: the canvas is
-    # 33 MB and cannot be read in one call, so the duplicate count has had
-    # to be estimated by grepping. Now the sync itself reports it.
+    # 120 + 272 = 392, against MATT's 362 counted this morning plus a day of
+    # 28-minute appends. The lookup returns everything. #64's hedge was
+    # therefore worse than the plain number it replaced — it would print
+    # "at least 272 (this is a floor)" about a figure that is exact.
+    #
+    # This is the Aug 5 mistake in a new costume: an absence of evidence read
+    # as evidence, before waiting for the thing to run. It is recorded here
+    # rather than quietly reverted, because the failure was mine and the next
+    # person deserves to see it named.
+    #
+    # So: report the true total. Hedge only on the one condition that could
+    # genuinely indicate a page cap — a count landing exactly on the request
+    # limit — and say plainly that even then it is a suspicion.
     _saw = len(_stale)
-    _page_bounded = _saw >= CANVAS_MAX_DELETES_PER_CYCLE
-    _remaining_known = max(0, _saw - CANVAS_MAX_DELETES_PER_CYCLE)
-    # 1 block is the healthy steady state: last cycle's, about to be replaced.
-    if _saw > 1 or _page_bounded:
-        _phrase = (f"at least {_remaining_known} still queued (the lookup is "
-                   f"page-bounded — this is a floor, not a total)"
-                   if _page_bounded else
-                   f"{_remaining_known} still queued")
-        print(f"[CANVAS SYNC] {name}: saw {_saw}, deleted {_deleted}, {_phrase}")
+    _remaining = max(0, _saw - CANVAS_MAX_DELETES_PER_CYCLE)
+    _maybe_capped = (_saw == CANVAS_MAX_DELETES_PER_CYCLE)
+    # One block is the healthy steady state: last cycle's, about to be replaced.
+    if _saw > 1:
+        _phrase = (f"*{_remaining} still queued*" if _remaining
+                   else "*backlog clear* — next cycle should see 1")
+        if _maybe_capped:
+            _phrase += (" _(the count landed exactly on the request limit, so "
+                        "there may be more the lookup did not return)_")
+        print(f"[CANVAS SYNC] {name}: found {_saw}, deleted {_deleted}, "
+              f"{_remaining} queued")
         try:
             _post_to_slack_async(SLACK_DEV_CHANNEL, (
-                f":broom: *Canvas cleanup* — `{name}`: lookup returned *{_saw}* "
-                f"duplicate block(s), removed *{_deleted}*. {_phrase.capitalize()}. "
-                f"_Next sync continues; this is progress, not completion._"))
+                f":broom: *Canvas cleanup* — `{name}`: found *{_saw}* duplicate "
+                f"block(s), removed *{_deleted}*. {_phrase}."))
         except Exception:
             pass
     elif _deleted:
-        print(f"[CANVAS SYNC] {name}: deleted {_deleted} stale block "
-              f"— steady state (lookup returned {_saw}, under the cap)")
+        print(f"[CANVAS SYNC] {name}: replaced 1 block — steady state")
 
     ok = _canvas_single_edit({
         "operation": "insert_after",
