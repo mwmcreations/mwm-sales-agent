@@ -42,6 +42,11 @@ from event_rail import (harden_event_body, audit_event, resolve_channel,
                         location_repair_for, venue_of,
                         VENUE_STUDIO, VENUE_VIRTUAL, VENUE_CLIENT_SITE)
 from event_rail import CH_WHATSAPP as CH_WHATSAPP_LABEL, CH_INSTAGRAM as CH_INSTAGRAM_LABEL
+# Patch #57 — barter proposals are not booked, and a call needs a number.
+from event_rail import (barter_signal_in_history, BARTER_YES, BARTER_MAYBE,
+                        barter_refusal_note, barter_clarify_note,
+                        booking_needs_number, resolve_callback_number,
+                        missing_number_note, PARTNERSHIP_INBOX)
 from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 from event_rail import (emails_in_field, email_field_matches,
@@ -2358,8 +2363,67 @@ Then call the get_available_slots tool to fetch real availability and present th
 
 Just reply with the number that works best for you — or if none of these work, let me know a day and time that's better for you and I'll check if Michael is available! ð"
 
+
+════════════════════════════════════════════════════════════════════
+PARTNERSHIPS AND EXCHANGES ARE NOT BOOKED  (hard rule — no exceptions)
+════════════════════════════════════════════════════════════════════
+If a lead proposes ANY arrangement where MWM is paid in something other
+than money — a barter, a trade, an "exchange of services", advertising or
+promotion or exposure in return for studio time, a sponsorship, an
+affiliate or commission deal, a revenue share — then:
+
+  ✗ Do NOT offer a call. Do NOT offer a studio visit.
+  ✗ Do NOT check or present Michael's availability.
+  ✗ Do NOT say or imply that Michael likes, loves, welcomes or is open to
+    partnerships. Do not characterise how he feels about a deal AT ALL.
+    You do not know, and it is not yours to promise.
+  ✗ Do NOT promise that you will brief him, or that he will reply by any
+    particular time.
+
+  ✓ Say, in your own words: this isn't something you can set up yourself,
+    and the way to put a proposal in front of the team is to email
+    info@mwmcreations.com with what they'd provide, what they'd want from
+    MWM, and their audience numbers. Michael reads that inbox and replies
+    himself.
+  ✓ Then STOP. No booking, no follow-up offer, no times.
+
+This applies from the moment the exchange is mentioned, even if the
+conversation started as a normal paid enquiry — which is exactly how it
+usually happens: they ask the price, can't afford it, and pivot.
+
+If they use partnership or collaboration language but you cannot tell
+whether they intend to PAY, ask one plain question before you offer
+anything: "Just so I point you the right way — is this a paid engagement,
+or are you proposing an exchange of services?" Then follow the answer.
+
+The booking tool enforces this. If you try to book an exchange lead it
+will refuse, and the refusal is not a bug to work around.
+
+════════════════════════════════════════════════════════════════════
+A CALL NEEDS A NUMBER YOU CAN ACTUALLY DIAL  (hard rule)
+════════════════════════════════════════════════════════════════════
+A strategy call is a PHONE CALL MICHAEL PLACES. Before you confirm any
+time for one, you must have the lead's phone number with country code,
+and you must pass it as callback_phone.
+
+An Instagram thread ID is NOT a phone number. A WhatsApp thread already
+has one; an Instagram conversation does not. So on Instagram, add the
+phone number to the details you collect:
+
+  👤 Your full name
+  📧 Your email
+  📱 Your best phone number (with country code)
+  🏢 Your business name
+
+If they won't give a number, do not book. Tell them Michael will follow
+up by email instead. Booking a call with no number to dial is worse than
+not booking — it puts a promise on the calendar that nobody can keep.
+
+The booking tool enforces this too, and will refuse without a number.
+
 Step 4.5 — COLLECT CONTACT INFO (before booking)
 Before calling book_appointment, you need the lead's name, email, and business name.
+For a STRATEGY CALL you also need their phone number — see the hard rule above.
 Ask for ALL THREE in a single message — this is the ONE exception to the one-question rule:
 
 "Perfect! Just need a few details to lock in the time:
@@ -2377,6 +2441,7 @@ When the lead replies with a number (1–5), call the book_appointment tool with
 - The corresponding slot_id
 - Their name, email, and business
 - appointment_type: use "studio_visit" if booking a studio visit, or "strategy_call" if booking a remote call
+- callback_phone: REQUIRED for "strategy_call" — the number Michael will dial, with country code
 
 Then confirm warmly:
 "You're all set! ð Michael's looking forward to meeting you at the studio on [day] at [time].
@@ -3058,7 +3123,10 @@ TOOLS = [
             "Call this after the lead replies with their chosen slot number. "
             "Sends a calendar invite to the lead's email automatically. "
             "Use appointment_type='studio_visit' when booking a studio visit, "
-            "and appointment_type='strategy_call' when booking a remote strategy call."
+            "and appointment_type='strategy_call' when booking a remote strategy call. "
+            "A strategy call is a phone call MICHAEL PLACES: you must pass callback_phone. "
+            "This tool will REFUSE the booking if the lead has proposed an exchange, "
+            "barter or trade instead of paying — those go to info@mwmcreations.com, never to the calendar."
         ),
         "input_schema": {
             "type": "object",
@@ -3083,6 +3151,10 @@ TOOLS = [
                     "type": "string",
                     "enum": ["studio_visit", "strategy_call"],
                     "description": "Type of appointment: 'studio_visit' for in-person visits to MWM Studios, 'strategy_call' for remote video/phone calls."
+                },
+                "callback_phone": {
+                    "type": "string",
+                    "description": "The phone number Michael will actually dial, with country code (e.g. +14075551234). REQUIRED for appointment_type='strategy_call' — a strategy call is a phone call Michael places, so ask the lead for their best number BEFORE you confirm a time. An Instagram or WhatsApp thread ID is not a phone number. If you do not have one, ask for it; do not guess and do not reuse the thread identifier."
                 }
             },
             "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
@@ -3290,7 +3362,8 @@ def get_available_slots():
         return []
 
 
-def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None):
+def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None,
+                     callback_phone=None):
     """
     Create a 1-hour Google Calendar event on the MWM Creations calendar.
 
@@ -3311,8 +3384,35 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
          (works when service account has WRITER access but DWD is not configured)
 
     Returns the event ID on success, or None on failure.
+
+    PATCH #57 — a `strategy_call` is a call MICHAEL PLACES. The event
+    location literally reads "Michael will dial the number on this
+    booking". Before this patch nothing checked that a number existed,
+    and an Instagram lead was booked for Fri Aug 7 10:00 whose only
+    identifier was an IGSID. The rail had already written the note
+    "IG-scoped identifier — WhatsApp impossible" onto that very event;
+    it just had no authority to stop it. It does now. A studio visit is
+    unaffected — the lead walks through the door, and refusing an
+    in-person booking over a missing phone number costs more than it saves.
     """
     try:
+        _num_ok, _dial_number, _num_why = resolve_callback_number(
+            appointment_type, identifier=lead_phone, callback=callback_phone,
+        )
+        if not _num_ok:
+            print(f"[book_appointment] REFUSED — no dialable number: {_num_why}")
+            _notify_error_to_dev(
+                "Call Booked With No Number",
+                f"Refused a {appointment_type} for {lead_name}: {_num_why}. "
+                f"Maya has been told to ask for the number and book again.",
+                lead_info=f"{lead_name} ({lead_phone})",
+                severity="WARNING",
+            )
+            return {"refused": True, "reason": _num_why,
+                    "instruction": missing_number_note(appointment_type, _num_why)}
+        if booking_needs_number(appointment_type) is False and not _dial_number:
+            print(f"[book_appointment] note: booking without a phone number — {_num_why}")
+
         # Try with DWD first (sends proper calendar invites as Michael)
         # Falls back to no-DWD if unauthorized_client (DWD not configured in Google Admin)
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
@@ -3406,6 +3506,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 f"Email: {lead_email}\n"
                 f"Booked by: Maya\n"
                 f"Booked via: {_true_channel}"
+                # Patch #57 — the number to dial, on the event, where the
+                # person who has to place the call will actually look.
+                + (f"\nCall this number: {_dial_number}" if _dial_number else "")
             ),
             "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
@@ -3933,12 +4036,36 @@ def handle_tool_call(tool_name, tool_input, sender=None):
         return check_specific_slot(tool_input["requested_datetime"])
 
     elif tool_name == "book_appointment":
+        # ── PATCH #57 gate 1: exchange proposals are not booked ──
+        # Read from the LEAD's own turns, never from Maya's — her property
+        # management script says "One partnership = dozens of compliant
+        # clients", and scanning her side would refuse every one of those.
+        _hist = (ig_conversation_history.get(sender)
+                 or conversation_history.get(sender)
+                 or []) if sender else []
+        _barter = barter_signal_in_history(_hist)
+        if _barter == BARTER_YES:
+            print(f"[book_appointment] REFUSED — barter proposal from {sender}")
+            try:
+                _notify_error_to_dev(
+                    "Barter Booking Blocked",
+                    f"{tool_input.get('lead_name', 'A lead')} proposed an exchange "
+                    f"rather than payment. Booking refused; Maya redirected them "
+                    f"to {PARTNERSHIP_INBOX}.",
+                    lead_info=f"{tool_input.get('lead_name', '')} ({sender})",
+                    severity="INFO",
+                )
+            except Exception:
+                pass
+            return {"error": barter_refusal_note(tool_input.get("lead_name"))}
+
         event_id = book_appointment(
             slot_id=tool_input["slot_id"],
             lead_name=tool_input["lead_name"],
             lead_email=tool_input["lead_email"],
             lead_business=tool_input["lead_business"],
             lead_phone=sender,
+            callback_phone=tool_input.get("callback_phone"),
             appointment_type=tool_input.get("appointment_type", "studio_visit"),
             # Patch #30: pass the resolved channel explicitly. This is THE
             # call-site that produced every mislabelled event — it omitted the
@@ -3946,6 +4073,11 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             # bookings. `sender` is "instagram:<IGSID>" for IG threads.
             booked_via=resolve_channel(sender),
         )
+        # PATCH #57 — a refusal comes back as a dict, and a dict is truthy.
+        # Without this the old `if event_id:` would treat "no number to dial"
+        # as a successful booking and fire the whole confirmation chain.
+        if isinstance(event_id, dict):
+            return {"error": event_id.get("instruction") or event_id.get("reason")}
         if event_id:
             # Update Google Sheets row with booking status
             try:
@@ -12980,6 +13112,64 @@ async function uploadAll(){
 
 MAYA_WEB_SYSTEM_PROMPT = """You are Maya, the AI sales and support assistant for MWM Creations & Studios, a video production company based in Orlando, Florida.
 
+════════════════════════════════════════════════════════════════════
+PARTNERSHIPS AND EXCHANGES ARE NOT BOOKED  (hard rule — no exceptions)
+════════════════════════════════════════════════════════════════════
+If a lead proposes ANY arrangement where MWM is paid in something other
+than money — a barter, a trade, an "exchange of services", advertising or
+promotion or exposure in return for studio time, a sponsorship, an
+affiliate or commission deal, a revenue share — then:
+
+  ✗ Do NOT offer a call. Do NOT offer a studio visit.
+  ✗ Do NOT check or present Michael's availability.
+  ✗ Do NOT say or imply that Michael likes, loves, welcomes or is open to
+    partnerships. Do not characterise how he feels about a deal AT ALL.
+    You do not know, and it is not yours to promise.
+  ✗ Do NOT promise that you will brief him, or that he will reply by any
+    particular time.
+
+  ✓ Say, in your own words: this isn't something you can set up yourself,
+    and the way to put a proposal in front of the team is to email
+    info@mwmcreations.com with what they'd provide, what they'd want from
+    MWM, and their audience numbers. Michael reads that inbox and replies
+    himself.
+  ✓ Then STOP. No booking, no follow-up offer, no times.
+
+This applies from the moment the exchange is mentioned, even if the
+conversation started as a normal paid enquiry — which is exactly how it
+usually happens: they ask the price, can't afford it, and pivot.
+
+If they use partnership or collaboration language but you cannot tell
+whether they intend to PAY, ask one plain question before you offer
+anything: "Just so I point you the right way — is this a paid engagement,
+or are you proposing an exchange of services?" Then follow the answer.
+
+The booking tool enforces this. If you try to book an exchange lead it
+will refuse, and the refusal is not a bug to work around.
+
+════════════════════════════════════════════════════════════════════
+A CALL NEEDS A NUMBER YOU CAN ACTUALLY DIAL  (hard rule)
+════════════════════════════════════════════════════════════════════
+A strategy call is a PHONE CALL MICHAEL PLACES. Before you confirm any
+time for one, you must have the lead's phone number with country code,
+and you must pass it as callback_phone.
+
+An Instagram thread ID is NOT a phone number. A WhatsApp thread already
+has one; an Instagram conversation does not. So on Instagram, add the
+phone number to the details you collect:
+
+  👤 Your full name
+  📧 Your email
+  📱 Your best phone number (with country code)
+  🏢 Your business name
+
+If they won't give a number, do not book. Tell them Michael will follow
+up by email instead. Booking a call with no number to dial is worse than
+not booking — it puts a promise on the calendar that nobody can keep.
+
+The booking tool enforces this too, and will refuse without a number.
+
+
 """ + MAYA_SHARED_KNOWLEDGE + """
 
 WEBSITE CHAT — CHANNEL-SPECIFIC BEHAVIOR:
@@ -13071,7 +13261,9 @@ WEB_CHAT_TOOLS = [
         "description": (
             "Book a 1-hour appointment on Michael's Google Calendar. "
             "Sends a calendar invite to the lead's email automatically. "
-            "Use appointment_type='studio_visit' for in-person visits, 'strategy_call' for remote calls."
+            "Use appointment_type='studio_visit' for in-person visits, 'strategy_call' for remote calls. "
+            "A strategy call is a phone call Michael places: callback_phone is required. "
+            "Exchange/barter proposals are never booked — send those to info@mwmcreations.com."
         ),
         "input_schema": {
             "type": "object",
@@ -13084,6 +13276,10 @@ WEB_CHAT_TOOLS = [
                     "type": "string",
                     "enum": ["studio_visit", "strategy_call"],
                     "description": "Type of appointment."
+                },
+                "callback_phone": {
+                    "type": "string",
+                    "description": "The phone number Michael will actually dial, with country code (e.g. +14075551234). REQUIRED for appointment_type='strategy_call' — a strategy call is a phone call Michael places, so ask the lead for their best number BEFORE you confirm a time. An Instagram or WhatsApp thread ID is not a phone number. If you do not have one, ask for it; do not guess and do not reuse the thread identifier."
                 }
             },
             "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
@@ -13152,9 +13348,12 @@ def _handle_web_tool_call(tool_name, tool_input):
             lead_email=_web_lead_email,
             lead_business=_web_lead_biz,
             lead_phone=_web_lead_phone,
+            callback_phone=tool_input.get("callback_phone"),
             appointment_type=tool_input.get("appointment_type", "studio_visit"),
             booked_via="Website Chat"
         )
+        if isinstance(event_id, dict):          # PATCH #57 — see site 1
+            return {"error": event_id.get("instruction") or event_id.get("reason")}
         if event_id:
             # ── Dedup + persist: register web chat lead in lead_data ──
             _web_key = f"web:{_web_lead_email or _web_lead_name or 'unknown'}"

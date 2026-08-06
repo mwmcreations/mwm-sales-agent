@@ -17,7 +17,12 @@ from event_rail import (stage_horizon_phrase, confirmation_copy, KIND_INTERNAL,
                         harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email, looks_like_address,
                         reminder_channel_for, EventRailRejected, STANDARD_REMINDERS,
-                        CH_INSTAGRAM, CH_WHATSAPP, CH_WEB, CH_UNKNOWN)
+                        CH_INSTAGRAM, CH_WHATSAPP, CH_WEB, CH_UNKNOWN,
+                        barter_signal, barter_signal_in_history,
+                        BARTER_YES, BARTER_MAYBE, BARTER_NONE,
+                        barter_refusal_note, barter_clarify_note,
+                        booking_needs_number, resolve_callback_number,
+                        missing_number_note, PARTNERSHIP_INBOX)
 
 _passed = _failed = 0
 
@@ -1050,6 +1055,145 @@ check_false("the full address never survives masking",
 check_false("...nor the full number",
             "14075551234" in mask_contact("14075551234"))
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PATCH #57 — barter proposals are not booked, and a call needs a number
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n--- Patch #57: barter proposals never reach the calendar ---")
+
+# The sentence that started this. Verbatim from the Aug 5 Instagram thread.
+GIAN = ("That's not a bad price, at the moment though I cant afford it but "
+        "are yall willing to do a business exchange if i advertise for yall "
+        "on my YouTube channel?")
+
+check("the actual message that caused this is a hard barter signal",
+      barter_signal(GIAN), BARTER_YES)
+
+for phrase in [
+    "would you be open to a barter?",
+    "I can advertise for you in exchange for studio time",
+    "happy to promote your studio in return for editing",
+    "can we trade services instead of paying",
+    "I'd rather do an exchange of services",
+    "posso fazer uma permuta?",
+    "free sessions in exchange for shoutouts",
+    "instead of paying could I give you exposure",
+]:
+    check_true(f"hard barter: {phrase[:44]!r}", barter_signal(phrase) == BARTER_YES)
+
+print("\n--- ...but a paying lead is not blocked ---")
+
+for phrase in [
+    "How much is it to film twice a month?",
+    "What's your hourly rate with editing included?",
+    "I want to book the monthly package",
+    "Can I come see the studio on Thursday?",
+    "We're an exchange student agency looking to hire a video team",
+]:
+    check("paying language stays clear of the hard gate",
+          barter_signal(phrase) == BARTER_YES, False)
+
+print("\n--- partnership language is a question, not a refusal ---")
+
+check("bare 'partnership' is only a maybe",
+      barter_signal("I'm interested in a partnership with your studio"),
+      BARTER_MAYBE)
+check("'partner with' is only a maybe",
+      barter_signal("Would you want to partner with our agency?"), BARTER_MAYBE)
+check("'collab' is only a maybe", barter_signal("wanna collab?"), BARTER_MAYBE)
+check("a plain enquiry is neither",
+      barter_signal("Do you shoot podcasts?"), BARTER_NONE)
+check("empty text is neither", barter_signal(""), BARTER_NONE)
+check("None does not crash", barter_signal(None), BARTER_NONE)
+
+print("\n--- history is read from the LEAD's turns only ---")
+
+# This is the false positive that would otherwise fire on every property
+# management pitch Maya makes. Her own script says "One partnership = ...".
+MWM_PITCH = ("One partnership = dozens of compliant clients. Bundle it into "
+             "your management offering.")
+
+check("MWM's own partnership pitch does not flag the lead",
+      barter_signal_in_history([
+          {"role": "user", "content": "We manage 40 associations."},
+          {"role": "assistant", "content": MWM_PITCH},
+      ]), BARTER_NONE)
+
+check("the lead's own barter line does flag",
+      barter_signal_in_history([
+          {"role": "user", "content": "how much per hour?"},
+          {"role": "assistant", "content": "It's $349/hour with editing."},
+          {"role": "user", "content": GIAN},
+          {"role": "assistant", "content": "That's a creative idea!"},
+      ]), BARTER_YES)
+
+check("hard beats soft anywhere in the window",
+      barter_signal_in_history([
+          {"role": "user", "content": "interested in a partnership"},
+          {"role": "user", "content": "I mean a barter, no money"},
+      ]), BARTER_YES)
+
+check("tool-shaped content blocks are flattened, not crashed on",
+      barter_signal_in_history([
+          {"role": "user", "content": [{"type": "text", "text": GIAN}]},
+      ]), BARTER_YES)
+
+check("an empty history is safe", barter_signal_in_history([]), BARTER_NONE)
+check("None history is safe", barter_signal_in_history(None), BARTER_NONE)
+
+check_true("the refusal tells Maya where to send them",
+           PARTNERSHIP_INBOX in barter_refusal_note("Gian"))
+check_true("the refusal names the lead when we know it",
+           "Gian" in barter_refusal_note("Gian"))
+check_true("the refusal forbids characterising Michael's appetite",
+           "how Michael feels" in barter_refusal_note())
+check_true("the clarify note asks the paid-or-exchange question",
+           "paid engagement" in barter_clarify_note())
+
+print("\n--- a call Michael places needs a number he can dial ---")
+
+check_true("a strategy call needs a number", booking_needs_number("strategy_call"))
+check_false("a studio visit does not", booking_needs_number("studio_visit"))
+check_false("an unknown type does not", booking_needs_number(None))
+
+# Gian's real identifier, as Maya stored it.
+IGSID = "+2264056414361639"
+
+ok, num, why = resolve_callback_number("strategy_call", identifier=IGSID)
+check("an IG thread with no callback number is refused", ok, False)
+check("...and no number is invented", num, None)
+check_true("...and the reason names the IGSID", "IGSID" in why)
+
+ok, num, why = resolve_callback_number("strategy_call", identifier=IGSID,
+                                       callback="+1 407 555 1234")
+check("a collected callback number rescues the booking", ok, True)
+check("...and it is the number that gets used", num, "+1 407 555 1234")
+
+ok, num, why = resolve_callback_number("strategy_call", identifier=IGSID,
+                                       callback=IGSID)
+check("passing the IGSID back as the callback fools nothing", ok, False)
+
+ok, num, why = resolve_callback_number("strategy_call",
+                                       identifier="whatsapp:+14075551234")
+check("a WhatsApp thread already has its number", ok, True)
+check_true("...taken from the identifier", "4075551234" in (num or ""))
+
+ok, num, why = resolve_callback_number("studio_visit", identifier=IGSID)
+check("a studio visit is NOT refused for want of a number", ok, True)
+check("...but it is honest that there is none", num, None)
+
+ok, num, why = resolve_callback_number("strategy_call", identifier=None,
+                                       callback=None)
+check("no identifier and no callback is still a refusal", ok, False)
+
+check_true("the refusal tells Maya exactly what to ask for",
+           "phone number" in missing_number_note("strategy_call"))
+check_true("...and which argument to put it in",
+           "callback_phone" in missing_number_note("strategy_call"))
+check_false("...and does not tell her to confirm a time first",
+            "confirm the time" in missing_number_note("strategy_call"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

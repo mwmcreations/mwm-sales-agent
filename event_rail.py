@@ -1877,3 +1877,224 @@ def within_send_window(dt, start_hour=SEND_WINDOW_START_HOUR,
     except AttributeError:
         return False
     return start_hour <= hour < end_hour
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #57 — two things Maya was allowed to do, and should not be
+#
+# Both came out of one real conversation (Gian Hernandez, IG DM, Aug 5):
+#
+#   1. The lead opened with pricing, could not afford it, and pivoted to
+#      "are y'all willing to do a business exchange if I advertise for
+#      y'all on my YouTube channel?" Maya answered by offering three
+#      strategy-call slots and telling him "Michael loves creative
+#      partnerships." Michael does not take barter proposals on calls,
+#      and Maya has no standing to characterise his appetite for a deal.
+#      Exchange proposals go to an inbox, in writing, or they do not go.
+#
+#   2. She then BOOKED a phone call for a lead whose only identifier was
+#      an Instagram-scoped ID. The event location reads "Michael will
+#      dial the number on this booking". There was no number. The rail
+#      already knew — reminder_channel_for() wrote the note "IG-scoped
+#      identifier — WhatsApp impossible" onto the event — but nothing
+#      stopped the booking. A call you cannot place is not a booking,
+#      it is a no-show with a calendar entry.
+# ══════════════════════════════════════════════════════════════════════
+
+PARTNERSHIP_INBOX = "info@mwmcreations.com"
+
+# TIER 1 — the shape of an actual barter offer. Something is being given
+# INSTEAD OF money. These block a booking outright.
+#
+# Deliberately about the SHAPE, not the vocabulary: "partnership" on its
+# own is not here, because a lead saying "I'm looking for a video partner"
+# usually means a paying engagement, and blocking those would cost real
+# money. Bare partnership language is TIER 2 below.
+_BARTER_HARD = re.compile(
+    r"(barter"
+    r"|permuta"
+    r"|\btroca\b|\btrocar\b"
+    r"|business\s+exchange"
+    r"|service\s+exchange"
+    r"|exchange\s+of\s+services"
+    r"|in\s+exchange\s+for"
+    r"|in\s+return\s+for"
+    r"|trade\s+(you|services|service|work|for)"
+    r"|swap\s+(services|service|work)"
+    r"|(instead\s+of|rather\s+than)\s+(paying|payment|money|cash)"
+    r"|(free|comp(ed)?|no\s+charge|discount(ed)?)\s+in\s+(exchange|return)"
+    r"|(advertis\w+|promot\w+|shout\s*out|expos\w+)[^.?!]{0,40}\b(in\s+)?(exchange|return|instead)"
+    r"|(exchange|return)[^.?!]{0,40}\b(advertis\w+|promot\w+|shout\s*out|expos\w+)"
+    r")",
+    re.I,
+)
+
+# TIER 2 — words that MIGHT be a barter approach and might be an ordinary
+# paying enquiry. These never block. They tell Maya to ask one question
+# before she offers anyone a time.
+_BARTER_SOFT = re.compile(
+    r"(partnership|partner\s+(with|up)"
+    r"|parceria"
+    r"|collab(orat\w+)?"
+    r"|sponsor(ship|ed)?"
+    r"|affiliate"
+    r"|revenue\s+share|rev\s*share"
+    r"|commission\s+(only|based)"
+    r")",
+    re.I,
+)
+
+BARTER_NONE = "none"
+BARTER_MAYBE = "maybe"
+BARTER_YES = "yes"
+
+
+def barter_signal(text):
+    """Classify one message: BARTER_YES / BARTER_MAYBE / BARTER_NONE."""
+    if not text:
+        return BARTER_NONE
+    s = str(text)
+    if _BARTER_HARD.search(s):
+        return BARTER_YES
+    if _BARTER_SOFT.search(s):
+        return BARTER_MAYBE
+    return BARTER_NONE
+
+
+def barter_signal_in_history(messages, lookback=14):
+    """Scan a conversation and return the strongest signal the LEAD gave.
+
+    Only inbound turns are read. This is not fussiness — MWM's own sales
+    copy says "One partnership = dozens of compliant clients", so scanning
+    assistant turns would flag every property-management pitch Maya has
+    ever made as a barter approach.
+
+    `messages` is the usual [{"role": ..., "content": ...}] list. Content
+    that arrives as a list of blocks (the tool-use shape) is flattened.
+    """
+    if not messages:
+        return BARTER_NONE
+    strongest = BARTER_NONE
+    for m in list(messages)[-lookback:]:
+        try:
+            if (m.get("role") or "").lower() != "user":
+                continue
+            content = m.get("content")
+        except AttributeError:
+            continue
+        if isinstance(content, list):
+            parts = []
+            for blk in content:
+                if isinstance(blk, dict):
+                    parts.append(str(blk.get("text") or ""))
+                else:
+                    parts.append(str(blk))
+            content = " ".join(parts)
+        sig = barter_signal(content)
+        if sig == BARTER_YES:
+            return BARTER_YES
+        if sig == BARTER_MAYBE:
+            strongest = BARTER_MAYBE
+    return strongest
+
+
+def barter_refusal_note(lead_name=None):
+    """What Maya is told when she tries to book a barter lead.
+
+    Addressed to Maya, not to the lead: it has to end the booking attempt
+    AND give her the next sentence, or she will improvise one.
+    """
+    who = f" {lead_name}" if lead_name else ""
+    return (
+        "BOOKING REFUSED — this lead has proposed an exchange, barter or "
+        "trade rather than payment. MWM does not take those on calls or "
+        "studio visits, and you must not offer times, check availability, "
+        "or say anything about how Michael feels about partnerships. "
+        f"Tell{who} this instead, in your own words: it is not something "
+        "you can set up yourself, and the way to put a proposal in front "
+        f"of the team is to email {PARTNERSHIP_INBOX} with what they would "
+        "provide, what they would want from MWM, and their audience "
+        "numbers — Michael reads that inbox and will reply himself. "
+        "Then stop. Do not book, do not offer to follow up, do not promise "
+        "a date for a reply."
+    )
+
+
+def barter_clarify_note():
+    """TIER 2. Not a refusal — one question before any time is offered."""
+    return (
+        "CAUTION — this lead has used partnership/collaboration language, "
+        "which may or may not mean they intend to pay. Before you offer "
+        "any times, ask one plain question: is this a paid engagement, or "
+        "are they proposing an exchange of services? If it is an exchange, "
+        f"send them to {PARTNERSHIP_INBOX} and do not book."
+    )
+
+
+# ── the number you are going to dial ─────────────────────────────────
+
+# Appointment types where Michael places a call. The event location for
+# these reads "Michael will dial the number on this booking", so a
+# booking without a dialable number is a promise nobody can keep.
+CALL_APPOINTMENT_TYPES = ("strategy_call",)
+
+
+def booking_needs_number(appointment_type):
+    """True when this appointment type cannot happen without a phone number."""
+    return str(appointment_type or "").strip().lower() in CALL_APPOINTMENT_TYPES
+
+
+def resolve_callback_number(appointment_type, identifier=None, callback=None):
+    """Decide what number this booking will actually be placed on.
+
+    Returns (ok, number, reason).
+
+    `callback` is a number the lead gave in words — it wins, because it
+    was volunteered for exactly this purpose. `identifier` is the thread
+    identifier, which is a phone number on WhatsApp and an IGSID on
+    Instagram; it is used only when it is genuinely dialable.
+
+    ok is False only for appointment types that need a number and have
+    none. A studio visit resolves ok=True with number=None: the lead is
+    walking through the door, and refusing an in-person booking over a
+    missing phone number would cost more than it saves. The caller still
+    gets the reason, and should report it.
+    """
+    needs = booking_needs_number(appointment_type)
+
+    if callback and is_dialable(callback):
+        return True, str(callback).strip(), "callback number supplied by the lead"
+
+    if callback and not is_dialable(callback):
+        why = ("the number given is Instagram-scoped, not a phone number"
+               if is_ig_scoped(callback)
+               else "the number given is not a usable phone number")
+        if needs:
+            return False, None, why
+        return True, None, why
+
+    if identifier and is_dialable(identifier):
+        return True, str(identifier).strip(), "thread identifier is a dialable number"
+
+    if needs:
+        if is_ig_scoped(identifier):
+            return False, None, (
+                "Instagram thread — the identifier is an IGSID, not a phone "
+                "number, and no callback number was collected"
+            )
+        return False, None, "no dialable number on this booking"
+
+    return True, None, "no phone number on file (not required for this type)"
+
+
+def missing_number_note(appointment_type, reason=""):
+    """What Maya is told when she tries to book a call with no number."""
+    tail = f" ({reason})" if reason else ""
+    return (
+        f"BOOKING REFUSED — a {appointment_type.replace('_', ' ')} is a phone "
+        f"call that Michael places, and there is no number to call{tail}. "
+        "Ask the lead for the best phone number to reach them on, including "
+        "country code, then book again with that number in callback_phone. "
+        "Do not confirm any time until you have it. If they will not give a "
+        "number, do not book — tell them Michael will follow up by email."
+    )
