@@ -16377,21 +16377,44 @@ def _replace_table_section(name, markdown):
             _deleted += 1
         if CANVAS_DELETE_SPACING_S:
             time.sleep(CANVAS_DELETE_SPACING_S)
-    _remaining = max(0, len(_stale) - CANVAS_MAX_DELETES_PER_CYCLE)
-    if _remaining:
-        # Never let a capped cleanup read as a complete one.
-        print(f"[CANVAS SYNC] {name}: deleted {_deleted}, "
-              f"{_remaining} duplicate block(s) STILL QUEUED — draining over "
-              f"the next cycles (cap {CANVAS_MAX_DELETES_PER_CYCLE}/cycle)")
+
+    # ── PATCH #64 — SAY THE NUMBER, AND SAY WHAT YOU CANNOT SEE ──
+    #
+    # #63 shipped with a drain report that could only count what the lookup
+    # returned. On the first run after deploy it removed a batch, found
+    # `remaining == 0`, and said nothing — while the canvas plainly still
+    # had hundreds of blocks on it. `canvases.sections.lookup` returns a
+    # BOUNDED page, so `len(_stale)` is a floor, never a total.
+    #
+    # That is the same failure as the bug it was written to fix: a report
+    # that cannot distinguish "finished" from "cannot see the rest". So the
+    # word "clear" is only ever used when the evidence supports it — a
+    # lookup that came back under the cap, fully deleted. Anything else is
+    # reported as a floor, out loud, with the number.
+    #
+    # This is also the instrument the board has been missing: the canvas is
+    # 33 MB and cannot be read in one call, so the duplicate count has had
+    # to be estimated by grepping. Now the sync itself reports it.
+    _saw = len(_stale)
+    _page_bounded = _saw >= CANVAS_MAX_DELETES_PER_CYCLE
+    _remaining_known = max(0, _saw - CANVAS_MAX_DELETES_PER_CYCLE)
+    # 1 block is the healthy steady state: last cycle's, about to be replaced.
+    if _saw > 1 or _page_bounded:
+        _phrase = (f"at least {_remaining_known} still queued (the lookup is "
+                   f"page-bounded — this is a floor, not a total)"
+                   if _page_bounded else
+                   f"{_remaining_known} still queued")
+        print(f"[CANVAS SYNC] {name}: saw {_saw}, deleted {_deleted}, {_phrase}")
         try:
             _post_to_slack_async(SLACK_DEV_CHANNEL, (
-                f":broom: *Canvas cleanup draining* — `{name}`: removed {_deleted} "
-                f"duplicate block(s) this cycle, *{_remaining} still queued*. "
-                f"Not finished; next sync continues."))
+                f":broom: *Canvas cleanup* — `{name}`: lookup returned *{_saw}* "
+                f"duplicate block(s), removed *{_deleted}*. {_phrase.capitalize()}. "
+                f"_Next sync continues; this is progress, not completion._"))
         except Exception:
             pass
     elif _deleted:
-        print(f"[CANVAS SYNC] {name}: deleted {_deleted} stale block(s) — backlog clear")
+        print(f"[CANVAS SYNC] {name}: deleted {_deleted} stale block "
+              f"— steady state (lookup returned {_saw}, under the cap)")
 
     ok = _canvas_single_edit({
         "operation": "insert_after",
