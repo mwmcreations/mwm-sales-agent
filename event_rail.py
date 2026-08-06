@@ -345,6 +345,100 @@ def sheet_row_key(value):
     return digits if len(digits) >= 7 else ""
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #63 — A BLOCK MUST CARRY THE MARK USED TO FIND IT AGAIN
+#
+# The pipeline canvas has 362 duplicate "Active Leads" blocks, ~16M
+# characters, growing by roughly one block every 28-minute sync. MATT could
+# not read it in one call this morning. It has been diagnosed twice as a
+# missing "S54-ACTIVE-LEADS" anchor. That anchor never existed. Here is what
+# actually happened.
+#
+# `_replace_table_section()` is a DELETE-then-INSERT cycle, and it has been
+# correct since S5.6:
+#
+#     for sid in _canvas_lookup_ids(_CANVAS_FINGERPRINTS[name]):
+#         delete sid
+#     insert fresh block after the header
+#
+# The delete half depends entirely on a fingerprint — a literal string that
+# Slack's `canvases.sections.lookup` searches for — matching text inside the
+# block that was inserted last cycle. For Active Leads that fingerprint is:
+#
+#     "active_leads": "Days in Stage"
+#
+# Patch #34 renamed that column. Its own comment explains why, and it was the
+# right call: the number was never days-in-stage, it was the lead's age, and
+# the wrong header made a healthy pipeline look stuck. The header became
+# "Lead Age (d)".
+#
+# Nothing linked the header to the fingerprint. They are 600 lines apart, in
+# different functions, and no test crossed them. So from Patch #34 onward the
+# lookup matched ZERO sections, the delete loop deleted nothing, and the
+# insert ran anyway — every 28 minutes, forever. Delete-then-insert quietly
+# degraded into append.
+#
+# The other four sections are fine, and that is the corroboration: their
+# fingerprints still appear in their payloads, and only Active Leads
+# duplicates. One renamed string, 362 blocks.
+#
+# The fix is not "correct the string" — that repairs this instance and leaves
+# the trap armed for the next person who improves a column header. The fix is
+# that the block CARRIES ITS OWN MARK: `_replace_table_section` stamps every
+# block it inserts, and looks for that stamp when deleting. The mark is
+# generated from the section name, so it cannot drift from the payload — the
+# same function produces both.
+#
+# Legacy fingerprints are still swept, or the 362 orphans already on the
+# canvas would be unreachable forever.
+# ══════════════════════════════════════════════════════════════════════
+
+CANVAS_SYNC_PREFIX = "sync-id:"
+
+
+def canvas_sync_mark(name):
+    """The stamp that identifies a synced canvas block, from its section name.
+
+    Plain text on purpose, and underscores are folded to hyphens. Slack's
+    `contains_text` search matches the RENDERED text of a section, so
+    anything markdown might eat — a backtick, a bracket, an underscore that
+    pairs with another one into emphasis — is a fingerprint that works until
+    it doesn't. This whole patch exists because a fingerprint stopped
+    matching and nothing said so; the replacement is not going to depend on
+    how a renderer feels about punctuation.
+    """
+    return f"{CANVAS_SYNC_PREFIX} {str(name or '').strip().replace('_', '-')}"
+
+
+def canvas_stamp_block(name, markdown):
+    """Return `markdown` guaranteed to contain its own section's mark.
+
+    Idempotent: stamping twice does not double-stamp. For a fenced code block
+    the mark goes INSIDE the fence, because a section lookup has to find it in
+    the same node that gets deleted — a mark outside the fence identifies a
+    different section from the one being cleaned up, which is a subtler
+    version of the exact bug this patch exists to end.
+    """
+    mark = canvas_sync_mark(name)
+    md = markdown if isinstance(markdown, str) else str(markdown or "")
+    if mark in md:
+        return md
+    stripped = md.rstrip()
+    if stripped.endswith("```"):
+        return stripped[:-3].rstrip("\n") + "\n" + mark + "\n```"
+    return stripped + "\n" + mark
+
+
+def canvas_block_is_findable(name, markdown):
+    """True when a block can be found again by the mark used to delete it.
+
+    This is the invariant Patch #34 broke without anyone noticing. Inserting
+    a block you cannot later look up is not a cosmetic problem — it is an
+    unbounded append, and it has cost this canvas 16 million characters.
+    """
+    return canvas_sync_mark(name) in (markdown or "")
+
+
 # ── attendee address ─────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")

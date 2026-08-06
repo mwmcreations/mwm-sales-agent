@@ -1549,5 +1549,75 @@ check_true("a 16-digit IGSID is still recognised as IG-scoped after keying",
 check_false("...and is never dialable",
             is_dialable(sheet_row_key("instagram:1586517099782001")))
 
+# ══════════════════════════════════════════════════════════════════════
+print("\n== #63: a canvas block carries the mark used to find it again ==")
+from event_rail import (canvas_sync_mark, canvas_stamp_block,
+                        canvas_block_is_findable, CANVAS_SYNC_PREFIX)
+
+_BLOCK = "```\nName       Stage     Lead Age (d)\nJane Doe   Booked    12\n```"
+
+check("the mark is derived from the section name",
+      canvas_sync_mark("active_leads"), "sync-id: active-leads")
+check_true("...and is plain text — nothing markdown can eat",
+           all(c not in canvas_sync_mark("active_leads") for c in "`*_[]#|"))
+check_true("two sections never share a mark",
+           canvas_sync_mark("active_leads") != canvas_sync_mark("quick_stats"))
+
+_stamped = canvas_stamp_block("active_leads", _BLOCK)
+check_true("a stamped block is findable by its own mark",
+           canvas_block_is_findable("active_leads", _stamped))
+check_false("an UNSTAMPED block is not findable — this is the 362-block bug",
+            canvas_block_is_findable("active_leads", _BLOCK))
+check_true("the mark goes INSIDE the fence, with the content it identifies",
+           _stamped.rstrip().endswith("```")
+           and canvas_sync_mark("active_leads") in _stamped.rsplit("```", 2)[1])
+check_true("...and the original content survives",
+           "Jane Doe   Booked    12" in _stamped)
+check("stamping is idempotent — a re-synced block is not double-marked",
+      canvas_stamp_block("active_leads", _stamped).count(CANVAS_SYNC_PREFIX), 1)
+check_true("a block that is not fenced still gets marked",
+           canvas_block_is_findable("qs", canvas_stamp_block("qs", "plain text")))
+check_true("empty markdown still ends up findable",
+           canvas_block_is_findable("qs", canvas_stamp_block("qs", "")))
+check_false("a block stamped for one section is NOT findable as another",
+            canvas_block_is_findable("quick_stats", _stamped))
+
+# ── the regression itself, read out of app.py's source ──
+# Patch #34 renamed a column header and the fingerprint 600 lines away was
+# never updated. Nothing crossed the two, so nothing complained. This does.
+_APP = open("app.py").read()
+import ast as _ast63, re as _re63
+_ns63 = {}
+for _n in _ast63.walk(_ast63.parse(_APP)):
+    if isinstance(_n, _ast63.Assign) and getattr(_n.targets[0], "id", "") in (
+            "_CANVAS_FINGERPRINTS", "_CANVAS_LEGACY_FINGERPRINTS"):
+        _ns63[_n.targets[0].id] = _ast63.literal_eval(_n.value)
+
+check_true("_CANVAS_FINGERPRINTS is still readable from source",
+           "_CANVAS_FINGERPRINTS" in _ns63)
+check_false("'Days in Stage' is no longer the Active Leads fingerprint — "
+            "that column has been called 'Lead Age (d)' since Patch #34",
+            _ns63.get("_CANVAS_FINGERPRINTS", {}).get("active_leads") == "Days in Stage")
+
+# The header line the canvas actually emits.
+_hdr63 = _re63.search(r"_lhdr = f\"(.*?)\"", _APP)
+check_true("the Active Leads header line is still findable in app.py", bool(_hdr63))
+if _hdr63:
+    _emitted = _hdr63.group(1)
+    _fp63 = _ns63.get("_CANVAS_FINGERPRINTS", {}).get("active_leads", "")
+    check_true(f"the fingerprint {_fp63!r} actually appears in the emitted header",
+               _fp63 and _fp63 in _emitted)
+
+# Every legacy fingerprint list must lead with a string that is still emitted
+# somewhere in the app — otherwise the orphan sweep cannot reach its own past.
+_legacy63 = _ns63.get("_CANVAS_LEGACY_FINGERPRINTS", {})
+check_true("legacy fingerprints are recorded for every synced section",
+           set(_legacy63) >= {"quick_stats", "source_breakdown", "studio_package",
+                              "active_leads", "system_status"})
+check_true("the Active Leads sweep still reaches blocks written under the OLD header",
+           "Days in Stage" in _legacy63.get("active_leads", []))
+check_true("...and blocks written under the current one",
+           "Lead Age (d)" in _legacy63.get("active_leads", []))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

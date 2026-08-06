@@ -52,6 +52,9 @@ from event_rail import (barter_signal_in_history, BARTER_YES, BARTER_MAYBE,
 # be tested without importing the whole app; app.py is not importable from
 # a test harness and that is exactly why this comparison went unpinned.
 from event_rail import sheet_row_key
+# Patch #63 — a synced canvas block carries the mark used to find it again.
+from event_rail import (canvas_sync_mark, canvas_stamp_block,
+                        canvas_block_is_findable)
 # Patch #58 — "I'll check with Michael" now has somewhere to land.
 from event_rail import (is_out_of_hours, out_of_hours_reason,
                         build_approval_request, approval_is_open,
@@ -16169,10 +16172,43 @@ _CANVAS_FINGERPRINTS = {
     "quick_stats":      "Total Active Leads",
     "source_breakdown": "Instagram (Maya Outbound)",
     "studio_package":   "Studio Contracts",
-    "active_leads":     "Days in Stage",
+    # PATCH #63 — was "Days in Stage". Patch #34 renamed that column to
+    # "Lead Age (d)" and this string was never updated, so the delete half of
+    # the canvas sync matched nothing and the insert ran anyway, every 28
+    # minutes, for weeks. Corrected here for section DISCOVERY; the
+    # delete sweep no longer depends on it (see _CANVAS_LEGACY_FINGERPRINTS).
+    "active_leads":     "Lead Age (d)",
     "system_status":    "Last Check",
     "action_log":       "Timestamp",
 }
+
+# PATCH #63 — every string a synced block has EVER been identifiable by.
+# The current mark is `canvas_sync_mark(name)` and is stamped into the block
+# by _replace_table_section itself, so it cannot drift from the payload.
+# These are swept as well, because 362 orphan blocks are already on the canvas
+# carrying nothing but the old header text, and a cleanup that cannot see them
+# leaves them there forever.
+_CANVAS_LEGACY_FINGERPRINTS = {
+    "quick_stats":      ["Total Active Leads"],
+    "source_breakdown": ["Instagram (Maya Outbound)"],
+    "studio_package":   ["Studio Contracts"],
+    "active_leads":     ["Lead Age (d)", "Days in Stage"],
+    "system_status":    ["Last Check"],
+}
+
+# Deleting 362 sections in one cycle is 362 API calls. Slack rate-limits
+# canvases.edit, and a burst that gets throttled halfway leaves the canvas in
+# a worse state than draining it deliberately. The backlog clears over a few
+# cycles and says out loud how much is left, so "still draining" and "stuck"
+# never look the same.
+CANVAS_MAX_DELETES_PER_CYCLE = int(os.getenv("CANVAS_MAX_DELETES_PER_CYCLE", "120"))
+CANVAS_DELETE_SPACING_S = float(os.getenv("CANVAS_DELETE_SPACING_S", "0.35"))
+
+# Sections this process has successfully inserted at least once. If a later
+# cycle looks for one and finds NOTHING, the block it wrote has become
+# unfindable — which is the append-forever signature, and the single fact
+# that would have caught this bug on day one instead of on day forty.
+_canvas_inserted_once = set()
 
 
 def _refresh_canvas_sections():
@@ -16299,19 +16335,71 @@ def _replace_table_section(name, markdown):
     'delete' strips only the text node, stranding a fingerprint-less remnant
     every cycle. Code blocks are single nodes: delete removes the whole block,
     replace is clean. Cycle = delete ALL fingerprint matches, then insert a
-    fresh block under the header. Self-heals when the block is missing."""
+    fresh block under the header. Self-heals when the block is missing.
+
+    PATCH #63: the block now carries the mark used to find it again, so a
+    header rename can never silently turn this cycle into an append."""
     header_id = _canvas_header_id(name)
     if not header_id:
         print(f"[CANVAS SYNC] {name}: header not found — cannot insert")
         return False
-    for sid in _canvas_lookup_ids(_CANVAS_FINGERPRINTS[name]):
-        if sid != header_id:
-            _canvas_single_edit({"operation": "delete", "section_id": sid})
+
+    # ── stamp first, so delete and insert agree by construction ──
+    markdown = canvas_stamp_block(name, markdown)
+    _mark = canvas_sync_mark(name)
+
+    # ── sweep: current mark first, then every string this section has ever
+    #    been identifiable by, so the existing orphans are reachable ──
+    _seen, _stale = set(), []
+    for _fp in [_mark] + _CANVAS_LEGACY_FINGERPRINTS.get(name, []):
+        for _sid in _canvas_lookup_ids(_fp):
+            if _sid and _sid != header_id and _sid not in _seen:
+                _seen.add(_sid)
+                _stale.append(_sid)
+
+    if not _stale and name in _canvas_inserted_once:
+        # We inserted a block for this section earlier in this process and
+        # cannot find a single one now. That is not "nothing to clean" — it
+        # is the block going unfindable, which is how 362 of them accumulated.
+        try:
+            _report_error(
+                "Canvas sync block became unfindable (_replace_table_section)",
+                Exception(f"section '{name}' was inserted earlier this process but "
+                          f"lookup for {_mark!r} and {_CANVAS_LEGACY_FINGERPRINTS.get(name, [])} "
+                          f"returned nothing — every future sync will APPEND instead "
+                          f"of replace"))
+        except Exception:
+            pass
+
+    _deleted = 0
+    for _sid in _stale[:CANVAS_MAX_DELETES_PER_CYCLE]:
+        if _canvas_single_edit({"operation": "delete", "section_id": _sid}):
+            _deleted += 1
+        if CANVAS_DELETE_SPACING_S:
+            time.sleep(CANVAS_DELETE_SPACING_S)
+    _remaining = max(0, len(_stale) - CANVAS_MAX_DELETES_PER_CYCLE)
+    if _remaining:
+        # Never let a capped cleanup read as a complete one.
+        print(f"[CANVAS SYNC] {name}: deleted {_deleted}, "
+              f"{_remaining} duplicate block(s) STILL QUEUED — draining over "
+              f"the next cycles (cap {CANVAS_MAX_DELETES_PER_CYCLE}/cycle)")
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                f":broom: *Canvas cleanup draining* — `{name}`: removed {_deleted} "
+                f"duplicate block(s) this cycle, *{_remaining} still queued*. "
+                f"Not finished; next sync continues."))
+        except Exception:
+            pass
+    elif _deleted:
+        print(f"[CANVAS SYNC] {name}: deleted {_deleted} stale block(s) — backlog clear")
+
     ok = _canvas_single_edit({
         "operation": "insert_after",
         "section_id": header_id,
         "document_content": {"type": "markdown", "markdown": markdown},
     })
+    if ok:
+        _canvas_inserted_once.add(name)
     print(f"[CANVAS SYNC] {name}: {'fresh block inserted' if ok else 'INSERT FAILED'} (S5.6 code-block cycle)")
     return ok
 
