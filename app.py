@@ -58,6 +58,9 @@ from event_rail import (is_out_of_hours, out_of_hours_reason,
                         approval_health_line, digits_of, APPROVAL_PENDING,
                         APPROVAL_APPROVED, APPROVAL_DECLINED, APPROVAL_EXPIRED,
                         STANDARD_HOURS_START, STANDARD_HOURS_END)
+# Patch #59 — a service account cannot invite attendees; fall back, never fail.
+from event_rail import (is_attendee_permission_error, strip_attendees,
+                        attendee_fallback_note, booking_sync_alert)
 from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 from event_rail import (emails_in_field, email_field_matches,
@@ -15073,6 +15076,8 @@ def studio_booking_webhook():
             end = str(evt.get("end_time") or "")[:5]
             if event == "booking_created":
                 gcal_note = "calendar ⚠️ failed"
+                _sb_state = "failed"          # PATCH #59 — pessimistic default
+                _sb_degraded = ""
                 try:
                     _sb_svc = get_calendar_service()
                     _sb_body = {
@@ -15114,18 +15119,63 @@ def studio_booking_webhook():
                             ))
                     except Exception as _sb_rail_err:
                         print(f"[EVENT-RAIL] portal harden failed (non-fatal): {_sb_rail_err}")
-                    _sb_created = _sb_svc.events().insert(
-                        calendarId=CALENDAR_ID, body=_sb_body, sendUpdates="all"
-                    ).execute(num_retries=3)
+                    # ── PATCH #59 ──────────────────────────────────────
+                    # This insert used to be a single attempt. On Aug 6 it
+                    # threw 403 forbiddenForServiceAccounts for Vanessa
+                    # Serrano's booking #59 — the service account may not
+                    # invite attendees without Domain-Wide Delegation — and
+                    # because it threw, NO EVENT WAS CREATED AT ALL. The
+                    # studio read as free for a slot a paying client had
+                    # booked. book_appointment already had this ladder; this
+                    # path did not.
+                    #
+                    # The event is what protects the studio from being
+                    # double-booked. The invite is a courtesy WordPress has
+                    # already delivered by email. If only one can survive,
+                    # it is the event.
+                    _sb_state = "ok"
+                    _sb_degraded = ""
+                    try:
+                        _sb_created = _sb_svc.events().insert(
+                            calendarId=CALENDAR_ID, body=_sb_body, sendUpdates="all"
+                        ).execute(num_retries=3)
+                    except Exception as _sb_first:
+                        if not is_attendee_permission_error(_sb_first):
+                            raise
+                        _sb_degraded = "no Domain-Wide Delegation on the booking service account"
+                        print(f"[STUDIO-BOOKING] #{bid} attendee insert refused — "
+                              f"retrying without attendees")
+                        _sb_retry = strip_attendees(_sb_body)
+                        _sb_retry["description"] = (
+                            (_sb_retry.get("description") or "")
+                            + "\n\n" + attendee_fallback_note(_sb_email))
+                        _sb_created = _sb_svc.events().insert(
+                            calendarId=CALENDAR_ID, body=_sb_retry, sendUpdates="none"
+                        ).execute(num_retries=3)
+                        _sb_state = "degraded"
+                        _report_error(
+                            "studio_booking.gcal_no_attendee",
+                            "Created WITHOUT the client as attendee — service "
+                            "account lacks Domain-Wide Delegation. Studio time "
+                            "IS blocked; calendar invites are off until DWD is "
+                            "granted.", f"booking={bid}")
                     _sbpg.save_state(f"studio_booking_gcal:{bid}", {"event_id": _sb_created.get("id", "")})
-                    gcal_note = "calendar ✅"
+                    gcal_note = "calendar ✅" if _sb_state == "ok" else "calendar ✅ (no invite)"
                 except Exception as _sb_e:
+                    _sb_state = "failed"
+                    _sb_degraded = str(_sb_e)[:180]
                     _report_error("studio_booking.gcal_insert", _sb_e, f"booking={bid}")
-                _post_to_slack_async(SLACK_MATT_CHANNEL, (
-                    f"📅 *STUDIO BOOKING* — {name}: {date} {start}–{end} "
-                    f"({evt.get('duration')}h) · portal booking #{bid} · {gcal_note} · "
-                    f"confirmation email sent by WP. No action needed."
-                ))
+                # PATCH #59 — the old line said "No action needed" even on
+                # the run where the calendar write had just failed. An alert
+                # that tells you to ignore a failure is worse than no alert.
+                _post_to_slack_async(SLACK_MATT_CHANNEL, booking_sync_alert(
+                    name, f"{date} {start}–{end} ({evt.get('duration')}h)",
+                    bid, _sb_state, _sb_degraded))
+                if _sb_state == "failed":
+                    _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                        f"🔴 *Portal booking #{bid} is NOT on the calendar* — "
+                        f"{name}, {date} {start}–{end}. The slot reads as free "
+                        f"and can be double-booked.\n`{_sb_degraded}`"))
             else:
                 late = event == "booking_cancelled_late"
                 gcal_note = ""

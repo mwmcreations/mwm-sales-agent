@@ -32,7 +32,9 @@ from event_rail import (stage_horizon_phrase, confirmation_copy, KIND_INTERNAL,
                         no_approval_tool_note, approval_filed_note,
                         approval_expiry_note, approval_health_line,
                         APPROVAL_PENDING, APPROVAL_APPROVED,
-                        STANDARD_HOURS_START, STANDARD_HOURS_END)
+                        STANDARD_HOURS_START, STANDARD_HOURS_END,
+                        is_attendee_permission_error, strip_attendees,
+                        attendee_fallback_note, booking_sync_alert)
 
 _passed = _failed = 0
 
@@ -1389,6 +1391,108 @@ check_true("...and its age, so three quiet days are visible",
            "h old" in approval_health_line(REQ, FRI))
 check_true("...and how many options are still salvageable",
            "2 of 3" in approval_health_line(REQ, FRI))
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PATCH #59 — the portal booking that never reached the calendar
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n--- Patch #59: recognising the attendee-permission failure ---")
+
+# The exact error Google returned for Vanessa Serrano's booking #59.
+REAL_403 = ('<HttpError 403 when requesting https://www.googleapis.com/calendar/v3/'
+            'calendars/c_03s30bthurplevpk6a264h7n34%40group.calendar.google.com/'
+            'events?sendUpdates=all&alt=json returned "Service accounts cannot '
+            'invite attendees without Domain-Wide Delegation of Authority.". '
+            'Details: "[{\'domain\': \'calendar\', \'reason\': '
+            '\'forbiddenForServiceAccounts\', \'message\': \'Service accounts '
+            'cannot invite attendees without Domain-Wide Delegation of '
+            'Authority.\'}]">')
+
+check_true("the real Vanessa 403 is recognised", is_attendee_permission_error(REAL_403))
+check_true("the reason code alone is enough",
+           is_attendee_permission_error("reason: forbiddenForServiceAccounts"))
+check_true("...and the prose alone is enough",
+           is_attendee_permission_error(
+               "Service accounts cannot invite attendees without "
+               "Domain-Wide Delegation of Authority."))
+check_true("case does not matter",
+           is_attendee_permission_error("FORBIDDENFORSERVICEACCOUNTS"))
+
+print("\n--- ...and NOT swallowing anything else ---")
+
+# This is the important half. Retrying these without attendees would fail
+# again while being reported as a degraded success.
+for other in [
+    "<HttpError 403 ... 'reason': 'rateLimitExceeded'>",
+    "<HttpError 404 ... Not Found>",
+    "<HttpError 401 ... Invalid Credentials>",
+    "<HttpError 400 ... 'Invalid start time.'>",
+    "<HttpError 403 ... 'reason': 'quotaExceeded'>",
+    "<HttpError 409 ... The requested identifier already exists.>",
+    "ConnectionResetError(104, 'Connection reset by peer')",
+]:
+    check_false(f"not an attendee problem: {other[:40]!r}",
+                is_attendee_permission_error(other))
+
+check_false("None is not an error", is_attendee_permission_error(None))
+check_false("empty is not an error", is_attendee_permission_error(""))
+
+print("\n--- the retry body keeps the event, drops only the invite ---")
+
+BODY = {
+    "summary": "🎬 Studio: Vanessa Serrano (3h)",
+    "description": "Studio Package portal booking #59",
+    "start": {"dateTime": "2026-08-21T12:00:00", "timeZone": "America/New_York"},
+    "end": {"dateTime": "2026-08-21T15:00:00", "timeZone": "America/New_York"},
+    "location": "1500 Park Center Dr, Suite 230",
+    "attendees": [{"email": "vanessa@vsinternationalproperties.com"}],
+    "reminders": {"useDefault": False,
+                  "overrides": [{"method": "popup", "minutes": 30}]},
+}
+SAFE = strip_attendees(BODY)
+
+check_false("the retry body has no attendees", "attendees" in SAFE)
+check("the time is untouched", SAFE["start"], BODY["start"])
+check("the end is untouched", SAFE["end"], BODY["end"])
+check("the summary is untouched", SAFE["summary"], BODY["summary"])
+check("the location survives", SAFE["location"], BODY["location"])
+check("the REMINDERS survive — the client still gets reminded",
+      SAFE["reminders"], BODY["reminders"])
+check_true("the original is not mutated", "attendees" in BODY)
+check_false("a body with no attendees is handled", "attendees" in strip_attendees({}))
+check_false("None is handled", "attendees" in strip_attendees(None))
+
+check_true("the fallback note names the client",
+           "vanessa@x.com" in attendee_fallback_note("vanessa@x.com"))
+check_true("...and says the studio time IS blocked",
+           "WITHOUT attendees" in attendee_fallback_note())
+check_true("...and says the client is not left uninformed",
+           "confirmation email" in attendee_fallback_note())
+
+print("\n--- the alert must never say 'no action needed' about a failure ---")
+
+OK = booking_sync_alert("Vanessa Serrano", "2026-08-21 12:00–15:00 (3h)", 59, "ok")
+check_true("a clean sync says no action needed", "No action needed." in OK)
+check_true("...and shows the tick", "calendar ✅" in OK)
+
+DEG = booking_sync_alert("Vanessa Serrano", "2026-08-21 12:00–15:00 (3h)", 59,
+                         "degraded", "no Domain-Wide Delegation")
+check_true("a degraded sync still confirms the time is blocked",
+           "studio time IS blocked" in DEG)
+check_true("...and names why the invite is missing",
+           "Domain-Wide Delegation" in DEG)
+
+FAIL = booking_sync_alert("Vanessa Serrano", "2026-08-21 12:00–15:00 (3h)", 59,
+                          "failed", "403 forbiddenForServiceAccounts")
+check_false("a FAILED sync never says 'No action needed'",
+            "No action needed" in FAIL)
+check_true("...it says the studio can be double-booked",
+           "double-booked" in FAIL)
+check_true("...and that the client thinks it is booked",
+           "believes it is booked" in FAIL)
+check_true("...and demands action", "ACTION NEEDED" in FAIL)
+check_true("...and carries the reason", "forbiddenForServiceAccounts" in FAIL)
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

@@ -2402,3 +2402,103 @@ def approval_health_line(req, now):
         f" · {len(live)} of {len((req or {}).get('slots') or [])} slots still live"
         f"{age_h} · {(req or {}).get('status')}"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #59 — a service account cannot invite attendees, and the portal
+# booking path had no fallback for it
+#
+# Vanessa Serrano booked Aug 21 through the client portal at 10:17 on
+# Aug 6. WordPress fired the webhook, the webhook ran, and Google
+# answered:
+#
+#   403 forbiddenForServiceAccounts — "Service accounts cannot invite
+#   attendees without Domain-Wide Delegation of Authority."
+#
+# The insert threw, so NO EVENT WAS CREATED AT ALL. The studio read as
+# free from 12:00 to 15:00 on a day a paying client had booked it.
+#
+# Why it had never fired before: of 16 portal bookings, the only other
+# failure was a QA test. Todd Berger's #56 on Jul 27 succeeded because
+# that event carried NO attendee — Patch #30's own notes say so. The
+# rail hardening that started genuinely attaching clients as attendees
+# landed after Jul 27, so Vanessa's was the FIRST real booking to take
+# the new path. Every portal booking after it would have failed too.
+#
+# book_appointment already solved this exact problem with a three-step
+# ladder (DWD -> attendees, no invites -> no attendees). The portal
+# webhook had one attempt and no fallback. This module supplies the
+# decision so both paths can share it and it can be tested without a
+# Google client.
+# ══════════════════════════════════════════════════════════════════════
+
+# The precise Google signature. Matching on the reason string rather than
+# the prose, because Google rewords messages and this must not go quiet.
+_DWD_MARKERS = (
+    "forbiddenforserviceaccounts",
+    "cannot invite attendees without domain-wide delegation",
+)
+
+
+def is_attendee_permission_error(err):
+    """True when this failure is 'you may not add attendees', nothing else.
+
+    Deliberately narrow. A quota error, a bad date or an auth failure must
+    NOT be swallowed by the attendee fallback — retrying those without
+    attendees would just fail again while looking like a degraded success.
+    """
+    if err is None:
+        return False
+    s = str(err).lower()
+    return any(m in s for m in _DWD_MARKERS)
+
+
+def strip_attendees(body):
+    """A copy of the event body with attendees removed, for the retry.
+
+    The event itself is what protects the studio from being double-booked.
+    The invite is a courtesy the portal has already delivered by email. If
+    only one can survive, it is the event.
+    """
+    out = dict(body or {})
+    out.pop("attendees", None)
+    return out
+
+
+def attendee_fallback_note(client_email=None):
+    """Explains, on the event, why the client is not an attendee."""
+    who = f" ({client_email})" if client_email else ""
+    return (
+        f"NOTE: the client{who} could not be added as a calendar attendee — "
+        "the booking service account lacks Domain-Wide Delegation, so Google "
+        "refuses any insert carrying attendees. The event was created WITHOUT "
+        "attendees so the studio time is blocked. The client already has the "
+        "confirmation email WordPress sent, so they are not left uninformed. "
+        "Granting Domain-Wide Delegation would restore real calendar invites."
+    )
+
+
+def booking_sync_alert(name, when, booking_id, calendar_state, degraded_reason=""):
+    """The #matt line for a portal booking.
+
+    The old text said "No action needed" unconditionally — including on the
+    run where the calendar write had just failed and the studio was left
+    looking free. An alert that tells you to ignore a failure is worse than
+    no alert.
+    """
+    if calendar_state == "ok":
+        return (f"📅 *STUDIO BOOKING* — {name}: {when} · portal booking "
+                f"#{booking_id} · calendar ✅ · confirmation email sent by WP. "
+                "No action needed.")
+    if calendar_state == "degraded":
+        return (f"📅 *STUDIO BOOKING* — {name}: {when} · portal booking "
+                f"#{booking_id} · calendar ✅ *without the client invite* "
+                f"({degraded_reason}) · confirmation email sent by WP. "
+                "The studio time IS blocked. No action needed today, but "
+                "calendar invites stay off until Domain-Wide Delegation is "
+                "granted to the booking service account.")
+    return (f"🔴 *STUDIO BOOKING — CALENDAR WRITE FAILED* — {name}: {when} · "
+            f"portal booking #{booking_id} · {degraded_reason or 'see #dev'}\n"
+            "*The studio reads as FREE for this slot and can be double-booked.* "
+            "The client has their confirmation email and believes it is booked. "
+            "ACTION NEEDED: add the event by hand, or fix the sync.")
