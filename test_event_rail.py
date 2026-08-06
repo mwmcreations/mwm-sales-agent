@@ -1494,5 +1494,60 @@ check_true("...and that the client thinks it is booked",
 check_true("...and demands action", "ACTION NEEDED" in FAIL)
 check_true("...and carries the reason", "forbiddenForServiceAccounts" in FAIL)
 
+# ══════════════════════════════════════════════════════════════════════
+print("\n== #61: one key for the Phone column — the Instagram stage-sync bug ==")
+from event_rail import sheet_row_key
+
+# Priti Verma, Gian Hernandez, Erving Rivera, Angie Starrz. Four bookings
+# with verified calendar events, all four reading "Contacted" on the canvas.
+# Ninety Instagram leads, zero "Booked" rows, ever, while WhatsApp booked
+# fifteen. The cause is one comparison applied to one side only.
+PRITI_SENDER = "instagram:1586517099782001"     # the conversation key
+PRITI_CELL   = "instagram:1586517099782001"     # what lands in the Phone cell
+
+check("the sender key normalises to bare digits",
+      sheet_row_key(PRITI_SENDER), "1586517099782001")
+check_true("...and the CELL normalises to the same thing — this is the whole fix",
+           sheet_row_key(PRITI_SENDER) == sheet_row_key(PRITI_CELL))
+
+# The exact expression update_lead_columns used to run. Pinned as the thing
+# that must never be true again: digits from the cell vs an unstripped sender.
+import re as _re61
+check_false("the OLD comparison (digits-of-cell == raw sender) never matched IG",
+            _re61.sub(r"\D", "", PRITI_CELL) == PRITI_SENDER)
+
+# WhatsApp worked, which is why this hid for months. Every spelling of a
+# phone number has to keep landing on the same row.
+for _spelling in ("whatsapp:+14075551234", "+14075551234", "14075551234",
+                  "+1 (407) 555-1234", " 14075551234 "):
+    check(f"WhatsApp {_spelling!r} still keys the same row",
+          sheet_row_key(_spelling), "14075551234")
+
+# A row written before this patch and one written after must agree.
+check_true("a bare-IGSID cell and a prefixed one are the same lead",
+           sheet_row_key("1586517099782001") == sheet_row_key("instagram:1586517099782001"))
+check_true("the mangled '+1'-bolted-on form is NOT confused with the clean one",
+           sheet_row_key("+1046947537903616") != sheet_row_key("instagram:046947537903616"))
+
+# Web-chat leads are keyed by email. Stripping them to digits would collapse
+# every one of them onto every other one.
+check("a web lead keeps its address", sheet_row_key("web:jane@doe.com"), "web:jane@doe.com")
+check_true("two different web leads do NOT collide",
+           sheet_row_key("web:a@x.com") != sheet_row_key("web:b@x.com"))
+check("a bare email keys on itself", sheet_row_key("Jane@Doe.com"), "jane@doe.com")
+
+# S24 — an unidentifiable cell must never match anything. A blank Phone cell
+# once matched every caller alive and contaminated an unrelated lead.
+for _junk in ("", "   ", None, "Phone", "n/a", "—", "407", "12345", "+"):
+    check(f"{_junk!r} is not a usable key", sheet_row_key(_junk), "")
+check_false("...and an empty key must never be treated as a match",
+            bool(sheet_row_key("")) and sheet_row_key("") == sheet_row_key("   "))
+
+# The IGSID/phone distinction the sheet key must not destroy.
+check_true("a 16-digit IGSID is still recognised as IG-scoped after keying",
+           is_ig_scoped(sheet_row_key("instagram:1586517099782001")))
+check_false("...and is never dialable",
+            is_dialable(sheet_row_key("instagram:1586517099782001")))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

@@ -271,6 +271,80 @@ def reminder_channel_for(identifier, email=None):
     return None, "no resolvable reminder channel"
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #61 — ONE KEY FOR THE PHONE COLUMN
+#
+# MATT's finding, Aug 6: Instagram has produced 90 active leads, four
+# calendar-verified bookings, and ZERO rows that ever read "Booked" — in the
+# entire history of this pipeline — while WhatsApp books and renders
+# correctly on the same night.
+#
+# It is not the canvas and it is not a backlog. Six functions match a lead
+# against the sheet's Phone column, and they do NOT agree on what a match is:
+#
+#   log_new_contact_to_sheets   row[4] == clean_phone          exact
+#   log_lead_to_sheets          row[4] == clean_phone          exact
+#   update_booking_in_sheets    row[4] == clean_phone          exact
+#   lookup_lead_in_sheets       endswith, >= 7 digits          suffix
+#   update_lead_columns         re.sub(\\D,'',row) == clean     DIGITS
+#
+# For an Instagram thread `sender` is "instagram:<IGSID>", and that whole
+# string — prefix included — is what gets written into the Phone cell. The
+# exact matchers therefore work: name, business and email all land, which is
+# why IG leads look present and healthy on the canvas.
+#
+# update_lead_columns strips the digits out of the CELL and compares them to
+# the UNSTRIPPED sender. "1586517099782001" == "instagram:1586517099782001"
+# is false, every time, for every Instagram lead that has ever existed. It
+# then finds no row and returns SILENTLY.
+#
+# And update_lead_columns is the only writer of exactly four columns:
+#
+#       Status · WhatsApp Status · Appointment Booked · Lead Temperature
+#
+# `Appointment Booked` is what the canvas reads to decide `stage = "Booked"`.
+# So an Instagram lead can be booked on the calendar, confirmed, reminded,
+# and sat in the studio, and the pipeline will still say "Contacted" —
+# because the one function that would have said otherwise could not find her
+# row and said nothing about it.
+#
+# The fix is one comparison, defined once, applied to BOTH SIDES of every
+# match. It deliberately does NOT change what is written into the cell: the
+# "instagram:" prefix is the only thing in the sheet that stops a 16-digit
+# IGSID being read by a human as a phone number, and Meta rejects an IGSID
+# sent to WhatsApp with error 131009.
+# ══════════════════════════════════════════════════════════════════════
+
+_SHEET_KEY_PREFIXES = ("whatsapp:", "instagram:", "messenger:", "ig:", "fb:")
+
+
+def sheet_row_key(value):
+    """Normalise EITHER a sender key OR a Phone cell to one comparable form.
+
+    Must be applied to both sides of a comparison. Applying it to one side
+    only is the bug this function exists to end.
+
+    Returns "" for anything that cannot identify a row — a blank cell, a
+    stray label, a digit residue too short to be real. An empty key must
+    never match, because a Phone cell that was merely empty once matched
+    every caller alive (the Prime Vacation identity contamination, S24).
+    """
+    s = str(value or "").strip().lower()
+    for _p in _SHEET_KEY_PREFIXES:
+        if s.startswith(_p):
+            s = s[len(_p):]
+            break
+    s = s.lstrip("+").strip()
+    if s.startswith("web:"):
+        # Web-chat leads are keyed by email address, not by digits. Stripping
+        # to digits would collapse every one of them to "" — i.e. to each other.
+        return "web:" + s[4:].strip()
+    if "@" in s:
+        return s
+    digits = re.sub(r"\D", "", s)
+    return digits if len(digits) >= 7 else ""
+
+
 # ── attendee address ─────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")

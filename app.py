@@ -48,6 +48,10 @@ from event_rail import (barter_signal_in_history, BARTER_YES, BARTER_MAYBE,
                         barter_refusal_note, barter_clarify_note,
                         booking_needs_number, resolve_callback_number,
                         missing_number_note, PARTNERSHIP_INBOX)
+# Patch #61 — one key for the Phone column. Lives in event_rail so it can
+# be tested without importing the whole app; app.py is not importable from
+# a test harness and that is exactly why this comparison went unpinned.
+from event_rail import sheet_row_key
 # Patch #58 — "I'll check with Michael" now has somewhere to land.
 from event_rail import (is_out_of_hours, out_of_hours_reason,
                         build_approval_request, approval_is_open,
@@ -5878,6 +5882,7 @@ def update_lead_columns(sender: str, updates: dict):
         return
     try:
         clean_phone = sender.replace("whatsapp:", "").replace("+", "")
+        _want = sheet_row_key(sender)          # PATCH #61
         now = datetime.now(pytz.timezone(TIMEZONE))
         svc = get_sheets_service()
         # S1.3: a lead created last month has no row in this month's tab — search current then previous tab
@@ -5899,11 +5904,30 @@ def update_lead_columns(sender: str, updates: dict):
             headers = rows[0]
             phone_col = headers.index("Phone") if "Phone" in headers else 4
             for i, row in enumerate(rows[1:], start=2):
-                if len(row) > phone_col and re.sub(r"\D", "", row[phone_col]) == clean_phone:
+                # PATCH #61 — normalise BOTH sides. This line used to strip the
+                # cell to digits and compare it to an unstripped sender, so an
+                # "instagram:<IGSID>" lead could never match its own row.
+                if len(row) > phone_col and _want and sheet_row_key(row[phone_col]) == _want:
                     target_row = i
             if target_row is not None:
                 break
         if target_row is None:
+            # PATCH #61 — a miss used to be indistinguishable from a success.
+            # Four Instagram bookings were written to a row that was never
+            # found, and nothing anywhere said so. A known miss and a
+            # never-attempted must not look alike.
+            print(f"[Sheets] NO ROW for {sender!r} (key={_want!r}) — "
+                  f"{list(updates.keys())} not written")
+            if "Appointment Booked" in updates or "Status" in updates:
+                try:
+                    _report_error(
+                        "Sheets CRM write found no row (update_lead_columns)",
+                        Exception(f"no row matched key={_want!r} for sender={sender!r}; "
+                                  f"dropped {list(updates.keys())} — the pipeline "
+                                  f"stage for this lead will not advance"),
+                        f"lead={sender}")
+                except Exception:
+                    pass
             return
         data = []
         for col_name, value in updates.items():
@@ -8616,8 +8640,21 @@ def _repopulate_lead_data_from_sheets():
                     if not raw_phone or len(raw_phone) < 7:
                         continue
 
-                    # Build the sender key — MUST match webhook format (whatsapp:+digits)
-                    sender_key = f"whatsapp:+{raw_phone}"
+                    # Build the sender key — MUST match webhook format.
+                    # PATCH #61 — it is "whatsapp:+digits" for a phone and
+                    # "instagram:<IGSID>" for an Instagram thread, and the
+                    # difference is not cosmetic: an IGSID keyed as a phone is
+                    # how a 16-digit Instagram ID ends up handed to the
+                    # WhatsApp API, which rejects it with error 131009. The
+                    # raw cell is trusted over the digits precisely because
+                    # the digits alone cannot tell the two apart.
+                    _raw_cell = row[phone_idx]
+                    _is_ig_row = (str(_raw_cell).strip().lower().startswith("instagram:")
+                                  or is_ig_scoped(raw_phone))
+                    if _is_ig_row:
+                        sender_key = f"instagram:{raw_phone}"
+                    else:
+                        sender_key = f"whatsapp:+{raw_phone}"
 
                     # Skip if already in lead_data (check both formats for safety)
                     if sender_key in lead_data or raw_phone in lead_data:
