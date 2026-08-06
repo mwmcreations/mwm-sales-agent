@@ -458,6 +458,103 @@ for _reason in ("lead is on do-not-contact", "lead converted",
     check(f"...but '{_reason}' stays closed", len(h2.emails), 0)
 
 
+# ══════════════════════════════════════════════════════════════════════
+section("17 · PATCH #60 — the sender's clock is LOCAL, not the host's")
+#
+# Rodolfo Silva, Aug 6 2026. Booked client, mid-engagement, script due to
+# Michael the next day. His T+2d nudge — "if the timing isn't right, tell me
+# and I'll stop following up" — was due at 11:47 AM ET. It went out at 07:55.
+#
+# Reconstructed exactly: armed_at is written offset-aware in LOCAL time, and
+# `_pass()` used `datetime.now()`, which on Railway is a naive UTC wall clock.
+# 11:55 UTC minus 11:47 local "=" 48h08m, so a 48h step read as due when only
+# 44h08m had actually passed. The same naive-UTC value was handed to the 8 AM
+# floor, where hour==11 sailed through a guard whose entire job was to stop
+# exactly this send.
+import pytz as _pytz
+
+_UTC = _pytz.utc
+RODOLFO_ARMED = "2026-08-04T11:47:00-04:00"      # aware, local — as stored
+RODOLFO_STEPS = [[48, er.CH_WEB, er.STEP_NUDGE]]
+
+
+def _rodolfo():
+    return {"r": lead(name="Rodolfo Silva", email="rodolfo@example.com",
+                      outcome_seq=seq(RODOLFO_STEPS, 0, armed_at=RODOLFO_ARMED,
+                                      email="rodolfo@example.com",
+                                      outcome="follow_up", close_after_days=14))}
+
+# ── the conversion helper, on its own ──
+check("an aware UTC timestamp converts to local, it is not stripped",
+      er.to_local_naive(_UTC.localize(datetime(2026, 8, 6, 11, 55))),
+      datetime(2026, 8, 6, 7, 55))
+check("an aware LOCAL timestamp survives the round trip unchanged",
+      er.to_local_naive(datetime.fromisoformat(RODOLFO_ARMED)),
+      datetime(2026, 8, 4, 11, 47))
+check("a naive timestamp is taken at face value — no guessing",
+      er.to_local_naive(datetime(2026, 8, 6, 7, 55)), datetime(2026, 8, 6, 7, 55))
+check("None survives", er.to_local_naive(None), None)
+
+# ── the send window, read on the right clock ──
+check("07:55 ET is BEFORE the 8 AM floor",
+      er.within_send_window(datetime(2026, 8, 6, 7, 55)), False)
+check("the same instant expressed as 11:55 UTC is ALSO before the floor",
+      er.within_send_window(_UTC.localize(datetime(2026, 8, 6, 11, 55))), False)
+check("11:47 ET is inside the window",
+      er.within_send_window(datetime(2026, 8, 6, 11, 47)), True)
+check("an aware local datetime works too — /admin/lead-seq passes one",
+      er.within_send_window(er.LOCAL_TZ.localize(datetime(2026, 8, 6, 11, 47))), True)
+
+# ── THE REGRESSION, end to end ──
+leads = _rodolfo()
+h = Harness(leads)
+res = osx._pass(now=datetime(2026, 8, 6, 7, 55))
+check("at 07:55 ET the T+2d step has NOT come due — nothing is sent",
+      len(h.emails), 0)
+check("...and it is counted as waiting, not held and not skipped",
+      res["waiting"], 1)
+check("...and the step pointer has not moved",
+      leads["r"]["outcome_seq"]["next_step"], 0)
+
+# The same instant, handed in as UTC — which is what the process actually had.
+leads = _rodolfo()
+h = Harness(leads)
+res = osx._pass(now=_UTC.localize(datetime(2026, 8, 6, 11, 55)))
+check("the identical instant labelled UTC also sends nothing",
+      len(h.emails), 0)
+check("...still waiting, not due", res["waiting"], 1)
+
+# And it does still fire — held, never skipped.
+leads = _rodolfo()
+h = Harness(leads)
+res = osx._pass(now=datetime(2026, 8, 6, 11, 47))
+check("at 11:47 ET — the hour it was actually due — it sends", len(h.emails), 1)
+check("...to the right person", h.emails[0][0], "rodolfo@example.com")
+check("...and the step advances exactly once",
+      leads["r"]["outcome_seq"]["next_step"], 1)
+check("...and the timestamp written on the record is local wall time",
+      leads["r"]["outcome_seq"]["sent"][0]["at"],
+      datetime(2026, 8, 6, 11, 47).isoformat())
+
+# A 4 AM pass must send nothing, whatever the elapsed maths says.
+leads = _rodolfo()
+h = Harness(leads)
+res = osx._pass(now=datetime(2026, 8, 7, 4, 0))
+check("a due step at 4 AM is HELD", len(h.emails), 0)
+check("...counted as quiet hours", res["held_quiet_hours"], 1)
+
+# ── the default clock: no argument at all ──
+_before = er.LOCAL_TZ.localize(datetime.now(er.LOCAL_TZ).replace(tzinfo=None))
+_ln = er.local_now()
+check("local_now() is naive", _ln.tzinfo, None)
+check("local_now() is NOT the host's UTC clock unless the host is on ET",
+      abs((_ln - datetime.utcnow()).total_seconds()) > 3000
+      or str(er.LOCAL_TZ) == "UTC", True)
+check("local_now() agrees with pytz on the wall clock, to the minute",
+      _ln.strftime("%Y-%m-%d %H:%M"),
+      datetime.now(er.LOCAL_TZ).strftime("%Y-%m-%d %H:%M"))
+
+
 print("\n" + "=" * 60)
 print(f"  TOTAL: {'FAILED — ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
 for f in FAILS:

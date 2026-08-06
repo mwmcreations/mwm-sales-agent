@@ -49,7 +49,7 @@ from event_rail import (CH_INSTAGRAM, CH_UNKNOWN, CH_WEB, CH_WHATSAPP,
                         STEP_EMAIL_ASK, STEP_NUDGE, STEP_REBOOK, STEP_RECAP,
                         STEP_REVIEW, STEP_VALUE, next_due_step,
                         seq_should_close, seq_stop_reason, within_send_window,
-                        sibling_stop_reason)
+                        sibling_stop_reason, local_now, to_local_naive)
 
 HEARTBEAT_NAME = "outcome_sender"
 CYCLE_SECONDS = 20 * 60          # 20 min: finest step granularity is 0h (no-show)
@@ -327,7 +327,11 @@ def _escalate(key, rec, seq, kind, why):
 def _pass(now=None):
     """One scan over lead_data. Returns a summary dict for logging/tests."""
     lead_data = _deps.get("lead_data") or {}
-    now = now or datetime.now()
+    # PATCH #60 — local wall clock, not the host's. `datetime.now()` on
+    # Railway is UTC, and every armed_at in this store is local. Mixing them
+    # added four hours to every elapsed-time sum and sent a booked client a
+    # "have you gone cold?" email at 07:55 in the morning.
+    now = to_local_naive(now) if now is not None else local_now()
     out = {"sent": 0, "closed": 0, "stopped": 0, "escalated": 0,
            "stale": 0, "waiting": 0, "failed": 0, "held_quiet_hours": 0}
 
@@ -388,8 +392,14 @@ def _pass(now=None):
                 seq["closed_reason"] = "unparseable armed_at"
                 _report("armed_at", "unparseable", f"lead={key}")
                 continue
-            if armed.tzinfo is not None:
-                armed = armed.replace(tzinfo=None)
+            # PATCH #60 — CONVERT, don't strip. `.replace(tzinfo=None)` on an
+            # aware value keeps the digits and throws away what they mean, so
+            # a UTC-stored armed_at would read four hours earlier than it is.
+            # Today every armed_at happens to be written in local time, which
+            # is why stripping looked harmless; the moment one is written in
+            # UTC — by a new caller, a restore, a different host — stripping
+            # silently backdates it. Converting is correct for both.
+            armed = to_local_naive(armed)
 
             elapsed_h = (now - armed).total_seconds() / 3600.0
 

@@ -44,12 +44,91 @@ DESIGN NOTES THAT ARE EASY TO GET WRONG
   only decides whether we also stop.
 """
 
+import os
 import re
 import unicodedata
 # Patch #58 needs real datetime parsing for approval slots. Stdlib only —
 # this module still imports nothing from app.py, which is the rule that
 # keeps it testable and free of circular imports.
 from datetime import datetime
+
+import pytz
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #60 — THE CLOCK. One definition of "now", in the studio's timezone.
+#
+# Rodolfo Silva is a booked client. At 07:55 ET on Aug 6 he was sent
+# "checking in … if the timing isn't right, tell me and I'll stop following
+# up." His T+2d step was due at 11:47 ET. It fired at 11:55 UTC — 3h52m
+# early, which is exactly the offset.
+#
+# The cause is that TWO clocks were in play and nobody had ever put them
+# side by side:
+#
+#   * `armed_at` is written offset-aware, in LOCAL time  ("…T11:47-04:00")
+#   * `outcome_sender._pass()` took `datetime.now()` — naive, and on Railway
+#     the container runs UTC, so that is a naive UTC wall clock.
+#
+# The sender then did `armed.replace(tzinfo=None)`, which THROWS THE OFFSET
+# AWAY rather than converting, leaving a naive LOCAL time. Subtracting a
+# naive local time from a naive UTC time silently adds four hours to every
+# elapsed-time calculation. Every timed client send in this system has been
+# landing up to four hours early.
+#
+# The same naive-UTC `now` was handed to within_send_window(), so the 8 AM
+# floor that exists specifically to stop pre-breakfast client sends was
+# comparing 11 (UTC) against 8 and passing. At 07:55 ET. The guard was not
+# merely bypassed — it was reading a different clock than the one it was
+# written to protect.
+#
+# The tell that this went unnoticed for so long: /admin/lead-seq computes
+# elapsed correctly (aware, `pytz.timezone(TIMEZONE)`), so the DIAGNOSTIC and
+# the SENDER have been quietly disagreeing. The diagnostic said "due 11:47
+# AM ET" and it was right. Any check that reads the diagnostic will keep
+# saying the rail is healthy while the rail messages people at dawn.
+#
+# So: one clock, defined here, in the module both the sender and the rail
+# already import. Naive-local is kept as the wire format because every
+# stored `sent[].at` and every test in the suite is naive — converting the
+# stored records would be a migration, and this is a timing bug, not a
+# schema one.
+# ══════════════════════════════════════════════════════════════════════
+
+LOCAL_TZ_NAME = os.getenv("TIMEZONE", "America/New_York")   # Orlando, Florida
+try:
+    LOCAL_TZ = pytz.timezone(LOCAL_TZ_NAME)
+except Exception:                                            # pragma: no cover
+    LOCAL_TZ = pytz.timezone("America/New_York")
+
+
+def to_local_naive(dt):
+    """Any datetime → the same INSTANT as a naive wall clock in LOCAL_TZ.
+
+    An offset-aware value is CONVERTED, not stripped. `.replace(tzinfo=None)`
+    on an aware datetime keeps the digits and discards the meaning, which is
+    the exact move that made a UTC-stored timestamp read as a local one.
+
+    A naive value is passed through unchanged: it is already on the wire
+    format this module uses, and guessing that it "must be UTC" would break
+    every stored record written before this patch.
+    """
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        dt = dt.astimezone(LOCAL_TZ)
+    return dt.replace(tzinfo=None)
+
+
+def local_now():
+    """Wall-clock time in the studio's timezone, naive.
+
+    Use this instead of `datetime.now()` anywhere a client-facing decision
+    is made. On a UTC host `datetime.now()` is a UTC wall clock wearing no
+    label, which is indistinguishable from a local one until it messages
+    somebody at 4 AM.
+    """
+    return datetime.now(LOCAL_TZ).replace(tzinfo=None)
 
 # ── S-2 · the standard reminder block ────────────────────────────────
 # Every client-facing event gets all three, set at creation, on every path.
@@ -1875,7 +1954,15 @@ def within_send_window(dt, start_hour=SEND_WINDOW_START_HOUR,
 
     Held, never skipped: a step delayed until morning is still sent, and the
     72h staleness budget is far wider than the longest possible hold.
+
+    PATCH #60 — the hour is read in LOCAL time, whatever it is handed. An
+    aware datetime is converted first; a naive one is taken at face value as
+    already-local. Callers used to reach `.hour` on a naive UTC clock and get
+    an answer that was right four hours before it was true. `/admin/lead-seq`
+    passes an AWARE datetime and `outcome_sender` passes a naive one, so this
+    function has to be correct for both or the two will keep disagreeing.
     """
+    dt = to_local_naive(dt)
     try:
         hour = dt.hour
     except AttributeError:
