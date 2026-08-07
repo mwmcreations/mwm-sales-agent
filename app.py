@@ -55,6 +55,8 @@ from event_rail import sheet_row_key
 # Patch #63 — a synced canvas block carries the mark used to find it again.
 from event_rail import (canvas_sync_mark, canvas_stamp_block,
                         canvas_block_is_findable)
+# Patch #66 — operator notifications are allow-listed, deny by default.
+from event_rail import operator_allowed
 # Patch #58 — "I'll check with Michael" now has somewhere to land.
 from event_rail import (is_out_of_hours, out_of_hours_reason,
                         build_approval_request, approval_is_open,
@@ -3821,6 +3823,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 # request id -> request dict (see event_rail.build_approval_request)
 approval_requests = {}
 _approval_lock = threading.Lock()
+# PATCH #66 — last time each request's undeliverable-email alarm was posted to
+# #dev, so a permanent failure pages once an hour instead of six times.
+_APPROVAL_ALARM_SENT = {}
 
 
 def _approval_base_url():
@@ -3910,8 +3915,14 @@ def _approval_notify_michael(req, is_reminder=False):
         f" ({n} option{'' if n == 1 else 's'})"
     )
     try:
-        result = _email_send(MICHAEL_EMAIL, subject, _approval_email_html(req),
-                             via="machine")
+        # PATCH #66 — was `_email_send(...)`, which routes through the LEAD
+        # suppression guard. That guard refuses every @mwmcreations.com
+        # address, so this email was blocked before it was ever sent and this
+        # door has never opened once. Operator mail goes down the allow-listed
+        # path instead. See event_rail.operator_allowed().
+        result = _email_operator(MICHAEL_EMAIL, subject,
+                                 _approval_email_html(req),
+                                 why=f"approval {req.get('id')}")
         ok = email_ok(result)
     except Exception as exc:
         _report_error("approval.notify", exc, f"request={req.get('id')}")
@@ -3927,13 +3938,28 @@ def _approval_notify_michael(req, is_reminder=False):
     else:
         # A notification that silently failed is the original bug wearing a
         # different hat. Make it loud.
-        _notify_error_to_dev(
-            "Approval Email Not Delivered",
-            f"Could not email Michael the approval request {req.get('id')} for "
-            f"{who}. THE LEAD IS WAITING AND NOBODY HAS BEEN ASKED.",
-            lead_info=f"{who} ({req.get('lead_phone') or req.get('lead_email')})",
-            severity="ERROR",
-        )
+        #
+        # PATCH #66 — but loud ONCE AN HOUR, not every ten minutes. This fired
+        # 6x/hour all night on AR-9CDD44 and the 40th copy carried no
+        # information the 1st did not. An alarm that repeats faster than anyone
+        # can act on it stops being an alarm and becomes weather — and #dev is
+        # the channel MATT reads to build the morning briefing.
+        _now_a = datetime.now(pytz.timezone(TIMEZONE)).replace(tzinfo=None)
+        _key_a = f"approval_alarm:{req.get('id')}"
+        _last_a = _APPROVAL_ALARM_SENT.get(_key_a)
+        if _last_a is None or (_now_a - _last_a).total_seconds() >= 3600:
+            _APPROVAL_ALARM_SENT[_key_a] = _now_a
+            _suffix = "" if _last_a is None else (
+                " (repeating hourly until this is fixed — first seen "
+                f"{_last_a.strftime('%b %d %H:%M')})")
+            _notify_error_to_dev(
+                "Approval Email Not Delivered",
+                f"Could not email Michael the approval request {req.get('id')} for "
+                f"{who}. THE LEAD IS WAITING AND NOBODY HAS BEEN ASKED."
+                f"{_suffix}",
+                lead_info=f"{who} ({req.get('lead_phone') or req.get('lead_email')})",
+                severity="ERROR",
+            )
     return ok
 
 
@@ -10227,6 +10253,48 @@ def email_is_suppressed(addr):
 # susan_gmail refuses every send, which is the intended fail-closed posture:
 # a missing wire must break loudly, not silently resume contacting DNC leads.
 _susan_gmail_mod.configure_suppression(email_is_suppressed)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #66 — OPERATOR NOTIFICATIONS. Allow-listed, deny by default.
+#
+# See the block in event_rail.py for why this exists. Short version: the
+# lead-suppression guard refuses every @mwmcreations.com address, which is
+# correct for lead outreach and meant Patch #58's approval email could never
+# reach Michael. This is the narrow channel for "the machine needs to tell the
+# operator something", and it can reach ONLY the addresses listed here.
+#
+# Deliberately NOT INTERNAL_EMAILS: that set contains yasminfmoraes@icloud.com,
+# who is a TEST LEAD on EMAIL_DNC. Reusing it would make this the exact leak
+# Patch #38 was written to close.
+# ═══════════════════════════════════════════════════════════════════════════
+OPERATOR_EMAILS = {
+    e.strip().lower() for e in
+    os.getenv("OPERATOR_EMAILS", MICHAEL_EMAIL).split(",")
+    if e.strip()
+} - EMAIL_DNC          # DNC wins, always, even against a misconfigured env var
+
+
+def _email_operator(to, subject, html, why=""):
+    """Send an OPERATIONAL notification to an operator. Returns the send dict.
+
+    Does not touch `email_is_suppressed()` — that predicate governs LEAD mail
+    and refuses the operator's own domain by design. This path is safe to
+    exempt from it precisely because the recipient must be on a short
+    allow-list rather than merely absent from a blocklist.
+    """
+    _ok, _why_not = operator_allowed(to, OPERATOR_EMAILS, EMAIL_DNC)
+    if not _ok:
+        print(f"[OPERATOR EMAIL] refused for {to!r}: {_why_not}")
+        return {"ok": False, "error": f"operator refused: {_why_not}"}
+    try:
+        result = send_gmail(to, subject, html)
+    except Exception as _oe:
+        _report_error("_email_operator", _oe, f"to={to} why={why}")
+        return {"ok": False, "error": str(_oe)[:300]}
+    if not email_ok(result):
+        print(f"[OPERATOR EMAIL] send failed to {to}: {result}")
+    return result
 
 
 def _dnc_boot_check():

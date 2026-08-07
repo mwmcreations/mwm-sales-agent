@@ -439,6 +439,70 @@ def canvas_block_is_findable(name, markdown):
     return canvas_sync_mark(name) in (markdown or "")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #66 — THE MACHINE COULD NOT TELL MICHAEL ANYTHING BY EMAIL
+#
+# Patch #58 built an out-of-hours approval door: when a lead asks for a time
+# outside business hours, Maya files a real request and EMAILS Michael one tap
+# per option. Email was chosen deliberately — #matt has never carried a human
+# message from him, and WhatsApp to his own number bounces on expired windows.
+#
+# It has never delivered a single approval. Not once.
+#
+# `email_is_suppressed()` (Patch #38/#44A) reads:
+#
+#     if e in INTERNAL_EMAILS or e.endswith("@mwmcreations.com"):
+#         return True, "internal address"
+#
+# and `MICHAEL_EMAIL` is `michael@mwmcreations.com`. So every approval email
+# was refused before it was sent, `email_ok()` correctly returned False, and
+# the alarm fired — every ten minutes, six times an hour, all night. Andrea
+# Battis has been waiting three days for an answer to a request that was filed
+# correctly and could never reach anybody.
+#
+# 🔴 THE GUARD ITSELF IS RIGHT AND MUST NOT BE WEAKENED. It exists because
+# MATT asked a yes/no on Aug 1 — could the scheduler email Michael's daughter
+# as a lead? — and the answer was yes. That must stay impossible.
+#
+# So this is NOT a bypass. It is a separate, ALLOW-LISTED channel: operator
+# notifications may go to a fixed, tiny set of addresses and to nobody else.
+# A lead cannot be reached through it even if a caller passes a lead's address,
+# because the address must be on the list rather than merely absent from a
+# blocklist. Deny-by-default, not allow-by-default — the difference between
+# the two is this entire patch.
+#
+# DNC still outranks the allow-list. Yasmin Moraes is on INTERNAL_EMAILS *and*
+# on EMAIL_DNC as a test lead; if a future edit ever widens the operator set to
+# INTERNAL_EMAILS, DNC has to be what stops her being emailed anyway.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def operator_allowed(addr, operators, dnc=None):
+    """(allowed: bool, reason: str) — may an OPERATOR notification go here?
+
+    Deny by default. An address must appear in `operators` to be reachable.
+
+    Order matters and is deliberate:
+      1. unparseable  → refuse (fail closed, same posture as the lead guard)
+      2. on DNC       → refuse EVEN IF on the operator list. Do-not-contact is
+                        a promise to a person; an internal label never overrides
+                        it. This is the line that keeps a test lead who is also
+                        an "internal" address unreachable.
+      3. not on the operator list → refuse. This is what makes the channel safe
+                        to exempt from the @mwmcreations.com rule at all.
+    """
+    e = str(addr or "").strip().lower()
+    if not e or "@" not in e:
+        return False, "unparseable address"
+    _ops = {str(o or "").strip().lower() for o in (operators or []) if str(o or "").strip()}
+    _dnc = {str(d or "").strip().lower() for d in (dnc or []) if str(d or "").strip()}
+    if e in _dnc:
+        return False, "on do-not-contact — DNC outranks the operator list"
+    if e not in _ops:
+        return False, "not an operator address (allow-list is deny-by-default)"
+    return True, ""
+
+
 # ── attendee address ─────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")

@@ -1619,5 +1619,68 @@ check_true("the Active Leads sweep still reaches blocks written under the OLD he
 check_true("...and blocks written under the current one",
            "Lead Age (d)" in _legacy63.get("active_leads", []))
 
+# ══════════════════════════════════════════════════════════════════════
+print("\n== #66: operator notifications are allow-listed, deny by default ==")
+from event_rail import operator_allowed
+
+MICHAEL = "michael@mwmcreations.com"
+OPS = {MICHAEL}
+DNC = {"yasminfmoraes@icloud.com", "ediasm@icloud.com"}
+
+# THE BUG. Patch #58's approval email went through the LEAD suppression guard,
+# whose rule is `e.endswith("@mwmcreations.com") -> suppressed`. Michael's own
+# address matches it, so the out-of-hours approval door never opened once and
+# Andrea Battis waited three days on a request that was filed correctly.
+check_true("Michael's own address IS refused by the lead-mail rule "
+           "(this is the bug, and the rule itself is correct)",
+           MICHAEL.endswith("@mwmcreations.com"))
+check_true("...but the OPERATOR channel can reach him",
+           operator_allowed(MICHAEL, OPS, DNC)[0])
+check("...with no reason given, because it is allowed",
+      operator_allowed(MICHAEL, OPS, DNC)[1], "")
+
+# Deny by default is the whole safety property. An address is reachable only
+# by being ON the list — never by being absent from a blocklist.
+check_false("a lead address is refused even though it is on no blocklist",
+            operator_allowed("lead@gmail.com", OPS, DNC)[0])
+check_true("...and the reason names the allow-list",
+           "allow-list" in operator_allowed("lead@gmail.com", OPS, DNC)[1])
+check_false("an empty operator set reaches NOBODY, including Michael",
+            operator_allowed(MICHAEL, set(), DNC)[0])
+check_false("a lookalike domain is refused",
+            operator_allowed("michael@mwmcreations.co", OPS, DNC)[0])
+check_false("a subdomain lookalike is refused",
+            operator_allowed("michael@mail.mwmcreations.com", OPS, DNC)[0])
+
+# 🔴 DNC OUTRANKS THE OPERATOR LIST. Yasmin Moraes is on INTERNAL_EMAILS *and*
+# on EMAIL_DNC as a test lead. If a future edit widens the operator set to
+# INTERNAL_EMAILS, this is the line that still stops her being emailed — which
+# is the exact leak Patch #38 was written to close.
+for _dnc_addr in sorted(DNC):
+    check_false(f"{_dnc_addr} is refused even when explicitly an operator",
+                operator_allowed(_dnc_addr, OPS | {_dnc_addr}, DNC)[0])
+    check_true("...and the reason says DNC outranks it",
+               "do-not-contact" in operator_allowed(_dnc_addr, OPS | {_dnc_addr}, DNC)[1])
+
+# Fail closed on anything unparseable — same posture as the lead guard.
+for _junk in ("", "   ", None, "notanemail", "@", "michael@"):
+    check_false(f"{_junk!r} is refused", operator_allowed(_junk, OPS, DNC)[0])
+check("...and says why", operator_allowed("", OPS, DNC)[1], "unparseable address")
+
+# Normalisation: case and whitespace must not create a bypass OR a false refusal.
+check_true("case and stray whitespace still resolve to the operator",
+           operator_allowed("  MICHAEL@MWMCreations.Com ", OPS, DNC)[0])
+check_false("case does not smuggle a DNC address through",
+            operator_allowed("YasminFMoraes@iCloud.com", OPS, DNC)[0])
+check_true("an operator list given with odd casing still matches",
+           operator_allowed(MICHAEL, {"Michael@MWMcreations.COM"}, DNC)[0])
+
+# Degenerate inputs must not throw — this runs on a send path.
+check_false("no operator set at all refuses rather than raising",
+            operator_allowed(MICHAEL, None, None)[0])
+check_true("dnc may be omitted", operator_allowed(MICHAEL, OPS)[0])
+check_false("blank entries in the operator list do not match a blank address",
+            operator_allowed("", {"", "  "}, DNC)[0])
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
