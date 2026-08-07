@@ -115,6 +115,101 @@ check("the refusal dict is TRUTHY (the trap)", bool(_blocked), True)
 check("...so callers must read ['ok'], which is False", _blocked.get("ok"), False)
 
 
+# ══════════════════════════════════════════════════════════════════════
+section("#68 — the operator channel: a second gate, not a hole in the first")
+#
+# Patch #58 built a door for "Maya needs to ask Michael". It never opened once
+# in three days: MICHAEL_EMAIL is michael@mwmcreations.com and the guard above
+# refuses that whole domain as internal. #66 tried to fix it by calling
+# send_gmail directly, skipping app.py's wrapper — and hit the SECOND copy of
+# the guard, which lives here. That belt-and-braces design worked exactly as
+# written. The exemption therefore has to be a first-class argument to the
+# sender, with its own allow-list.
+import event_rail as _er68
+
+_OPS68 = {"michael@mwmcreations.com"}
+_DNC68 = {"yasminfmoraes@icloud.com", "ediasm@icloud.com"}
+
+
+def _suppress68(a):
+    e = str(a or "").strip().lower()
+    if not e or "@" not in e:
+        return True, "unparseable"
+    if e in _DNC68:
+        return True, "do-not-contact list"
+    if e.endswith("@mwmcreations.com"):
+        return True, "internal address"
+    return False, ""
+
+
+# ── fail closed before anything is wired ──
+sg.configure_operators(None)
+_r = sg.send_gmail("michael@mwmcreations.com", "s", "x", operator=True)
+check("an UNCONFIGURED operator predicate refuses the send", _r.get("ok"), False)
+check("...and says the predicate is missing rather than inventing a reason",
+      "not configured" in _r.get("error", ""), True)
+
+sg.configure_suppression(_suppress68)
+sg.configure_operators(lambda a: _er68.operator_allowed(a, _OPS68, _DNC68))
+
+# ── THE BUG, pinned. Michael without the flag must still be refused, because
+#    that path is lead mail and the domain rule is correct for lead mail. ──
+_r = sg.send_gmail("michael@mwmcreations.com", "s", "x")
+check("Michael WITHOUT operator=True is still suppressed (this was the outage)",
+      _r.get("ok"), False)
+check("...for the internal-address reason specifically",
+      "internal address" in _r.get("error", ""), True)
+
+# ── the operator path clears BOTH gates and reaches the sender ──
+_reached = {"v": False}
+_real_service = sg._get_gmail_service
+
+
+def _boom():
+    _reached["v"] = True
+    raise RuntimeError("reached the sender")
+
+
+sg._get_gmail_service = _boom
+try:
+    sg.send_gmail("michael@mwmcreations.com", "s", "x", operator=True)
+    check("operator=True gets PAST the guard to the actual send", _reached["v"], True)
+
+    # ── and the gate is deny-by-default, not a hole ──
+    _reached["v"] = False
+    _r = sg.send_gmail("lead@gmail.com", "s", "x", operator=True)
+    check("a LEAD cannot ride the operator flag", _r.get("ok"), False)
+    check("...refused by the allow-list, not by a blocklist",
+          "allow-list" in _r.get("error", ""), True)
+    check("...and never reached the sender", _reached["v"], False)
+
+    for _d in sorted(_DNC68):
+        _reached["v"] = False
+        _r = sg.send_gmail(_d, "s", "x", operator=True)
+        check(f"{_d} is refused on the operator path too", _r.get("ok"), False)
+        check("...because DNC outranks the operator list",
+              "do-not-contact" in _r.get("error", ""), True)
+        check("...and never reached the sender", _reached["v"], False)
+
+    # ── CC would widen the blast radius past the one vetted address ──
+    _reached["v"] = False
+    _r = sg.send_gmail("michael@mwmcreations.com", "s", "x",
+                       cc="someone@else.com", operator=True)
+    check("an operator send carrying CC is refused outright", _r.get("ok"), False)
+    check("...and never reached the sender", _reached["v"], False)
+
+    # ── ordinary lead sending must be completely unaffected ──
+    _reached["v"] = False
+    sg.send_gmail("ok@gmail.com", "s", "x")
+    check("a normal permitted lead send still reaches the sender", _reached["v"], True)
+finally:
+    sg._get_gmail_service = _real_service
+
+check("operators_configured() reports the wire", sg.operators_configured(), True)
+sg.configure_operators(None)
+check("...and reports it missing once cleared", sg.operators_configured(), False)
+
+
 print("\n" + "=" * 60)
 print(f"  TOTAL: {'FAILED — ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
 if FAILS:

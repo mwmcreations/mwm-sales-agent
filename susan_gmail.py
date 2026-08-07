@@ -199,6 +199,63 @@ def _suppressed(addr):
         return True, "suppression check raised: {}".format(str(exc)[:120])
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #68 — THE OPERATOR EXEMPTION LIVES HERE, WHERE SENDING HAPPENS.
+#
+# #66 tried to reach Michael by calling send_gmail() directly, skipping
+# app.py's `_email_send` wrapper and therefore its lead-suppression check.
+# It still failed:
+#
+#     operator.boot_check failed: could not email the operator at
+#     michael@mwmcreations.com: suppressed: internal address
+#
+# Because suppression is enforced TWICE on purpose — once in the wrapper and
+# once here, so a caller that forgets the wrapper is still caught. That design
+# is correct and it worked. #66 simply bypassed the layer it knew about and
+# walked into the one it did not.
+#
+# So the exemption cannot live in app.py. It has to be a first-class argument
+# to the sender, guarded by its OWN allow-list, right where the decision to
+# transmit is made. `operator=True` is visible in the signature, greppable, and
+# impossible to reach by accident from a lead-facing path.
+#
+# Deny-by-default is preserved twice over: the operator predicate must be
+# wired (or the send fails closed), AND the address must be on the operator
+# list. DNC still outranks both — that check lives inside the predicate app.py
+# installs, so a do-not-contact address can never be an operator.
+# ══════════════════════════════════════════════════════════════════════
+
+_OPERATOR_HOOK = None
+
+
+def configure_operators(fn):
+    """Install the operator predicate: fn(addr) -> (allowed: bool, reason: str).
+
+    Separate from the suppression hook on purpose. Suppression answers "must I
+    NOT send to this lead?"; this answers "is this one of the two or three
+    addresses that belong to the people who run the business?". Conflating
+    them is what produced a three-day silent outage.
+    """
+    global _OPERATOR_HOOK
+    _OPERATOR_HOOK = fn
+
+
+def operators_configured():
+    """True once app.py has wired the operator predicate."""
+    return _OPERATOR_HOOK is not None
+
+
+def _operator_ok(addr):
+    """(allowed, reason). Every failure mode returns NOT ALLOWED."""
+    if _OPERATOR_HOOK is None:
+        return False, "operator predicate not configured — failing closed"
+    try:
+        allowed, reason = _OPERATOR_HOOK(addr)
+        return bool(allowed), str(reason or "")
+    except Exception as exc:
+        return False, "operator check raised: {}".format(str(exc)[:120])
+
+
 def _recipients(to, cc):
     """Every address this message would reach — CC included.
 
@@ -214,7 +271,8 @@ def _recipients(to, cc):
 
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
-def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None):
+def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None,
+               operator=False):
     """
     Send an email via Gmail as info@mwmcreations.com.
 
@@ -232,14 +290,31 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
         and NOTHING is sent. Callers must test result["ok"] — the dict is truthy
         either way, which is exactly the bug #44A2 fixes at the call sites.
     """
-    # PATCH #44A — before the service, before the MIME, before anything.
-    for _addr in _recipients(to, cc):
-        _blocked, _why = _suppressed(_addr)
-        if _blocked:
-            print("[GMAIL] BLOCKED — refusing send to {}: {}".format(_addr, _why))
+    # PATCH #68 — OPERATOR MAIL. A different question, so a different gate.
+    # Not a bypass: the address must be ON the operator list, CC is refused
+    # outright so the blast radius is exactly one known address, and an
+    # unconfigured predicate fails closed like everything else here.
+    if operator:
+        if cc:
+            print("[GMAIL] BLOCKED — operator sends may not carry CC")
             return {"ok": False, "suppressed": True,
-                    "blocked_address": _addr,
-                    "error": "suppressed: {}".format(_why)}
+                    "error": "operator send refused: CC not permitted"}
+        _allowed, _why_op = _operator_ok(to)
+        if not _allowed:
+            print("[GMAIL] BLOCKED — not an operator address {}: {}".format(to, _why_op))
+            return {"ok": False, "suppressed": True,
+                    "blocked_address": str(to or ""),
+                    "error": "operator refused: {}".format(_why_op)}
+        print("[GMAIL] operator send permitted to {}".format(to))
+    else:
+        # PATCH #44A — before the service, before the MIME, before anything.
+        for _addr in _recipients(to, cc):
+            _blocked, _why = _suppressed(_addr)
+            if _blocked:
+                print("[GMAIL] BLOCKED — refusing send to {}: {}".format(_addr, _why))
+                return {"ok": False, "suppressed": True,
+                        "blocked_address": _addr,
+                        "error": "suppressed: {}".format(_why)}
     try:
         gmail = _get_gmail_service()
 

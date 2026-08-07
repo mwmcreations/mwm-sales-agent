@@ -10254,6 +10254,12 @@ def email_is_suppressed(addr):
 # a missing wire must break loudly, not silently resume contacting DNC leads.
 _susan_gmail_mod.configure_suppression(email_is_suppressed)
 
+# PATCH #68 — the operator predicate, installed alongside suppression. Two
+# questions, two hooks: "must I NOT mail this lead?" and "is this one of the
+# handful of addresses belonging to the people who run the business?".
+_susan_gmail_mod.configure_operators(
+    lambda _a: operator_allowed(_a, OPERATOR_EMAILS, EMAIL_DNC))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PATCH #66 — OPERATOR NOTIFICATIONS. Allow-listed, deny by default.
@@ -10288,7 +10294,10 @@ def _email_operator(to, subject, html, why=""):
         print(f"[OPERATOR EMAIL] refused for {to!r}: {_why_not}")
         return {"ok": False, "error": f"operator refused: {_why_not}"}
     try:
-        result = send_gmail(to, subject, html)
+        # PATCH #68 — operator=True. Without it this lands on the
+        # lead-suppression check inside send_gmail, which is what silently
+        # defeated #66 and kept the approval door shut.
+        result = send_gmail(to, subject, html, operator=True)
     except Exception as _oe:
         _report_error("_email_operator", _oe, f"to={to} why={why}")
         return {"ok": False, "error": str(_oe)[:300]}
@@ -10391,6 +10400,10 @@ def _dnc_boot_check():
     try:
         if not _susan_gmail_mod.suppression_configured():
             return "hook not installed"
+        # PATCH #68 — an unwired operator predicate fails closed, which means
+        # silence. Name it at boot instead.
+        if not _susan_gmail_mod.operators_configured():
+            return "operator predicate NOT installed — operator mail will fail closed"
         # Any @mwmcreations.com address is suppressed as internal by the
         # predicate itself, so this probes the real path without depending
         # on the contents of EMAIL_DNC.
