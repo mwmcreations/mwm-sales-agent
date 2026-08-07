@@ -256,6 +256,37 @@ def _operator_ok(addr):
         return False, "operator check raised: {}".format(str(exc)[:120])
 
 
+_TRANSACTIONAL_HOOK = None
+
+
+def configure_transactional(fn):
+    """Install the client-transactional predicate.
+
+    fn(addr) -> ("allow" | "block" | "default", reason). See
+    event_rail.transactional_allowed for why the answer is three-way.
+    """
+    global _TRANSACTIONAL_HOOK
+    _TRANSACTIONAL_HOOK = fn
+
+
+def transactional_configured():
+    return _TRANSACTIONAL_HOOK is not None
+
+
+def _transactional_decision(addr):
+    """("allow"|"block"|"default", reason). Any failure degrades to "default",
+    which means the ordinary suppression guard decides — the safe direction."""
+    if _TRANSACTIONAL_HOOK is None:
+        return "default", "transactional predicate not configured"
+    try:
+        decision, reason = _TRANSACTIONAL_HOOK(addr)
+        decision = str(decision or "default")
+        return (decision if decision in ("allow", "block", "default") else "default",
+                str(reason or ""))
+    except Exception as exc:
+        return "default", "transactional check raised: {}".format(str(exc)[:120])
+
+
 def _recipients(to, cc):
     """Every address this message would reach — CC included.
 
@@ -272,7 +303,7 @@ def _recipients(to, cc):
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
 def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None,
-               operator=False):
+               operator=False, transactional=False):
     """
     Send an email via Gmail as info@mwmcreations.com.
 
@@ -308,7 +339,23 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
         print("[GMAIL] operator send permitted to {}".format(to))
     else:
         # PATCH #44A — before the service, before the MIME, before anything.
+        # PATCH #69 — with one narrow exception: CLIENT TRANSACTIONAL mail.
+        # A client who is on the lead-DNC list (because they must not receive
+        # marketing) still has to receive the confirmation for the booking
+        # they made. The exception is per-address and allow-listed; the
+        # never-contact tier still refuses, and anything not explicitly
+        # excepted falls through to the ordinary guard unchanged.
         for _addr in _recipients(to, cc):
+            if transactional:
+                _dec, _twhy = _transactional_decision(_addr)
+                if _dec == "block":
+                    print("[GMAIL] BLOCKED — transactional refused for {}: {}".format(_addr, _twhy))
+                    return {"ok": False, "suppressed": True,
+                            "blocked_address": _addr,
+                            "error": "transactional refused: {}".format(_twhy)}
+                if _dec == "allow":
+                    print("[GMAIL] transactional exception for {}: {}".format(_addr, _twhy))
+                    continue
             _blocked, _why = _suppressed(_addr)
             if _blocked:
                 print("[GMAIL] BLOCKED — refusing send to {}: {}".format(_addr, _why))

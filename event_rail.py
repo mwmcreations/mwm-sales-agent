@@ -503,6 +503,63 @@ def operator_allowed(addr, operators, dnc=None):
     return True, ""
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #69 — A CLIENT IS NOT A LEAD, AND DNC WAS ANSWERING BOTH QUESTIONS
+#
+# Marcia Cardim booked a studio session through the portal on Aug 7. She is a
+# paying client with an event on Aug 12. Her booking reminders — T-168h,
+# T-48h, T-24h, T-2h — route through `_email_send`, which calls
+# `email_is_suppressed`, and `ediasm@icloud.com` is on EMAIL_DNC.
+#
+# She was put there for a good reason: she became a client and must not
+# receive LEAD follow-ups. But one list is now answering two questions:
+#
+#     "may the machine market to this person?"        → correctly NO
+#     "may the machine confirm the booking they made?" → wrongly NO
+#
+# This is the third time in two days that suppression has conflated distinct
+# audiences. #66/#68 was lead-mail vs OPERATOR mail. This is lead-mail vs
+# CLIENT TRANSACTIONAL mail. The pattern is the lesson: a blocklist that
+# cannot say WHY it is blocking will eventually block the wrong thing.
+#
+# Same remedy as #68 — an explicit allow-list, deny by default, and a hard
+# never-contact tier that outranks everything. Yasmin Moraes is a TEST lead
+# on EMAIL_DNC; she must remain unreachable by every path including this one.
+# Marcia is a client with a real booking; she must get her reminders.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def transactional_allowed(addr, allowed, never_contact=None):
+    """(decision, reason) for CLIENT TRANSACTIONAL mail — confirmations and
+    reminders for something the person actually booked.
+
+    Returns one of three decisions, and the three-way answer is the point:
+
+      "allow"   — explicitly on the transactional allow-list. Send it even if
+                  the lead-DNC list would otherwise refuse.
+      "block"   — unparseable, or on the hard never-contact tier. Never send,
+                  no matter which flag the caller passed.
+      "default" — nothing special about this address; fall through to the
+                  ORDINARY suppression check. Most clients land here, and
+                  that is correct: the allow-list is an exception mechanism,
+                  not a replacement for the guard.
+
+    Deliberately NOT a boolean. A two-way answer would force every caller to
+    decide what "no" meant, and "never contact" and "not special, ask the
+    normal rules" are answers that must not be confused.
+    """
+    e = str(addr or "").strip().lower()
+    if not e or "@" not in e:
+        return "block", "unparseable address"
+    _never = {str(n or "").strip().lower() for n in (never_contact or []) if str(n or "").strip()}
+    _ok = {str(a or "").strip().lower() for a in (allowed or []) if str(a or "").strip()}
+    if e in _never:
+        return "block", "on the never-contact tier — outranks every allow-list"
+    if e in _ok:
+        return "allow", "client transactional allow-list"
+    return "default", "no transactional exception — ordinary suppression applies"
+
+
 # ── attendee address ─────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")

@@ -210,6 +210,106 @@ sg.configure_operators(None)
 check("...and reports it missing once cleared", sg.operators_configured(), False)
 
 
+# ══════════════════════════════════════════════════════════════════════
+section("#69 — a client is not a lead: transactional mail vs marketing")
+#
+# Marcia Cardim booked a studio session for Aug 12 through the portal. She is
+# on EMAIL_DNC because she became a CLIENT and must not receive lead
+# follow-ups. Her four booking reminders route through the same guard, so all
+# four would have been refused — and nobody would have known until she failed
+# to show. Third audience the one blocklist was silently answering for.
+_NEVER69 = {"yasminfmoraes@icloud.com"}          # test lead — never, by any path
+_TXOK69 = {"ediasm@icloud.com"}                  # client — transactional only
+
+
+def _sup69(a):
+    e = str(a or "").strip().lower()
+    if not e or "@" not in e:
+        return True, "unparseable"
+    if e in ("yasminfmoraes@icloud.com", "ediasm@icloud.com"):
+        return True, "do-not-contact list"
+    if e.endswith("@mwmcreations.com"):
+        return True, "internal address"
+    return False, ""
+
+
+sg.configure_suppression(_sup69)
+sg.configure_transactional(lambda a: _er68.transactional_allowed(a, _TXOK69, _NEVER69))
+
+_hit69 = {"v": False}
+_real69 = sg._get_gmail_service
+
+
+def _boom69():
+    _hit69["v"] = True
+    raise RuntimeError("reached sender")
+
+
+def _try69(**kw):
+    _hit69["v"] = False
+    try:
+        sg.send_gmail(**kw)
+    except RuntimeError:
+        pass
+    return _hit69["v"]
+
+
+sg._get_gmail_service = _boom69
+try:
+    # THE BUG: the client's own booking reminder must now get through.
+    check("a client on DNC RECEIVES transactional mail",
+          _try69(to="ediasm@icloud.com", subject="s", body_html="h",
+                 transactional=True), True)
+    # ...and marketing to that same client must still be refused.
+    check("...but marketing to that same client is still refused",
+          _try69(to="ediasm@icloud.com", subject="s", body_html="h"), False)
+
+    # THE HARD TIER: a test lead is unreachable by every path, flag or no flag.
+    check("a never-contact address is refused even as transactional",
+          _try69(to="yasminfmoraes@icloud.com", subject="s", body_html="h",
+                 transactional=True), False)
+    check("...and refused as ordinary mail",
+          _try69(to="yasminfmoraes@icloud.com", subject="s", body_html="h"), False)
+    check("...and refused when hidden in CC of a transactional send",
+          _try69(to="ok@gmail.com", cc="yasminfmoraes@icloud.com", subject="s",
+                 body_html="h", transactional=True), False)
+
+    # The exception is per-address, not a mode. Everyone else is unaffected.
+    check("an ordinary lead is unaffected by the transactional flag",
+          _try69(to="ok@gmail.com", subject="s", body_html="h",
+                 transactional=True), True)
+    check("an internal address is STILL refused as transactional",
+          _try69(to="someone@mwmcreations.com", subject="s", body_html="h",
+                 transactional=True), False)
+    check("an allow-listed client in CC is permitted",
+          _try69(to="ok@gmail.com", cc="ediasm@icloud.com", subject="s",
+                 body_html="h", transactional=True), True)
+
+    # Fail-safe direction: an unconfigured predicate must not open a hole.
+    sg.configure_transactional(None)
+    check("with NO transactional predicate, a DNC client stays blocked",
+          _try69(to="ediasm@icloud.com", subject="s", body_html="h",
+                 transactional=True), False)
+finally:
+    sg._get_gmail_service = _real69
+
+# The predicate's three-way answer, on its own.
+check("allow-listed client -> allow",
+      _er68.transactional_allowed("ediasm@icloud.com", _TXOK69, _NEVER69)[0], "allow")
+check("never-contact -> block",
+      _er68.transactional_allowed("yasminfmoraes@icloud.com", _TXOK69, _NEVER69)[0], "block")
+check("anyone else -> default (ordinary rules decide)",
+      _er68.transactional_allowed("someone@gmail.com", _TXOK69, _NEVER69)[0], "default")
+check("unparseable -> block",
+      _er68.transactional_allowed("", _TXOK69, _NEVER69)[0], "block")
+check("never-contact outranks being on BOTH lists",
+      _er68.transactional_allowed("yasminfmoraes@icloud.com",
+                                  _TXOK69 | _NEVER69, _NEVER69)[0], "block")
+check("case and whitespace do not smuggle past the hard tier",
+      _er68.transactional_allowed("  YasminFMoraes@iCloud.com ",
+                                  _TXOK69, _NEVER69)[0], "block")
+
+
 print("\n" + "=" * 60)
 print(f"  TOTAL: {'FAILED — ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
 if FAILS:

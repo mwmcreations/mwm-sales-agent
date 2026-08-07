@@ -57,6 +57,8 @@ from event_rail import (canvas_sync_mark, canvas_stamp_block,
                         canvas_block_is_findable)
 # Patch #66 — operator notifications are allow-listed, deny by default.
 from event_rail import operator_allowed
+# Patch #69 — client transactional mail is not lead mail.
+from event_rail import transactional_allowed
 # Patch #58 — "I'll check with Michael" now has somewhere to land.
 from event_rail import (is_out_of_hours, out_of_hours_reason,
                         build_approval_request, approval_is_open,
@@ -9696,6 +9698,11 @@ def _lead_reminder_thread():
                                 _em_subject,
                                 _em_html,
                                 via=f"confirmation-T{stage_h}h",
+                                # PATCH #69 — a booking confirmation is
+                                # transactional, not marketing. A client on the
+                                # lead-DNC list still gets the reminder for the
+                                # session they booked.
+                                transactional=True,
                             )):
                                 _sent_via = "email (WhatsApp unavailable)"
                         except Exception as _mail_err:
@@ -10259,6 +10266,9 @@ _susan_gmail_mod.configure_suppression(email_is_suppressed)
 # handful of addresses belonging to the people who run the business?".
 _susan_gmail_mod.configure_operators(
     lambda _a: operator_allowed(_a, OPERATOR_EMAILS, EMAIL_DNC))
+# Patch #69 — and the transactional predicate. Three questions, three hooks.
+_susan_gmail_mod.configure_transactional(
+    lambda _a: transactional_allowed(_a, TRANSACTIONAL_OK_EMAILS, NEVER_CONTACT_EMAILS))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -10274,6 +10284,35 @@ _susan_gmail_mod.configure_operators(
 # who is a TEST LEAD on EMAIL_DNC. Reusing it would make this the exact leak
 # Patch #38 was written to close.
 # ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #69 — CLIENT TRANSACTIONAL MAIL. See event_rail.transactional_allowed.
+#
+# NEVER_CONTACT is the hard tier: a test lead, a person who asked to be left
+# alone entirely. It outranks every allow-list in this file, including the
+# operator one. Yasmin Moraes lives here — she is on EMAIL_DNC as a TEST lead
+# and must stay unreachable by every path.
+#
+# TRANSACTIONAL_OK is the narrow exception: people who are on EMAIL_DNC
+# because they became CLIENTS, and who must therefore still receive
+# confirmations and reminders for bookings they actually made. Marcia Cardim
+# is the live case — a portal booking on Aug 12 whose four reminders would
+# otherwise all be refused.
+#
+# Anything on neither list is unaffected: ordinary suppression decides.
+# ═══════════════════════════════════════════════════════════════════════════
+NEVER_CONTACT_EMAILS = {
+    e.strip().lower() for e in
+    os.getenv("NEVER_CONTACT_EMAILS", "yasminfmoraes@icloud.com").split(",")
+    if e.strip()
+}
+
+TRANSACTIONAL_OK_EMAILS = {
+    e.strip().lower() for e in
+    os.getenv("TRANSACTIONAL_OK_EMAILS", "ediasm@icloud.com").split(",")
+    if e.strip()
+} - NEVER_CONTACT_EMAILS      # the hard tier wins, always
+
+
 OPERATOR_EMAILS = {
     e.strip().lower() for e in
     os.getenv("OPERATOR_EMAILS", MICHAEL_EMAIL).split(",")
@@ -10451,7 +10490,7 @@ def _run_operator_boot_check():
 
 
 def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
-                lead_key=None):
+                lead_key=None, transactional=False):
     """PATCH #44A/#44C — the ONE sender every automated path goes through.
 
     Three jobs the individual call sites kept getting wrong:
@@ -10474,14 +10513,29 @@ def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
          it claims to measure.
     """
     _to = str(to or "").strip()
-    _sup, _reason = email_is_suppressed(_to)
-    if _sup:
-        print(f"[EMAIL] suppressed ({_reason}) — not sending to {_to}")
-        return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}"}
+    # PATCH #69 — the wrapper's own copy of the guard has to learn the same
+    # exception the sender learned, or a client's booking reminder dies here
+    # instead of one layer down. (That two-layer asymmetry is exactly what
+    # made #66 look fixed when it was not.)
+    _tdec, _twhy = ("default", "")
+    if transactional:
+        _tdec, _twhy = transactional_allowed(
+            _to, TRANSACTIONAL_OK_EMAILS, NEVER_CONTACT_EMAILS)
+        if _tdec == "block":
+            print(f"[EMAIL] transactional refused ({_twhy}) — not sending to {_to}")
+            return {"ok": False, "suppressed": True,
+                    "error": f"transactional refused: {_twhy}"}
+    if _tdec != "allow":
+        _sup, _reason = email_is_suppressed(_to)
+        if _sup:
+            print(f"[EMAIL] suppressed ({_reason}) — not sending to {_to}")
+            return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}"}
     try:
         _kw = {}
         if cc:
             _kw["cc"] = cc
+        if transactional:
+            _kw["transactional"] = True
         result = send_gmail(_to, subject, html, drive_file_id, **_kw)
     except Exception as _se:
         _report_error("_email_send", _se, f"to={_to} via={via}")
@@ -15304,7 +15358,36 @@ def studio_booking_webhook():
                 _sb_state = "failed"          # PATCH #59 — pessimistic default
                 _sb_degraded = ""
                 try:
-                    _sb_svc = get_calendar_service()
+                    # PATCH #69 — ASK FOR DELEGATION. Domain-wide delegation has
+                    # been granted to this service account the whole time
+                    # (client 116770307274894749674, scope .../auth/calendar) —
+                    # but Google only honours it when the code IMPERSONATES a
+                    # user. `book_appointment` does; this webhook never did, so
+                    # every portal booking authenticated as a bare robot, and a
+                    # bare robot may not invite attendees.
+                    #
+                    # The proof is in the calendar itself: Maya-booked events
+                    # read `creator: michael@mwmcreations.com` and carry their
+                    # attendee. Portal events read `creator: maya-calendar@…
+                    # iam.gserviceaccount.com` and carry none. Same account,
+                    # same grant, different call.
+                    #
+                    # This was escalated to Michael for days as "grant DWD —
+                    # one admin click". It was never his to fix.
+                    _sb_delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+                    try:
+                        _sb_svc = (get_calendar_service(impersonate=_sb_delegate)
+                                   if _sb_delegate else get_calendar_service())
+                    except Exception as _sb_dwd_err:
+                        # Same narrow fallback as book_appointment: only the
+                        # delegation-config errors. Anything else must raise.
+                        if ("unauthorized_client" in str(_sb_dwd_err)
+                                or "invalid_grant" in str(_sb_dwd_err)):
+                            print(f"[STUDIO-BOOKING] delegation unavailable "
+                                  f"({_sb_dwd_err}) — falling back to direct access")
+                            _sb_svc = get_calendar_service()
+                        else:
+                            raise
                     _sb_body = {
                         "summary": f"🎬 Studio: {name} ({evt.get('duration')}h)",
                         "description": (
