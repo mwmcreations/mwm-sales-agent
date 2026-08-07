@@ -10297,6 +10297,88 @@ def _email_operator(to, subject, html, why=""):
     return result
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #67 — PROVE THE OPERATOR CHANNEL, DON'T INFER IT FROM SILENCE.
+#
+# #66 fixed the reason Michael could not be emailed. It could not PROVE the
+# fix, because the only live test case — AR-9CDD44, Andrea Battis — aged out
+# at almost the same moment the new build booted. The alarm went quiet and the
+# email never arrived, so the quiet meant nothing.
+#
+# That is the third time in twelve hours this board has been fooled by an
+# absence: a canvas report that had not posted yet, a Calendly widget a
+# screenshot could not photograph, and now a retry loop that stopped for the
+# wrong reason. Every one of them was a missing POSITIVE signal, not a bad
+# inference from a present one.
+#
+# So the operator channel now proves itself the way #44A's DNC guard does —
+# at boot, end to end, against the real sender, and it says so out loud. If
+# Michael cannot be emailed, we learn it on the deploy that broke it and not
+# on the night a lead is waiting.
+#
+# Throttled through pg_store so a run of six deploys does not put six test
+# emails in his inbox; #dev still gets a verdict every boot either way, so a
+# throttled run and a broken run never look alike.
+# ═══════════════════════════════════════════════════════════════════════════
+OPERATOR_SELFTEST_MIN_HOURS = float(os.getenv("OPERATOR_SELFTEST_MIN_HOURS", "6"))
+
+
+def _operator_email_boot_check():
+    """Send one real email to the operator and report the verdict. Never raises."""
+    try:
+        if not OPERATOR_EMAILS:
+            return "no OPERATOR_EMAILS configured — the machine cannot reach anybody"
+
+        _now = datetime.now(pytz.timezone(TIMEZONE)).replace(tzinfo=None)
+        _last_iso, _throttled = None, False
+        try:
+            import pg_store as _ps
+            if _ps.enabled():
+                _last_iso = _ps.load_state("operator_selftest_at", None)
+                if _last_iso:
+                    _age_h = (_now - datetime.fromisoformat(str(_last_iso))
+                              ).total_seconds() / 3600.0
+                    _throttled = _age_h < OPERATOR_SELFTEST_MIN_HOURS
+        except Exception:
+            pass    # a throttle we cannot read must not stop the test
+
+        if _throttled:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                f":envelope_with_arrow: *Operator email self-test SKIPPED* — last "
+                f"proven {_last_iso}, inside the {OPERATOR_SELFTEST_MIN_HOURS:g}h "
+                f"window. _Skipped, not failed._"))
+            return ""
+
+        _to = sorted(OPERATOR_EMAILS)[0]
+        _res = _email_operator(
+            _to, "MWM machine — operator channel self-test",
+            "<div style=\"font-family:Arial,Helvetica,sans-serif;font-size:15px;"
+            "line-height:1.6;color:#222;\">"
+            "<p>This is the machine proving it can reach you by email.</p>"
+            "<p>Nothing is wrong and nothing is needed from you. If this stops "
+            "arriving, the out-of-hours approval door has closed again — that is "
+            "the failure it exists to catch.</p>"
+            f"<p style=\"color:#777;font-size:13px;\">Sent at boot · "
+            f"{_now.strftime('%b %d %Y, %I:%M %p ET')}</p></div>",
+            why="boot self-test")
+        if not email_ok(_res):
+            return (f"could not email the operator at {_to}: "
+                    f"{_res.get('error') or _res}")
+        try:
+            import pg_store as _ps2
+            if _ps2.enabled():
+                _ps2.save_state("operator_selftest_at", _now.isoformat())
+        except Exception:
+            pass
+        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+            f":white_check_mark: *OPERATOR EMAIL SELF-TEST PASSED* — the machine "
+            f"delivered to `{mask_contact(_to)}`. The out-of-hours approval door "
+            f"can reach a human. _(Patch #67; #66 fixed the block, this proves it.)_"))
+        return ""
+    except Exception as _oe:
+        return f"operator self-test raised: {str(_oe)[:200]}"
+
+
 def _dnc_boot_check():
     """Prove the guard is live at BOOT, not on the first blocked send.
 
@@ -10331,6 +10413,28 @@ if _dnc_boot_problem:
         pass
 else:
     print("[DNC] boot check ok — suppression enforced at send_gmail chokepoint")
+
+
+# PATCH #67 — run AFTER the DNC check on purpose. If suppression is not wired,
+# that is the louder failure and should be the first thing in the log.
+def _run_operator_boot_check():
+    """Deferred to a thread: one email must never delay or block boot."""
+    try:
+        import time as _t
+        _t.sleep(20)          # let the Slack/Gmail clients finish warming
+        _problem = _operator_email_boot_check()
+        if _problem:
+            print(f"🚨 [OPERATOR] BOOT CHECK FAILED — {_problem}")
+            _report_error(
+                "operator.boot_check", _problem,
+                "THE MACHINE CANNOT EMAIL A HUMAN. Out-of-hours approvals, and "
+                "anything else that needs Michael, will file correctly and reach "
+                "nobody. Patch #58 failed this way silently for three days.")
+        else:
+            print("[OPERATOR] boot check ok — the operator channel is reachable")
+    except Exception as _e:
+        print(f"[OPERATOR] boot check thread error (non-fatal): {_e}")
+
 
 
 def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
@@ -17167,6 +17271,13 @@ _outcome_seq.configure(
     dev_channel=SLACK_DEV_CHANNEL,
 )
 threading.Thread(target=_outcome_seq.loop, daemon=True, name="outcome_sender").start()
+
+# PATCH #67 — started HERE, with the other background threads, not beside its
+# own definition. Up there it launched before `email_ok` and `send_gmail` were
+# bound, and only a 20-second sleep stood between it and a NameError. A sleep
+# is not a dependency guarantee; module order is.
+threading.Thread(target=_run_operator_boot_check, daemon=True,
+                 name="operator_boot_check").start()
 
 
 # ══════════════════════════════════════════════════════════════════════
