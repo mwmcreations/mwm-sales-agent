@@ -73,6 +73,18 @@ TRIAL_PRICE_ID = os.getenv("STUDIO_TRIAL_PRICE_ID",
                            "price_1U15xuDAWlnEb9RfH6w5jYIf")
 TRIAL_NAME = "Studio Trial — 1 Month"
 
+# PATCH #70 — AD_09's product. Created in Stripe by ROB on Aug 8 2026 (Michael's
+# rule: ROB is the only agent who touches Stripe). Registered here because
+# PACKAGES is keyed by price ID in CODE, not read from Stripe metadata — so a
+# product can exist in Stripe, take real money, and provision NOTHING until
+# this entry lands. That is exactly what happened between Rob creating it and
+# this patch: package_for_session() returned None and the handler answered
+# "other-product". Same failure #53 was written to prevent; it recurs for every
+# new product until someone adds the row.
+HOUR_ONEOFF_PRICE_ID = os.getenv("STUDIO_HOUR_ONEOFF_PRICE_ID",
+                                 "price_1U2Gz7DAWlnEb9Rfhl5nA8t0")
+HOUR_ONEOFF_NAME = "Studio Hour + Professional Editing"
+
 # Keyed by Stripe price ID, because that is the one identifier the webhook can
 # always see on a line item. `kind` mirrors the metadata set on the Stripe
 # price and payment link, so a human reading either sees the same word.
@@ -118,6 +130,37 @@ PACKAGES = {
         # No credit toward a 3-month contract. Recorded here so a future upsell
         # sequence cannot quietly invent one: if they go to the package it is a
         # fresh $1,200/mo × 3, and the $1,400 stays spent on the trial.
+        "credits_toward_contract": False,
+    },
+    HOUR_ONEOFF_PRICE_ID: {
+        "kind": "studio_hour_oneoff",
+        "name": HOUR_ONEOFF_NAME,
+        "hours": 1,
+        # 30 days to use one hour is generous and matches the trial's shape, so
+        # the portal's booking-window enforcement (S8.5) behaves identically.
+        "term_days": 30,
+        # ZERO, for the same reason as the trial: grace would silently double
+        # the window the ad implied.
+        "grace_days": 0,
+        "recurring": False,
+        # A $349 one-off must never inflate MRR. #53 was written because a
+        # one-off was being counted as $1,200 of recurring revenue.
+        "mrr": 0,
+        "one_off": 349,
+        "price_label": "$349 one-time",
+        # Deliberately its own status. It must never merge with
+        # "Client — Studio Trial (1 month)" — different product, different
+        # price, different campaign.
+        "sheet_status": "Client — Studio Hour (one-off)",
+        "pace_note": "one hour, filmed and edited",
+        # Editing is not an add-on here, it IS the offer. AD_09 says "we film
+        # you, we edit it, you leave with video you can use" — the welcome
+        # email is the written record the client keeps, so it says so.
+        "includes_note": "Post-production editing is included",
+        # Michael's ruling, Aug 8: "get the lead inside our room paying the
+        # $349, and I can do the upsell over there." The upsell is deliberate
+        # and happens in person. Nothing in this flow cross-sells, and no
+        # credit toward a contract is invented here.
         "credits_toward_contract": False,
     },
 }

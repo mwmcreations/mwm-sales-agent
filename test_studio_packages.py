@@ -529,6 +529,71 @@ if _fn62 is not None:
        "the paid-client path names the SERVICE on the sheet row, not just a status")
 
 
+# ── PATCH #70 — AD_09's $349 hour is a THIRD product ────────────────────
+#
+# Rob created the Stripe price on Aug 8. For a stretch after that, the price
+# existed, the payment link was live, and paying it provisioned NOTHING —
+# package_for_session() returned None and the handler answered "other-product".
+# That is the #53 failure recurring, because PACKAGES is keyed by price ID in
+# CODE and a new Stripe product does not register itself. These tests exist so
+# the next product cannot repeat it silently.
+section("#70 — the $349 one-off hour")
+
+_p70 = sp.package_for_price("price_1U2Gz7DAWlnEb9Rfhl5nA8t0")
+ok(_p70 is not None,
+   "the AD_09 price resolves to a package (None here = money taken, nothing given)")
+
+if _p70:
+    ok(_p70["hours"] == 1, "one hour, not four and not twelve")
+    ok(_p70["term_days"] == 30, "30-day term")
+    ok(_p70["grace_days"] == 0,
+       "ZERO grace — grace would silently double the window the ad implied")
+    ok(_p70["recurring"] is False, "one-off, never a subscription")
+    ok(_p70["mrr"] == 0,
+       "a $349 one-off must NOT inflate MRR (the #53 lesson, restated)")
+    ok(_p70["one_off"] == 349, "counted as $349 of one-off revenue")
+
+    # The window WordPress actually enforces (S8.5 reads contract_end_date).
+    _t70 = sp.package_term(_p70, date(2026, 8, 8))
+    ok((_t70["booking_deadline"] - _t70["start"]).days == 30,
+       "booking deadline is exactly 30 days out, not 60")
+
+# Two products must never be mistaken for each other. Michael's ruling is that
+# AD_09 leads are never offered the trial or the package, so the labels that
+# drive that decision have to stay distinct.
+_names70 = [x["name"] for x in sp.PACKAGES.values()]
+_status70 = [x["sheet_status"] for x in sp.PACKAGES.values()]
+ok(len(set(_names70)) == len(_names70), "no two packages share a product name")
+ok(len(set(_status70)) == len(_status70), "no two packages share a sheet status")
+ok(sp.package_for_price(sp.TRIAL_PRICE_ID)["kind"] == "studio_trial_1mo",
+   "the trial still resolves to the trial (the new entry did not shadow it)")
+ok(sp.package_by_name(sp.HOUR_ONEOFF_NAME)["kind"] == "studio_hour_oneoff",
+   "the portal ledger can classify a one-off hour by NAME, not just price id")
+
+# Revenue reporting: adding this product must not move MRR by a cent.
+_rec70, _mrr70, _one70, _tot70 = sp.revenue_split([
+    {"package_name": sp.PACKAGE_NAME},
+    {"package_name": sp.HOUR_ONEOFF_NAME},
+    {"package_name": sp.TRIAL_NAME},
+])
+ok(_mrr70 == sp.PACKAGE_MRR,
+   "MRR counts only the recurring package — the $349 and the $1,400 stay out")
+ok(_tot70 == 1749, "one-off revenue is $349 + $1,400 = $1,749")
+
+# The word "trial" belongs to the OTHER product. If it ever appears in this
+# one's client-facing strings, a cold AD_09 buyer gets told they are on a trial.
+if _p70:
+    _txt70 = " ".join(str(_p70.get(k, "")) for k in
+                      ("name", "price_label", "pace_note", "includes_note",
+                       "sheet_status")).lower()
+    ok("trial" not in _txt70,
+       "no client-facing string on the $349 product says 'trial'")
+    ok("month" not in _txt70 and "/mo" not in _txt70 and "recurring" not in _txt70,
+       "nothing on the $349 product reads as monthly or recurring")
+
+print("\nPATCH70_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
+
+
 print("\n" + "=" * 62)
 print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 62)
