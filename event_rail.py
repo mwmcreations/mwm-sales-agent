@@ -2878,3 +2878,85 @@ def booking_sync_alert(name, when, booking_id, calendar_state, degraded_reason="
             "*The studio reads as FREE for this slot and can be double-booked.* "
             "The client has their confirmation email and believes it is booked. "
             "ACTION NEEDED: add the event by hand, or fix the sync.")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATCH #71 — AD_09: is this lead here for the $349 offer?
+#
+# Michael's ruling, Aug 8 2026, verbatim:
+#   "I want Maya to keep sending clients to the studio and I will close them,
+#    because my chances of closing studio packages are way higher... but for
+#    this offer we need Maya to be very focused on the offer. Leads coming
+#    from this offer need to be attacked to purchase this offer. All others,
+#    she needs to do the same process that she's doing right now."
+#
+# So this predicate is deliberately NARROW. A false NEGATIVE is cheap: the lead
+# falls into the normal flow and gets invited to the studio, which is Michael's
+# best closing tool anyway. A false POSITIVE is expensive: someone who wanted a
+# conversation gets a payment link, which reads as not listening.
+#
+# WHY NOT JUST USE ad_id: capture is live (S27, both legs) but on Aug 8 the
+# lead sheet showed column U empty on every August row. Until that is fixed,
+# ad_id alone would identify nobody. So ad_id is checked FIRST and trusted when
+# present, with offer-specific language as the fallback.
+#
+# Generic studio interest — "how much is the studio", "can I book time" — must
+# NOT match. That lead belongs to Michael's room, not to a checkout link.
+# ═══════════════════════════════════════════════════════════════════════
+
+import re as _re71
+
+# Phrases that only someone who saw THIS offer would use. Each is checked
+# against the lead's own words, lowercased.
+_AD09_STRONG = (
+    "nothing to sign",
+    "studio hour",
+    "one hour with editing",
+    "hour with editing",
+    "filmed and edited",
+    "film and edit",
+)
+
+_AD09_AD_MENTION = _re71.compile(
+    r"\b(saw|seen|watched|from)\s+(your|the|an|this)\s+(ad|advert|advertisement|reel|video)\b"
+    r"|\byour\s+ad\b|\bthe\s+ad\b|\bad\s+on\s+(instagram|facebook|ig|whatsapp)\b",
+    _re71.I,
+)
+
+# $349 written as money. A bare "349" is NOT enough — it shows up inside phone
+# numbers and addresses, and a mis-fire here costs a real conversation.
+_AD09_PRICE = _re71.compile(
+    r"\$\s?349\b|\b349\s?(dollars|usd|bucks)\b|\b349\s?\$",
+    _re71.I,
+)
+
+
+def ad09_lead(ad_id=None, messages=None, ad09_ad_ids=None):
+    """Is this lead here for the AD_09 $349 offer? -> (bool, reason).
+
+    `ad_id`        the Meta ad id captured at inbound (may be empty today).
+    `messages`     the lead's OWN messages. Never pass Maya's replies in —
+                   she says "$349" herself, and matching on that would latch
+                   the branch on permanently after the first mention.
+    `ad09_ad_ids`  iterable of ad ids that count as AD_09.
+
+    Returns (False, "") when nothing matches, so the caller can log WHY a lead
+    did or did not get the offer branch instead of guessing later.
+    """
+    ids = {str(x).strip() for x in (ad09_ad_ids or ()) if str(x).strip()}
+    aid = str(ad_id or "").strip()
+    if aid and ids and aid in ids:
+        return True, "ad_id"
+
+    for raw in (messages or ()):
+        text = str(raw or "").lower()
+        if not text:
+            continue
+        if _AD09_PRICE.search(text):
+            return True, "price"
+        for phrase in _AD09_STRONG:
+            if phrase in text:
+                return True, "phrase:" + phrase
+        if _AD09_AD_MENTION.search(text):
+            return True, "ad_mention"
+    return False, ""

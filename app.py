@@ -2323,7 +2323,7 @@ Say something like:
 “I’d love to connect you with Michael Moraes, our founder — he does free 30-minute strategy calls where he can walk you through what would work best for your situation. Want me to check his availability?”
 
 And also share:
-“In the meantime, you can also browse and book studio time directly here: www.videoproductionplans.com/book-studio”
+“In the meantime, you can also browse and book studio time directly here: mwmcreations.com/book-studio/”
 
 For Path B leads, use appointment_type=”strategy_call” when booking (not studio_visit).
 
@@ -2521,7 +2521,7 @@ Step 6 — PRICING & ROUTING (only if they ask)
 If someone directly asks about pricing, share the plans honestly and briefly.
 
 If they want HOURLY studio time (with or without editing), route them directly to the booking site — but also keep the door open for a visit:
-"You can book hourly studio time and pay directly online: www.videoproductionplans.com/book-studio — and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
+"You can book hourly studio time and pay directly online: mwmcreations.com/book-studio/ — and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
 
 If they want the Monthly 4h package ($1,200/month) or are interested in a broader content strategy, ALWAYS mention it saves them $200 every month vs booking hourly ($1,396 -> $1,200, plus package-only short-form cuts, captions, and logo animation), then bring it back to the visit:
 "The best way to kick that off is a quick visit to the studio — Michael will walk you through the space and make sure it's the perfect fit for what you're building. Want to schedule that?"
@@ -2563,6 +2563,68 @@ IMPORTANT GUIDELINES
   Example: Lead says "I can't make my appointment Thursday at 10am, can we do next Tuesday instead?" → FIRST call cancel_appointment (lead_name="Lead Name", cancel_reason="Lead requested reschedule to next Tuesday", event_date="2026-06-25T10:00:00"), THEN find and book the new slot.
   NEVER skip Step 1. Two events for the same lead = a scheduling conflict on Michael's calendar.
 - CRITICAL: Never wrap URLs in asterisks or any markdown formatting. Always write URLs as plain text on their own line. Example — WRONG: **www.site.com/page** — CORRECT: www.site.com/page
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATCH #71 — AD_09 OFFER BLOCK
+#
+# Michael's ruling, Aug 8 2026: MAYA's default job does not change. She keeps
+# getting leads into the room with him, because his close rate in person on
+# packages beats anything a bot can do on a link. This block applies ONLY to
+# leads who came for the $349 offer — and for those, the ask is the purchase.
+#
+# Deliberately NOT wired: any mention of the $1,400 trial or the $1,200/mo
+# package. Michael: "get the lead inside our room paying the $349, and I can do
+# the upsell over there." The upsell happens in person, not in the DM.
+# ═══════════════════════════════════════════════════════════════════════
+AD_09_STUDIO_HOUR_URL = os.getenv("AD09_OFFER_URL",
+                                  "https://mwmcreations.com/studio-hour/")
+AD_09_AD_IDS = [x.strip() for x in os.getenv("AD09_AD_IDS", "").split(",") if x.strip()]
+
+AD_09_OFFER_BLOCK = """
+
+═══════════════════════════════════════════════════════════════
+THIS LEAD CAME FROM OUR $349 STUDIO HOUR AD. READ THIS FIRST.
+═══════════════════════════════════════════════════════════════
+They watched an ad for ONE SPECIFIC THING and messaged you about it. Your job
+with this lead is NOT the usual one. Do not run the standard nurture.
+
+THE OFFER, EXACTLY AS THE AD STATES IT — do not embellish or restate loosely:
+  One hour in our Orlando studio. We film you, we edit it, you leave with
+  video you can use. $349. Nothing to sign.
+
+WHAT TO DO
+1. Acknowledge the thing they came for. They watched 42 seconds about a
+   specific offer — opening with "would you like to come see the studio?"
+   tells them you were not listening.
+2. The ask is the PURCHASE. Send them this page and name what it is:
+   {url}
+   Something like: "Here's the page — one hour, filmed and edited, $349.
+   You don't pick your filming date now; you book that afterwards in your
+   own portal whenever suits you."
+3. THAT LAST POINT IS THE OFFER'S BIGGEST SELLING POINT. Many leads want the
+   offer but do not yet know when they can film. Say plainly that paying does
+   NOT commit them to a date — they get 30 days to choose it themselves.
+
+HOW TO SAY THE PRICE
+  Say "$349". NEVER "only $349" or "just $349" — it apologises for the price
+  and makes it sound negotiable. It is the price.
+
+🔴 DO NOT OFFER THE FREE STUDIO VISIT AS AN ALTERNATIVE.
+  It is a FALLBACK ONLY — use it if they decline the offer, or if they ask to
+  see the space first. Never lead with it. Never volunteer it. Offering a free
+  visit to someone who just watched a paid ad teaches them the price is soft,
+  and it is the single biggest leak in this campaign.
+
+🔴 DO NOT MENTION the $1,400 Studio Trial or the $1,200/month package to this
+  lead. Not as a comparison, not as an upsell, not "we also offer". The $349
+  path ends at $349. If they ask about packages unprompted, answer factually
+  and briefly, then return to the offer they came for.
+
+If they go quiet after you send the link, follow up about the OFFER — not with
+a different, cheaper, or free alternative.
+═══════════════════════════════════════════════════════════════
 """
 
 
@@ -6483,8 +6545,8 @@ def _extract_gabriela_followups(text: str) -> list[str]:
     items = []
     if re.search(r'videoproductionplans\.com/expo2026', text, re.IGNORECASE):
         items.append('https://www.videoproductionplans.com/expo2026')
-    if re.search(r'videoproductionplans\.com/book-?studio', text, re.IGNORECASE):
-        items.append('https://www.videoproductionplans.com/book-studio')
+    if re.search(r'(?:videoproductionplans\.com|mwmcreations\.com)/book-?studio', text, re.IGNORECASE):
+        items.append('https://mwmcreations.com/book-studio/')
     # Michael's direct WhatsApp number — send as a clickable contact
     if re.search(r'813.*?503.*?1224|8135031224', text):
         items.append('+1 (813) 503-1224')
@@ -7874,6 +7936,27 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             print(f"\u26a0\ufe0f Lead context lookup error (non-fatal): {_ctx_err}")
             _lead_ctx = ""
 
+        # ── PATCH #71: AD_09 $349 offer branch (WhatsApp leg) ──
+        # Only the LEAD's own words are inspected. Maya says "$349" herself
+        # once she is on the branch; feeding her replies back in would latch
+        # it on permanently for every lead she ever quoted.
+        try:
+            _a9_msgs = [incoming_msg] + [
+                (_m.get("content") or "")
+                for _m in (conversation_history.get(sender) or [])[-8:]
+                if _m.get("role") == "user"
+            ]
+            _a9_on, _a9_why = event_rail.ad09_lead(
+                (lead_data.get(sender) or {}).get("ad_id", ""),
+                _a9_msgs, AD_09_AD_IDS)
+            if _a9_on:
+                _lead_ctx = (_lead_ctx or "") + AD_09_OFFER_BLOCK.format(
+                    url=AD_09_STUDIO_HOUR_URL)
+                (lead_data.setdefault(sender, {}))["ad09"] = _a9_why
+                print(f"[AD_09] offer branch ON for {sender} via {_a9_why}")
+        except Exception as _a9e:
+            print(f"\u26a0\ufe0f AD_09 branch error (non-fatal, Maya still replies): {_a9e}")
+
 
         # ── AI Re-engagement context injection ──
         try:
@@ -8284,6 +8367,24 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             _lead_ctx = f"Instagram user: {_ig_name}" + (f" (@{_ig_user})" if _ig_user else "")
     except Exception as _sx:
         _report_error("_handle_incoming_instagram:L6497", _sx)  # S6.5 silent-except sweep
+
+    # ── PATCH #71: AD_09 $349 offer branch (Instagram leg) ──
+    try:
+        _a9_msgs = [incoming_msg] + [
+            (_m.get("content") or "")
+            for _m in (conversation_history.get(sender) or [])[-8:]
+            if _m.get("role") == "user"
+        ]
+        _a9_on, _a9_why = event_rail.ad09_lead(
+            (lead_data.get(sender) or {}).get("ad_id", ""),
+            _a9_msgs, AD_09_AD_IDS)
+        if _a9_on:
+            _lead_ctx = (_lead_ctx or "") + AD_09_OFFER_BLOCK.format(
+                url=AD_09_STUDIO_HOUR_URL)
+            (lead_data.setdefault(sender, {}))["ad09"] = _a9_why
+            print(f"[AD_09] offer branch ON for IG {sender} via {_a9_why}")
+    except Exception as _a9e:
+        print(f"\u26a0\ufe0f AD_09 branch error IG (non-fatal): {_a9e}")
 
     # ── Pipeline event: NEW_LEAD ──
     try:

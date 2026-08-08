@@ -1682,5 +1682,64 @@ check_true("dnc may be omitted", operator_allowed(MICHAEL, OPS)[0])
 check_false("blank entries in the operator list do not match a blank address",
             operator_allowed("", {"", "  "}, DNC)[0])
 
+
+# ── PATCH #71 — AD_09 $349 offer branch ────────────────────────────────
+#
+# Michael's ruling, Aug 8 2026: MAYA's default job is UNCHANGED — get leads
+# into the room with him, because his in-person close on packages beats
+# anything a bot closes on a link. This branch fires ONLY for leads who came
+# for the $349 offer.
+#
+# The asymmetry that shapes every case below: a false NEGATIVE is cheap (the
+# lead gets invited to the studio, which is Michael's best tool anyway). A
+# false POSITIVE is expensive — someone who wanted a conversation gets a
+# payment link, which reads as not listening. So the "must NOT fire" cases
+# matter more than the matching ones.
+from event_rail import ad09_lead as _a9
+
+for _t in ["I saw your ad about the $349 studio hour",
+           "is it really 349 dollars for one hour?",
+           "nothing to sign right?",
+           "I want the studio hour",
+           "do you film and edit it for me",
+           "saw your ad on instagram"]:
+    check_true("AD_09 fires on offer language: {!r}".format(_t[:42]),
+               _a9(None, [_t], None)[0])
+
+for _t in ["how much is the studio?",
+           "can I book studio time next week",
+           "I want to record a podcast",
+           "what do you guys do?",
+           "do you offer packages?",
+           "hi"]:
+    check_false("AD_09 does NOT hijack a normal lead: {!r}".format(_t[:42]),
+                _a9(None, [_t], None)[0])
+
+# A bare 349 is not a price. Either of these matching costs a real conversation.
+check_false("349 inside a phone number is not the offer",
+            _a9(None, ["my number is 407 349 1122"], None)[0])
+check_false("349 inside a street address is not the offer",
+            _a9(None, ["I'm at 349 Park Center Drive"], None)[0])
+
+check_true("a matching ad_id fires the branch", _a9("120249", ["hi"], ["120249"])[0])
+check_false("a different ad_id does not", _a9("999999", ["hi"], ["120249"])[0])
+check_false("an empty ad_id cannot fire on its own", _a9("", ["hi"], ["120249"])[0])
+check_false("no configured ad ids means ad_id cannot match", _a9("120249", ["hi"], [])[0])
+
+check_true("the reason is reported so a miss can be diagnosed",
+           _a9(None, ["$349 please"], None)[1] == "price")
+check_true("empty reason when it did not fire", _a9(None, ["hi"], None)[1] == "")
+
+# This runs on EVERY inbound message. It must never raise.
+for _bad in (None, [], [None], [""], [123], ("tuple",)):
+    try:
+        _a9(None, _bad, None); _survived = True
+    except Exception:
+        _survived = False
+    check_true("survives odd input {!r}".format(_bad), _survived)
+check_false("no messages means no branch", _a9(None, None, None)[0])
+
+print("\nPATCH71_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
