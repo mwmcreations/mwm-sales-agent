@@ -2960,3 +2960,109 @@ def ad09_lead(ad_id=None, messages=None, ad09_ad_ids=None):
         if _AD09_AD_MENTION.search(text):
             return True, "ad_mention"
     return False, ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PATCH #72 — A TALLY, BECAUSE SILENT FAILURE IS THE HOUSE DEFECT
+#
+# On Aug 8 ERIC reported 12 conversations across Aug 4–8 that produced ZERO
+# pipeline rows. Tracing it found the shape of the problem, but not the cause,
+# because BOTH candidate explanations are invisible from outside:
+#
+#   (a) the row was never ATTEMPTED — `is_new_sender` is computed from an
+#       in-memory dict, so "new" really means "new since the last restart"; or
+#   (b) the row was attempted and the Sheets write THREW — and every writer is
+#       wrapped in try/except that only print()s, so the failure goes to a
+#       Railway log nobody reads and the conversation carries on perfectly.
+#
+# Those need opposite fixes. Guessing between them is how a wrong fix ships.
+# This makes both countable from one curl of /health.
+#
+# Deliberately in-memory and deliberately NOT persisted: it answers "what is
+# this process doing right now", resets on deploy, and must never become a
+# thing that can fail and take a request with it. Every method swallows.
+# ═══════════════════════════════════════════════════════════════════════
+
+import threading as _threading72
+
+
+class Tally:
+    """Counters with a last-note and last-time, safe to call from any thread.
+
+    bump() can NEVER raise. It sits on the inbound message path, and an
+    observability counter that breaks the thing it observes is worse than no
+    counter at all.
+    """
+
+    def __init__(self):
+        self._lock = _threading72.Lock()
+        self._counts = {}
+        self._notes = {}
+        self._times = {}
+
+    def bump(self, name, note="", n=1):
+        try:
+            key = str(name)
+            with self._lock:
+                self._counts[key] = self._counts.get(key, 0) + int(n)
+                if note:
+                    self._notes[key] = str(note)[:200]
+                self._times[key] = local_now().isoformat(timespec="seconds")
+        except Exception:
+            pass  # never break a caller
+        return None
+
+    def get(self, name):
+        try:
+            with self._lock:
+                return self._counts.get(str(name), 0)
+        except Exception:
+            return 0
+
+    def snapshot(self):
+        """{name: {count, last, at}} — sorted, JSON-safe, never raises."""
+        try:
+            with self._lock:
+                out = {}
+                for k in sorted(self._counts):
+                    row = {"count": self._counts[k]}
+                    if k in self._notes:
+                        row["last"] = self._notes[k]
+                    if k in self._times:
+                        row["at"] = self._times[k]
+                    out[k] = row
+                return out
+        except Exception:
+            return {}
+
+
+# The one instance the app shares.
+TALLY = Tally()
+
+
+def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
+    """Turn the four counters into a plain-English reading. -> (state, why)
+
+    This is the whole point of #72: the four numbers only mean something in
+    relation to each other, and the reading should not depend on whoever is
+    looking at them remembering the rules at 2am.
+    """
+    created, failed = int(created or 0), int(failed or 0)
+    skipped_dup, gate_not_new = int(skipped_dup or 0), int(gate_not_new or 0)
+    attempted = created + failed + skipped_dup
+
+    if failed and not created:
+        return "broken", ("every attempted lead row FAILED to write — the Sheets "
+                          "call is throwing; read `last` for the error")
+    if failed:
+        return "degraded", "some lead-row writes are failing; read `last` for the error"
+    if attempted == 0 and gate_not_new:
+        return "never_attempted", ("no row was ever ATTEMPTED — every inbound was "
+                                   "treated as an already-known sender, so the "
+                                   "in-memory gate is the cause, not the write")
+    if attempted == 0:
+        return "idle", "no inbound leads since this process started"
+    if created:
+        return "ok", "lead rows are being written"
+    return "dedup_only", ("rows were attempted but all were skipped as duplicates "
+                          "— check the month-tab dedupe, not the write")

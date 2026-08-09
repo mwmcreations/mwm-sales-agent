@@ -34,6 +34,7 @@ from cris_wix import handle_cris_action
 from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block, send_lara_template, LARA_TEMPLATES
 # Patch #30 — Event Confirmation Rail. One gate, four write-sites.
 import event_rail
+from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
                         reminder_channel_for, EventRailRejected,
@@ -5936,6 +5937,7 @@ def log_new_contact_to_sheets(sender: str):
         ).execute(num_retries=3)
         existing_phones = [r[0] if r else "" for r in result.get("values", [])]
         if clean_phone in existing_phones:
+            _TALLY.bump("sheets.lead_row_skipped_duplicate", clean_phone)
             print(f"[Sheets] First-contact row already exists for {clean_phone} — skipping")
             return
 
@@ -7770,7 +7772,14 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         if is_new_sender:
             conversation_history[sender] = []
         conversation_history[sender].append({"role": "user", "content": incoming_msg})
+        if (not is_new_sender) and (not is_michael):
+            # PATCH #72 — the gate that may be the whole bug. `is_new_sender`
+            # is computed from an IN-MEMORY dict, so it means "new since the
+            # last restart", not "never seen". If this number is large while
+            # attempted is 0, the gate is the cause and the write is innocent.
+            _TALLY.bump("sheets.lead_row_gate_not_new", "whatsapp")
         if is_new_sender and not is_michael:
+            _TALLY.bump("sheets.lead_row_attempted", "whatsapp")
             try:
                 log_new_contact_to_sheets(sender)
             except Exception as e:
@@ -7953,7 +7962,10 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 _lead_ctx = (_lead_ctx or "") + AD_09_OFFER_BLOCK.format(
                     url=AD_09_STUDIO_HOUR_URL)
                 (lead_data.setdefault(sender, {}))["ad09"] = _a9_why
+                _TALLY.bump("ad09.branch_on", f"whatsapp via {_a9_why}")
                 print(f"[AD_09] offer branch ON for {sender} via {_a9_why}")
+            else:
+                _TALLY.bump("ad09.branch_off", "whatsapp — normal studio-visit flow")
         except Exception as _a9e:
             print(f"\u26a0\ufe0f AD_09 branch error (non-fatal, Maya still replies): {_a9e}")
 
@@ -8382,7 +8394,10 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             _lead_ctx = (_lead_ctx or "") + AD_09_OFFER_BLOCK.format(
                 url=AD_09_STUDIO_HOUR_URL)
             (lead_data.setdefault(sender, {}))["ad09"] = _a9_why
+            _TALLY.bump("ad09.branch_on", f"instagram via {_a9_why}")
             print(f"[AD_09] offer branch ON for IG {sender} via {_a9_why}")
+        else:
+            _TALLY.bump("ad09.branch_off", "instagram — normal studio-visit flow")
     except Exception as _a9e:
         print(f"\u26a0\ufe0f AD_09 branch error IG (non-fatal): {_a9e}")
 
@@ -8400,6 +8415,7 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
                 context=f"[IG DM] First message: {incoming_msg[:200]}"
             )
             # Log first contact to Sheets (IG DM source)
+            _TALLY.bump("sheets.lead_row_attempted", "instagram")
             try:
                 log_new_contact_to_sheets(sender)
             except Exception as e:
@@ -15654,6 +15670,22 @@ def health_check():
             "booted_at": _PROCESS_START.isoformat(),
             "note": ("compare `commit` against the hash in DEPLOY_RESULT.json — "
                      "if they differ, the patch is committed but NOT running"),
+        },
+        # PATCH #72 — countable answers instead of a Railway log nobody reads.
+        "counters": _TALLY.snapshot(),
+        "lead_rows": {
+            "verdict": _lead_row_verdict(
+                _TALLY.get("sheets.lead_row_created"),
+                _TALLY.get("sheets.lead_row_FAILED"),
+                _TALLY.get("sheets.lead_row_skipped_duplicate"),
+                _TALLY.get("sheets.lead_row_gate_not_new"))[0],
+            "why": _lead_row_verdict(
+                _TALLY.get("sheets.lead_row_created"),
+                _TALLY.get("sheets.lead_row_FAILED"),
+                _TALLY.get("sheets.lead_row_skipped_duplicate"),
+                _TALLY.get("sheets.lead_row_gate_not_new"))[1],
+            "note": ("counters reset on every deploy — read them against "
+                     "`thread_registry.uptime_minutes`, not against yesterday"),
         },
         "threads": thread_health,
         # Patch #33: never let a caller compare this count against a baseline

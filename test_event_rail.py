@@ -1741,5 +1741,61 @@ check_false("no messages means no branch", _a9(None, None, None)[0])
 
 print("\nPATCH71_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+
+# ── PATCH #72 — the tally, and the verdict it produces ─────────────────
+#
+# Built because ERIC found 12 conversations across Aug 4–8 that produced ZERO
+# pipeline rows, and the two candidate causes — "never attempted" vs "write
+# threw" — are indistinguishable from outside and need OPPOSITE fixes.
+# These tests pin the readings so nobody has to remember the rules at 2am.
+from event_rail import Tally, lead_row_verdict
+
+_t = Tally()
+check_true("a fresh tally reads zero", _t.get("nothing") == 0)
+_t.bump("a"); _t.bump("a"); _t.bump("b", "with a note")
+check_true("bump counts", _t.get("a") == 2)
+check_true("snapshot carries the count", _t.snapshot()["a"]["count"] == 2)
+check_true("snapshot carries the last note", _t.snapshot()["b"]["last"] == "with a note")
+check_true("snapshot timestamps the last bump", "at" in _t.snapshot()["b"])
+check_true("unknown key is absent, not an error", "zzz" not in _t.snapshot())
+
+# 🔴 This sits on the inbound message path. It must never break a request.
+_survived = True
+try:
+    _t.bump(None); _t.bump("x", None); _t.bump("y", "n", "not-a-number")
+    _t.bump(object(), object())
+except Exception:
+    _survived = False
+check_true("bump NEVER raises, whatever it is handed", _survived)
+
+# The verdicts — each one names a DIFFERENT fix, which is the whole point.
+check_true("all writes failing reads as broken",
+           lead_row_verdict(created=0, failed=5)[0] == "broken")
+check_true("some writes failing reads as degraded",
+           lead_row_verdict(created=3, failed=1)[0] == "degraded")
+check_true("nothing attempted but traffic seen blames the GATE, not the write",
+           lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=12)[0]
+           == "never_attempted")
+check_true("no traffic at all is idle, not broken",
+           lead_row_verdict()[0] == "idle")
+check_true("rows being written reads ok",
+           lead_row_verdict(created=4)[0] == "ok")
+check_true("attempted but all deduped points at the dedupe",
+           lead_row_verdict(created=0, skipped_dup=6)[0] == "dedup_only")
+check_true("every verdict explains itself", all(
+    bool(lead_row_verdict(*a)[1]) for a in
+    [(0, 5, 0, 0), (3, 1, 0, 0), (0, 0, 0, 12), (0, 0, 0, 0), (4, 0, 0, 0), (0, 0, 6, 0)]))
+
+# Eric's actual observation, expressed as the reading it should now produce.
+check_true("ERIC's 12-conversations-zero-rows case is diagnosable",
+           lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=12)[0]
+           == "never_attempted")
+check_false("...and is NOT mistaken for a broken writer",
+            lead_row_verdict(0, 0, 0, 12)[0] == "broken")
+
+check_true("verdict survives junk input", lead_row_verdict(None, None, None, None)[0] == "idle")
+
+print("\nPATCH72_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
