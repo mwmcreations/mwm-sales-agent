@@ -3164,3 +3164,78 @@ def studio_visit_verdict(role=None, business=None, stated_budget=None,
                        "before booking an in-person visit.")
 
     return True, f"qualified: {role}, business on file, budget not below floor"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #75 · THE FOUNDER-CALL GATE
+#
+# #74 stopped unqualified leads reaching the STUDIO. It did not stop them
+# reaching MICHAEL, because Path B — the free 30-minute strategy call —
+# was ungated on purpose. I reasoned that a call is where unqualified
+# leads are supposed to land. Michael corrected that the same day:
+#
+#   "Lance is another Joseph. Not even worth it for the call."
+#
+# Lance Richardson, Aug 6, Instagram DM. First line: "I live in
+# Philadelphia you are in Orlando." Asked what business he was in:
+# "Writing 4 books about my life very inspirational." No business, no
+# company, no revenue. Money never came up — Maya never asked and he
+# never said. He was booked onto the founder's calendar anyway.
+#
+# 🔑 A CALL IS NOT FREE. It is thirty minutes of the only person who
+# cannot be cloned. Path B was never meant to be "put them on Michael's
+# calendar instead" — it was meant to be the cheaper door.
+#
+# 🔑 GEOGRAPHY IS NOT THE TEST. Nathan Waters (NWPhotoVideo) is out of
+# state and is one of the best leads in the pipeline. Out-of-area means
+# do not pitch the STUDIO; it does not mean refuse the person. What
+# separates Nathan from Lance is a business, not a zip code.
+# ══════════════════════════════════════════════════════════════════════
+
+def strategy_call_verdict(role=None, business=None, stated_budget=None,
+                          budget_declined=False, floor=STUDIO_FLOOR_USD):
+    """May this lead take a 30-minute call with Michael?
+
+    Returns (allow: bool, reason: str).
+
+    A LOWER bar than a studio visit, deliberately — this is the cheaper
+    door and most leads should get through it. It asks for ONE positive
+    signal, not all of them:
+
+      · a decision-making / earning role, OR
+      · a stated budget at or above the floor
+
+    Blocks only on: an explicit sub-floor number, a lead already told they
+    are under it, or NO signal at all. "No signal at all" is Lance and
+    Joseph — enthusiasm, a story, and nothing that could become an invoice.
+    """
+    role = (role or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+    if budget_declined:
+        return False, ("This lead has already been told our floor is "
+                       f"${floor} and is under it. Do not put them on "
+                       "Michael's calendar. Send the booking link and "
+                       "pricing so they can come back when it fits.")
+
+    amount = None
+    if stated_budget is not None:
+        try:
+            amount = float(str(stated_budget).replace("$", "").replace(",", "").strip())
+        except (TypeError, ValueError):
+            amount = None
+    if amount is not None and amount < float(floor):
+        return False, (f"Stated budget ${amount:,.0f} is below our ${floor} "
+                       "floor. Say warmly that our studio time starts at "
+                       f"${floor}/hour, do not negotiate down, and send the "
+                       "booking link rather than a call.")
+
+    if role in STUDIO_ROLES_ALLOWED:
+        return True, f"qualified for a call: {role}"
+    if amount is not None and amount >= float(floor):
+        return True, f"qualified for a call: stated budget ${amount:,.0f}"
+
+    return False, ("Nothing here says this person can buy yet — no business "
+                   "or role, and no budget named. A call is thirty minutes of "
+                   "Michael's day, so it is not the default. Send the pricing "
+                   "and the booking link, and offer the call again the moment "
+                   "they tell you what they run or what they can spend.")

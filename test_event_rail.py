@@ -1840,6 +1840,44 @@ check_true("every refusal tells Maya what to do instead",
 
 print("\nPATCH74_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+# ── PATCH #75 · the founder-call gate ────────────────────────────────
+from event_rail import strategy_call_verdict as _scv, studio_visit_verdict
+
+check_false("LANCE: aspiring author, no business, no budget — no call",
+            _scv(role="freelancer_hobbyist_student",
+                 business="Author - 4 inspirational books")[0])
+check_false("...and refused when Maya never captured a role at all",
+            _scv(role=None, business="4 books about my life")[0])
+check_false("JOSEPH would also have been stopped one door earlier",
+            _scv(role="freelancer_hobbyist_student",
+                 business="Cosito (proyecto musical)")[0])
+check_true("NATHAN: out of state but a real business — call ALLOWED",
+           _scv(role="executive_decision_maker", business="NWPhotoVideo LLC")[0])
+check_true("DR CRUZ: owner of a consulting firm — allowed",
+           _scv(role="owner_founder", business="Cruz Consulting")[0])
+check_true("a stated budget at the floor earns a call even with no role",
+           _scv(role=None, business="", stated_budget=249)[0])
+check_true("...and well above it",
+           _scv(role=None, business="", stated_budget=1200)[0])
+check_false("a stated budget under the floor is refused",
+            _scv(role="owner_founder", business="Acme", stated_budget=100)[0])
+check_false("...and stays refused later via the persisted flag",
+            _scv(role="owner_founder", business="Acme", budget_declined=True)[0])
+check_true("the call bar is LOWER than the studio bar: no business needed",
+           _scv(role="owner_founder", business="")[0])
+check_false("...but the studio still refuses that same lead",
+            studio_visit_verdict(role="owner_founder", business="")[0])
+check_true("junk budget string neither crashes nor grants a call",
+           _scv(role="owner_founder", business="x", stated_budget="lots")[0])
+check_true("every call refusal tells Maya what to send instead",
+           all(("booking link" in _scv(**k)[1].lower() or "pricing" in _scv(**k)[1].lower())
+               for k in [dict(role=None, business=""),
+                         dict(role="freelancer_hobbyist_student", business="x"),
+                         dict(role="owner_founder", business="x", stated_budget=50),
+                         dict(role="owner_founder", business="x", budget_declined=True)]))
+
+print("\nPATCH75_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print("\nPATCH72_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")

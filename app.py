@@ -2301,6 +2301,15 @@ name a figure.
 
 Move fast — understand them in 2-3 exchanges, not 10.
 
+WARMTH HAS A CEILING. Be kind, be human, acknowledge what someone tells you —
+once. Do not escalate. Do not tell people their story will change the world,
+that their spirit is their superpower, or that a call is their first step to
+being heard. If a lead opens up about grief, illness, money trouble, isolation
+or being mistrustful of the world, answer with one short, genuine, grounded
+line and move to the practical question. Never mirror that back at them and
+then ask for a booking. Someone who came to be heard is not a lead, and
+treating them like one is worse than saying nothing.
+
 Based on their answers, QUALIFY the lead into one of three paths:
 
 PATH A — STUDIO TOUR (high-value video/content leads):
@@ -2326,14 +2335,35 @@ is a real offer, just a far cheaper one for us to make.
 
 These are the people Michael wants to meet in person. Proceed to Step 3A.
 
-PATH B — FREE CALL + BOOKING LINK (other video/content leads):
-Offer a free call and send the booking link if the person is:
+PATH B — PRICING + BOOKING LINK (other video/content leads):
+🔴 PATH B IS NOT "BOOK THEM A CALL WITH MICHAEL INSTEAD." That is the mistake
+that put an aspiring author from Philadelphia on his calendar for an hour. A
+30-minute founder call is the second most expensive thing you can spend on a
+lead. Path B means: give them the price, give them the link, be genuinely
+helpful, and let them come to us.
+
+Offer a call ONLY once you know one of these:
+  · what business they run and what their role in it is, or
+  · a budget they have named that is $249 or more.
+Until then: pricing and the booking link. If they tell you either of those
+things later, offer the call immediately and warmly — this is a not-yet, not a no.
+
+Route here if the person is:
 - An employee or team member without decision-making authority
 - A freelancer, student, or hobbyist exploring options
 - Someone only interested in hourly studio rental (not strategy)
 - Someone who seems casual or early-stage with no clear business need yet
 - Someone located out of state or clearly unable to visit
 These leads still get excellent service — just a different path. Proceed to Step 3B.
+
+GEOGRAPHY — ask early, naturally, woven into discovery, never as a cold gate.
+If they are outside roughly the Orlando metro (about 60 miles — Tampa and
+Daytona lean IN), do NOT pitch the studio visit. Pitch the remote track:
+editing, campaigns, content strategy. If they say they are travelling to
+Orlando, the studio is back on the table — self-declared travel overrides this.
+🔑 OUT OF AREA IS NOT A DISQUALIFIER. Some of our best leads are out of state
+with real businesses. Distance decides whether you offer the ROOM. It never
+decides whether the person is worth talking to.
 
 PATH C — HOA/CONDO COMPLIANCE WEBSITE (compliance leads):
 Route to this path if the person mentions ANY of these: HOA, condo association, condominium, compliance, Florida statute, 718, 720, board of directors, governing documents, community website, property management company managing communities, association website, or anything related to legally required association websites.
@@ -3346,7 +3376,7 @@ TOOLS = [
                     "enum": ["owner_founder", "executive_decision_maker", "marketing_lead",
                              "professional_personal_brand", "employee_no_authority",
                              "freelancer_hobbyist_student"],
-                    "description": "REQUIRED for appointment_type='studio_visit'. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
+                    "description": "REQUIRED for BOTH appointment types — a call is gated too, at a lower bar. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
                 },
                 "stated_budget": {
                     "type": "number",
@@ -4652,10 +4682,41 @@ def studio_visit_gate(tool_input, sender):
     Strategy calls are deliberately NOT gated. A call costs thirty remote
     minutes and is exactly where an unqualified lead is supposed to land.
     """
-    if tool_input.get("appointment_type", "studio_visit") != "studio_visit":
-        return None
-
     declined = bool((lead_data.get(sender) or {}).get("budget_declined")) if sender else False
+
+    # PATCH #75 — a CALL is gated too, at a lower bar. #74 kept unqualified
+    # leads out of the studio and left them landing on Michael's calendar
+    # instead, which is the only diary that cannot be cloned. Michael, the
+    # same day: "Lance is another Joseph. Not even worth it for the call."
+    if tool_input.get("appointment_type", "studio_visit") != "studio_visit":
+        ok, why = event_rail.strategy_call_verdict(
+            role=tool_input.get("lead_role"),
+            business=tool_input.get("lead_business"),
+            stated_budget=tool_input.get("stated_budget"),
+            budget_declined=declined,
+        )
+        if ok:
+            return None
+        print(f"[book_appointment] REFUSED strategy_call — {why}")
+        try:
+            _TALLY.bump("booking.strategy_call_unqualified", why[:120])
+        except Exception:
+            pass
+        try:
+            _notify_error_to_dev(
+                "Unqualified Founder Call Blocked",
+                f"{tool_input.get('lead_name', 'A lead')} was refused a strategy "
+                f"call: {why} (role={tool_input.get('lead_role')!r}, "
+                f"business={tool_input.get('lead_business')!r}, "
+                f"stated_budget={tool_input.get('stated_budget')!r}). "
+                f"Maya was redirected to pricing + the booking link.",
+                lead_info=f"{tool_input.get('lead_name', '')} ({sender})",
+                severity="INFO",
+            )
+        except Exception:
+            pass
+        return {"error": why}
+
     ok, why = event_rail.studio_visit_verdict(
         role=tool_input.get("lead_role"),
         business=tool_input.get("lead_business"),
@@ -14519,7 +14580,7 @@ WEB_CHAT_TOOLS = [
                     "enum": ["owner_founder", "executive_decision_maker", "marketing_lead",
                              "professional_personal_brand", "employee_no_authority",
                              "freelancer_hobbyist_student"],
-                    "description": "REQUIRED for appointment_type='studio_visit'. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
+                    "description": "REQUIRED for BOTH appointment types — a call is gated too, at a lower bar. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
                 },
                 "stated_budget": {
                     "type": "number",
