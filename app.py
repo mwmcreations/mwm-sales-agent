@@ -2282,18 +2282,48 @@ One question at a time. Get to the point quickly:
 - What kind of business do you have?
 - What is your role? (owner, marketing director, employee, etc.)
 
+You MUST have both of those answers before you can book an in-person studio
+visit. The booking tool will refuse without them, and it is right to — a visit
+costs Michael an hour in the room.
+
+NAME THE NUMBER EARLY. Do not wait to be asked about price. Once you know what
+they do, say plainly that studio time starts at $249/hour (production only) or
+$349/hour with editing included, and listen to how they answer. That one
+sentence separates real prospects from people who were never going to buy, and
+it does it before anyone's time is spent.
+
+$249 IS THE FLOOR. There is no product below it — no discount, no "welcome"
+exception, no competitor match, no free work. If someone states a number under
+$249, say warmly "our studio time starts at $249/hour", do not negotiate down,
+and offer the free strategy call instead. Never quote anything below $249.
+A vague answer about budget is NOT a low budget — this applies only when they
+name a figure.
+
 Move fast — understand them in 2-3 exchanges, not 10.
 
 Based on their answers, QUALIFY the lead into one of three paths:
 
 PATH A — STUDIO TOUR (high-value video/content leads):
-Invite to the studio if the person is ANY of these:
-- A business owner or entrepreneur interested in video production or content strategy
-- A founder, CEO, or company decision-maker looking for brand storytelling
-- A marketing director or brand manager with budget authority for content
-- A professional building a personal brand (lawyer, doctor, coach, consultant, real estate agent)
-- Someone actively looking for ongoing content production or a strategic content partner
-- A company representative exploring a Roadmap or monthly content package
+An in-person visit is the most expensive thing you can spend on a lead: an hour
+of Michael's day. BOTH of these must be true before you offer one.
+
+  1. They run or lead something real. One of:
+     - A business owner, founder, CEO or entrepreneur
+     - A company decision-maker, or a marketing director / brand manager with
+       budget authority
+     - A professional with an EARNING practice building a personal brand —
+       lawyer, doctor, coach, consultant, real estate agent
+  2. Nothing they have said puts them below the $249 floor.
+
+If you cannot name their business AND their role from what they actually told
+you, you do not yet know whether this is Path A. Ask. Do not assume.
+
+NOT Path A, however enthusiastic or likeable they are: students, hobbyists,
+aspiring artists and musicians without a career, freelancers testing the water,
+employees with no authority, and anyone who has named a budget under $249.
+These are not bad people and this is not a rejection — they get Path B, which
+is a real offer, just a far cheaper one for us to make.
+
 These are the people Michael wants to meet in person. Proceed to Step 3A.
 
 PATH B — FREE CALL + BOOKING LINK (other video/content leads):
@@ -3310,6 +3340,17 @@ TOOLS = [
                 "callback_phone": {
                     "type": "string",
                     "description": "The phone number Michael will actually dial, with country code (e.g. +14075551234). REQUIRED for appointment_type='strategy_call' — a strategy call is a phone call Michael places, so ask the lead for their best number BEFORE you confirm a time. An Instagram or WhatsApp thread ID is not a phone number. If you do not have one, ask for it; do not guess and do not reuse the thread identifier."
+                },
+                "lead_role": {
+                    "type": "string",
+                    "enum": ["owner_founder", "executive_decision_maker", "marketing_lead",
+                             "professional_personal_brand", "employee_no_authority",
+                             "freelancer_hobbyist_student"],
+                    "description": "REQUIRED for appointment_type='studio_visit'. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
+                },
+                "stated_budget": {
+                    "type": "number",
+                    "description": "Only if the lead STATED a number, in dollars. Leave it out if they did not — silence is not a low budget and blocks nothing. If they named a figure below our $249 floor, pass it: the booking will be refused and you will be told what to say."
                 }
             },
             "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
@@ -4593,6 +4634,69 @@ def check_specific_slot(requested_datetime):
         return {"available": False, "reason": "could not verify that time"}
 
 
+def studio_visit_gate(tool_input, sender):
+    """PATCH #74 — may this booking become an IN-PERSON studio visit?
+
+    Returns None to allow, or a dict to hand straight back to Maya as a refusal.
+
+    Michael, Aug 10 2026, after losing a 10 AM hour to a hobbyist musician:
+    "we only bring the right type of leads — business owners, entrepreneurs,
+    people that can spend at least $349."
+
+    The rule is older than the incident. MAYA.md §51, Jul 29, written the day
+    Dondrique Lewis was correctly told "$100 isn't in our range" and was handed
+    a founder slot anyway: "Declining the number is not enough — the booking
+    must not happen." It lived only in an agent notebook, which nothing in this
+    process reads, so for twelve days nothing enforced it. It is enforced here.
+
+    Strategy calls are deliberately NOT gated. A call costs thirty remote
+    minutes and is exactly where an unqualified lead is supposed to land.
+    """
+    if tool_input.get("appointment_type", "studio_visit") != "studio_visit":
+        return None
+
+    declined = bool((lead_data.get(sender) or {}).get("budget_declined")) if sender else False
+    ok, why = event_rail.studio_visit_verdict(
+        role=tool_input.get("lead_role"),
+        business=tool_input.get("lead_business"),
+        stated_budget=tool_input.get("stated_budget"),
+        budget_declined=declined,
+    )
+
+    # Remember a stated sub-floor number FOREVER. Dondrique came back eight
+    # days after being declined; a gate that forgets holds for one conversation.
+    try:
+        stated = tool_input.get("stated_budget")
+        if (not ok and stated is not None and sender and sender in lead_data
+                and float(stated) < float(event_rail.STUDIO_FLOOR_USD)):
+            lead_data[sender]["budget_declined"] = True
+    except (TypeError, ValueError):
+        pass
+
+    if ok:
+        return None
+
+    print(f"[book_appointment] REFUSED studio_visit — {why}")
+    try:
+        _TALLY.bump("booking.studio_visit_unqualified", why[:120])
+    except Exception:
+        pass
+    try:
+        _notify_error_to_dev(
+            "Unqualified Studio Visit Blocked",
+            f"{tool_input.get('lead_name', 'A lead')} was refused an in-person "
+            f"studio visit: {why} (role={tool_input.get('lead_role')!r}, "
+            f"business={tool_input.get('lead_business')!r}, "
+            f"stated_budget={tool_input.get('stated_budget')!r}). "
+            f"Maya was redirected to the free strategy call.",
+            lead_info=f"{tool_input.get('lead_name', '')} ({sender})",
+            severity="INFO",
+        )
+    except Exception:
+        pass
+    return {"error": why}
+
+
 def handle_tool_call(tool_name, tool_input, sender=None):
     """Execute a tool call and return the result as a dict."""
     if tool_name == "get_available_slots":
@@ -4639,6 +4743,11 @@ def handle_tool_call(tool_name, tool_input, sender=None):
             except Exception:
                 pass
             return {"error": barter_refusal_note(tool_input.get("lead_name"))}
+
+        # ── PATCH #74 gate 2: qualification, studio visits only ──
+        _q_refusal = studio_visit_gate(tool_input, sender)
+        if _q_refusal:
+            return _q_refusal
 
         event_id = book_appointment(
             slot_id=tool_input["slot_id"],
@@ -14404,6 +14513,17 @@ WEB_CHAT_TOOLS = [
                 "callback_phone": {
                     "type": "string",
                     "description": "The phone number Michael will actually dial, with country code (e.g. +14075551234). REQUIRED for appointment_type='strategy_call' — a strategy call is a phone call Michael places, so ask the lead for their best number BEFORE you confirm a time. An Instagram or WhatsApp thread ID is not a phone number. If you do not have one, ask for it; do not guess and do not reuse the thread identifier."
+                },
+                "lead_role": {
+                    "type": "string",
+                    "enum": ["owner_founder", "executive_decision_maker", "marketing_lead",
+                             "professional_personal_brand", "employee_no_authority",
+                             "freelancer_hobbyist_student"],
+                    "description": "REQUIRED for appointment_type='studio_visit'. What this person actually is, from what THEY told you — never a guess. 'professional_personal_brand' means an EARNING practice (lawyer, doctor, coach, consultant, realtor), not somebody aspiring to one. A musician with no career, a student or a hobbyist is 'freelancer_hobbyist_student' — they get the free call, which is a different door, not a rejection. If you have not asked, ask before you book."
+                },
+                "stated_budget": {
+                    "type": "number",
+                    "description": "Only if the lead STATED a number, in dollars. Leave it out if they did not — silence is not a low budget and blocks nothing. If they named a figure below our $249 floor, pass it: the booking will be refused and you will be told what to say."
                 }
             },
             "required": ["slot_id", "lead_name", "lead_email", "lead_business", "appointment_type"]
@@ -14476,6 +14596,13 @@ def _handle_web_tool_call(tool_name, tool_input):
         _web_lead_email = tool_input["lead_email"]
         _web_lead_biz = tool_input["lead_business"]
         _web_lead_phone = tool_input.get("lead_phone")  # may be provided by smarter prompts
+
+        # PATCH #74 — same gate as the WhatsApp/Instagram leg. Worth noting for
+        # whoever reads this next: the older barter gate was only ever installed
+        # on that leg, so this path has never had one. This gate is on both.
+        _q_refusal = studio_visit_gate(tool_input, _web_lead_phone)
+        if _q_refusal:
+            return _q_refusal
 
         event_id = book_appointment(
             slot_id=tool_input["slot_id"],

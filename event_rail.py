@@ -3066,3 +3066,101 @@ def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
         return "ok", "lead rows are being written"
     return "dedup_only", ("rows were attempted but all were skipped as duplicates "
                           "— check the month-tab dedupe, not the write")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #74 · STUDIO-VISIT QUALIFICATION GATE
+#
+# Michael's order, MAYA.md §51, written Jul 29 2026 after Dondrique Lewis
+# ($100 budget) reached the founder's calendar anyway:
+#
+#   "A stated budget below $249 does not get booked onto Michael's
+#    calendar. DECLINING THE NUMBER IS NOT ENOUGH — THE BOOKING MUST NOT
+#    HAPPEN."
+#
+# That rule lived only in MAYA.md, which is an agent notebook. The machine
+# that actually talks to leads reads the prompt in app.py, and no budget,
+# role or business check has ever existed on the studio-visit path. So on
+# Aug 10 2026 it happened a second time: Joseph Joel Hernandez, a hobbyist
+# musician with no business and no budget, took a 10 AM studio tour.
+#
+# Michael, after that hour: "we only bring the right type of leads —
+# business owners, entrepreneurs, people that can spend at least $349."
+#
+# 🔑 Joseph is why ROLE is the load-bearing test, not budget. He never
+# stated a number, so a budget-only rule would have let him through again.
+# He carried a "business" too — "Cositø (proyecto musical)" — so a
+# non-empty business string is not enough either.
+# ══════════════════════════════════════════════════════════════════════
+
+STUDIO_FLOOR_USD = 249      # the rate card. Nothing exists below it.
+
+# Roles that may be invited in person.
+STUDIO_ROLES_ALLOWED = {
+    "owner_founder",
+    "executive_decision_maker",
+    "marketing_lead",
+    "professional_personal_brand",   # lawyer, doctor, coach, consultant,
+}                                    # realtor — an EARNING practice
+
+# Roles that get the free call instead. Never a refusal to the lead — a
+# different door.
+STUDIO_ROLES_BLOCKED = {
+    "employee_no_authority",
+    "freelancer_hobbyist_student",
+}
+
+
+def studio_visit_verdict(role=None, business=None, stated_budget=None,
+                         budget_declined=False, floor=STUDIO_FLOOR_USD):
+    """May this lead be booked for an IN-PERSON studio visit?
+
+    Returns (allow: bool, reason: str). `reason` is written to be shown to
+    Maya, so it always says what to do next rather than only what is wrong.
+
+    FAIL-CLOSED on the role: an unknown role blocks. That is deliberate —
+    it converts "the prompt says ask what their role is" into "you cannot
+    book until you have asked." Every previous version of this rule was
+    advisory and every advisory version was ignored.
+
+    NOT fail-closed on budget. MAYA.md §51 rule 4 is explicit: "A budget
+    ask that is merely vague is NOT below floor — this rule fires on a
+    STATED sub-$249 number, not on silence." Blocking silence would refuse
+    most good leads, so silence passes.
+    """
+    role = (role or "").strip().lower().replace(" ", "_").replace("-", "_")
+    biz = (business or "").strip()
+
+    if budget_declined:
+        return False, ("This lead has already been told our floor is "
+                       f"${floor} and is under it. Do not book the studio. "
+                       "Offer the free strategy call instead.")
+
+    if stated_budget is not None:
+        try:
+            amount = float(str(stated_budget).replace("$", "").replace(",", "").strip())
+        except (TypeError, ValueError):
+            amount = None
+        if amount is not None and amount < float(floor):
+            return False, (f"Stated budget ${amount:,.0f} is below our ${floor} "
+                           "floor, and there is no product under it. Say warmly "
+                           f"that our studio time starts at ${floor}/hour, do not "
+                           "negotiate down, and offer the free strategy call.")
+
+    if role in STUDIO_ROLES_BLOCKED:
+        return False, ("This lead is not a decision-maker with budget "
+                       "authority. Offer the free 30-minute strategy call and "
+                       "the direct booking link — not an in-person visit.")
+
+    if role not in STUDIO_ROLES_ALLOWED:
+        return False, ("You have not established what this person does. Ask "
+                       "what their business is and what their role in it is, "
+                       "then book. A studio visit costs Michael an hour in the "
+                       "room, so it is only for owners, decision-makers and "
+                       "professionals with an earning practice.")
+
+    if not biz or biz.lower() in {"unknown", "n/a", "na", "none", "-", "personal"}:
+        return False, ("No business is on file. Ask what business they run "
+                       "before booking an in-person visit.")
+
+    return True, f"qualified: {role}, business on file, budget not below floor"

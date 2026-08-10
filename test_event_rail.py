@@ -1795,6 +1795,51 @@ check_false("...and is NOT mistaken for a broken writer",
 
 check_true("verdict survives junk input", lead_row_verdict(None, None, None, None)[0] == "idle")
 
+# ── PATCH #74 · studio-visit qualification gate ──────────────────────
+from event_rail import studio_visit_verdict as _svv
+
+check_false("JOSEPH: hobbyist musician with a 'business' name is REFUSED",
+            _svv(role="freelancer_hobbyist_student",
+                 business="Cosito (proyecto musical)")[0])
+check_false("...and is still refused when no role was ever captured",
+            _svv(role=None, business="Cosito (proyecto musical)")[0])
+check_false("DONDRIQUE: a stated $100 budget is refused",
+            _svv(role="owner_founder", business="Acme", stated_budget=100)[0])
+check_false("...and stays refused after he was told the floor (persisted flag)",
+            _svv(role="owner_founder", business="Acme", budget_declined=True)[0])
+check_true("a real owner with a business and no budget stated is ALLOWED",
+           _svv(role="owner_founder", business="Zerlotini Brothers")[0])
+check_true("silence about budget does NOT block (MAYA.md rule 4)",
+           _svv(role="executive_decision_maker", business="Acme",
+                stated_budget=None)[0])
+check_true("budget exactly at the floor is allowed",
+           _svv(role="owner_founder", business="Acme", stated_budget=249)[0])
+check_false("budget one dollar under the floor is refused",
+            _svv(role="owner_founder", business="Acme", stated_budget=248)[0])
+check_true("$349 clears the floor",
+           _svv(role="professional_personal_brand", business="Dr Bolfer",
+                stated_budget=349)[0])
+check_false("an employee with no authority gets the call, not the room",
+            _svv(role="employee_no_authority", business="Acme Corp")[0])
+check_false("an allowed role with no business on file is refused",
+            _svv(role="owner_founder", business="")[0])
+check_false("'Unknown' is not a business",
+            _svv(role="owner_founder", business="Unknown")[0])
+check_true("junk budget string does not crash and does not block",
+           _svv(role="owner_founder", business="Acme", stated_budget="lots")[0])
+check_true("a dollar-formatted budget parses",
+           _svv(role="owner_founder", business="Acme", stated_budget="$1,200")[0])
+check_true("role is case/spacing tolerant",
+           _svv(role="Owner Founder", business="Acme")[0])
+check_true("every refusal tells Maya what to do instead",
+           all("call" in _svv(**k)[1].lower() or "ask" in _svv(**k)[1].lower()
+               for k in [dict(role=None, business="x"),
+                         dict(role="employee_no_authority", business="x"),
+                         dict(role="owner_founder", business="x", stated_budget=50),
+                         dict(role="owner_founder", business="")]))
+
+print("\nPATCH74_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print("\nPATCH72_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
