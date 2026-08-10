@@ -11906,12 +11906,24 @@ Guidelines:
 - Ask for clarification if needed
 - Stay in character as {agent_info['name']}
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "ANA":
@@ -11932,12 +11944,24 @@ The calendar timezone is America/New_York (EDT).
 
 CRITICAL: NEVER tell the user you created, deleted, or modified a calendar event unless you received a [CALENDAR ACTION RESULT] confirming the action was executed. If someone asks you to do a calendar action and you don't receive a [CALENDAR ACTION RESULT], tell them you couldn't process the request automatically and ask them to rephrase with a clear command like: schedule a "Meeting Name" tomorrow at 2pm for 1 hour.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "MAYA (Slack)":
@@ -11969,12 +11993,24 @@ When an action is detected, it executes automatically against the Google Sheets 
 
 CRITICAL: NEVER tell the user you executed a sheets update, handoff, or calendar check unless you received a [MAYA ACTION RESULT] confirming the action was executed. If no result was received, tell them you couldn't process the request automatically and ask them to rephrase.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "SUSAN":
@@ -12008,12 +12044,24 @@ When an action is detected, it executes automatically against the relevant API (
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, stats, open rates, subscriber counts, or any other Mailchimp data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Susan.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "VICTOR":
@@ -12035,12 +12083,24 @@ When an action is detected, it executes automatically against the Yodeck API. Yo
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate screen names, school names, device statuses, or any other Yodeck data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list screens first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Victor.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "LARA":
@@ -12129,12 +12189,24 @@ When an action is detected, it executes automatically against the Meta Marketing
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate campaign names, spend amounts, impressions, click rates, or any other Meta Ads data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list campaigns first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Eric.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "ROB":
@@ -12161,12 +12233,24 @@ When an action is detected, it executes automatically against the Stripe API. Yo
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate payment amounts, customer names, subscription details, invoice data, or any other Stripe data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list charges first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Rob.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "CRIS":
@@ -12187,12 +12271,24 @@ When an action is detected, it executes automatically against the Wix API. You w
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate site names, contact details, blog posts, product listings, or any other Wix data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that data right now — try rephrasing your request or ask me to list sites first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Cris.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     if agent_info["name"] == "LARA":
@@ -12237,12 +12333,24 @@ When an action is detected, it executes automatically against Google Sheets, Gma
 
 CRITICAL ANTI-FABRICATION RULE: NEVER make up, invent, or hallucinate client names, plans, statuses, deliveries, upcoming shoots, email content, or any other data. Only present data that was provided to you in this conversation. If you don't have real data to share, say "I couldn't pull that right now — try rephrasing your request or ask me to check the MWM Clients sheet first." NEVER reference internal system mechanisms or technical terms like "action result" — just speak naturally as Lara.
 
-After completing any task or action, always end your response with a structured summary:
+🔴 YOU CANNOT DO WORK FROM THIS CHANNEL. Read this twice.
 
-✅ DONE: [task name]
-What was done: [one line]
-Result: [outcome / data returned]
-Next step: [if applicable, or "awaiting further instructions"]
+This Slack responder has NO memory of the agent it is imitating and, unless an
+ACTION RESULT block appears in this conversation, NO tools. It cannot read the
+repo, run code, deploy, query Stripe, touch Google Drive, or open the agent's
+memory file. It is a conversation surface, nothing more.
+
+Therefore:
+- NEVER write "DONE", "✅", "shipped", "deployed", "patched", "linked", "fixed"
+  or any other past-tense claim about work, unless this conversation literally
+  contains an ACTION RESULT block reporting it. No result block = it did not happen.
+- NEVER invent a function name, file, patch number, commit or ticket. If you do
+  not have it in front of you, say you do not have it.
+- NEVER accept or confirm a directive on the agent's behalf. You cannot commit
+  their time; only their own session can.
+- Say plainly what you are: relay the question, note that the real agent picks it
+  up at their next session, and stop. An honest "I can't see that from here" is
+  correct and expected.
 """
 
     return base
@@ -12331,10 +12439,32 @@ def _get_slack_history(channel_id, limit=10):
         return []
 
 
+# PATCH #73 (Michael, Aug 10 2026) — agents allowed to auto-reply in their OWN
+# channel. These two are the only ones with a real execution path: ANA reaches
+# Google Calendar via handle_calendar_action(), MAYA reaches Gmail via
+# handle_susan_gmail_action(). Every other agent had NO tools at all, yet the
+# shared prompt instructed all nine to sign off with "✅ DONE" — so they invented
+# the work. On Aug 10 a fabricated DEV report claimed a patch to
+# link_payment_to_lead() (a function that has never existed), claimed Patch #35
+# was shipping (it shipped Jul 30) and claimed an Instagram retry fix while the
+# identical alerts kept firing for another hour. It also "accepted" a directive
+# MATT had explicitly put on HOLD.
+#
+# A channel that cannot act must not answer as though it can.
+AGENTS_WITH_ACTION_PATH = {"ANA", "MAYA (Slack)"}
+
+
 def _handle_slack_agent_message(channel_id, text, user_id, thread_ts=None):
     """Process a Slack message in a background thread and post the agent's response."""
     agent = AGENT_CHANNELS.get(channel_id)
     if not agent:
+        return
+
+    if agent["name"] not in AGENTS_WITH_ACTION_PATH:
+        # Silence, deliberately. The real agent reads this channel at session
+        # start; a reply here would only be a guess wearing their name.
+        print(f"[SLACK-AGENT] {agent['name']} auto-reply suppressed "
+              f"(no action path) — channel {agent['channel']}")
         return
 
     # Strip Slack "Sent using Claude/Cowork" suffix that pollutes action parsing
