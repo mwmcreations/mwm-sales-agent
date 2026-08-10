@@ -77,3 +77,99 @@ Verified live, logged-out, after activation:
 | bare + manual click 3h | 3 | false | STUDIO ONLY $747 | rendered |
 
 Last row is the regression check: manual interaction is unchanged.
+
+### S22 — Studio Portal full month calendar (Aug 9 2026) — ✅ **LIVE, VERIFIED**
+Michael: the portal's "Book a Session" was showing a bare `mm/dd/yyyy` box, not
+the full calendar he asked for.
+
+Root cause, two faults in the same block:
+1. There never was a calendar in the portal. `/book-studio/` got a month grid
+   (S19) but the portal kept `<input type="date">`.
+2. That whole section was styled for a DARK page. `.mwm-calendly-intro` and
+   `.mwm-book-field label` were `rgba(255,255,255,.6/.7)` — **white text on the
+   portal's white background**. That is the blank gap above the date box in the
+   screenshot: the "Session date" label and the intro line were rendering, just
+   invisible. The input looked like a dark pill because of `background:#12122a`.
+
+Fix (4 hunks in `mwm-studio-booking.php`):
+- month grid markup + light-theme CSS replacing the native date input;
+  `#mwm-book-date` kept as a hidden input so `confirmBooking()` is untouched
+- `initBooking` rewritten; added `monthName` / `moveMonth` / `loadMonth` / `renderCal`
+- after a successful booking, clear the pick and re-fetch the month
+- `.mwm-calendly-intro` colour → `#6b7280`
+
+Availability calls **`mwm_studio_rental_month`** — the same endpoint
+`/book-studio/` uses, derived from `get_available_slots` (pending holds + gcal
+busy). One source of truth; no second availability rule to drift.
+Registered nopriv, no nonce (S21), so a cached page can't 403 it.
+
+Verified: JS `node --check` clean; diff is exactly 4 hunks; brace/paren/quote
+balance identical to the pre-patch backup.
+🔴 NOT the frozen surface — the Twilio A2P freeze covers `/book-studio/` and
+`/privacy-policy/` only. Page 741 untouched.
+
+DEPLOYED Aug 9 2026 via wp-admin Plugin File Editor. WordPress returned
+"File edited successfully" (which also means its loopback fatal-error check
+passed and did not roll back).
+
+Deploy method worth reusing: rather than pasting a 197KB file, the live editor
+content was hashed first (SHA-256 `c4e0cd44…`) and confirmed **byte-identical
+to the repo baseline** — no live drift — then an index-based diff was replayed
+in the page and the result re-hashed to `726f7203…`, matching the repo's
+patched file exactly before Update File was clicked. Live and repo are the same
+bytes, proven, not assumed.
+
+POST-DEPLOY VERIFICATION (logged out, cache-busted):
+| check | result |
+|---|---|
+| `/studio-portal/` HTTP | 200, 75,659 b, no PHP fatal |
+| calendar markup + CSS present | yes (`mwm-cal-grid`, `.mwm-cal-open`) |
+| old `<input type="date">` gone / hidden input present | yes / yes |
+| `.mwm-calendly-intro` colour fixed | yes (`#6b7280`) |
+| `mwm_studio_rental_month` (Aug 2026) | 18 open days, Aug 10 → Aug 31, horizon Oct 8 |
+| REGRESSION `/book-studio/` | 200, 89,285 b, widget intact, no fatal |
+| REGRESSION `mwm_studio_rental_slots` Aug 12 | 4 slots |
+
+Backup of the pre-patch file: `/tmp/mwm-backup-1786312586.php` on the device VM.
+
+### 🔴 S22b — TWO CALENDARS on /studio-portal/ (Aug 10 2026) — FIXED
+Juliane reported the portal rendering **two** calendars stacked: my new light
+one (S22, in the plugin) and a **dark** one directly beneath it.
+
+**Root cause — mine.** A portal calendar ALREADY EXISTED as Code Snippets
+**ID 17, "Studio Portal — Inline Booking Calendar (S14)"**, active, global
+scope. It was NOT in this repo, so reading this README told me nothing about
+it — but the real failure is that I never inspected the rendered portal DOM
+before building a second calendar. Check the live page, not just the repo.
+
+What S14 did (now exported here as
+`snippet-17-studio-portal-inline-calendar-S14-DEACTIVATED.php`, 4,269 b):
+- `input.style.display = 'none'` on `#mwm-book-date` — it HID the native date
+  input and drew a dark month grid in its place
+- on a day click: sets `input.value` + dispatches `change`, so the plugin's
+  `loadSlots()` fired and real times appeared
+- 🔑 **it made ZERO availability calls** — no `mwm_studio_rental_month`, no
+  `mwm_studio_get_available_slots`. Only PAST days were disabled, so every
+  future day looked bookable, including days the studio is fully booked.
+
+After S22 replaced the native input with `<input type="hidden">`, S14's hide
+became a no-op and its grid rendered alongside mine — two calendars.
+
+**Fix:** deactivated snippet 17 via the list-row activation switch.
+⚠️ The edit screen's "Save and Deactivate" button SAVED but left it ACTIVE —
+verify state on the list page afterwards, never trust that button.
+
+VERIFIED after the fix (logged out, cache-busted):
+| check | result |
+|---|---|
+| `id="mwm-cal-grid"` in page | 1 |
+| `id="mwm-cal"` wrapper | 1 |
+| `mwmcal` / datepicker / flatpickr / pikaday | 0 |
+| legacy `type="date" id="mwm-book-date"` | 0 |
+| page weight | 75,659 b → 71,716 b |
+| `mwm_studio_rental_month` (Aug) | 18 open days, from Aug 10, horizon Oct 8 |
+| REGRESSION `/book-studio/` | 200, 89,285 b, widget intact, no `mwmcal`, no fatal |
+| REGRESSION `mwm_studio_rental_slots` Aug 12 | 4 slots |
+
+The portal template is ONE shortcode output shared by every client, so this is
+fixed for all 12 portal clients at once, not just Juliane's account.

@@ -3480,19 +3480,47 @@ MWMJS;
 					<h2><?php esc_html_e( 'Book a Session', 'mwm-studio' ); ?></h2>
 					<p class="mwm-calendly-intro">Pick a date to see available times. Hours come out of your package automatically, and your booking appears under Upcoming Bookings right away.</p>
 				<style>
-				.mwm-slots{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+				/* S22 (Aug 9 2026): full month calendar in the portal, matching /book-studio.
+				   The old markup was a bare <input type="date"> styled for a DARK page —
+				   label colour rgba(255,255,255,.7) rendered white-on-white and the intro
+				   line was invisible, which is why this section looked empty. */
+				.mwm-cal{max-width:520px;border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;background:#fff}
+				.mwm-cal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+				.mwm-cal-label{font-weight:700;font-size:15px;color:#1a1a2e;letter-spacing:.3px}
+				.mwm-cal-nav{width:32px;height:32px;border:1px solid #e5e7eb;background:#fff;border-radius:8px;cursor:pointer;font-size:17px;line-height:1;color:#4b5563}
+				.mwm-cal-nav:hover{border-color:#7c3aed;color:#7c3aed}
+				.mwm-cal-nav[disabled]{opacity:.35;cursor:default;border-color:#e5e7eb;color:#9ca3af}
+				.mwm-cal-dow,.mwm-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+				.mwm-cal-dow span{text-align:center;font-size:10.5px;letter-spacing:1px;text-transform:uppercase;color:#9ca3af;font-weight:700;padding-bottom:6px}
+				.mwm-cal-day{min-height:44px;display:flex;align-items:center;justify-content:center;border-radius:9px;font-size:14px;font-weight:600;border:1px solid transparent;background:#f6f6f8;color:#c3c3cb;cursor:default;padding:0}
+				.mwm-cal-blank{background:transparent}
+				.mwm-cal-open{background:#f3efff;border-color:#d9cdfa;color:#4c1d95;cursor:pointer;font-family:inherit}
+				.mwm-cal-open:hover{background:#e6dcff;border-color:#7c3aed}
+				.mwm-cal-picked{background:#7c3aed!important;border-color:#7c3aed!important;color:#fff!important}
+				.mwm-cal-loading{grid-column:1/-1;text-align:center;color:#9ca3af;font-size:13px;padding:22px 0}
+				.mwm-cal-note{font-size:12.5px;color:#6b7280;margin-top:12px}
+				.mwm-slots{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 0}
 				.mwm-slot-btn{min-width:90px}
-				.mwm-slot-selected{outline:2px solid #7c3aed;background:rgba(124,58,237,.25)!important}
+				.mwm-slot-selected{outline:2px solid #7c3aed;background:rgba(124,58,237,.18)!important}
 				.mwm-book-field{margin:12px 0}
-				.mwm-book-field label{display:block;margin-bottom:6px;color:rgba(255,255,255,.7);font-size:13px}
-				.mwm-book-field input,.mwm-book-field select{width:100%;max-width:320px;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:#12122a;color:#fff}
-				.mwm-book-error{color:#f87171;margin-top:10px}
+				.mwm-book-field label{display:block;margin-bottom:6px;color:#4b5563;font-size:13px;font-weight:600}
+				.mwm-book-field input,.mwm-book-field select{width:100%;max-width:320px;padding:10px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;color:#1a1a2e;font-family:inherit;font-size:14px}
+				.mwm-book-field input:focus,.mwm-book-field select:focus{outline:none;border-color:#7c3aed}
+				.mwm-book-error{color:#dc2626;margin-top:10px}
+				@media(max-width:560px){.mwm-cal{padding:14px}.mwm-cal-day{min-height:38px;font-size:13px}}
 				</style>
 				<div id="mwm-native-booking">
-					<div class="mwm-book-field">
-						<label for="mwm-book-date">Session date</label>
-						<input type="date" id="mwm-book-date">
+					<div id="mwm-cal" class="mwm-cal">
+						<div class="mwm-cal-head">
+							<button type="button" id="mwm-cal-prev" class="mwm-cal-nav" aria-label="Previous month">&#8249;</button>
+							<div id="mwm-cal-label" class="mwm-cal-label"></div>
+							<button type="button" id="mwm-cal-next" class="mwm-cal-nav" aria-label="Next month">&#8250;</button>
+						</div>
+						<div class="mwm-cal-dow"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+						<div id="mwm-cal-grid" class="mwm-cal-grid"></div>
+						<div id="mwm-cal-note" class="mwm-cal-note"></div>
 					</div>
+					<input type="hidden" id="mwm-book-date">
 					<div id="mwm-slots" class="mwm-slots"></div>
 					<div id="mwm-book-details" style="display:none">
 						<div class="mwm-book-field">
@@ -3800,13 +3828,85 @@ MWMJS;
 				initBooking: function() {
 					var self = this;
 					if (!this.client) return;
-					var d = document.getElementById('mwm-book-date');
-					if (!d || d.dataset.mwmBound) return;
-					d.dataset.mwmBound = '1';
+					var g = document.getElementById('mwm-cal-grid');
+					if (!g || g.dataset.mwmBound) return;
+					g.dataset.mwmBound = '1';
 					var t = new Date();
-					d.min = t.getFullYear() + '-' + ('0' + (t.getMonth() + 1)).slice(-2) + '-' + ('0' + t.getDate()).slice(-2);
-					d.addEventListener('change', function(){ if (d.value) self.loadSlots(d.value); });
+					this.calY = t.getFullYear();
+					this.calM = t.getMonth() + 1;
+					this.calFirstY = this.calY;
+					this.calFirstM = this.calM;
+					this.calDays = [];
+					$('#mwm-cal-prev').on('click', function(){ self.moveMonth(-1); });
+					$('#mwm-cal-next').on('click', function(){ self.moveMonth(1); });
 					$('#mwm-book-confirm').on('click', function(){ self.confirmBooking(); });
+					this.loadMonth();
+				},
+
+				monthName: function(m) {
+					return ['January','February','March','April','May','June','July',
+					        'August','September','October','November','December'][m - 1] || '';
+				},
+
+				moveMonth: function(n) {
+					this.calM += n;
+					if (this.calM < 1) { this.calM = 12; this.calY--; }
+					if (this.calM > 12) { this.calM = 1; this.calY++; }
+					this.loadMonth();
+				},
+
+				/* S22: availability comes from mwm_studio_rental_month — the SAME endpoint
+				   the /book-studio month calendar uses, which derives from
+				   get_available_slots (pending holds + Google Calendar busy blocks).
+				   One source of truth: a day is open here only if it is open there.
+				   duration:1 is the loosest filter, which is what a day picker wants —
+				   the slot list narrows it afterwards. */
+				loadMonth: function() {
+					var self = this;
+					var atStart = (this.calY === this.calFirstY && this.calM === this.calFirstM);
+					$('#mwm-cal-prev').prop('disabled', atStart);
+					$('#mwm-cal-label').text(this.monthName(this.calM) + ' ' + this.calY);
+					$('#mwm-cal-grid').html('<div class="mwm-cal-loading">Checking availability…</div>');
+					$('#mwm-cal-note').text('');
+					$('#mwm-slots').empty();
+					$('#mwm-book-details').hide();
+					this.ajax('mwm_studio_rental_month', { year: this.calY, month: this.calM, duration: 1 }, function(data){
+						self.calDays = (data && data.days) || [];
+						self.renderCal();
+					}, function(msg){
+						$('#mwm-cal-grid').empty();
+						$('#mwm-cal-note').text(msg || 'Could not load availability — please try again in a moment.');
+					});
+				},
+
+				renderCal: function() {
+					var self = this;
+					var firstDow = new Date(this.calY, this.calM - 1, 1).getDay();
+					var total    = new Date(this.calY, this.calM, 0).getDate();
+					var open = {};
+					for (var i = 0; i < this.calDays.length; i++) { open[String(this.calDays[i])] = 1; }
+					var html = '';
+					for (var b = 0; b < firstDow; b++) { html += '<span class="mwm-cal-day mwm-cal-blank"></span>'; }
+					for (var d = 1; d <= total; d++) {
+						var iso = this.calY + '-' + ('0' + this.calM).slice(-2) + '-' + ('0' + d).slice(-2);
+						if (open[iso]) {
+							html += '<button type="button" class="mwm-cal-day mwm-cal-open" data-date="' + iso + '">' + d + '</button>';
+						} else {
+							html += '<span class="mwm-cal-day mwm-cal-closed">' + d + '</span>';
+						}
+					}
+					$('#mwm-cal-grid').html(html);
+					var n = this.calDays.length;
+					$('#mwm-cal-note').text(n
+						? n + (n === 1 ? ' day' : ' days') + ' open this month — pick one to see times.'
+						: 'No open days this month. Use the arrow to look at the next one.');
+					$('#mwm-cal-grid .mwm-cal-open').on('click', function(){
+						$('#mwm-cal-grid .mwm-cal-open').removeClass('mwm-cal-picked');
+						$(this).addClass('mwm-cal-picked');
+						var iso = String($(this).data('date'));
+						$('#mwm-book-date').val(iso);
+						self.loadSlots(iso);
+					});
 				},
 
 				loadSlots: function(date) {
@@ -3861,7 +3961,9 @@ MWMJS;
 						$('#mwm-slots').empty();
 						$('#mwm-book-date').val('');
 						$('#mwm-book-notes').val('');
+						$('#mwm-cal-grid .mwm-cal-open').removeClass('mwm-cal-picked');
 						self.selectedSlot = null;
+						self.loadMonth();
 						self.loadDashboardData();
 						self.showToast((data && data.message) ? data.message : 'Session booked! It now appears under Upcoming Bookings.');
 					}, function(msg){
@@ -4074,7 +4176,7 @@ MWMJS;
 			.mwm-contact-footer a { color:#8247f5; font-weight:700; margin-left:4px; }
 
 			/* Calendly embed */
-			.mwm-calendly-intro { color: rgba(255,255,255,0.6); margin-bottom: 16px; font-size: 14px; }
+			.mwm-calendly-intro { color: #6b7280; margin-bottom: 16px; font-size: 14px; }
 			.mwm-calendly-container { border-radius: 12px; overflow: hidden; background: #1a1a2e; }
 			.mwm-calendly-container .calendly-inline-widget, #mwm-calendly-widget { min-height: 1400px; }
 
