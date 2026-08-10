@@ -571,6 +571,13 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 # Store conversation history per user (in-memory)
 conversation_history = {}
 
+# PATCH #76 — senders we have EVER received an inbound message from. THIS, and
+# not conversation_history, is what "new lead" means: conversation_history is
+# also written by outbound sends, so it says yes to people who have never
+# replied to us. Restored from Postgres at boot (and seeded from stored
+# history) and snapshotted every 5 minutes by the state saver.
+_first_inbound_seen = set()
+
 # LARA WhatsApp conversation history per sender (in-memory).
 # Keyed by `whatsapp:+1...`. Independent from Maya's conversation_history
 # so the two agents don't pollute each other's context.
@@ -7938,8 +7945,26 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         except Exception as _esc_err:
             print(f"⚠️ Escalation detection error (non-fatal, Maya still responds): {_esc_err}")
 
-        is_new_sender = sender not in conversation_history
+        # PATCH #76 — this used to be `sender not in conversation_history`, and
+        # that was the whole bug. conversation_history is written by OUTBOUND
+        # paths too — the website-form auto-greeting, the Slack shadow relay and
+        # the manual /send endpoint all seed the key with an assistant message
+        # BEFORE the lead has ever replied. It is also restored from Postgres at
+        # boot, so the mistake is permanent, not restart-scoped. A lead we
+        # greeted first was therefore never "new" when they answered: no Sheets
+        # row, no NEW_LEAD event, no Susan / LARA / ERIC assignment. That is the
+        # `lead_rows.verdict = never_attempted` in /health. It is now the first
+        # INBOUND message ever seen from this sender, tracked durably and
+        # independently of anything we send.
+        _history_missing = sender not in conversation_history
+        is_new_sender = event_rail.is_first_inbound(
+            sender,
+            seen_inbound=_first_inbound_seen,
+            history=conversation_history.get(sender),
+        )
         if is_new_sender:
+            _first_inbound_seen.add(sender)
+        if _history_missing:
             conversation_history[sender] = []
         conversation_history[sender].append({"role": "user", "content": incoming_msg})
         if (not is_new_sender) and (not is_michael):
@@ -8513,8 +8538,18 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
         print(f"⚠️ IG DM escalation detection error (non-fatal): {_esc_err}")
 
     # ── Conversation history ──
-    is_new_sender = sender not in ig_conversation_history
+    # PATCH #76 — same bug, Instagram leg; see the WhatsApp handler for the full
+    # note. Keys here are `instagram:<IGSID>` and WhatsApp keys are
+    # `whatsapp:+1...`, so one durable set safely serves both channels.
+    _history_missing = sender not in ig_conversation_history
+    is_new_sender = event_rail.is_first_inbound(
+        sender,
+        seen_inbound=_first_inbound_seen,
+        history=ig_conversation_history.get(sender),
+    )
     if is_new_sender:
+        _first_inbound_seen.add(sender)
+    if _history_missing:
         ig_conversation_history[sender] = []
     ig_conversation_history[sender].append({"role": "user", "content": incoming_msg})
 
@@ -17731,6 +17766,13 @@ def _restore_state_from_pg():
         _briefing_sent.update(_pg.load_state("briefing_sent", []) or [])
         _noshow_processed.update(_pg.load_state("noshow_processed", []) or [])
         _lead_reminder_sent.update(_pg.load_state("lead_reminder_sent", []) or [])
+        # PATCH #76 — durable first-inbound record, plus a one-time seed from the
+        # stored conversations so this deploy does not re-fire NEW_LEAD for every
+        # lead already in the base. The seed is idempotent and cheap; leaving it
+        # in permanently also self-heals if the saved set is ever lost.
+        _first_inbound_seen.update(_pg.load_state("first_inbound_seen", []) or [])
+        _first_inbound_seen.update(event_rail.seed_seen_inbound(
+            conversation_history, ig_conversation_history))
         _mr_reported_events.update(_pg.load_state("mr_reported_events", {}) or {})
         _manual_mode.update(_pg.load_state("manual_mode", {}) or {})
         print(f"[PG] State restored — {len(lead_data)} leads, {len(conversation_history)} WA convos, "
@@ -17999,6 +18041,7 @@ def _state_saver_thread():
             _pg.save_state("briefing_sent", list(_briefing_sent))
             _pg.save_state("noshow_processed", list(_noshow_processed))
             _pg.save_state("lead_reminder_sent", list(_lead_reminder_sent))
+            _pg.save_state("first_inbound_seen", list(_first_inbound_seen))  # PATCH #76
             _pg.save_state("mr_reported_events", _mr_reported_events)
             _pg.save_state("manual_mode", _manual_mode)
         except Exception as e:

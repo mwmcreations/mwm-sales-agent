@@ -3239,3 +3239,50 @@ def strategy_call_verdict(role=None, business=None, stated_budget=None,
                    "Michael's day, so it is not the default. Send the pricing "
                    "and the booking link, and offer the call again the moment "
                    "they tell you what they run or what they can spend.")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #76 — FIRST INBOUND
+# ══════════════════════════════════════════════════════════════════════
+
+def is_first_inbound(sender, seen_inbound=(), history=None):
+    """True when this is the first message we have EVER received FROM `sender`.
+
+    The old test — "is this sender absent from conversation_history?" — was
+    wrong, because conversation_history is also written when WE send. The
+    website-form auto-greeting, the Slack shadow relay and the manual /send
+    endpoint each create the key with an assistant message before the lead
+    has said a word. Anyone we greeted first therefore looked like a
+    RETURNING lead the moment they finally replied, and so never got a CRM
+    row, a NEW_LEAD event, or a Susan / LARA / ERIC assignment.
+
+    `seen_inbound` is the durable record and is authoritative.
+    `history` is a self-healing second opinion: if the stored conversation
+    already carries a message with role "user" then we have heard from this
+    person before, even if the durable set was lost or never seeded.
+    """
+    if not sender:
+        return False
+    if sender in seen_inbound:
+        return False
+    for m in (history or ()):
+        if isinstance(m, dict) and m.get("role") == "user":
+            return False
+    return True
+
+
+def seed_seen_inbound(*histories):
+    """Bootstrap the durable set from stored conversations.
+
+    Returns every sender whose stored history already contains an inbound
+    message. Run once at boot so that deploying this patch does not re-fire
+    NEW_LEAD across the entire existing lead base.
+    """
+    seen = set()
+    for hist in histories:
+        for sender, msgs in (hist or {}).items():
+            for m in (msgs or ()):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    seen.add(sender)
+                    break
+    return seen

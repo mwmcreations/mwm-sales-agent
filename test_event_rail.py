@@ -1878,6 +1878,52 @@ check_true("every call refusal tells Maya what to send instead",
 
 print("\nPATCH75_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #76 — first inbound (the lead-row bug)
+# ══════════════════════════════════════════════════════════════════════
+from event_rail import is_first_inbound as _fi, seed_seen_inbound as _seed
+
+_GREETED = [{"role": "assistant", "content": "Hi, I'm Maya!"}]
+_TALKED  = [{"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "hey"}]
+
+check_true("a sender we have never touched is a first inbound",
+           _fi("whatsapp:+15551230000", seen_inbound=set(), history=None))
+check_true("THE BUG: a lead we greeted first is STILL a first inbound",
+           _fi("whatsapp:+15551230001", seen_inbound=set(), history=_GREETED))
+check_true("an outbound-only history of any length never counts as inbound",
+           _fi("whatsapp:+15551230002", seen_inbound=set(),
+               history=_GREETED * 25))
+check_true("a lead who has already replied is NOT a first inbound",
+           not _fi("whatsapp:+15551230003", seen_inbound=set(), history=_TALKED))
+check_true("the durable set alone is enough to block a repeat",
+           not _fi("whatsapp:+15551230004",
+                   seen_inbound={"whatsapp:+15551230004"}, history=None))
+check_true("durable set wins even when history was lost entirely",
+           not _fi("instagram:1533250014838110",
+                   seen_inbound={"instagram:1533250014838110"}, history=[]))
+check_true("an empty sender is never a first inbound",
+           not _fi("", seen_inbound=set(), history=None))
+check_true("junk rows in history neither crash nor count as inbound",
+           _fi("whatsapp:+15551230005", seen_inbound=set(),
+               history=[None, "oops", 42, {"role": "assistant"}]))
+check_true("no keyword args still works (positional call)",
+           _fi("whatsapp:+15551230006", set(), None))
+
+_seeded = _seed({"whatsapp:+1a": _TALKED, "whatsapp:+1b": _GREETED},
+                {"instagram:9": _TALKED})
+check_true("seed picks up only senders who have actually written to us",
+           _seeded == {"whatsapp:+1a", "instagram:9"})
+check_true("seeding makes an existing lead stop looking new — no NEW_LEAD storm",
+           not _fi("whatsapp:+1a", seen_inbound=_seeded, history=_TALKED))
+check_true("but a greeted-never-replied lead survives the seed and still fires",
+           _fi("whatsapp:+1b", seen_inbound=_seeded, history=_GREETED))
+check_true("seed tolerates empty and None inputs",
+           _seed({}, None) == set())
+
+print("\nPATCH76_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
+
 print("\nPATCH72_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
