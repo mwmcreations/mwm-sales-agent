@@ -43,7 +43,7 @@ w("""<?php
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_ZB_VERSION', '1' );
+define( 'MWM_RM_SEED_ZB_VERSION', '2' );
 
 function mwm_rm_seed_zbrothers() {
 
@@ -92,6 +92,7 @@ w(f"""
 			'strategist'           => {php(c['strategist'])},
 			'language'             => {php(c['language'])},
 			'status'               => {php(c['status'])},
+			'studio_client_id'     => {c.get('studio_client_id') or 'null'},
 		) );
 		$client_id = (int) $wpdb->insert_id;
 
@@ -103,6 +104,17 @@ w(f"""
 		error_log( '[MWM ROADMAP seed] aborted — could not create or find the client row.' );
 		return;
 	}}
+
+	// The row may predate this seed version — keep the studio link and the
+	// allowances current without ever touching the access code.
+	$wpdb->update( $clients, array(
+		'studio_client_id'     => {c.get('studio_client_id') or 'null'},
+		'campaigns_allowed'    => {c['campaigns_allowed']},
+		'captures_allowed'     => {c['captures_allowed']},
+		'studio_hours_allowed' => {c['studio_hours_allowed']},
+		'contract_start'       => {php(c['contract_start'])},
+		'contract_end'         => {php(c['contract_end'])},
+	), array( 'id' => $client_id ) );
 
 	// ── rebuild this client's campaigns, assets and actions ──────────────
 	// Scoped to $client_id throughout. Nothing belonging to another client is

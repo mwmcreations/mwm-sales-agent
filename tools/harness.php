@@ -34,7 +34,16 @@ function get_transient( $k ) { return false; }
 function set_transient( $k, $v, $t ) {}
 function delete_transient( $k ) {}
 function add_shortcode( $tag, $cb ) { $GLOBALS['__sc'][ $tag ] = $cb; }
-function apply_filters( $tag, $value ) { return $value; }
+function apply_filters( $tag, $value ) {
+	// Mirror what production does: studio hours come from the studio ledger,
+	// never from a stored number. The harness reads the same figure the seed
+	// JSON records, so the offline copy and the live page agree.
+	if ( $tag === 'mwm_rm_studio_hours_used' ) {
+		$j = json_decode( file_get_contents( __DIR__ . '/zbrothers_data.json' ), true );
+		return isset( $j['client']['studio_hours_used'] ) ? (float) $j['client']['studio_hours_used'] : $value;
+	}
+	return $value;
+}
 function add_filter( $tag, $cb, $pri = 10, $args = 1 ) {}
 function is_singular( $t = '' ) { return true; }
 function get_post( $id = null ) { return null; }
