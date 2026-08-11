@@ -1,7 +1,8 @@
 <?php
-// Code Snippets plugin — MWM ROADMAP™ Portal · SCHEMA (NOT YET DEPLOYED — no WP snippet ID yet;
-// rename to wp-snippet-<ID>-roadmap-schema.php once it is created in wp-admin)
-// DEV · Aug 9 2026 · Spec: docs/ROADMAP_Portal_Spec.md
+// Code Snippets plugin — MWM ROADMAP™ Portal · SCHEMA
+// WP Code Snippets ID 21 · ACTIVE · deployed Aug 11 2026 (Michael's named approval
+// to run this on the production WP DB). Mirror of what is live in wp-admin.
+// DEV · Aug 9 2026, v1.1.0 Aug 11 2026 · Spec: docs/ROADMAP_Portal_Spec.md §10
 //
 // Phase 1 of 7. This snippet creates tables ONLY. It renders nothing, exposes
 // no endpoint, and touches no existing table. Safe to activate before any of
@@ -15,7 +16,7 @@
 // 🔑 dbDelta is FUSSY. Two spaces after PRIMARY KEY, one field per line,
 //    KEY not INDEX, no backticks on the table name. Do not "tidy" this.
 
-define( 'MWM_ROADMAP_DB_VERSION', '1.0.0' );
+define( 'MWM_ROADMAP_DB_VERSION', '1.1.0' );
 
 function mwm_roadmap_install_schema() {
 
@@ -36,6 +37,9 @@ function mwm_roadmap_install_schema() {
 		access_code varchar(255) NOT NULL,
 		plan varchar(20) NOT NULL DEFAULT 'gold',
 		campaigns_allowed smallint(5) unsigned NOT NULL DEFAULT 12,
+		captures_allowed smallint(5) unsigned NOT NULL DEFAULT 4,
+		studio_hours_allowed decimal(5,2) NOT NULL DEFAULT 12.00,
+		conversions_used smallint(5) unsigned NOT NULL DEFAULT 0,
 		contract_start date DEFAULT NULL,
 		contract_end date DEFAULT NULL,
 		strategist varchar(191) DEFAULT '' NOT NULL,
@@ -92,6 +96,13 @@ function mwm_roadmap_install_schema() {
 	// ── assets ───────────────────────────────────────────────────────────
 	// review_state is the §5 approval machine, PER ASSET — a month can be
 	// half approved:  review → approved  |  review → fix → (revision) → review
+	//
+	// kind: hero | reel | episode | short | script | stills
+	// v1.1 — a SCRIPT is an asset. It therefore runs the SAME approval machine
+	// as a film, and every transition lands in mwm_roadmap_asset_events, which
+	// is what makes 'who approved the script, and when' an answerable question.
+	// Michael, Aug 11: the script must be confirmed and approved by the client
+	// before anything is filmed.
 	$sql[] = "CREATE TABLE {$p}mwm_roadmap_assets (
 		id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 		campaign_id bigint(20) unsigned NOT NULL,
@@ -164,6 +175,85 @@ function mwm_roadmap_install_schema() {
 		UNIQUE KEY token_hash (token_hash),
 		KEY campaign_id (campaign_id),
 		KEY expires_at (expires_at)
+	) $charset;";
+
+	// ── participants (§ Next filming session) ────────────────────────────
+	// Everyone who has to be in front of a camera on a shoot day. Michael,
+	// Aug 11: date, location, script and PEOPLE all have to be confirmed, and
+	// people is the one that slips. role carries the shoot's cast shape —
+	// a podcast month reads "guest", an institutional month reads
+	// "testimonial · your client". placeholder=1 is the honest "third client
+	// not yet chosen" row: a gap the portal SAYS out loud rather than hiding.
+	$sql[] = "CREATE TABLE {$p}mwm_roadmap_participants (
+		id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+		campaign_id bigint(20) unsigned NOT NULL,
+		name varchar(191) DEFAULT '' NOT NULL,
+		role varchar(32) NOT NULL DEFAULT 'guest',
+		detail varchar(255) DEFAULT '' NOT NULL,
+		email varchar(191) DEFAULT '' NOT NULL,
+		phone varchar(40) DEFAULT '' NOT NULL,
+		confirm_state varchar(20) NOT NULL DEFAULT 'pending',
+		placeholder tinyint(1) NOT NULL DEFAULT 0,
+		invited_at datetime DEFAULT NULL,
+		confirmed_at datetime DEFAULT NULL,
+		confirmed_by varchar(191) DEFAULT '' NOT NULL,
+		sort_order smallint(5) unsigned NOT NULL DEFAULT 0,
+		created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		updated_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		PRIMARY KEY  (id),
+		KEY campaign_id (campaign_id),
+		KEY confirm_state (confirm_state)
+	) $charset;";
+
+	// ── capture series (§10.2) ───────────────────────────────────────────
+	// A property filmed repeatedly on a cadence — a build captured before,
+	// during and after. PREDICTABLE, therefore cheap to route, therefore it
+	// does NOT draw down the capture allowance.
+	$sql[] = "CREATE TABLE {$p}mwm_roadmap_capture_series (
+		id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+		client_id bigint(20) unsigned NOT NULL,
+		label varchar(191) NOT NULL,
+		address varchar(255) DEFAULT '' NOT NULL,
+		cadence_days smallint(5) unsigned NOT NULL DEFAULT 42,
+		next_due date DEFAULT NULL,
+		active tinyint(1) NOT NULL DEFAULT 1,
+		created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		PRIMARY KEY  (id),
+		KEY client_active (client_id,active),
+		KEY next_due (next_due)
+	) $charset;";
+
+	// ── captures (§10.2) ─────────────────────────────────────────────────
+	// kind: series | standard | priority
+	//   series   → from a capture_series row. Allowance: NOT drawn.
+	//   standard → client names the property, MWM picks the day inside
+	//              window_ends_on (10 working days). Allowance: 1 drawn.
+	//   priority → client names the day, or <5 days notice. A dedicated
+	//              mobilisation, so it is PAID and never drawn from allowance.
+	// campaign_id is not decoration: a capture is raw material for a month's
+	// campaign, not a stray errand (§10.6).
+	$sql[] = "CREATE TABLE {$p}mwm_roadmap_captures (
+		id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+		client_id bigint(20) unsigned NOT NULL,
+		campaign_id bigint(20) unsigned DEFAULT NULL,
+		series_id bigint(20) unsigned DEFAULT NULL,
+		kind varchar(20) NOT NULL DEFAULT 'standard',
+		property_label varchar(191) NOT NULL,
+		address varchar(255) DEFAULT '' NOT NULL,
+		notes text NULL,
+		state varchar(20) NOT NULL DEFAULT 'requested',
+		requested_at datetime DEFAULT NULL,
+		window_ends_on date DEFAULT NULL,
+		scheduled_at datetime DEFAULT NULL,
+		filmed_at datetime DEFAULT NULL,
+		draws_allowance tinyint(1) NOT NULL DEFAULT 1,
+		billable tinyint(1) NOT NULL DEFAULT 0,
+		created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		updated_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,
+		PRIMARY KEY  (id),
+		KEY client_state (client_id,state),
+		KEY window_ends_on (window_ends_on),
+		KEY series_id (series_id)
 	) $charset;";
 
 	foreach ( $sql as $stmt ) {

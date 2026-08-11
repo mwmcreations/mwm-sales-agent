@@ -1,4 +1,4 @@
-# MWM ROADMAP™ CLIENT PORTAL — SPEC v0.5
+# MWM ROADMAP™ CLIENT PORTAL — SPEC v0.6
 
 **Author:** DEV · Aug 9 2026 · **Status:** prototype delivered, buildable
 **Prototype:** `roadmap-portal.html` (also a Cowork artifact: `roadmap-client-portal`)
@@ -16,6 +16,10 @@ See §7.
 mirrors the notice rules; 48h hold expiry; Sundays closed. Real ROADMAP client
 roster read from Stripe (§9). Phase 1 shipped to the repo:
 `wordpress/snippet-20-roadmap-schema.php`.
+**v0.6** (Michael, Aug 11): the ALLOWANCE MODEL — §10. Campaign vs Capture vs
+studio hour, the scheduling-latitude ladder, the one-way conversion valve, and the
+ruling that the portal is a PLANNING SURFACE rather than a status page. Also locked:
+full year visible, English only, ROADMAP clients get studio hours on the same login.
 
 ---
 
@@ -374,3 +378,153 @@ It does carry `Revision Round`, `Final Delivery Link`, `Status` and
 **Conclusion: demote the sheet sync from build step 4 to later.** Build the
 admin screen first, enter the four clients' campaigns there, and treat the
 tracker as an import assist rather than the source of truth.
+
+---
+
+## 10 · The allowance model — what a client can spend, and on what  🔑 *new in v0.6*
+
+*Locked with Michael, Aug 11 2026, in conversation. Every rule here came from him
+or was agreed by him in that exchange. Nothing below is DEV's assumption.*
+
+### 10.1 · Why there are separate currencies at all
+
+The unit of work is a **campaign**, and a campaign is a **month** — one theme, one
+production day, many deliverables. The word is load-bearing and was chosen
+deliberately:
+
+> Michael: *"some clients, they will get confused, and they will think that one
+> film shoot is like one video… 'oh, just one video a month, it's not enough.'
+> And this is not true."*
+
+🔴 **Therefore: never publish an hours figure against a campaign.** "Up to 6 hours"
+invites the client to feel short-changed when a shoot wraps in three, and re-anchors
+them on duration instead of outcome — the exact disease the word "campaign" exists
+to cure. A campaign is **a full production day**. It has no published hour count.
+
+The currencies are separated by **what they cost MWM**, which is not hours:
+
+| | What it is | What it costs MWM |
+|---|---|---|
+| **Campaign day** | Full production day, crew + direction + edit | A full mobilisation |
+| **Capture** | ≤2h on location, one operator + gimbal, acquisition only | A partial mobilisation |
+| **Studio hour** | Client comes to us, room already lit | Almost nothing |
+
+🔑 **The scarce resource is the number of times MWM mobilises, not hours rolled.**
+A "two-hour shoot" is a five-hour crew day — studio, load, drive, shoot, drive,
+unload — costing ~70% of a full day. Any rule that prices a short shoot as a
+*fraction* of a campaign loses money on every one. **You cannot make short dedicated
+shoots cheap. You can only make them fewer.**
+
+### 10.2 · The Capture ladder — the client pays in scheduling latitude
+
+This is the mechanism that makes flexibility affordable. What the client gives up
+is not money, it is control of the date:
+
+1. **Capture series** — client registers a property and a cadence (a build filmed
+   before / during / after). Predictable, so it plans into an existing route weeks
+   ahead. **Does NOT draw down the Capture allowance.** Cheapest thing on the board.
+2. **Standard Capture** — client names the property, **MWM picks the day inside 10
+   working days**, batching it onto a campaign shoot day or clustering 2–3 into one
+   capture day. **Draws one Capture from the allowance.**
+3. **Priority Capture** — client names the day, or needs it inside 5 days. Forces a
+   dedicated trip. **Paid at rate card. Never drawn from the allowance.**
+
+> Michael on the real case: *"ZBrothers… sometimes they want us just to go film a
+> house for two hours because the house has been constructed and is ready to be
+> delivered."* And: *"not only the houses they already built, there are the houses
+> that are still building, but they need footage because they wanna do it before
+> and after."*
+
+**A completed house has a window** — it is finished and staged for a week or more
+before handover. The 10-working-day queue works *because* the need is "before it is
+gone", not "on Tuesday". **If that window turns out to be shorter than 10 working
+days for a builder, this whole model needs re-cutting — confirm with Michael.**
+
+### 10.3 · Included allowances
+
+| Plan | Campaign days | Captures | Studio hours |
+|---|---|---|---|
+| Gold | 12 | 4 (indicative — see below) | 12 |
+| Silver | 6 | 2 | 6 |
+
+⚠️ **4/year is a conservative placeholder.** With one operator and a gimbal a
+batched capture day covers 3–4 properties, so a builder-shaped client could carry
+8–12 a year without touching margin. **Open: the real crew cost of a Capture.**
+One operator with a gimbal is a different product from a two-person lighting
+setup, and that number decides whether the allowance is generous or reckless.
+
+### 10.4 · Conversion — one valve, one direction
+
+**One unused campaign day → 6 studio hours OR 2 Captures.** Never the reverse.
+
+- **One-way only.** A campaign carries crew, direction, editing and strategy. If
+  hours could become campaigns, a full production day has been sold at room rate.
+- **Capped at 2 conversions per contract year.** Past that the plan has become a
+  studio rental and the client should be on a different product.
+- **Not inside a shoot's notice window** (7 days location / 48h studio). Converting
+  a campaign 48h before its confirmed day is a cancellation wearing a costume.
+- **Renewal window:** in the last 60 days of the contract, open the valve on
+  everything unused. It turns *"we paid for 12 and used 9"* from a renewal argument
+  into a favour. 🔴 **Z Brothers renew 14 Nov with 0 of 12 studio hours used — that
+  conversation is ~3 months out and is already predictable.**
+
+### 10.5 · When a campaign is spent
+
+**On the shoot day.** *(Michael, Aug 11: "the campaign is considered spent after
+the shoot day.")* A no-show or a move inside the notice window also spends it —
+the crew day was committed. This mirrors the reschedule rule locked in §S67.
+
+### 10.6 · Captures are raw material, not errands
+
+Every Capture is tagged to a **campaign month** and its footage belongs to that
+month's deliverables. A capture is not a favour squeezed into a full calendar — it
+is **acquisition that makes that month's campaign stronger**, spread across the
+month instead of crammed into one production day.
+
+### 10.7 · The flex bucket should be the client's choice at signup
+
+🔑 **Z Brothers have 12 studio hours and have used ZERO**, while the thing they ask
+for repeatedly — filming houses on location — is not in their plan at all. **Their
+flex allowance is denominated in the wrong currency for their business.** A builder
+does not need a studio; an author or coach needs nothing else.
+
+**Proposal: at signup the client picks their flex bucket** — studio hours, Captures,
+or a split — at equal value. Z Brothers take Captures and zero studio hours.
+Bolfer takes the hours. *Michael's reaction: "I love it… we give them the
+flexibility to go there and map out the way they want."*
+
+### 10.8 · What the portal must therefore do — this is the product, not a report
+
+> Michael: *"the client can see exactly what is happening, what are their options,
+> what they can book, how they can book, where is allowed, what is not allowed,
+> what is gonna create extra costs… it's a matter of them going there and expanding
+> their shoot days, their times, their deliverables."*
+
+🔴 **The portal is a PLANNING SURFACE, not a status page.** Alongside §1's panels it
+must carry:
+
+1. **Allowance meters** — campaign days, Captures, series, studio hours: what is
+   left, not just what is used.
+2. **What you can book**, each with its own rule stated inline — notice period,
+   how the day gets chosen, what it draws down.
+3. **What creates an extra cost** — published on the page, in plain words, *before*
+   the client does it. Priority Captures, over-allowance Captures, moves inside the
+   notice window, studio time beyond the included hours.
+4. **The conversion offer, surfaced when it is relevant** — e.g. *"5 campaign days
+   left and 3 months to use them."* The portal should raise it, not wait to be asked.
+5. 🔑 **Deliverables promised BEFORE the shoot, not reported after.** A campaign in
+   `planned` should already read *"1 hero film · 8 social cuts · 2 teasers"*. This is
+   what actually kills the "one video a month" complaint — accounting never will.
+
+### 10.9 · Still open
+
+1. **Crew cost of a Capture** — one operator + gimbal vs two-person setup. Decides
+   the allowance size (§10.3).
+2. **Is 10 working days genuinely acceptable to a builder?** The entire batching
+   model rests on it (§10.2).
+3. **A crewed short shoot that is not self-directed and not a Capture** — Michael:
+   *"that has always been a hard time for me."* Current answer: it IS a Capture if
+   ≤2h and acquisition-only; anything needing direction or talent is a campaign day
+   or a paid add-on. **Confirm the line.**
+4. Does the flex-bucket choice (§10.7) apply to existing contracts mid-term, or
+   only at renewal?
