@@ -1,0 +1,236 @@
+{
+  "_note": "Canonical Z Brothers portal data. ONE source, two consumers: seed_zbrothers.php (local harness + offline copy) and gen_wp_seeder.py (the WordPress seeder). Never edit the generated files.",
+  "_sources": {
+    "arc": "ZBrothers_Annual_Roadmap.pdf — the signed Plano GOLD",
+    "shoot_days": "MWM CREATIONS calendar, 8 GRAVAÇÃO entries Nov 2025 - Jul 2026, confirmed by Michael Aug 11",
+    "deliverables": "Google Drive — Z BROTHERS/EXPORT, walked Aug 11 2026",
+    "plan": "Stripe GOLD PLAN prod_OIxgvyHybU4UJG, $2,397 + $30 legacy price"
+  },
+
+  "client": {
+    "client_name": "Thiago & Sandina Zerlotini",
+    "company": "Zerlotini Brothers Construction",
+    "email": "thiago@zbrothersconstruction.com",
+    "plan": "gold",
+    "campaigns_allowed": 12,
+    "captures_allowed": 4,
+    "studio_hours_allowed": 12,
+    "studio_hours_used": 0,
+    "conversions_used": 0,
+    "contract_start": "2025-11-14",
+    "contract_end": "2026-11-14",
+    "strategist": "Michael Moraes",
+    "language": "en",
+    "status": "active"
+  },
+
+  "campaigns": [
+    {
+      "month_no": 1,
+      "title": "Institutional",
+      "theme_desc": "Thiago and Sandina's story — faith, family, legacy, and why Z Brothers builds the way it does. The film the whole year is built on.",
+      "status": "delivered",
+      "shoot_at": "2025-11-14 09:00:00",
+      "shoot_kind": "location",
+      "shoot_location": "On location, Orlando",
+      "shoot_state": "confirmed",
+      "delivered_at": "2025-12-15",
+      "folder_url": "https://drive.google.com/drive/folders/1eNp3itvWTxR-I73j1heSyZXCkuUjWh_-",
+      "assets": [
+        { "title": "Institutional film — full version", "kind": "hero", "url": "https://drive.google.com/file/d/1_O6J1r4h7mkVzQndqS9ks5trfhpUcrBF/view", "qty": 1, "review_state": "approved" },
+        { "title": "Institutional film — Portuguese subtitles", "kind": "hero", "url": "https://drive.google.com/file/d/1SRNh_TwzaJHacfA1yy6cFobH9GBxTFvT/view", "qty": 1, "review_state": "approved" },
+        { "title": "Short version — widescreen", "kind": "short", "url": "https://drive.google.com/file/d/1bhqc8vqEDTtFOFD5C82M3m7ElCgjuFq6/view", "qty": 1, "review_state": "approved" },
+        { "title": "Short version — vertical", "kind": "short", "url": "https://drive.google.com/file/d/1nEBOzZgSjcNxhCy36ydedZWrX7fRrFQu/view", "qty": 1, "review_state": "approved" },
+        { "title": "Social cuts", "kind": "reel", "url": "https://drive.google.com/drive/folders/1OlR6Hj0uanX9YyvdEME6MHtluYyTl4oH", "qty": 7, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 2,
+      "title": "Finish Differentiators",
+      "theme_desc": "What luxury detail looks like inside an affordable home — the finishes, the materials, the decisions most builders skip.",
+      "status": "delivered",
+      "shoot_at": "2025-12-29 09:00:00",
+      "shoot_kind": "location",
+      "shoot_location": "On location, Orlando",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-01-16",
+      "folder_url": "https://drive.google.com/drive/folders/11eNnXxN2GNsPnp50bPD89J90CTvjZwad",
+      "assets": [
+        { "title": "Films 1–8 — widescreen", "kind": "hero", "url": "https://drive.google.com/drive/folders/1DaGGdKxG8F1qrYeIhPo1_A5hUjqP2Fty", "qty": 8, "review_state": "approved" },
+        { "title": "Films 1–8 — vertical", "kind": "reel", "url": "https://drive.google.com/drive/folders/1N4LSiSXQXFfff-aG1ZQSUjJNRr2x6L2Y", "qty": 8, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 3,
+      "title": "Z NEWS — Episodes 1 to 8",
+      "theme_desc": "An eight-part series in your own format: short, direct pieces answering what buyers and investors actually ask.",
+      "status": "delivered",
+      "shoot_at": "2026-02-26 09:00:00",
+      "shoot_kind": "studio",
+      "shoot_location": "MWM Creations & Studios",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-03-12",
+      "folder_url": "https://drive.google.com/drive/folders/1bFDblw3KOmbgFL3ZndVgfu5XcknYTjJm",
+      "assets": [
+        { "title": "Z NEWS episode 1", "kind": "episode", "url": "https://drive.google.com/file/d/1ignvxZI9XUShhXUzeoDxxazxJ9T8Ycb9/view", "qty": 1, "review_state": "approved" },
+        { "title": "Z NEWS episodes 2–8", "kind": "episode", "url": "https://drive.google.com/drive/folders/1bFDblw3KOmbgFL3ZndVgfu5XcknYTjJm", "qty": 7, "review_state": "approved" },
+        { "title": "Vertical cuts of every episode", "kind": "reel", "url": "https://drive.google.com/drive/folders/1xte5sT1BqS2BBS3jYd_yF51bVXoAI1ls", "qty": 7, "review_state": "approved" },
+        { "title": "Call-to-action films", "kind": "short", "url": "https://drive.google.com/drive/folders/1bFDblw3KOmbgFL3ZndVgfu5XcknYTjJm", "qty": 3, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 4,
+      "title": "Brand Films",
+      "theme_desc": "Four brand pieces cut for both feeds, each delivered widescreen, vertical and subtitled.",
+      "status": "delivered",
+      "shoot_at": "2026-05-01 09:00:00",
+      "shoot_kind": "location",
+      "shoot_location": "On location, Orlando",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-05-14",
+      "folder_url": "https://drive.google.com/drive/folders/1tkUpkuDmrhfZe7O_VSHJwLU7NxYoFAA9",
+      "assets": [
+        { "title": "Brand films 1–4 — first delivery", "kind": "hero", "url": "https://drive.google.com/drive/folders/1GfYPjDB0wRCf9GZnWOjOBDCukEMxjboG", "qty": 4, "review_state": "approved" },
+        { "title": "Brand films 1–4 — widescreen, subtitled", "kind": "hero", "url": "https://drive.google.com/drive/folders/1NW2rL3g-hej4KdvSNPz1A2KYF6CHYdj8", "qty": 4, "review_state": "approved" },
+        { "title": "Brand films 1–4 — vertical, subtitled", "kind": "reel", "url": "https://drive.google.com/drive/folders/1g_dYycsIMXjTFDq6I74SkQxlPFgEcTr8", "qty": 4, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 5,
+      "title": "Casa Windermere",
+      "theme_desc": "A finished Windermere home, filmed before handover — the luxury showcase format applied to a real completion.",
+      "status": "delivered",
+      "shoot_at": "2026-05-21 09:00:00",
+      "shoot_kind": "location",
+      "shoot_location": "Windermere, FL",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-06-09",
+      "folder_url": "https://drive.google.com/drive/folders/14vUXeugaHQa8EhGxdk0EGANzbOy3n7vu",
+      "assets": [
+        { "title": "Casa Windermere — widescreen, subtitled", "kind": "hero", "url": "https://drive.google.com/file/d/1HzqC3CBytsoliNKz-pSm2IMAOPZmBr9T/view", "qty": 1, "review_state": "approved" },
+        { "title": "Casa Windermere — vertical, subtitled", "kind": "reel", "url": "https://drive.google.com/file/d/1WQojiYeubTOqrOBYRB6a_7qoxSYLjxMH/view", "qty": 1, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 6,
+      "title": "Handover & Father's Day",
+      "theme_desc": "A family receiving their keys, plus a Father's Day piece cut from the same day.",
+      "status": "delivered",
+      "shoot_at": "2026-06-03 09:00:00",
+      "shoot_kind": "location",
+      "shoot_location": "Windermere, FL",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-06-26",
+      "folder_url": "https://drive.google.com/drive/folders/1DrbpX4hqJ_aul_UxKdj5MPd-ny2ooVMF",
+      "assets": [
+        { "title": "House handover — main film", "kind": "hero", "url": "https://drive.google.com/file/d/1JwU26ptV3Cffu0IvgyQhH43N_1m9eM3e/view", "qty": 1, "review_state": "approved" },
+        { "title": "House handover — alternate cut", "kind": "hero", "url": "https://drive.google.com/file/d/1XnLGrMM9gqp9pVFbt0YfNttVtS5DpSO_/view", "qty": 1, "review_state": "approved" },
+        { "title": "House handover — vertical", "kind": "reel", "url": "https://drive.google.com/file/d/1s1rh_vK61gj2AaJLbhk9mT6F49A8TrcR/view", "qty": 1, "review_state": "approved" },
+        { "title": "Father's Day films", "kind": "short", "url": "https://drive.google.com/drive/folders/1EG7wloCgfHVy5RxMmDilQIWEQSOHhzIS", "qty": 2, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 7,
+      "title": "Z CAST — the podcast begins",
+      "theme_desc": "Your own show. One long-form episode, plus every strong moment cut out of it and captioned for social.",
+      "status": "delivered",
+      "shoot_at": "2026-06-18 09:00:00",
+      "shoot_kind": "studio",
+      "shoot_location": "MWM Creations & Studios",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-06-23",
+      "folder_url": "https://drive.google.com/drive/folders/1DFDV0qDsDvsufAtyQCS6KxylT86gc_6r",
+      "assets": [
+        { "title": "Z CAST — full episode", "kind": "episode", "url": "https://drive.google.com/file/d/1p2ubdsDvFmeB8xamTFBc0AS7SE-eX9bz/view", "qty": 1, "review_state": "approved" },
+        { "title": "Short cuts, captioned", "kind": "short", "url": "https://drive.google.com/drive/folders/1PERJtroa7M3C3m8C-jdQOOJPOtQSpn0D", "qty": 16, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 8,
+      "title": "Z CAST — Episode 01 with Sandina",
+      "theme_desc": "The series proper: title sequence, full episode, and eighteen short cuts ready to post.",
+      "status": "delivered",
+      "shoot_at": "2026-07-15 09:00:00",
+      "shoot_kind": "studio",
+      "shoot_location": "MWM Creations & Studios",
+      "shoot_state": "confirmed",
+      "delivered_at": "2026-07-24",
+      "folder_url": "https://drive.google.com/drive/folders/1P7i9ahL36QsPCoSLcj5yMYOvAEixOQtW",
+      "assets": [
+        { "title": "Z CAST Episode 01 — full episode", "kind": "episode", "url": "https://drive.google.com/file/d/1qCe7LOx8pd9usnPoy4TqIrTtBpkW6n81/view", "qty": 1, "review_state": "approved" },
+        { "title": "Z CAST title sequence", "kind": "short", "url": "https://drive.google.com/file/d/1HzYMv3ZKtoNWGxMVTrR9HCedX9l5FEvg/view", "qty": 1, "review_state": "approved" },
+        { "title": "Short cuts, captioned", "kind": "short", "url": "https://drive.google.com/drive/folders/1grdRE4gAWVX6cjCF4QdemRpjKjd2UoeQ", "qty": 18, "review_state": "approved" }
+      ]
+    },
+    {
+      "month_no": 9,
+      "title": "Realtor Partner Series",
+      "theme_desc": "Films made with the agents who sell your homes — their audience meets your build quality, in their words.",
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": null,
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
+    },
+    {
+      "month_no": 10,
+      "title": "Luxury Showcase",
+      "theme_desc": "One finished high-end home, filmed properly — the piece that positions Z Brothers as a luxury boutique builder.",
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": null,
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
+    },
+    {
+      "month_no": 11,
+      "title": "Partner Podcast",
+      "theme_desc": "A Z CAST episode with someone from the build — an engineer, an architect, a designer. Authority by association.",
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": null,
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
+    },
+    {
+      "month_no": 12,
+      "title": "Annual Retrospective",
+      "theme_desc": "Thiago, Sandina, the team and the families from this year — and where Z Brothers goes next.",
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": null,
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
+    }
+  ],
+
+  "actions": [
+    {
+      "title": "Four campaign days left, and 95 days to use them",
+      "detail": "Months 9 to 12 of your roadmap are still to film. On location we need 7 days' notice, so the last comfortable booking date is early November.",
+      "due_date": "2026-11-14"
+    },
+    {
+      "title": "You have not used any of your 12 studio hours",
+      "detail": "They are included in your plan and they expire with your contract year. A studio day is the cheapest way to add a Z CAST episode or a batch of social films.",
+      "due_date": "2026-11-14"
+    },
+    {
+      "title": "We need a partner named for the Realtor Series",
+      "detail": "Month 9 films with agents who sell your homes. Give us one or two names and we will handle the invitation and the scheduling.",
+      "due_date": null
+    }
+  ]
+}
