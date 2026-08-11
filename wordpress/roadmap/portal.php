@@ -1,6 +1,6 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ Portal · LOGIN + READ-ONLY RENDER
-// WP Code Snippets ID 37 · ACTIVE · DEV · Aug 11 2026 · v1.2.1
+// WP Code Snippets ID 43 · ACTIVE · DEV · Aug 11 2026 · v1.3.0
 // (IDs churn on every import — see wordpress/SNIPPET-INVENTORY-ROADMAP.md)
 //
 // 🔴 FILENAME RULE CHANGED FOR THESE THREE FILES. wordpress/SNIPPET-INVENTORY.md
@@ -776,6 +776,21 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
 	$sh_allowed = (float) $client->studio_hours_allowed;
 	$sh_used    = (float) apply_filters( 'mwm_rm_studio_hours_used', 0, $client );
 
+	// 🔴 FIRST RUN — a client who has had nothing delivered yet.
+	// Their portal must NOT open with an accounting of zeros. "0 campaigns filmed,
+	// 0 films delivered" is not a status, it is twelve reminders that nothing has
+	// happened, and it is the fastest way to make a paying client feel behind.
+	// Same failure as padlocking a studio client's year (Spec §11.2).
+	// So when nothing has happened yet, the page gets ONE job: book the first day.
+	$first_run = ( $spent === 0 && $film_count === 0 );
+
+	// Computed once, up here, because two sections read it and the year list must
+	// not depend on the booking form having rendered first.
+	$bookable = array();
+	foreach ( $campaigns as $c ) {
+		if ( $c->status === 'planned' && $c->shoot_state === 'none' ) { $bookable[] = $c; }
+	}
+
 	// The conversion offer surfaces itself when it is relevant (Spec §10.8.4).
 	// The VALVE opens in the final 60 days (Strategy §7). The PROMPT surfaces sooner —
 	// a client who finds out at day 59 has already lost the chance to just film them.
@@ -804,6 +819,34 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
     <div class="rm-note">Your roadmap is being prepared. It will appear here as soon as your strategist has finished it.</div>
   <?php else : ?>
 
+  <!-- ── FIRST RUN: one job, not a scoreboard ─────────────────────── -->
+  <?php if ( $first_run ) : ?>
+  <section class="rm-sec">
+    <div class="rm-hero">
+      <div class="rm-heroh">Your year starts with one day.</div>
+      <p class="rm-heros">
+        <?php echo (int) $allowed; ?> campaigns have been planned for you and nothing has been
+        filmed yet — so there is only one thing on this page that matters, and it is picking
+        the first day.
+      </p>
+
+      <div class="rm-comes">
+        <div class="rm-comesh">We come to you</div>
+        <p>You do not need to travel to a studio or give up a weekend. We bring the cameras,
+          the lighting, the sound and the teleprompter to <b>your own office</b> and film there.
+          It is a better setting for what you are explaining, and it costs you a few hours
+          instead of a day.</p>
+      </div>
+
+      <div class="rm-what">
+        <div class="rm-whath">What a campaign is</div>
+        <p>A campaign is a <b>production day and everything that comes out of it</b> — the films,
+          the short cuts, the versions for each platform. It is not one video. One day of filming
+          usually becomes a set of finished pieces you will be publishing for weeks.</p>
+      </div>
+    </div>
+  </section>
+  <?php else : ?>
   <!-- ── AT A GLANCE ───────────────────────────────────────────────── -->
   <div class="rm-tiles">
     <div class="rm-tile">
@@ -824,6 +867,8 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
     </div>
   </div>
 
+  <?php endif; ?>
+
   <!-- ── WHAT YOU CAN BOOK ─────────────────────────────────────────── -->
   <section class="rm-sec">
     <h2 class="rm-h2">What you can book, and how</h2>
@@ -835,12 +880,12 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
       </div>
       <div class="rm-brow">
         <div class="rm-bk">Capture · series <span class="rm-bmini">does not draw down</span></div>
-        <div class="rm-bd">A property you want filmed repeatedly — before, during and after a build. Register it once and we plan it into our route.</div>
+        <div class="rm-bd">Somewhere you want filmed more than once as it changes — a project, a site, a space being built or renovated. Register it once and we plan it into our route.</div>
         <div class="rm-bn">We schedule it with you</div>
       </div>
       <div class="rm-brow">
         <div class="rm-bk">Capture · standard <span class="rm-bmini">draws 1</span></div>
-        <div class="rm-bd">Name the property. We choose the day and group it with other visits nearby.</div>
+        <div class="rm-bd">Tell us the place. We choose the day and group it with other visits nearby.</div>
         <div class="rm-bn">Filmed within <b>10 working days</b></div>
       </div>
       <div class="rm-brow">
@@ -863,17 +908,13 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
 
   <!-- ── REQUEST A FILMING DAY (spec §6) ───────────────────────────── -->
   <?php
-  $bookable = array();
-  foreach ( $campaigns as $c ) {
-    if ( $c->status === 'planned' && $c->shoot_state === 'none' ) { $bookable[] = $c; }
-  }
   if ( ! empty( $bookable ) ) :
     $min_studio   = mwm_rm_earliest_open( 'studio' );
     $min_location = mwm_rm_earliest_open( 'location' );
     $last_day     = $client->contract_end ? $client->contract_end : date( 'Y-m-d', strtotime( '+1 year' ) );
   ?>
   <section class="rm-sec">
-    <h2 class="rm-h2">Book your next filming day</h2>
+    <h2 class="rm-h2"><?php echo $first_run ? 'Book your first filming day' : 'Book your next filming day'; ?></h2>
 
     <?php if ( $req_ok ) : ?>
       <div class="rm-held">
@@ -899,7 +940,7 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
         <div class="rm-seg">
           <label class="rm-segopt">
             <input type="radio" name="shoot_kind" value="location" checked>
-            <span><b>On location</b><em>Your site, a finished home, an event</em></span>
+            <span><b>On location</b><em>Your office, a site, wherever the story is</em></span>
           </label>
           <label class="rm-segopt">
             <input type="radio" name="shoot_kind" value="studio">
@@ -1022,7 +1063,7 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
       </div>
     </div>
   </section>
-  <?php else : ?>
+  <?php elseif ( ! $first_run ) : ?>
   <section class="rm-sec">
     <h2 class="rm-h2">Your next filming session</h2>
     <div class="rm-next rm-nextempty">
@@ -1054,8 +1095,9 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
             <?php if ( $a->detail ) : ?><div class="rm-actd"><?php echo esc_html( $a->detail ); ?></div><?php endif; ?>
           </div>
           <div class="rm-actage"><?php
+            // An age of "0 days" is noise on something raised today. Say nothing.
             if ( $a->due_date ) { echo 'by ' . esc_html( mwm_rm_fmt_date( $a->due_date, 'j M' ) ); }
-            elseif ( $age !== null ) { echo (int) $age . ( $age === 1 ? ' day' : ' days' ); }
+            elseif ( $age !== null && $age > 0 ) { echo (int) $age . ( $age === 1 ? ' day' : ' days' ); }
           ?></div>
         </div>
       <?php endforeach; ?>
@@ -1074,7 +1116,7 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
         $meters[] = array( 'Campaign days', $spent, $allowed, 'A full production day — crew, direction and the edit that follows.' );
       }
       if ( $cap_allowed > 0 ) {
-        $meters[] = array( 'Captures', $cap_used, $cap_allowed, 'A short on-location visit to pick up footage, one operator with a gimbal.' );
+        $meters[] = array( 'Captures', $cap_used, $cap_allowed, 'A short visit to pick up footage while something is happening — one operator, in and out.' );
       }
       if ( $sh_allowed > 0 ) {
         $meters[] = array( 'Studio hours', $sh_used, $sh_allowed, 'Time in our studio, already lit and ready.' );
@@ -1105,7 +1147,12 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
 
   <!-- ── THE YEAR ──────────────────────────────────────────────────── -->
   <section class="rm-sec">
-    <h2 class="rm-h2">Your year</h2>
+    <h2 class="rm-h2"><?php echo $first_run ? 'What we are going to make' : 'Your year'; ?></h2>
+    <?php if ( $first_run ) : ?>
+      <p class="rm-yearlede">Your strategist wrote this arc for you. The order matters — each
+        campaign is built on the one before it — but <b>you choose when each one happens, where,
+        who is in it and what it says.</b> Nothing here is fixed except the thinking behind it.</p>
+    <?php endif; ?>
     <div class="rm-year">
       <?php foreach ( $campaigns as $c ) :
         $ca   = isset( $assets_by[ (int) $c->id ] ) ? $assets_by[ (int) $c->id ] : array();
@@ -1116,7 +1163,11 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
           <summary class="rm-camsum">
             <span class="rm-cmonth">Campaign <?php echo (int) $c->month_no; ?></span>
             <span class="rm-ctitle"><?php echo esc_html( $c->title ); ?></span>
-            <span class="rm-pill rm-p<?php echo (int) $step; ?>"><?php echo esc_html( mwm_rm_status_label( $c->status ) ); ?></span>
+            <?php if ( $first_run && ! empty( $bookable ) && (int) $c->id === (int) $bookable[0]->id ) : ?>
+              <span class="rm-pill rm-pstart">Start here</span>
+            <?php else : ?>
+              <span class="rm-pill rm-p<?php echo (int) $step; ?>"><?php echo esc_html( mwm_rm_status_label( $c->status ) ); ?></span>
+            <?php endif; ?>
           </summary>
           <div class="rm-cambody">
             <?php if ( $c->theme_desc ) : ?><p class="rm-ctheme"><?php echo esc_html( $c->theme_desc ); ?></p><?php endif; ?>
@@ -1246,6 +1297,25 @@ body.mwm-roadmap-page .content-area{max-width:1200px !important;width:100% !impo
   color:var(--cr);border-radius:9px;padding:11px 13px;font-size:13.4px;margin-bottom:16px;font-weight:560}
 .rm-lfoot{font-size:12.4px;color:var(--i3);margin-top:18px !important;line-height:1.55}
 
+
+
+/* first run — the welcome hero */
+.rm-hero{background:var(--pa);border:1px solid var(--ln);border-radius:14px;padding:26px 28px;box-shadow:var(--sh);
+  background-image:linear-gradient(180deg,color-mix(in srgb,var(--s1) 13%,var(--pa)) 0%,var(--pa) 42%)}
+html[data-theme="dark"] .rm-hero{background-image:linear-gradient(180deg,color-mix(in srgb,var(--s1) 40%,var(--pa)) 0%,var(--pa) 42%)}
+@media(max-width:620px){.rm-hero{padding:22px 18px}}
+.rm-heroh{font-size:28px;font-weight:680;letter-spacing:-.028em;line-height:1.16;max-width:22ch}
+@media(max-width:560px){.rm-heroh{font-size:23px}}
+.rm-heros{font-size:15.5px;color:var(--i2);line-height:1.62;margin-top:10px;max-width:60ch}
+.rm-comes,.rm-what{margin-top:18px;background:var(--p2);border:1px solid var(--ln);border-radius:11px;padding:15px 17px}
+html[data-theme="dark"] .rm-comes,html[data-theme="dark"] .rm-what{background:var(--su)}
+.rm-comes{border-left:3px solid var(--s3)}
+.rm-comesh,.rm-whath{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--i3);font-weight:680;margin-bottom:7px}
+.rm-comes p,.rm-what p{font-size:13.8px;color:var(--i2);line-height:1.62}
+.rm-comes b,.rm-what b{color:var(--ink)}
+.rm-yearlede{font-size:13.8px;color:var(--i2);line-height:1.62;margin-bottom:13px;max-width:74ch}
+.rm-yearlede b{color:var(--ink)}
+.rm-pstart{background:var(--gd);color:#fff}
 
 /* booking form */
 .rm-book-form{background:var(--pa);border:1px solid var(--ln);border-radius:12px;padding:20px 22px;box-shadow:var(--sh)}
