@@ -1,5 +1,10 @@
 # MWM ROADMAP™ CLIENT PORTAL — SPEC v0.6
 
+> 🔑 **`ROADMAP_Strategy.md` is the higher authority.** That document is the business
+> model — what a client buys, what it costs MWM, and the rules governing the exchange.
+> This one is how the portal implements it. **If the two disagree, the strategy wins
+> and this spec gets corrected.**
+
 **Author:** DEV · Aug 9 2026 · **Status:** prototype delivered, buildable
 **Prototype:** `roadmap-portal.html` (also a Cowork artifact: `roadmap-client-portal`)
 
