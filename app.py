@@ -18256,6 +18256,13 @@ def _calendar_write_selftest():
     _t.sleep(300)  # after boot settles
     sa = _get_calendar_sa_email() or "no-credential-env"
     try:
+        # BARE-SA-WRITE-OK: this self-test deliberately creates an event with NO
+        # attendees, so it needs no Domain-Wide Delegation. #80: that is exactly
+        # why its PASS must not be read as "the calendar is fine" — on Aug 11 it
+        # reported HEALTHY at 00:21 while the booking form was 403-ing on every
+        # attendee-carrying write. A diagnostic that disagrees with the thing it
+        # diagnoses is worse than none, so the message below now says what it
+        # actually proved.
         service = get_calendar_service()
         tz = pytz.timezone(TIMEZONE)
         start = (datetime.now(tz) + timedelta(days=1)).replace(hour=3, minute=0, second=0, microsecond=0)
@@ -18272,7 +18279,10 @@ def _calendar_write_selftest():
         _post_to_slack_async(
             SLACK_DEV_CHANNEL,
             f"\u2705 *CALENDAR WRITE SELF-TEST PASSED (S5.2)* \u2014 service account `{sa}` "
-            f"created + deleted a test event on the MWM CREATIONS calendar. Write path HEALTHY. "
+            f"created + deleted a test event on the MWM CREATIONS calendar. "
+            f"Basic write path HEALTHY. \u26a0\ufe0f This test creates NO attendees, so it does "
+            f"NOT prove invites work \u2014 attendee writes need Domain-Wide Delegation and fail "
+            f"separately (see `booking_form.gcal_no_attendee` / `studio_booking.gcal_no_attendee`). "
             f"P1 calendar item: root cause resolved; close after next real booking succeeds.",
         )
     except Exception as e:
@@ -19555,11 +19565,60 @@ def booking_form_submit():
         return jsonify({"ok": False, "message": "The Event Rail refused this booking.",
                         "errors": [str(_hx)[:300]]}), 400
 
+    # ── PATCH #80 — the third instance of the SAME defect ───────────────
+    # "Service accounts cannot invite attendees without Domain-Wide
+    # Delegation of Authority." DWD has been granted to this service
+    # account the whole time; Google only honours it when the code
+    # IMPERSONATES a user. `book_appointment` does. The studio-booking
+    # webhook did not until #69. THIS form — #50A — was never touched by
+    # #69, and it is the one Michael actually types into.
+    #
+    # It also failed in the worst possible way: `require_attendee=True`
+    # guarantees an attendee is on the body, so the insert was guaranteed
+    # to 403, and the handler returned "nothing created". Michael got a
+    # red box and an empty calendar.
+    #
+    # #69's ruling applies here verbatim: the event is what protects the
+    # studio from being double-booked; the invite is a courtesy. If only
+    # one can survive, it is the event.
+    _bf_delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
     try:
-        _svc = get_calendar_service()
-        _created = _svc.events().insert(
-            calendarId=CALENDAR_ID, body=_body, sendUpdates="none"
-        ).execute(num_retries=3)
+        _svc = (get_calendar_service(impersonate=_bf_delegate)
+                if _bf_delegate else get_calendar_service())
+    except Exception as _bf_dwd_err:
+        # Only the delegation-config errors fall back. Anything else must raise.
+        if ("unauthorized_client" in str(_bf_dwd_err)
+                or "invalid_grant" in str(_bf_dwd_err)):
+            print(f"[BOOK-FORM] delegation unavailable ({_bf_dwd_err}) — "
+                  f"falling back to the bare service account")
+            _svc = get_calendar_service()
+        else:
+            raise
+
+    _bf_degraded = ""
+    try:
+        try:
+            _created = _svc.events().insert(
+                calendarId=CALENDAR_ID, body=_body, sendUpdates="none"
+            ).execute(num_retries=3)
+        except Exception as _bf_first:
+            if not is_attendee_permission_error(_bf_first):
+                raise
+            _bf_degraded = "no Domain-Wide Delegation on the booking service account"
+            print("[BOOK-FORM] attendee insert refused — retrying without attendees "
+                  "so the slot is still blocked")
+            _bf_retry = strip_attendees(_body)
+            _bf_retry["description"] = ((_bf_retry.get("description") or "")
+                                        + "\n\n" + attendee_fallback_note(_c["email"]))
+            _created = _svc.events().insert(
+                calendarId=CALENDAR_ID, body=_bf_retry, sendUpdates="none"
+            ).execute(num_retries=3)
+            _report_error(
+                "booking_form.gcal_no_attendee",
+                "Booking form created the event WITHOUT the client as attendee — "
+                "the service account could not invite. The studio time IS blocked; "
+                "the client has NOT been invited and no RSVP can be read.",
+                f"title={_title}")
     except Exception as _cx:
         _report_error("booking_form.insert", _cx, f"title={_title}")
         return jsonify({"ok": False, "message": "Calendar write failed — nothing created.",
@@ -19657,10 +19716,19 @@ def booking_form_submit():
         except Exception:
             pass
 
+    # #80: if the invite was dropped, SAY SO on the success screen. A booking
+    # that silently lost its attendee reads as fully wired and is not — that
+    # is how Marcia and Vanessa sat for weeks as "no-attendee" events.
+    if _bf_degraded:
+        _issues = list(_issues or []) + [
+            "Client was NOT invited — " + _bf_degraded + ". The studio time is "
+            "blocked and the event exists, but there is no invite and no RSVP "
+            "to read. Send the client a note yourself."]
     return jsonify({
         "ok": True, "event_id": _eid, "link": _link,
         "title": _title, "when": _when, "location": _loc,
         "confirmations": _conf, "lead": _lead_note,
+        "attendee_dropped": bool(_bf_degraded),
         "issues": _issues,
     }), 200
 

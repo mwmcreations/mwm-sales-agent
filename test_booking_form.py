@@ -597,6 +597,76 @@ for bad in ["secret", "token", "pin", "password", "api_key"]:
     ok(bad not in d.lower(), "the description carries no {!r}".format(bad))
 
 
+section("PATCH #80 — no calendar WRITE may use a bare service account")
+# "Service accounts cannot invite attendees without Domain-Wide Delegation of
+# Authority." DWD has been granted the whole time; Google honours it only when
+# the code IMPERSONATES a user. This exact defect has now shipped THREE times:
+#   book_appointment          — always impersonated, always worked
+#   studio-booking webhook    — did not, fixed by #69
+#   /book/submit (this form)  — did not, fixed by #80, and it is the one
+#                               Michael types into himself
+# app.py cannot be imported in a harness (Flask + Google libs), so this is a
+# SOURCE scan — the same tactic #62 used for the arity bug, and for the same
+# reason: the only versions of this rule that ever held were executable ones.
+import os as _os
+import re as _re
+
+_APP = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "app.py")
+_src = open(_APP, encoding="utf-8").read()
+_lines = _src.split("\n")
+
+# Every line that performs a calendar INSERT, and the service it uses.
+# A bare service account is legitimate in exactly two shapes:
+#   (a) the write carries NO attendees  -> marked `BARE-SA-WRITE-OK:` with a reason
+#   (b) it is the narrow fallback AFTER an impersonating attempt failed
+# Anything else is instance #4 of this bug, and this test is here to make the
+# next one fail in CI instead of in Michael's browser.
+_bare_writes = []
+for _i, _ln in enumerate(_lines):
+    _m = _re.search(r"(\w+)\s*\.events\(\)\.insert\(", _ln)
+    if not _m:
+        continue
+    _var = _m.group(1)
+    # Scope the check to the ENCLOSING FUNCTION, not an arbitrary line window.
+    # A 60-line window said book_appointment was bare; its impersonating call
+    # is 196 lines up, in the same function. The function is the honest unit.
+    _fn_start = 0
+    for _k in range(_i, -1, -1):
+        if _re.match(r"^\s{0,4}def\s", _lines[_k]):
+            _fn_start = _k
+            break
+    _window = "\n".join(_lines[_fn_start:_i + 1])
+    if "impersonate" in _window:
+        continue                      # impersonating primary, or its fallback
+    if "BARE-SA-WRITE-OK:" in _window:
+        continue                      # declared attendee-free, with a reason
+    _bare_writes.append((_i + 1, _ln.strip()[:80]))
+
+ok(not _bare_writes,
+   "every calendar insert either impersonates or is a declared attendee-free write"
+   + ("" if not _bare_writes else " -> " + str(_bare_writes)))
+
+ok(_src.count("BARE-SA-WRITE-OK:") == 1,
+   "exactly one write is declared attendee-free (the S5.2 self-test)")
+ok("NOT prove invites work" in _src,
+   "the self-test no longer reports plain HEALTHY — it says what it did not test")
+
+
+# And pin the specific site that broke today, by name.
+_bf = _src.find("PATCH #80")
+ok(_bf != -1, "the booking form carries the #80 fix")
+_bf_block = _src[_bf:_bf + 3000] if _bf != -1 else ""
+ok("GOOGLE_DELEGATE_EMAIL" in _bf_block,
+   "the booking form reads GOOGLE_DELEGATE_EMAIL — the same env var #69 uses")
+ok("impersonate=_bf_delegate" in _bf_block,
+   "the booking form actually impersonates when a delegate is configured")
+ok("is_attendee_permission_error" in _bf_block and "strip_attendees" in _bf_block,
+   "if the invite is still refused it degrades to an event WITHOUT attendees")
+ok("unauthorized_client" in _bf_block and "invalid_grant" in _bf_block,
+   "only delegation-config errors fall back — anything else raises")
+ok("attendee_dropped" in _src,
+   "a dropped invite is reported to the person who filled the form, not hidden")
+
 print("\n" + "=" * 60)
 print("  BOOKING FORM (#50): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 60)
