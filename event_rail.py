@@ -3040,6 +3040,12 @@ class Tally:
 TALLY = Tally()
 
 
+# Above this many consecutive already-known inbounds with zero rows
+# attempted, "nobody new happened to write in" stops being a credible
+# explanation. ERIC's real report was 12.
+LEAD_ROW_GATE_SUSPECT_AT = 10
+
+
 def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
     """Turn the four counters into a plain-English reading. -> (state, why)
 
@@ -3057,9 +3063,25 @@ def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
     if failed:
         return "degraded", "some lead-row writes are failing; read `last` for the error"
     if attempted == 0 and gate_not_new:
-        return "never_attempted", ("no row was ever ATTEMPTED — every inbound was "
-                                   "treated as an already-known sender, so the "
-                                   "in-memory gate is the cause, not the write")
+        # S84: before #76 this state had exactly one meaning — the gate was
+        # broken. After #76 it has TWO, and they look identical from here:
+        # (a) the gate is working and every inbound really was a returning
+        # sender, or (b) the gate is broken again. Reporting (a) in the
+        # language of (b) is the failure this project keeps paying for:
+        # a known miss and a never-attempted must not look alike, and a
+        # diagnostic that asserts a cause it cannot see is worse than none.
+        if gate_not_new >= LEAD_ROW_GATE_SUSPECT_AT:
+            return "suspect_gate", (
+                f"{gate_not_new} inbound(s) and NOT ONE was treated as new. At "
+                f"this volume that is improbable — suspect the durable "
+                f"first-inbound set (#76), not the Sheets write. This is the "
+                f"shape of ERIC's 12-conversations-zero-rows report.")
+        return "all_returning", (
+            f"{gate_not_new} inbound(s), each from a sender we had already "
+            f"heard from, so no row was due. Nothing is known to be wrong. "
+            f"This does NOT prove the first-inbound gate works — that needs "
+            f"one genuinely NEW sender, and none has written in yet. Read it "
+            f"again after {LEAD_ROW_GATE_SUSPECT_AT} inbounds.")
     if attempted == 0:
         return "idle", "no inbound leads since this process started"
     if created:

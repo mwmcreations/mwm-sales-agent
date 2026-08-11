@@ -1774,9 +1774,9 @@ check_true("all writes failing reads as broken",
            lead_row_verdict(created=0, failed=5)[0] == "broken")
 check_true("some writes failing reads as degraded",
            lead_row_verdict(created=3, failed=1)[0] == "degraded")
-check_true("nothing attempted but traffic seen blames the GATE, not the write",
+check_true("a HIGH count of all-returning inbounds still blames the GATE",
            lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=12)[0]
-           == "never_attempted")
+           == "suspect_gate")
 check_true("no traffic at all is idle, not broken",
            lead_row_verdict()[0] == "idle")
 check_true("rows being written reads ok",
@@ -1788,9 +1788,29 @@ check_true("every verdict explains itself", all(
     [(0, 5, 0, 0), (3, 1, 0, 0), (0, 0, 0, 12), (0, 0, 0, 0), (4, 0, 0, 0), (0, 0, 6, 0)]))
 
 # Eric's actual observation, expressed as the reading it should now produce.
-check_true("ERIC's 12-conversations-zero-rows case is diagnosable",
+check_true("ERIC's 12-conversations-zero-rows case is still diagnosable",
            lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=12)[0]
-           == "never_attempted")
+           == "suspect_gate")
+
+# S84: the reading that sent me chasing a ghost on Aug 10. Two inbounds, both
+# returning, zero rows — post-#76 that is the HEALTHY shape, and the old text
+# called it "never_attempted … the gate is the cause". A quiet night must not
+# wear the same words as a broken gate.
+check_true("a QUIET night reads as all_returning, not as a broken gate",
+           lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=2)[0]
+           == "all_returning")
+check_false("...and a quiet night is never reported as suspect",
+            lead_row_verdict(0, 0, 0, 2)[0] == "suspect_gate")
+check_true("the quiet reading SAYS it is not proof the gate works",
+           "does NOT prove" in lead_row_verdict(0, 0, 0, 2)[1])
+check_true("the suspect reading names the durable set, not the old in-memory one",
+           "first-inbound set" in lead_row_verdict(0, 0, 0, 12)[1])
+check_true("the boundary is inclusive — exactly the threshold escalates",
+           lead_row_verdict(0, 0, 0, 10)[0] == "suspect_gate")
+check_true("one below the threshold does not escalate",
+           lead_row_verdict(0, 0, 0, 9)[0] == "all_returning")
+check_true("a single created row outranks any gate count",
+           lead_row_verdict(created=1, gate_not_new=99)[0] == "ok")
 check_false("...and is NOT mistaken for a broken writer",
             lead_row_verdict(0, 0, 0, 12)[0] == "broken")
 
