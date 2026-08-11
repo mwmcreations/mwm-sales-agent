@@ -54,3 +54,23 @@ diagnoses is worse than none.*
 `https://mwmcreations.com/roadmap-portal/` — page **1202**, slug `roadmap-portal`,
 content is the single shortcode `[mwm_roadmap_portal]`.
 MWM-side confirm/decline: **wp-admin → ROADMAP requests**.
+
+## Aug 11 · 20:35 — live IDs after Patch #90
+
+| ID | snippet | state |
+|---|---|---|
+| 28 | schema v1.2.0 | active |
+| 34 | seed Zerlotini Brothers v3 | active |
+| 40 | hold sweep (24h nudge, 48h release) | active |
+| 42 | seed Dr Luiz Bolfer | active |
+| **51** | **Portal v1.4.0 — a confirmed day reaches a calendar** | **active** |
+| 24 | one-shot bootstrap | inactive |
+| 44, 48 | Portal v1.3.0, v1.3.1 | inactive — superseded by 51 |
+| 46, 47, 49, 50, 52 | ZZ temps | inactive, safe to trash |
+
+🔴 **A temp snippet must be `scope: admin`, and it must claim its run before it does
+any work.** Snippet 49 was global scope and POSTed without a nonce; `check_admin_referer()`
+calls `wp_die()`, so *every page of wp-admin* returned "The link you followed has expired"
+— the whole admin was unusable and the cause looked like a WordPress nonce bug, not like
+a snippet. Recovery is `?snippets-safe-mode=true` on any admin URL, which loads the
+Snippets screen with no snippets running so the offender can be switched off.
