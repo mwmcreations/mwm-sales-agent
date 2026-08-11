@@ -3117,6 +3117,81 @@ def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
 
 STUDIO_FLOOR_USD = 249      # the rate card. Nothing exists below it.
 
+# ══════════════════════════════════════════════════════════════════════
+# S84 · THE FLOOR IS SOURCE-CONDITIONAL
+#
+# Michael, Aug 10: "The real floor is 249, but we are having a campaign
+# right now for 349 — so if they're leads coming from that campaign, the
+# floor is 349 because of that specific campaign."
+#
+# A lead who arrived on a $349 promise and is then qualified at $249
+# undercuts the campaign's own economics. A referral or a walk-in has
+# made no such promise and is held to the rate card.
+#
+# 🔑 MATT's ticket said the blocker was that the lead record carries no
+# campaign attribution. That is not what the code says. `ad_id`,
+# `utm_campaign`, `ctwa_clid` and `ad_referral` have been captured at
+# inbound time since S27 — on BOTH the WhatsApp and Instagram legs — and
+# they sit on lead_data right now. What was missing was never the capture.
+# It was that nothing ever READ them: the floor was a module constant, and
+# #pipeline printed the channel without the campaign.
+# Verify the object, not the label — including when the label is a ticket.
+# ══════════════════════════════════════════════════════════════════════
+
+CAMPAIGN_FLOOR_USD = 349    # the live campaign's own promise
+
+
+def is_campaign_sourced(ad_id=None, utm_campaign=None, ad_referral=False):
+    """True when this lead is attributable to a paid ad.
+
+    Any ONE of the three is enough. They come from different Meta payload
+    shapes (WhatsApp sends `source_id`, Instagram sends `ad_id` inside
+    `referral`, and `ad_referral` is our own flag set when either fired),
+    so requiring agreement between them would silently drop leads whose
+    payload carried only one.
+    """
+    if bool(ad_referral):
+        return True
+    for v in (ad_id, utm_campaign):
+        if str(v or "").strip():
+            return True
+    return False
+
+
+def applicable_floor(ad_id=None, utm_campaign=None, ad_referral=False):
+    """The dollar floor THIS lead must clear.
+
+    Campaign-sourced leads are held to the campaign's number; everyone
+    else to the rate card. Returns an int so it reads cleanly in the
+    refusal copy Maya speaks aloud.
+    """
+    if is_campaign_sourced(ad_id, utm_campaign, ad_referral):
+        return CAMPAIGN_FLOOR_USD
+    return STUDIO_FLOOR_USD
+
+
+def attribution_line(ad_id=None, utm_campaign=None, utm_source=None):
+    """One line naming the ad that produced this lead, or "" if organic.
+
+    Goes on the #pipeline record. Michael's complaint was that every entry
+    read `Source: Instagram DM` whether the lead came from the $349
+    campaign, an organic DM or a referral — indistinguishable at a glance,
+    and he was reading each thread by hand to tell them apart.
+    """
+    camp = str(utm_campaign or "").strip()
+    aid = str(ad_id or "").strip()
+    src = str(utm_source or "").strip()
+    if not (camp or aid):
+        return ""
+    bits = []
+    if camp:
+        bits.append(camp)
+    if aid:
+        bits.append(f"ad_id {aid}")
+    if src and src.lower() not in ("ad", "ads"):
+        bits.append(src)
+    return "Campaign: " + " · ".join(bits)
+
 # Roles that may be invited in person.
 STUDIO_ROLES_ALLOWED = {
     "owner_founder",

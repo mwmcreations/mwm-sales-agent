@@ -1996,5 +1996,58 @@ check_true("suppression is per-IGSID — a different lead still gets its alert",
 
 print("\nPATCH77_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+
+print("\n== S84: the floor is source-conditional ($249 base / $349 campaign) ==")
+from event_rail import (is_campaign_sourced as _cs, applicable_floor as _af,
+                        attribution_line as _al, CAMPAIGN_FLOOR_USD,
+                        STUDIO_FLOOR_USD as _BASE)
+
+check_false("no attribution at all is not campaign-sourced", _cs())
+check_false("empty strings are not attribution", _cs(ad_id="", utm_campaign=""))
+check_true("an ad_id alone is enough — IG sends it inside referral",
+           _cs(ad_id="120249808207780738"))
+check_true("a campaign name alone is enough",
+           _cs(utm_campaign="STUDIO $349 AUG"))
+check_true("the ad_referral flag alone is enough — WA payloads carry only it",
+           _cs(ad_referral=True))
+check_true("whitespace is not attribution", not _cs(ad_id="   "))
+
+check_true("an organic lead is held to the rate card", _af() == _BASE == 249)
+check_true("a campaign lead is held to the campaign's own promise",
+           _af(ad_id="120249808207780738") == CAMPAIGN_FLOOR_USD == 349)
+check_true("the flag alone lifts the floor", _af(ad_referral=True) == 349)
+check_true("a referral or walk-in stays at 249", _af(utm_campaign="  ") == 249)
+
+# Joseph Joel Hernandez consumed a studio hour and a founder hour on Aug 10.
+# Michael's rule exists to stop that, and could only ever fire on 249.
+check_true("a $300 budget CLEARS the base floor",
+           _af() == 249 and 300 >= _af())
+check_false("...but the SAME $300 does NOT clear the campaign floor",
+            300 >= _af(ad_id="120249808207780738"))
+
+check_true("attribution line is empty for an organic lead", _al() == "")
+check_true("attribution names the campaign when we have it",
+           "STUDIO $349 AUG" in _al(utm_campaign="STUDIO $349 AUG"))
+check_true("attribution names the ad_id when that is all we have",
+           "ad_id 120249808207780738" in _al(ad_id="120249808207780738"))
+check_true("both are named together when both exist",
+           _al(ad_id="123", utm_campaign="AUG") == "Campaign: AUG · ad_id 123")
+check_false("the redundant source word 'ad' is not repeated back",
+            "ad" == _al(ad_id="123", utm_source="ad").split("· ")[-1])
+
+# The gates must actually USE the resolved floor, not the module constant.
+from event_rail import studio_visit_verdict as _svv2, strategy_call_verdict as _scv2
+_ok249, _ = _svv2(role="owner_founder", business="Acme", stated_budget=300, floor=249)
+_ok349, _why349 = _svv2(role="owner_founder", business="Acme", stated_budget=300, floor=349)
+check_true("an owner_founder with $300 passes at the base floor", _ok249)
+check_false("the same owner_founder with $300 is refused at the campaign floor", _ok349)
+check_true("the refusal quotes the CAMPAIGN number, not the rate card",
+           "$349" in _why349)
+_okc, _whyc = _scv2(role="owner_founder", business="Acme", stated_budget=300, floor=349)
+check_false("the founder call honours the campaign floor too", _okc)
+check_true("that refusal also quotes $349", "$349" in _whyc)
+
+print("\nPATCH79_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

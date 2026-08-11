@@ -947,6 +947,37 @@ def _post_pipeline_event(event_type, lead_name="", lead_phone="", source="",
     _digits = re.sub(r"\D", "", lead_phone or "")
     phone_display = f"***{_digits[-4:]}" if len(_digits) >= 4 else lead_phone or "N/A"
 
+    # S84: name the AD, not just the channel. Michael, Aug 10: every entry
+    # read "Source: Instagram DM" whether the lead came from the $349
+    # campaign, an organic DM or a referral — so he was opening each thread
+    # by hand to tell them apart, which is exactly the manual loop the
+    # pipeline record exists to remove. The attribution has been on the lead
+    # record since S27; it had simply never been printed.
+    _src_display = source or "N/A"
+    try:
+        _pl_attr = {}
+        for _k in (lead_phone or "", f"instagram:{lead_phone or ''}",
+                   f"whatsapp:{lead_phone or ''}"):
+            _cand = lead_data.get(_k)
+            if isinstance(_cand, dict) and (_cand.get("ad_id")
+                                            or _cand.get("utm_campaign")):
+                _pl_attr = _cand
+                break
+        _attr_line = event_rail.attribution_line(
+            ad_id=_pl_attr.get("ad_id"),
+            utm_campaign=_pl_attr.get("utm_campaign"),
+            utm_source=_pl_attr.get("utm_source"),
+        )
+        if _attr_line:
+            _floor_here = event_rail.applicable_floor(
+                ad_id=_pl_attr.get("ad_id"),
+                utm_campaign=_pl_attr.get("utm_campaign"),
+                ad_referral=_pl_attr.get("ad_referral"),
+            )
+            _src_display = f"{_src_display} · {_attr_line} · floor ${_floor_here}"
+    except Exception:
+        pass   # attribution is a nice-to-have; never break the pipeline post
+
     blocks = [
         {
             "type": "header",
@@ -957,7 +988,7 @@ def _post_pipeline_event(event_type, lead_name="", lead_phone="", source="",
             "fields": [
                 {"type": "mrkdwn", "text": f"*Lead:* {lead_name or 'Unknown'}"},
                 {"type": "mrkdwn", "text": f"*Phone:* {phone_display}"},
-                {"type": "mrkdwn", "text": f"*Source:* {source or 'N/A'}"},
+                {"type": "mrkdwn", "text": f"*Source:* {_src_display}"},
                 {"type": "mrkdwn", "text": f"*Assigned:* {agents_str}"},
             ]
         },
@@ -4798,6 +4829,17 @@ def studio_visit_gate(tool_input, sender):
     """
     declined = bool((lead_data.get(sender) or {}).get("budget_declined")) if sender else False
 
+    # S84: the floor is source-conditional. `ad_id` / `utm_campaign` /
+    # `ad_referral` have been on the lead record since S27 — nothing had
+    # ever read them, so a lead who arrived on the $349 campaign was being
+    # qualified at $249 and the campaign undercut its own economics.
+    _attr = (lead_data.get(sender) or {}) if sender else {}
+    _floor = event_rail.applicable_floor(
+        ad_id=_attr.get("ad_id"),
+        utm_campaign=_attr.get("utm_campaign"),
+        ad_referral=_attr.get("ad_referral"),
+    )
+
     # PATCH #75 — a CALL is gated too, at a lower bar. #74 kept unqualified
     # leads out of the studio and left them landing on Michael's calendar
     # instead, which is the only diary that cannot be cloned. Michael, the
@@ -4808,6 +4850,7 @@ def studio_visit_gate(tool_input, sender):
             business=tool_input.get("lead_business"),
             stated_budget=tool_input.get("stated_budget"),
             budget_declined=declined,
+            floor=_floor,
         )
         if ok:
             return None
@@ -4836,6 +4879,7 @@ def studio_visit_gate(tool_input, sender):
         business=tool_input.get("lead_business"),
         stated_budget=tool_input.get("stated_budget"),
         budget_declined=declined,
+        floor=_floor,
     )
 
     # Remember a stated sub-floor number FOREVER. Dondrique came back eight
@@ -4843,7 +4887,7 @@ def studio_visit_gate(tool_input, sender):
     try:
         stated = tool_input.get("stated_budget")
         if (not ok and stated is not None and sender and sender in lead_data
-                and float(stated) < float(event_rail.STUDIO_FLOOR_USD)):
+                and float(stated) < float(_floor)):
             lead_data[sender]["budget_declined"] = True
     except (TypeError, ValueError):
         pass
