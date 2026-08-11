@@ -198,7 +198,51 @@ instead of crammed into one production day.
   cancellation wearing a costume.
 - **Renewal window:** in the final 60 days, open the valve on everything unused. It
   turns *"we paid for 12 and used 9"* from a renewal argument into a favour.
-  🔴 **Z Brothers renew 14 Nov with 0 of 12 studio hours used.**
+  🔴 **Z Brothers renew 14 Nov with 11 of 12 studio hours unused.**
+
+### 7.1 · 🔴 What happens to unused campaigns at the end of a year
+
+**Michael's ruling, Aug 11.** There are two paths and they are deliberately unequal,
+because the inequality is the point.
+
+| | What happens to the unused balance |
+|---|---|
+| **They renew** | **It carries over** into the new contract year. |
+| **They do not renew** | **30 days' grace** to use what is left. Then it is gone. |
+
+> *"That way we don't have to stay a full 30 days of the grace period where they have
+> no contract — they are just trying to use the remaining of what they have and they
+> are not even paying for that extra month. So it makes more sense that right away
+> after the contract is done he starts a new contract paying for that following
+> month, and we just carry over."*
+
+🔑 **Carryover is not generosity, it is the renewal incentive.** A grace period is a
+month where MWM is producing and nobody is paying. Carryover converts that month into
+a paid one and makes renewing the obviously better option. **DEV proposed the
+opposite — no carry, on pipeline grounds — and was overruled correctly: that answer
+protected production and ignored the revenue shape entirely.**
+
+⚠️ **The one thing to watch.** Carryover compounds if a client under-uses two years
+running. One year in hand is absorbable; a client arriving at year three with nine
+banked campaigns is owed twenty-one in twelve months, which cannot be built. **No cap
+is set today** — flag it before the second renewal that carries a balance.
+
+### 7.2 · 🔴 A banked campaign is the campaign, not the date
+
+Nothing expires inside a contract year, and unfilmed campaigns bank. But the promise
+has an edge, and the edge is §5: **the pipeline is serial.**
+
+> *"They are yours and they don't expire. They are scheduled one at a time, in order."*
+
+🔑 **Banking does not add work — it CONCENTRATES it.** Twelve campaigns still cost
+twelve campaigns; what changes is that some of them slide into a shorter window that
+already holds the others. **A lumpy year is precisely what a serial pipeline cannot
+absorb.** So when a client is behind, the urgency is real and it is **not expiry, it
+is throughput** — nothing they are owed disappears, but MWM's ability to deliver it
+all in the time remaining does.
+
+**Banked campaigns sit in the normal status ladder as `planned`, never as a credit
+note** — visibly in the year, in order, behind whatever is ahead of them.
 
 **A campaign is spent on the shoot day** (Michael), and also by a no-show or a move
 inside the notice window — the crew day was committed either way.
@@ -343,6 +387,7 @@ mostly presentation.
 | 2 | Is **10 working days** genuinely acceptable to a builder's handover window? | The entire batching model (§6) |
 | 3 | Where is the line for a **crewed short shoot** needing direction — Capture, campaign day, or paid add-on? | §6 |
 | 4 | Does the **flex-bucket choice** apply mid-contract or only at renewal? | §4 |
+| ~~8~~ | ~~What happens to unused campaigns at the end of a year?~~ **ANSWERED Aug 11 — §7.1: carry over on renewal, 30 days' grace if not.** | — |
 | 5 | Are the **proposed edit-day budgets** (30/15/60) right? | §4 |
 | 6 | Do the **edit-day estimates hold by scope** — is an institutional always 3, or 3 small / 5 large? | §3 — if it varies, the client's meter must be an estimate that moves |
 | 7 | How is **Enterprise** actually sold, given "unlimited" is governed by §5? | §4 |

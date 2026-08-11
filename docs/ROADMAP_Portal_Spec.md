@@ -21,6 +21,11 @@ See §7.
 mirrors the notice rules; 48h hold expiry; Sundays closed. Real ROADMAP client
 roster read from Stripe (§9). Phase 1 shipped to the repo:
 `wordpress/snippet-20-roadmap-schema.php`.
+**v0.7** (Michael, Aug 11 pm): **ONE portal, tiered** — §11. Studio clients log
+into the same portal and see a ROADMAP panel; this SUPERSEDES both the v0.5 "same
+login" note and the short-lived "keep them completely separate" ruling. Also:
+carryover on renewal (Strategy §7.1), the client-facing word is **campaign** never
+"month", and phase 5 pre-scheduling shipped — §6 is now built, not proposed.
 **v0.6** (Michael, Aug 11): the ALLOWANCE MODEL — §10. Campaign vs Capture vs
 studio hour, the scheduling-latitude ladder, the one-way conversion valve, and the
 ruling that the portal is a PLANNING SURFACE rather than a status page. Also locked:
@@ -321,13 +326,13 @@ booked.
 ## 8 · Open questions for Michael
 1. **Who maintains it?** LARA owns deliverables today. Portal should not create
    a second place to update, or it will rot. Sync or hand over — pick one.
-2. **Language.** Z Brothers' roadmap is in Portuguese; the portal chrome is
-   English. Per-client language flag?
-3. **Do ROADMAP clients also get studio hours?** If yes, one login must show
-   both, and hours belong on this portal too.
-4. Should the client see the *whole* year up front, or only campaigns already
-   agreed? (Prototype shows the whole year — it demonstrates the value of the
-   plan they bought.)
+2. ~~**Language.**~~ **CLOSED (Michael, Aug 11): English, 100%, everybody.** The
+   `language` column is dead weight — harmless, left in place.
+3. ~~**Do ROADMAP clients also get studio hours?**~~ **CLOSED — yes, and it went
+   further: ONE portal for both products, see §11.** The roadmap portal reads the
+   studio ledger for the hours figure; it never stores it.
+4. ~~Whole year up front?~~ **CLOSED (Michael, Aug 11): the full year, always.**
+   *"The client needs to be able to see the full picture for their contract."*
 5. **Reschedule policy for on-location shoots** — §6.5. Needs a written rule
    before the confirm button goes live.
 7. **Hold expiry** — how long does an unconfirmed pre-schedule hold a day before
@@ -533,3 +538,80 @@ must carry:
    or a paid add-on. **Confirm the line.**
 4. Does the flex-bucket choice (§10.7) apply to existing contracts mid-term, or
    only at renewal?
+
+
+---
+
+## 11 · ONE PORTAL, TIERED — the ruling that supersedes §3's login note  🔑 *new in v0.7*
+
+**Michael settled this in three steps on Aug 11, and only the third is live:**
+
+1. *(morning)* ROADMAP clients get studio hours on the same login.
+2. *(early afternoon)* *"The studio portal must be completely different from the
+   roadmap client portal."*
+3. 🔴 **(afternoon — LIVE):** *"Even the studio clients only have access to this
+   larger portal, and we put like a roadmap-client-only [section] for the other
+   features so they can see the other features. This is an amazing upsell
+   opportunity for the studio clients."*
+
+⇒ **One portal. Two tiers of content. Do not build a second portal.**
+
+### 11.1 · Why this is the right call
+
+The 12 studio clients are the warmest ROADMAP prospects that exist: they already pay,
+already trust the room, and already know what the work feels like. Today the only
+thing that ever pitches them is Michael remembering to. **A portal they open anyway
+pitches them every time, at zero marginal cost.** It also collapses two builds into
+one — two portals means every future feature is built twice and then drifts.
+
+### 11.2 · 🔴 The rule that makes or breaks it
+
+**Never render a client's own year as empty boxes with padlocks on them.**
+
+That is the Bolfer failure exactly: twelve empty months is not aspiration, it is
+twelve reminders that nothing has happened — and inside a product the client already
+pays for, it reads as a paywall. It also makes the thing they *do* have feel like the
+consolation prize.
+
+**Instead:** show their own product first and in full, then one panel that presents
+ROADMAP as *a real thing* — a complete example year, a real client's real numbers —
+with **their own hours shown as already included in it** rather than set against it.
+The upgrade is framed as more of what they already like, because that is what it is.
+
+### 11.3 · What the panel carries
+
+- **Their own arithmetic** — *"You've booked 3 sessions and have 8 hours left to use
+  by 1 November"* — because a number they recognise beats a claim they don't.
+- **A complete 12-campaign arc**, so they see a whole year rather than their empty one.
+- **Proof from a real client**: 101 films · 8 production days · 1 day a month.
+- **What's included**, with studio hours ticked as *already yours*.
+- **One low-pressure action.** Not a checkout — a conversation.
+
+### 11.4 · 🔴 The Script Generator is the exclusive hook, and it is NOT on the panel yet
+
+Michael: *"the script generator tool… this is only available for roadmap clients."*
+It is the strongest ROADMAP-only feature there is. **It stays off the upsell panel
+until it exists** — advertising it to a paying client is a promise that comes due the
+day they upgrade.
+
+🔑 **Build the half with no strategic downside first.** Strategy §10 already
+establishes that *a script has a runtime, and runtime converts to shoot time*. A tool
+that prices a script in minutes-on-the-floor — *"this runs about 3:20; with two setups
+and B-roll, roughly two hours of your day"* — is real, useful, exclusive, and
+**generates nothing**, so it sidesteps §10.2 entirely (*if the client can generate
+their own scripts, what are they paying $2,497/mo for?*). The generative half ships
+last, as the strategy says.
+
+---
+
+## 12 · Client-facing vocabulary  🔑 *new in v0.7*
+
+🔴 **The unit is a CAMPAIGN. The word "month" must not appear in anything a client
+reads.** Michael, Aug 11: *"let's talk about campaigns and not months."*
+
+`month_no` stays as the column name — it is internal ordering. But every rendered
+string says **Campaign 9 · Realtor Partner Series**, never "Month 9". "Month" quietly
+re-anchors a client on one-video-a-month, which is the exact disease the word
+"campaign" exists to cure (Strategy §1). Swept on Aug 11 across the form, the option
+labels, the year list, the empty states, the attention cards, the admin screen and the
+notification email.
