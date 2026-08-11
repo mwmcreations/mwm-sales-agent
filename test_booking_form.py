@@ -25,7 +25,8 @@ from event_rail import (
     BILLING, BILLING_ORDER, CONFIRMATION_PLAN,
     billing_options_for, billing_is_asked, BILLING_CONSULTATION,
     booking_title, booking_kind, booking_needs_address,
-    relationship_sells, relationship_from_description,
+    relationship_sells, relationship_from_description, relationship_of_event,
+                        booking_private_props, harden_event_body,
     relationship_in_pipeline, relationship_converted,
     booking_description, validate_booking, booking_location,
     slot_conflicts, day_is_free, slot_runs_past_midnight,
@@ -35,6 +36,14 @@ from event_rail import (
 )
 
 PASS = FAIL = 0
+
+
+def _rec(**kw):
+    """S87: the internal record now lives in extendedProperties.private,
+    not in the description the client reads. These tests follow it there."""
+    from event_rail import booking_private_props
+    return {"extendedProperties": {"private": booking_private_props(**kw)}}
+
 
 
 def ok(cond, label):
@@ -175,17 +184,23 @@ ok(not relationship_sells("anything_else"), "an unknown value fails closed")
 
 d = booking_description("Enzo", "e@x.com", type_key="location_shoot",
                         relationship="existing_client", billing="paid", amount="$2,400")
-ok(relationship_from_description(d) == "existing_client",
+d_rec = _rec(type_key="location_shoot", relationship="existing_client",
+             billing="paid", amount="$2,400")
+ok(relationship_of_event(d_rec) == "existing_client",
    "the relationship survives a write/read round trip")
-ok("Sales rail: OFF" in d, "a non-selling relationship says so in plain words")
-ok(not relationship_sells(relationship_from_description(d)),
+ok(d_rec["extendedProperties"]["private"]["sales_rail"] == "off",
+   "a non-selling relationship is recorded as sales_rail=off")
+ok(not relationship_sells(relationship_of_event(d_rec)),
    "reading it back still refuses to sell")
+ok("Sales rail" not in d and "existing_client" not in d,
+   "S87: and NONE of that reaches the description the client reads")
+ok("$2,400" not in d, "S87: the client never sees what they were charged, either")
 
-d2 = booking_description("Someone", "s@x.com", type_key="studio_visit",
-                         relationship="new_lead", billing="paid")
-ok(relationship_from_description(d2) == "new_lead", "a new lead round-trips")
-ok("Sales rail: OFF" not in d2, "a real prospect is not marked off")
-ok(relationship_sells(relationship_from_description(d2)), "and may be sold to")
+d2_rec = _rec(type_key="studio_visit", relationship="new_lead", billing="paid")
+ok(relationship_of_event(d2_rec) == "new_lead", "a new lead round-trips")
+ok(d2_rec["extendedProperties"]["private"]["sales_rail"] == "on",
+   "a real prospect is not marked off")
+ok(relationship_sells(relationship_of_event(d2_rec)), "and may be sold to")
 
 ok(relationship_from_description("") == "", "no description -> unknown")
 ok(relationship_from_description("Lead: X\nEmail: y@z.com") == "",
@@ -217,13 +232,17 @@ for billing in BILLING_ORDER:
        "billing={}: still a client event with a full ladder".format(billing))
     ok(instrumentation_gaps(ev) == [], "billing={}: no gaps".format(billing))
 
-paid = booking_description("X", "x@y.com", type_key="studio_visit",
-                           relationship="new_lead", billing="paid", amount="$1,200")
-ok("$1,200" in paid, "a paid booking records the amount")
-free = booking_description("X", "x@y.com", type_key="studio_visit",
-                           relationship="partner", billing="partnership")
-ok("$" not in free, "an unpaid booking records no amount")
-ok("partnership" in free.lower(), "and says why it is unpaid")
+paid = _rec(type_key="studio_visit", relationship="new_lead",
+            billing="paid", amount="$1,200")["extendedProperties"]["private"]
+ok("$1,200" in paid.get("billing", ""), "a paid booking records the amount")
+free = _rec(type_key="studio_visit", relationship="partner",
+            billing="partnership")["extendedProperties"]["private"]
+ok("$" not in free.get("billing", ""), "an unpaid booking records no amount")
+ok("partnership" in free.get("billing", "").lower(), "and says why it is unpaid")
+ok("$1,200" not in booking_description("X", "x@y.com", type_key="studio_visit",
+                                       relationship="new_lead", billing="paid",
+                                       amount="$1,200"),
+   "S87: and the amount stays out of the client's copy")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -404,9 +423,9 @@ for rel in RELATIONSHIPS:
     d = booking_description("Marcus Webb", "m@webbmedia.com",
                             type_key="studio_recording", relationship=rel,
                             billing="paid", amount="$1,800")
-    ok(relationship_from_description(d) == rel,
-       "{}: round-trips through the event description".format(rel))
-    ok(relationship_sells(relationship_from_description(d)) == relationship_sells(rel),
+    ok(relationship_of_event(_rec(relationship=rel)) == rel,
+       "{}: round-trips through the private record".format(rel))
+    ok(relationship_sells(relationship_of_event(_rec(relationship=rel))) == relationship_sells(rel),
        "{}: and the sales verdict survives with it".format(rel))
 
 # validation accepts the new option, and still refuses junk
@@ -425,7 +444,7 @@ for bl in ("paid", "partnership", "trade", "internal"):
     for rel in RELATIONSHIPS:
         d = booking_description("X", "x@y.com", type_key="location_shoot",
                                 relationship=rel, billing=bl)
-        ok(relationship_sells(relationship_from_description(d)) == relationship_sells(rel),
+        ok(relationship_sells(relationship_of_event(_rec(relationship=rel))) == relationship_sells(rel),
            "billing={} rel={}: billing never changes the sales verdict".format(bl, rel))
 
 
@@ -481,15 +500,19 @@ for k in DELIVER:
 # the description has to say where the money actually lives
 _d = booking_description("Marcus Webb", "m@webbmedia.com", type_key="studio_visit",
                          relationship="new_lead", billing="no_charge")
-ok("No charge" in _d, "a consultation records that there is no charge")
-ok("Event Report" in _d, "...and points at where the price will be recorded")
-ok("$" not in _d, "...and carries no amount")
+_dp = _rec(type_key="studio_visit", relationship="new_lead",
+           billing="no_charge")["extendedProperties"]["private"]
+ok("No charge" in _dp.get("billing", ""), "a consultation records that there is no charge")
+ok("Daily Event Report" in _dp.get("pricing", ""),
+   "...and points at where the price will be recorded")
+ok("$" not in _dp.get("billing", ""), "...and carries no amount")
+ok("No charge" not in _d and "Event Report" not in _d,
+   "S87: the client is not shown our internal pricing bookkeeping")
 
 # billing must not have leaked into the thing that decides follow-up
 for b in BILLING:
-    _dd = booking_description("X", "x@y.com", type_key="studio_visit",
-                              relationship="new_lead", billing=b)
-    ok(relationship_sells(relationship_from_description(_dd)),
+    _dd = _rec(type_key="studio_visit", relationship="new_lead", billing=b)
+    ok(relationship_sells(relationship_of_event(_dd)),
        "billing={}: a new lead is STILL followed up — money never gates the sales rail".format(b))
 _dd = booking_description("X", "x@y.com", type_key="studio_recording",
                           relationship="existing_client", billing="paid", amount="$5,000")
@@ -580,10 +603,9 @@ for desc, should_nurture, label in GUARD:
 
 ok(relationship_from_description("Lead: X") == "",
    "a legacy event yields no relationship, so the guard cannot fire on it")
-ok(relationship_from_description(
-       booking_description("Enzo", "e@x.com", type_key="location_shoot",
-                           relationship="existing_client", billing="paid")
-   ) == "existing_client",
+ok(relationship_of_event(_rec(type_key="location_shoot",
+                              relationship="existing_client", billing="paid"))
+   == "existing_client",
    "an event this form creates DOES carry a readable relationship")
 
 
@@ -722,6 +744,60 @@ ok('reminder: document.getElementById("reminder").value' in _src,
    "and submits it")
 ok("stated_reminder_channel=_c[\"reminder\"]" in _src,
    "and the booking route hands it to the Event Rail")
+
+section("PATCH #87 — the client reads the description, so nothing private goes in it")
+# Michael, Aug 11, on Shelley Roxanne's invite: "once she receives the invitation
+# all of those notes she is also going to be able to read... this is not fine."
+# Google renders the description in full to every guest. We had been emailing
+# clients our relationship classification, our sales-rail verdict, what we were
+# charging them, who booked it, and a block of creation diagnostics.
+_leak = booking_description(
+    "Shelley Roxanne", "sr@worldofsherox.com", phone="+13057207038",
+    business="World of SheRox", type_key="strategy_call",
+    relationship="existing_client", billing="no_charge",
+    notes="Follow up on next steps for your studio video production.")
+
+for _banned in ["Sales rail", "existing_client", "Relationship:", "No charge",
+                "Booked by", "Direct Booking form", "Event Report", "Billing:"]:
+    ok(_banned not in _leak,
+       "the client never reads {!r} on their own invite".format(_banned))
+
+ok("Lead: Shelley Roxanne" in _leak,
+   "Lead: STAYS — it is her own name, and six readers greet her with it")
+ok("Email: sr@worldofsherox.com" in _leak,
+   "Email: STAYS — her own address, and the rail's fallback when attendees fail")
+ok("Follow up on next steps" in _leak, "her notes are hers and stay visible")
+ok("MWM Creations & Studios" in _leak, "and it still reads like a real invitation")
+
+# The record did not vanish — it moved.
+_p = booking_private_props(phone="+13057207038", business="World of SheRox",
+                           type_key="strategy_call", relationship="existing_client",
+                           billing="no_charge", booked_by="Direct Booking form")
+ok(_p["relationship"] == "existing_client", "the relationship is kept, privately")
+ok(_p["sales_rail"] == "off", "so is the sales-rail verdict")
+ok("No charge" in _p["billing"], "so is the billing")
+ok(_p["booked_by"] == "Direct Booking form", "so is who booked it")
+ok(all(len(v) <= 300 for v in _p.values()),
+   "every value fits Google's 300-char limit for a private property")
+
+# The rail stamp must not print onto the invite either.
+_b, _i = harden_event_body(
+    {"summary": "Strategy Call - Shelley Roxanne", "description": _leak,
+     "start": {"dateTime": "2026-09-01T10:00:00-04:00"},
+     "end": {"dateTime": "2026-09-01T10:30:00-04:00"},
+     "location": "Phone"},
+    source_identifier="+13057207038", attendee_email="sr@worldofsherox.com",
+    context="test.s87", strict=False, stated_reminder_channel="email")
+ok("—— Event Rail ——" not in (_b.get("description") or ""),
+   "the Event Rail stamp is gone from the client's copy")
+ok("Reminder channel" not in (_b.get("description") or ""),
+   "and so is the reminder-channel line Michael spotted")
+_bp = (_b.get("extendedProperties") or {}).get("private") or {}
+ok(_bp.get("reminder_channel") == "email",
+   "the rail still records what it resolved — privately")
+ok(_bp.get("source_channel"), "and the source channel with it")
+ok("stated" in (_bp.get("reminder_why") or ""),
+   "including WHY, so an audit can still tell inference from instruction")
 
 print("\n" + "=" * 60)
 print("  BOOKING FORM (#50): {} passed, {} failed".format(PASS, FAIL))

@@ -733,19 +733,22 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
         if isinstance(rem, dict) and rem.get("overrides"):
             notes.append("reminder block replaced with the standard block")
 
-    # ── stamp what we resolved onto the event, so the next audit can read it ──
-    desc = body.get("description") or ""
-    stamp = [
-        "",
-        "—— Event Rail ——",
-        f"Source channel: {channel}   (resolved from identifier, not from a label)",
-        f"Reminder channel: {rchan or 'NONE — UNREMINDABLE'}",
-    ]
-    for n in notes:
-        stamp.append(f"note: {n}")
+    # ── stamp what we resolved — PRIVATELY ──
+    # S87: this block used to be appended to the description, which Google
+    # renders in full to every guest. Michael found `Sales rail: OFF` and a
+    # list of creation issues sitting in a client's invite. Nothing has ever
+    # read this stamp back — it is write-only diagnostics — so it moves to
+    # extendedProperties.private, where our own reads still see it and the
+    # attendee never does.
+    _priv = (body.get("extendedProperties") or {}).get("private") or {}
+    _priv["source_channel"] = str(channel)[:300]
+    _priv["reminder_channel"] = str(rchan or "NONE — UNREMINDABLE")[:300]
+    _priv["reminder_why"] = str(rwhy or "")[:300]
+    if notes:
+        _priv["rail_notes"] = "; ".join(notes)[:300]
     if issues:
-        stamp.append("ISSUES AT CREATION: " + "; ".join(issues))
-    body["description"] = desc + "\n".join(stamp)
+        _priv["rail_issues"] = "; ".join(issues)[:300]
+    body.setdefault("extendedProperties", {})["private"] = _priv
 
     # ── report ──
     if issues and reporter:
@@ -1243,47 +1246,89 @@ def relationship_from_description(desc):
 def booking_description(name, email, phone="", business="",
                         type_key="", relationship="", billing="",
                         amount="", notes=""):
-    """The description block, in the shape every existing reader expects.
+    """The description an ATTENDEE will read. Nothing else belongs here.
 
-    `Lead:` and `Email:` are not decoration — instrumentation_gaps() reads the
-    first to decide whether a reminder can greet a human by name, and
-    _event_rail_client_email() reads the second as its fallback when the
-    attendee list fails. Writing them is what makes a hand-booked event
-    indistinguishable from a machine-booked one.
+    🔴 S87 — Michael, Aug 11, after seeing Shelley Roxanne's invite:
+    *"once she receives the invitation all of those notes that are on the
+    invitation she is also going to be able to read... this is not fine."*
+    He is right, and it had been true of every invite this system has ever
+    sent. A calendar description is rendered in full to every guest, and we
+    were printing `Relationship: existing_client`, `Sales rail: OFF — existing
+    client is not a sales prospect`, `Billing: No charge — sales meeting`,
+    `Booked by: Michael (Direct Booking form)` and a block of rail
+    diagnostics onto a document we then emailed to the client.
+
+    🔑 The rule this establishes: **an event description is client-facing
+    copy, not a record.** Internal state goes in `extendedProperties.private`,
+    which Google shows only to our own copy of the event.
+
+    `Lead:` and `Email:` STAY. They are the client's own name and address —
+    nothing to hide — and six readers depend on them, including the one that
+    decides whether a reminder can greet her by name instead of "there".
     """
-    lines = ["Lead: {}".format(" ".join(str(name or "").split()))]
+    spec = BOOKING_TYPES.get(type_key) or {}
+    lines = []
+
+    label = spec.get("label") or "Meeting"
+    lines.append("{} with Michael Moraes — MWM Creations & Studios".format(label))
+
+    if notes:
+        lines.append("")
+        lines.append(str(notes).strip())
+
+    lines.append("")
+    lines.append("Lead: {}".format(" ".join(str(name or "").split())))
     if email:
         lines.append("Email: {}".format(str(email).strip()))
-    if phone:
-        lines.append("Phone: {}".format(str(phone).strip()))
-    if business:
-        lines.append("Business: {}".format(str(business).strip()))
+    return "\n".join(lines)
 
-    spec = BOOKING_TYPES.get(type_key) or {}
-    if spec:
-        lines.append("Booking type: {}".format(spec.get("label")))
+
+# Keys we keep ON the event but OUT of the client's view. Google renders
+# extendedProperties to nobody; they come back on our own reads.
+def booking_private_props(phone="", business="", type_key="", relationship="",
+                          billing="", amount="", booked_by="Direct Booking form"):
+    """The internal record that used to sit in the client-facing description.
+
+    Values are truncated to Google's 300-character limit per property.
+    """
+    props = {}
+
+    def put(k, v):
+        v = str(v or "").strip()
+        if v:
+            props[k] = v[:300]
+
+    put("phone", phone)
+    put("business", business)
+    put("booking_type", type_key)
+    put("booked_by", booked_by)
     if relationship in RELATIONSHIPS:
-        lines.append("Relationship: {}".format(relationship))
-        if not relationship_sells(relationship):
-            lines.append("Sales rail: OFF — {} is not a sales prospect"
-                         .format(RELATIONSHIPS[relationship]["label"].lower()))
+        put("relationship", relationship)
+        put("sales_rail", "on" if relationship_sells(relationship) else "off")
     if billing in BILLING:
         bill = BILLING[billing]
         if billing == "paid" and str(amount or "").strip():
             bill = "{} — {}".format(bill, str(amount).strip())
-        lines.append("Billing: {}".format(bill))
+        put("billing", bill)
         if billing == "no_charge":
-            # PATCH #51 — say where the money actually gets recorded, so the
-            # next person reading this event does not think we forgot to.
-            lines.append("Pricing: decided at the meeting — goes on the Daily "
-                         "Event Report, not on the booking")
+            put("pricing", "decided at the meeting — Daily Event Report, not the booking")
+    return props
 
-    lines.append("Booked by: Michael (Direct Booking form)")
-    if notes:
-        lines.append("")
-        lines.append("Notes:")
-        lines.append(str(notes).strip())
-    return "\n".join(lines)
+
+def relationship_of_event(event):
+    """The relationship for an event, private props first, description second.
+
+    The description fallback is not legacy cruft — every event created before
+    S87 carries it there, and they are still on the calendar.
+    """
+    try:
+        priv = ((event or {}).get("extendedProperties") or {}).get("private") or {}
+        val = str(priv.get("relationship") or "").strip().lower()
+        if val in RELATIONSHIPS:
+            return val
+    except Exception:
+        pass
+    return relationship_from_description((event or {}).get("description", ""))
 
 
 def _hhmm_to_min(v):

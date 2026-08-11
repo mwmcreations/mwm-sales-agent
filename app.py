@@ -100,7 +100,8 @@ from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
                         booking_title, booking_kind, booking_location,
                         booking_needs_address, booking_description,
                         validate_booking, relationship_sells,
-                        relationship_from_description,
+                        relationship_from_description, relationship_of_event,
+                        booking_private_props,
                         slot_conflicts, slot_buffer_warnings,
                         BOOKING_BUFFER_MIN,
                         billing_options_for, billing_is_asked,
@@ -9881,7 +9882,7 @@ def _noshow_detector():
                     # made before #50, and anything still typed by hand — the
                     # behaviour is UNCHANGED, because silently going quiet on
                     # legacy events would be a second, opposite bug.
-                    _ao_rel = relationship_from_description(event.get("description", ""))
+                    _ao_rel = relationship_of_event(event)
                     if _ao_rel and not relationship_sells(_ao_rel):
                         _mr_reported_events[event_id] = "no_sell_" + _ao_rel
                         print(f"[AUTO-OUTCOME] {_ao_name or 'Unknown'} ({summary}) "
@@ -19550,10 +19551,17 @@ def booking_form_submit():
         billing=_c["billing"], amount=_c["amount"], notes=_c["notes"])
 
     _kind = booking_kind(_c["type"])
+    # S87: the commercial record goes where the CLIENT CANNOT READ IT. The
+    # description is copy they receive by email; this is bookkeeping.
+    _priv = booking_private_props(
+        phone=_c["phone"], business=_c["business"], type_key=_c["type"],
+        relationship=_c["relationship"], billing=_c["billing"],
+        amount=_c["amount"], booked_by="Direct Booking form")
     _body = {
         "summary": _title,
         "description": _desc,
         "location": _loc,
+        "extendedProperties": {"private": _priv},
         "start": {"dateTime": _start.isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": _end.isoformat(), "timeZone": TIMEZONE},
     }
