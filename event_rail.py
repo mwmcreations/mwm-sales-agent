@@ -3286,3 +3286,68 @@ def seed_seen_inbound(*histories):
                     seen.add(sender)
                     break
     return seen
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S84 · Instagram 24-hour messaging-window guard
+#
+# WhatsApp got this in S24: when Meta returns 131047 the verdict is PERSISTED
+# and consulted before the next send, so a doomed free-form message is refused
+# rather than burned. Instagram never got the same treatment. Its 403 handler
+# wrote an IN-MEMORY set, alerted #dev, and returned — so every later caller
+# walked into another 403 and alerted again. Eight identical alerts for one
+# IGSID in 90 minutes on Aug 10, and NOT ONE counter anywhere: the entire
+# failure class was invisible to /health while it was actively firing.
+#
+# The alert text also read "Lead marked window-expired; re-engagement will
+# skip." True only inside one process, and only on the re-engagement path.
+# An alert must not claim an outcome it did not produce.
+# ─────────────────────────────────────────────────────────────────────────────
+
+IG_WINDOW_MARK_PREFIX = "ig_window_expired:"
+
+
+def ig_mark_key(igsid):
+    """Storage key for an IGSID's window-expired mark, or None if unusable.
+
+    ONE function produces the key that BOTH the writer and the reader use.
+    #61 and #63 were the same bug wearing different clothes: two places
+    independently deriving a string that had to match, and drifting apart.
+    Accepts a bare IGSID or a `instagram:<igsid>` sender key.
+    """
+    d = str(igsid or "").strip()
+    if d.startswith("instagram:"):
+        d = d[len("instagram:"):].strip()
+    return (IG_WINDOW_MARK_PREFIX + d) if d else None
+
+
+def ig_window_blocked(mark_iso, last_inbound_iso=None):
+    """True when a 403 verdict stands un-superseded by a newer inbound.
+
+    A newer inbound reopens the window, exactly as it does for WhatsApp.
+    Both sides are normalised through to_local_naive() before comparison —
+    an aware value is CONVERTED, never stripped (#60).
+
+    Absent or unparseable data fails OPEN. Refusing to send on a value we
+    could not read is a worse failure than one wasted API call.
+    """
+    mark = to_local_naive(_parse_et(mark_iso))
+    if mark is None:
+        return False
+    last = to_local_naive(_parse_et(last_inbound_iso))
+    if last is not None and last > mark:
+        return False
+    return True
+
+
+def ig_should_alert_403(igsid, already_marked):
+    """Alert on the FIRST 403 for an IGSID; stay silent for the repeats.
+
+    Suppressing repeats is the point of the ticket, but a suppressed alert
+    must still be countable — a capped or partial job announces what it did
+    not do. The caller bumps a counter on every 403 regardless of this
+    verdict, so /health carries the true volume even when #dev is quiet.
+    """
+    if not ig_mark_key(igsid):
+        return False
+    return not bool(already_marked)

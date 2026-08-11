@@ -34,7 +34,8 @@ from event_rail import (stage_horizon_phrase, confirmation_copy, KIND_INTERNAL,
                         APPROVAL_PENDING, APPROVAL_APPROVED,
                         STANDARD_HOURS_START, STANDARD_HOURS_END,
                         is_attendee_permission_error, strip_attendees,
-                        attendee_fallback_note, booking_sync_alert)
+                        attendee_fallback_note, booking_sync_alert,
+                        ig_mark_key, ig_window_blocked, ig_should_alert_403)
 
 _passed = _failed = 0
 
@@ -1925,6 +1926,55 @@ print("\nPATCH76_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 
 print("\nPATCH72_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
+
+print("\n== S84: the Instagram 24h window guard (the 8-alert burst) ==")
+# Aug 10: IGSID 1600333768119203 produced eight identical #dev alerts between
+# 19:37 and 21:12, each claiming re-engagement would skip. The mark was an
+# in-memory set consulted on ONE path, so every other caller re-attempted and
+# re-alerted. WhatsApp has had the persistent version of this since S24.
+_key = ig_mark_key
+_blk = ig_window_blocked
+_alert = ig_should_alert_403
+
+check_true("a bare IGSID produces a key",
+           _key("1600333768119203") == "ig_window_expired:1600333768119203")
+check_true("an instagram:-prefixed sender produces the SAME key",
+           _key("instagram:1600333768119203") == _key("1600333768119203"))
+check_true("one function makes the key both sides use — writer and reader agree",
+           _key("instagram:  1600333768119203  ".strip()) == _key("1600333768119203"))
+check_true("an empty IGSID has no key", _key("") is None)
+check_true("None has no key", _key(None) is None)
+
+check_false("no mark means nothing is blocked", _blk(None))
+check_false("an empty mark means nothing is blocked", _blk(""))
+check_true("a mark with no inbound since blocks the send",
+           _blk("2026-08-10T19:37:25"))
+check_false("an inbound NEWER than the mark reopens the window",
+            _blk("2026-08-10T19:37:25", "2026-08-10T20:15:00"))
+check_true("an inbound OLDER than the mark leaves it blocked",
+           _blk("2026-08-10T19:37:25", "2026-08-09T11:00:00"))
+check_false("an unparseable mark fails OPEN — never refuse on unreadable data",
+            _blk("not-a-date"))
+check_true("an unparseable INBOUND leaves the standing mark in force",
+           _blk("2026-08-10T19:37:25", "not-a-date"))
+
+# #60: an aware value must be CONVERTED, not stripped. A mark written with a
+# -04:00 offset and an inbound written naive-local are the same wall clock.
+check_false("aware mark vs newer naive inbound compares as instants, not digits",
+            _blk("2026-08-10T19:37:25-04:00", "2026-08-10T20:15:00"))
+check_true("aware mark vs older naive inbound stays blocked",
+           _blk("2026-08-10T19:37:25-04:00", "2026-08-10T18:00:00"))
+
+check_true("the FIRST 403 for an IGSID alerts", _alert("1600333768119203", False))
+check_false("the SECOND and every later 403 stays silent",
+            _alert("1600333768119203", True))
+check_false("a 403 with no usable IGSID never alerts", _alert("", False))
+check_false("None IGSID never alerts", _alert(None, False))
+check_true("suppression is per-IGSID — a different lead still gets its alert",
+           _alert("1043867094713993", False))
+
+print("\nPATCH77_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

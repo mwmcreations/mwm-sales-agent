@@ -461,6 +461,88 @@ def send_whatsapp_meta(to: str, body: str = None, media_url: str = None,
     return None
 
 
+def _ig_digits(igsid):
+    """The bare IGSID for `igsid`, accepting an `instagram:`-prefixed sender."""
+    return (event_rail.ig_mark_key(igsid) or "").replace(
+        event_rail.IG_WINDOW_MARK_PREFIX, "") or None
+
+
+def _ig_mark_window_expired(igsid):
+    """Persist a Meta 403 verdict (24h IG messaging window closed).
+
+    S84: the WhatsApp twin of this has existed since S24. Instagram only ever
+    had an in-memory set, so the verdict died at every restart and was
+    consulted on exactly one code path. Everything else re-attempted, got 403,
+    and alerted again — eight times for one lead on Aug 10.
+    """
+    key = event_rail.ig_mark_key(igsid)
+    if not key:
+        return
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return
+        _p.save_state(key, datetime.now(pytz.timezone(TIMEZONE)).isoformat())
+        print(f"[IG-GATE] window-expired mark set for {_ig_digits(igsid)}")
+    except Exception as _e:
+        print(f"[IG-GATE] window mark failed (non-fatal): {_e}")
+
+
+def _ig_window_expired_mark(igsid):
+    """Return the stored 403 mark timestamp for this IGSID, or None."""
+    key = event_rail.ig_mark_key(igsid)
+    if not key:
+        return None
+    try:
+        import pg_store as _p
+        if not _p.enabled():
+            return None
+        return _p.load_state(key, None)
+    except Exception:
+        return None
+
+
+def _ig_clear_window_expired(igsid):
+    """Drop the 403 mark — the lead wrote in, so the window reopened."""
+    key = event_rail.ig_mark_key(igsid)
+    if not key:
+        return
+    try:
+        import pg_store as _p
+        if _p.enabled():
+            _p.save_state(key, "")
+    except Exception:
+        pass
+
+
+def _ig_last_inbound(igsid):
+    """Timestamp of this IGSID's last INBOUND message, or None if unknown."""
+    d = _ig_digits(igsid)
+    if not d:
+        return None
+    for _k in (f"instagram:{d}", d):
+        _v = (lead_data.get(_k) or {}).get("last_message_time")
+        if _v:
+            return _v
+    return None
+
+
+def _ig_can_send_dm(igsid):
+    """(ok, reason) — refuse a free-form IG DM whose window Meta already closed.
+
+    Mirrors _wa_can_send(). Fails OPEN on anything unreadable: one wasted API
+    call is a smaller failure than silently refusing to answer a live lead.
+    """
+    d = _ig_digits(igsid)
+    if not d:
+        return True, "ok"
+    if d in _ig_403_blocked:
+        return False, "window_expired"
+    if event_rail.ig_window_blocked(_ig_window_expired_mark(d), _ig_last_inbound(d)):
+        return False, "window_expired"
+    return True, "ok"
+
+
 def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None):
     """Send an Instagram DM via Meta's Instagram Messaging API (Graph API).
 
@@ -471,6 +553,14 @@ def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None
     body: Text message to send.
     media_url: URL of image/video to attach (optional).
     """
+    # ── S84: refuse a send Meta has already told us will 403 ──
+    _ig_ok, _ig_why = _ig_can_send_dm(recipient_id)
+    if not _ig_ok:
+        _TALLY.bump("ig.send_blocked_window_expired", str(recipient_id))
+        print(f"[IG-GATE] send refused for {recipient_id} — {_ig_why} "
+              f"(mark stands; no API call, no alert)")
+        return None
+
     if not INSTAGRAM_PAGE_ID:
         print("[IG DM] INSTAGRAM_PAGE_ID not configured — cannot send")
         return None
@@ -526,13 +616,30 @@ def send_instagram_dm(recipient_id: str, body: str = None, media_url: str = None
                 # ── 403 = messaging window closed — do NOT retry ──
                 if e.response.status_code == 403:
                     print(f"🚫 IG DM 403 Forbidden for {recipient_id} — messaging window closed. Not retrying.")
+                    # S84: the mark is what makes the claim in the alert TRUE.
+                    # Persist BEFORE deciding whether to alert, and count every
+                    # 403 even when the alert is suppressed — a capped job
+                    # announces what it did not do.
+                    _already = bool(_ig_window_expired_mark(recipient_id)) or (
+                        recipient_id in _ig_403_blocked)
                     _ig_403_blocked.add(recipient_id)
-                    _notify_error_to_dev(
-                        "Instagram DM Window Closed",
-                        f"IG DM to {recipient_id} blocked (403) — 24h messaging window expired. Lead marked window-expired; re-engagement will skip.",
-                        lead_info=f"IGSID: {recipient_id}",
-                        severity="WARNING"
-                    )
+                    _ig_mark_window_expired(recipient_id)
+                    _TALLY.bump("ig.window_expired_403", str(recipient_id))
+                    if event_rail.ig_should_alert_403(recipient_id, _already):
+                        _notify_error_to_dev(
+                            "Instagram DM Window Closed",
+                            f"IG DM to {recipient_id} blocked (403) — 24h messaging "
+                            f"window expired. The block is now recorded and further "
+                            f"sends to this lead are refused before they are "
+                            f"attempted; a reply from the lead reopens the window. "
+                            f"Repeat 403s are counted at /health "
+                            f"(ig.window_expired_403), not re-alerted here.",
+                            lead_info=f"IGSID: {recipient_id}",
+                            severity="WARNING"
+                        )
+                    else:
+                        _TALLY.bump("ig.window_expired_403_alert_suppressed",
+                                    str(recipient_id))
                     return None
             if _attempt < 2:
                 _wait = (2 ** _attempt) * 0.5
@@ -8495,6 +8602,9 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
 
     # ── Clear 403 block if user messages back (reopens 24h window) ──
     _ig_403_blocked.discard(sender_id)
+    if _ig_window_expired_mark(sender_id):
+        _ig_clear_window_expired(sender_id)   # S84: durable mark, not just RAM
+        _TALLY.bump("ig.window_reopened_by_inbound", str(sender_id))
 
     # ── Michael detection (by IG user ID if configured) ──
     _michael_ig_id = os.getenv("MICHAEL_INSTAGRAM_ID", "")
