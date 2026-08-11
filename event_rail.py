@@ -253,12 +253,40 @@ def resolve_channel(identifier, hint=None):
     return CH_UNKNOWN
 
 
-def reminder_channel_for(identifier, email=None):
+REMINDER_CHANNELS = {
+    "email":    "Email — always works, and it is what carries the calendar invite",
+    "whatsapp": "WhatsApp — only if you know they actually use it",
+}
+
+
+def reminder_channel_for(identifier, email=None, stated=None):
     """Which rail can actually reach this person? Returns (channel, why).
 
     channel is one of "whatsapp" / "instagram" / "email" / None.
     None means UNREMINDABLE — that is a hard S-1 failure, not a warning.
+
+    🔑 S85 — A STATED CHANNEL BEATS THE INFERENCE, ALWAYS.
+    `is_dialable()` answers "could this number be phoned." It was being read
+    as "this person is on WhatsApp." For a lead who ARRIVED on WhatsApp that
+    is sound — they messaged us there, so we have proof. For a booking
+    Michael typed into /book it is a guess, and on Aug 11 it guessed wrong:
+    Shelley Roxanne's US mobile made the rail write "Reminder channel:
+    whatsapp" for a client who is email and SMS only.
+
+    Evidence beats inference. When somebody who knows the client says which
+    rail to use, that answer wins outright — but only if the rail can
+    actually carry it, so a stated email with no address on file still falls
+    through to the honest answer rather than promising a send we cannot make.
     """
+    if stated:
+        st = str(stated).strip().lower()
+        if st == "whatsapp" and is_dialable(identifier):
+            return "whatsapp", "stated by the person who booked it"
+        if st == "email" and email and ascii_email(email)[1]:
+            return "email", "stated by the person who booked it"
+        # a stated channel we cannot actually carry falls through to the
+        # resolver below rather than being asserted and silently failing
+
     if is_dialable(identifier):
         return "whatsapp", "dialable E.164 identifier"
     if is_ig_scoped(identifier):
@@ -619,7 +647,7 @@ def looks_like_address(location):
 def harden_event_body(body, source_identifier=None, attendee_email=None,
                       context="", strict=False, reporter=None,
                       default_location=None, channel_hint=None,
-                      require_attendee=True, require_postal=True):
+                      require_attendee=True, require_postal=True, stated_reminder_channel=None):
     """Validate and repair a Google Calendar event body in place.
 
     Returns (body, issues). `issues` is a list of human-readable strings; an
@@ -691,7 +719,8 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
                       "a client not on the attendee list cannot be reached by calendar mail")
 
     # ── reminder channel ──
-    rchan, rwhy = reminder_channel_for(source_identifier, attendee_email)
+    rchan, rwhy = reminder_channel_for(source_identifier, attendee_email,
+                                       stated=stated_reminder_channel)
     if rchan is None:
         issues.append(f"no resolvable reminder channel: {rwhy}")
     elif rchan != "whatsapp":
@@ -1470,7 +1499,16 @@ def validate_booking(payload):
                       .format(BILLING.get(billing, billing),
                               BOOKING_TYPES[type_key]["label"]))
 
+    # S85 — ask, do not infer. Default EMAIL: it is the only channel this form
+    # has actually verified (the address is required and it is what carries the
+    # invite). WhatsApp is offered because much of Michael's book is on it, but
+    # it must be a choice, never a deduction from a phone number's shape.
+    reminder = (get("reminder") or "email").strip().lower()
+    if reminder not in REMINDER_CHANNELS:
+        reminder = "email"
+
     clean = {
+        "reminder": reminder,
         "type": type_key, "name": name, "email": email,
         "phone": get("phone"), "business": get("business"),
         "date": date, "start": start, "minutes": minutes,

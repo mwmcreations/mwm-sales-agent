@@ -667,6 +667,62 @@ ok("unauthorized_client" in _bf_block and "invalid_grant" in _bf_block,
 ok("attendee_dropped" in _src,
    "a dropped invite is reported to the person who filled the form, not hidden")
 
+section("PATCH #81 — the reminder rail is stated, not deduced")
+from event_rail import (reminder_channel_for as _rcf, REMINDER_CHANNELS as _RC,
+                        validate_booking as _vb)
+
+_US = "+13057207038"          # Shelley's real number, the one that misfired
+_MAIL = "sr@worldofsherox.com"
+
+# The bug, preserved so it cannot come back quietly.
+ok(_rcf(_US, _MAIL)[0] == "whatsapp",
+   "unstated: a dialable number STILL infers whatsapp (unchanged behaviour)")
+ok(_rcf(_US, _MAIL, stated="email")[0] == "email",
+   "stated email BEATS the dialable-number inference — the Aug 11 Shelley bug")
+ok("stated by the person who booked it" in _rcf(_US, _MAIL, stated="email")[1],
+   "and the reason says a human chose it, not that we worked it out")
+ok(_rcf(_US, _MAIL, stated="whatsapp")[0] == "whatsapp",
+   "stated whatsapp is honoured when the number can actually carry it")
+
+# A stated channel we cannot carry must NOT be asserted.
+ok(_rcf(_US, "", stated="email")[0] == "whatsapp",
+   "stated email with NO address falls through — never promise a send we cannot make")
+ok(_rcf("", _MAIL, stated="whatsapp")[0] == "email",
+   "stated whatsapp with no dialable number falls through to email")
+ok(_rcf("", "", stated="email")[0] is None,
+   "stating a channel cannot conjure a rail out of nothing")
+ok(_rcf(_US, _MAIL, stated="carrier pigeon")[0] == "whatsapp",
+   "an unknown stated value is ignored, not obeyed")
+ok(_rcf(_US, _MAIL, stated=None)[0] == "whatsapp",
+   "stated=None behaves exactly as before this patch")
+
+# The form defaults, and refuses to store nonsense.
+_e1, _c1 = _vb({"type": "strategy_call", "name": "A B", "email": _MAIL,
+                "date": "2026-09-01", "start": "10:00", "minutes": "30",
+                "relationship": "existing_client", "billing": "no_charge"})
+ok(_c1.get("reminder") == "email",
+   "a booking that says nothing defaults to EMAIL, the channel we verified")
+_e2, _c2 = _vb({"type": "strategy_call", "name": "A B", "email": _MAIL,
+                "date": "2026-09-01", "start": "10:00", "minutes": "30",
+                "relationship": "existing_client", "billing": "no_charge",
+                "reminder": "whatsapp"})
+ok(_c2.get("reminder") == "whatsapp", "an explicit whatsapp choice is kept")
+_e3, _c3 = _vb({"type": "strategy_call", "name": "A B", "email": _MAIL,
+                "date": "2026-09-01", "start": "10:00", "minutes": "30",
+                "relationship": "existing_client", "billing": "no_charge",
+                "reminder": "sms"})
+ok(_c3.get("reminder") == "email",
+   "SMS is not a rail yet (A2P unapproved) — it degrades to email, not to a lie")
+ok(set(_RC) == {"email", "whatsapp"},
+   "exactly two channels are offered, and SMS is not one of them")
+
+ok('id="reminder"' in _src and 'name: document' not in _src.split('id="reminder"')[0][-200:],
+   "the form actually renders the picker")
+ok('reminder: document.getElementById("reminder").value' in _src,
+   "and submits it")
+ok("stated_reminder_channel=_c[\"reminder\"]" in _src,
+   "and the booking route hands it to the Event Rail")
+
 print("\n" + "=" * 60)
 print("  BOOKING FORM (#50): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 60)

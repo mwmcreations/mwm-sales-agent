@@ -18957,6 +18957,16 @@ button.go:disabled { background: #9ca3af; cursor: not-allowed; }
       <h2>7 · Anything else</h2>
       <div class="field"><textarea id="notes"
         placeholder="What they want, what you agreed, anything the crew needs to know."></textarea></div>
+      <div class="field">
+        <label for="reminder">Remind them by</label>
+        <select id="reminder">
+          <option value="email" selected>Email — always works, and it carries the invite</option>
+          <option value="whatsapp">WhatsApp — only if you know they use it</option>
+        </select>
+        <div class="hint">The rail used to guess this from the phone number, and a
+          US mobile is not proof of a WhatsApp account. SMS is not on this list
+          until the A2P campaign is approved.</div>
+      </div>
     </div>
 
     <div class="card">
@@ -19277,7 +19287,8 @@ async function doSubmit() {
     start: document.getElementById("start").value,
     minutes: document.getElementById("minutes").value,
     location: document.getElementById("location").value,
-    notes: document.getElementById("notes").value
+    notes: document.getElementById("notes").value,
+    reminder: document.getElementById("reminder").value
   };
   try {
     var r = await fetch("/book/submit", { method:"POST",
@@ -19560,6 +19571,7 @@ def booking_form_submit():
             reporter=_report_error,
             require_attendee=True,
             require_postal=(venue_of(_kind) != VENUE_VIRTUAL),
+            stated_reminder_channel=_c["reminder"],   # S85: ask, do not infer
         )
     except Exception as _hx:
         return jsonify({"ok": False, "message": "The Event Rail refused this booking.",
