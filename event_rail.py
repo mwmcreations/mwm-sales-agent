@@ -3531,3 +3531,87 @@ def ig_should_alert_403(igsid, already_marked):
     if not ig_mark_key(igsid):
         return False
     return not bool(already_marked)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PATCH #90 — a confirmed ROADMAP filming day, as a calendar event
+# ═══════════════════════════════════════════════════════════════════
+#
+# The ROADMAP portal let a producer click Confirm and told the client the day
+# was confirmed, and nothing was ever written to a calendar. The webhook that
+# fixes that lives in app.py; the part that can be wrong in an interesting way
+# lives here, where it can be tested without Google.
+#
+# 🔴 THE RULE THIS FUNCTION EXISTS FOR: an ON-LOCATION day must never inherit
+# the studio address. The studio is the safe default for a studio day and the
+# WORST possible default for a location day — it sends a crew, a camera and a
+# van to Winter Park while the client waits in his own office. A location day
+# with no address is a refusal, not a fallback.
+
+ROADMAP_STUDIO = "studio"
+ROADMAP_LOCATION = "location"
+
+
+def roadmap_shoot_event_body(client_name, campaign_no, campaign_title, date,
+                             start_time, end_time, kind, location,
+                             studio_address, timezone, client_email="",
+                             notes="", confirmed_by=""):
+    """Build the Google Calendar body for a CONFIRMED ROADMAP filming day.
+
+    Pure — no network, no Google, no clock. Raises EventRailRejected rather than
+    returning a body that would put a crew in the wrong place or on no clock.
+    """
+    name = (client_name or "").strip()
+    title = (campaign_title or "").strip()
+    date = (date or "").strip()
+    start = str(start_time or "")[:5]
+    end = str(end_time or "")[:5]
+    kind = (kind or ROADMAP_STUDIO).strip().lower()
+    where = (location or "").strip()
+    email = (client_email or "").strip()
+
+    if not name:
+        raise EventRailRejected(["a filming day needs a client name"], context="roadmap_shoot")
+    if not date or not start or not end:
+        raise EventRailRejected(["a filming day needs a date and a start and end time"], context="roadmap_shoot")
+    if start >= end:
+        raise EventRailRejected(
+            ["a filming day cannot end before it starts (%s -> %s)" % (start, end)],
+            context="roadmap_shoot")
+
+    if kind == ROADMAP_LOCATION:
+        # 🔴 See the note above. No address means no event.
+        if not looks_like_address(where):
+            raise EventRailRejected(
+                ["an on-location day needs the client's address — refusing to fall "
+                 "back to the studio and send the crew to the wrong place"],
+                context="roadmap_shoot")
+        where_label = "on location"
+    else:
+        where = where or (studio_address or "").strip()
+        if not where:
+            raise EventRailRejected(["a studio day needs the studio address"], context="roadmap_shoot")
+        where_label = "MWM studio"
+
+    camp = str(campaign_no) if campaign_no not in (None, "") else "?"
+    summary = "ROADMAP: %s — C%s" % (name, camp)
+    if title:
+        summary += " " + title
+
+    description = "\n".join([
+        "MWM ROADMAP™ filming day",
+        "Client: %s%s" % (name, (" (%s)" % email) if email else ""),
+        "Campaign %s: %s" % (camp, title or "—"),
+        "Where: %s — %s" % (where_label, where),
+        "Notes: %s" % ((notes or "").strip() or "—"),
+        "Confirmed by: %s" % ((confirmed_by or "").strip() or "—"),
+        "Source: ROADMAP portal (machine, Patch #90)",
+    ])
+
+    return {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": "%sT%s:00" % (date, start), "timeZone": timezone},
+        "end": {"dateTime": "%sT%s:00" % (date, end), "timeZone": timezone},
+        "location": where,
+    }, where_label

@@ -73,6 +73,7 @@ from event_rail import (is_out_of_hours, out_of_hours_reason,
 # Patch #59 — a service account cannot invite attendees; fall back, never fail.
 from event_rail import (is_attendee_permission_error, strip_attendees,
                         attendee_fallback_note, booking_sync_alert)
+from event_rail import roadmap_shoot_event_body  # Patch #90
 from event_rail import (outcome_plan, plan_is_deliverable, ig_window_open,
                         STEP_EMAIL_ASK, STEP_HUMAN)   # Patch #39
 from event_rail import (emails_in_field, email_field_matches,
@@ -16134,6 +16135,186 @@ def studio_booking_webhook():
 
     threading.Thread(target=_sb_process, args=(_sb_evt,), daemon=True).start()
     return jsonify({"received": True}), 200
+
+
+@app.route('/webhook/roadmap-shoot', methods=['POST'])
+def roadmap_shoot_webhook():
+    """PATCH #90: the ROADMAP portal pushes a CONFIRMED filming day here so it lands
+    on the MWM CREATIONS calendar. Auth = X-MWM-Portal-Secret (same shared secret as
+    /webhook/studio-booking).
+
+    SYNCHRONOUS ON PURPOSE — unlike /webhook/studio-booking, which fast-ACKs because a
+    paying client is waiting on the response. Nobody waits on this one: it fires when a
+    producer clicks Confirm in wp-admin, a handful of times a week. So it does the
+    calendar write inline and returns what actually happened, and WordPress prints that
+    verdict on the screen the producer is already looking at.
+
+    The alternative was the studio's shape: ACK instantly, write in a thread, and tell
+    the producer "Confirmed" before anyone knows whether it reached a calendar. That is
+    the exact failure this endpoint exists to close - on Aug 11 a day was confirmed in
+    the portal, no event was created, and no screen said so. Two seconds of latency is
+    a cheap price for an honest answer.
+
+    Events:
+      shoot_confirmed  - create the event (re-confirming replaces, never duplicates)
+      shoot_cancelled  - remove it (decline, quiet release, or an expired hold)
+    """
+    _rs_secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not _rs_secret:
+        _report_error("roadmap_shoot_webhook", "WP_PORTAL_SECRET not set")
+        return jsonify({"ok": False, "state": "failed", "error": "not configured"}), 503
+    if request.headers.get("X-MWM-Portal-Secret", "") != _rs_secret:
+        print("[ROADMAP-SHOOT] rejected - bad secret")
+        return jsonify({"ok": False, "state": "failed", "error": "unauthorized"}), 401
+    try:
+        evt = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"ok": False, "state": "failed", "error": "bad payload"}), 400
+
+    event = evt.get("event")
+    if event not in ("shoot_confirmed", "shoot_cancelled"):
+        return jsonify({"ok": False, "state": "failed", "error": "unknown event"}), 400
+
+    cid = str(evt.get("campaign_id") or "")
+    if not cid:
+        return jsonify({"ok": False, "state": "failed", "error": "no campaign_id"}), 400
+
+    import pg_store as _rspg
+    _rs_key = "roadmap_shoot_gcal:" + cid
+    name = (evt.get("client_name") or "Client").strip()
+    email = (evt.get("client_email") or "").strip()
+    date = (evt.get("date") or "").strip()
+    start = str(evt.get("start_time") or "")[:5]
+    end = str(evt.get("end_time") or "")[:5]
+    kind = (evt.get("kind") or "studio").strip()
+    where = (evt.get("location") or "").strip() or STUDIO_ADDRESS
+    camp_no = evt.get("campaign_no")
+    camp_title = (evt.get("campaign_title") or "").strip()
+
+    # -- cancel ----------------------------------------------------------
+    if event == "shoot_cancelled":
+        _rs_rec = _rspg.load_state(_rs_key) or {}
+        _rs_gid = _rs_rec.get("event_id") if isinstance(_rs_rec, dict) else _rs_rec
+        if not _rs_gid:
+            # Nothing on file is the ORDINARY case: a day released before it was ever
+            # confirmed never had an event. Say so plainly instead of crying failure.
+            return jsonify({"ok": True, "state": "nothing_to_remove"}), 200
+        try:
+            get_calendar_service().events().delete(
+                calendarId=CALENDAR_ID, eventId=_rs_gid).execute(num_retries=3)
+        except Exception as _rs_del_e:
+            _rs_msg = str(_rs_del_e)
+            if "404" in _rs_msg or "410" in _rs_msg or "notFound" in _rs_msg or "deleted" in _rs_msg:
+                _rspg.save_state(_rs_key, {"event_id": ""})
+                return jsonify({"ok": True, "state": "already_gone"}), 200
+            _report_error("roadmap_shoot.gcal_delete", _rs_del_e, "campaign=" + cid)
+            return jsonify({"ok": False, "state": "failed", "error": _rs_msg[:180]}), 200
+        _rspg.save_state(_rs_key, {"event_id": ""})
+        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+            "*ROADMAP filming day removed* - " + name + ", Campaign " + str(camp_no) + ": "
+            + camp_title + " - " + date + " " + start + "-" + end + " - calendar event deleted"))
+        return jsonify({"ok": True, "state": "removed"}), 200
+
+    # -- confirm ---------------------------------------------------------
+    if not (date and start and end):
+        return jsonify({"ok": False, "state": "failed", "error": "no date/time"}), 400
+
+    # 🔴 The body is built by event_rail so the one rule that can put a crew in the
+    # wrong city — an on-location day silently inheriting the studio address — is
+    # testable without Google. A refusal here means NO event and a loud answer to
+    # WordPress, which is the correct outcome: better an unconfirmed day than a van
+    # sent to Winter Park while the client waits in his own office.
+    try:
+        body, _rs_where_label = roadmap_shoot_event_body(
+            client_name=name, client_email=email,
+            campaign_no=camp_no, campaign_title=camp_title,
+            date=date, start_time=start, end_time=end,
+            kind=kind, location=(evt.get("location") or ""),
+            studio_address=STUDIO_ADDRESS, timezone=TIMEZONE,
+            notes=evt.get("notes") or "", confirmed_by=evt.get("confirmed_by") or "",
+        )
+    except Exception as _rs_body_e:
+        _report_error("roadmap_shoot.body", _rs_body_e, "campaign=" + cid)
+        return jsonify({"ok": False, "state": "refused",
+                        "error": str(_rs_body_e)[:180]}), 200
+    where = body["location"]
+    try:
+        body, _rs_issues = harden_event_body(
+            body,
+            source_identifier=email,
+            attendee_email=email or None,
+            context="roadmap_shoot_webhook",
+            strict=False,
+            reporter=_report_error,
+            default_location=where,
+            channel_hint="Portal",
+            require_attendee=True,
+        )
+        if _rs_issues:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                "*ROADMAP shoot " + cid + " created with rail issues* - " + name + "\n"
+                + "\n".join("- " + i for i in _rs_issues)))
+    except Exception as _rs_rail_e:
+        print("[EVENT-RAIL] roadmap harden failed (non-fatal): " + str(_rs_rail_e))
+
+    _rs_delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+    try:
+        try:
+            svc = (get_calendar_service(impersonate=_rs_delegate)
+                   if _rs_delegate else get_calendar_service())
+        except Exception as _rs_dwd_e:
+            if ("unauthorized_client" in str(_rs_dwd_e)
+                    or "invalid_grant" in str(_rs_dwd_e)):
+                print("[ROADMAP-SHOOT] delegation unavailable - direct access")
+                svc = get_calendar_service()
+            else:
+                raise
+
+        # Re-confirming the same campaign must not leave two events on the day.
+        _rs_prev = _rspg.load_state(_rs_key) or {}
+        _rs_prev_id = _rs_prev.get("event_id") if isinstance(_rs_prev, dict) else _rs_prev
+        if _rs_prev_id:
+            try:
+                svc.events().delete(calendarId=CALENDAR_ID,
+                                    eventId=_rs_prev_id).execute(num_retries=2)
+            except Exception:
+                pass  # already gone, or never really there - the insert below is the truth
+
+        state = "ok"
+        degraded = ""
+        try:
+            created = svc.events().insert(
+                calendarId=CALENDAR_ID, body=body, sendUpdates="all").execute(num_retries=3)
+        except Exception as _rs_first:
+            # Same ladder as PATCH #59: the DAY must survive even if the invite cannot.
+            if not is_attendee_permission_error(_rs_first):
+                raise
+            degraded = "no Domain-Wide Delegation on the calendar service account"
+            retry = strip_attendees(body)
+            retry["description"] = ((retry.get("description") or "")
+                                    + "\n\n" + attendee_fallback_note(email))
+            created = svc.events().insert(
+                calendarId=CALENDAR_ID, body=retry, sendUpdates="none").execute(num_retries=3)
+            state = "degraded"
+            _report_error(
+                "roadmap_shoot.gcal_no_attendee",
+                "Filming day is ON the calendar but the client is NOT an attendee - "
+                "service account lacks Domain-Wide Delegation.", "campaign=" + cid)
+        _rspg.save_state(_rs_key, {"event_id": created.get("id", "")})
+        _post_to_slack_async(SLACK_MATT_CHANNEL, (
+            "*ROADMAP filming day CONFIRMED* - " + name + "\n"
+            "Campaign " + str(camp_no) + ": " + camp_title + "\n"
+            + date + " " + start + "-" + end + " - " + _rs_where_label + " - " + where + "\n"
+            + ("calendar ok" if state == "ok" else "calendar ok (no invite - " + degraded + ")")))
+        return jsonify({"ok": True, "state": state, "event_id": created.get("id", ""),
+                        "degraded": degraded}), 200
+    except Exception as _rs_e:
+        _report_error("roadmap_shoot.gcal_insert", _rs_e, "campaign=" + cid)
+        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+            "*ROADMAP filming day is NOT on the calendar* - " + name + ", "
+            + date + " " + start + "-" + end + ". The day reads as free and can be "
+            "double-booked.\n`" + str(_rs_e)[:180] + "`"))
+        return jsonify({"ok": False, "state": "failed", "error": str(_rs_e)[:180]}), 200
 
 
 @app.route('/health', methods=['GET'])

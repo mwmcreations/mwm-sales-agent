@@ -615,3 +615,52 @@ re-anchors a client on one-video-a-month, which is the exact disease the word
 "campaign" exists to cure (Strategy §1). Swept on Aug 11 across the form, the option
 labels, the year list, the empty states, the attention cards, the admin screen and the
 notification email.
+
+---
+
+## 13 · A confirmed day must reach a calendar  🔑 *new in v0.8 · Patch #90*
+
+🔴 **A confirmed day that is not on a calendar is not confirmed.**
+
+Until Patch #90, clicking **Confirm** in *ROADMAP requests* wrote `shoot_state =
+'confirmed'` to a row and emailed the client. That was the whole of it. No event was
+created, no crew ever saw the day, and the studio stayed free to be booked over. It
+happened for real on 11 Aug 2026 and — this is the part that makes it dangerous rather
+than merely missing — **nothing on any screen said so.** The producer read
+*"Confirmed."* and walked away.
+
+The fix has two halves.
+
+**The machine** (`/webhook/roadmap-shoot`, `app.py`) creates or removes the Google
+Calendar event. It is **synchronous**, unlike `/webhook/studio-booking`, which fast-ACKs
+because a paying client is waiting on the HTTP response. Nobody waits on this one: it
+fires when a producer clicks a button in wp-admin, a few times a week. So it writes to
+Google inline and returns the real verdict. Two seconds buys an honest answer.
+
+**The portal** (`mwm_rm_push_shoot()`) waits for that verdict and prints it on the
+screen the producer is already looking at:
+
+| verdict | what the producer sees |
+|---|---|
+| `ok` | *Confirmed — it is on the calendar.* |
+| `degraded` | green day, **no invite** — the service account still lacks Domain-Wide Delegation |
+| `failed` / `unreachable` | 🔴 red: *CONFIRMED ON THE PORTAL, BUT NO CALENDAR EVENT WAS CREATED* — plus the date, time and address to enter by hand |
+
+🔴 **The DB write is deliberately NOT rolled back when the calendar write fails.** The
+client has already been promised the day; a producer can add a calendar entry by hand in
+ten seconds. What a producer cannot do is find out about a missing one.
+
+**Decline** and **Release quietly** push `shoot_cancelled`, because freeing the day in
+the portal while it stays blocked on the calendar is the same defect pointing the other
+way.
+
+### 13.1 · The rule that puts a crew in the wrong city
+
+`roadmap_shoot_event_body()` lives in `event_rail.py`, not in the route, so the one
+mistake that can be made silently is testable without Google:
+
+🔴 **An on-location day must never inherit the studio address.** The studio is the
+correct default for a studio day and the *worst possible* default for a location day —
+it sends a van to Winter Park while the client waits in his own office. A location day
+with no usable address is a **refusal**, not a fallback: no event, and a loud answer to
+WordPress. Better an unconfirmed day than a crew at the wrong door.

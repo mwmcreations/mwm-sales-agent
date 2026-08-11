@@ -1,7 +1,9 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ Portal · LOGIN + READ-ONLY RENDER
-// WP Code Snippets ID 43 · ACTIVE · DEV · Aug 11 2026 · v1.3.0
-// (IDs churn on every import — see wordpress/SNIPPET-INVENTORY-ROADMAP.md)
+// WP Code Snippets ID 51 · ACTIVE · DEV · Aug 11 2026 · v1.4.0
+// v1.4.0 — Confirm now writes the day to the MWM CREATIONS calendar and REPORTS
+//          what happened. Before this, Confirm wrote a row and told the client
+//          the day was booked; no crew ever saw it and no screen said so.
 //
 // 🔴 FILENAME RULE CHANGED FOR THESE THREE FILES. wordpress/SNIPPET-INVENTORY.md
 // says a mirror is named for its Code Snippets ID. That rule assumed IDs are
@@ -490,6 +492,97 @@ function mwm_rm_notify_request( $client, $campaign, $date, $window_label, $kind,
 }
 
 /* ===========================================================================
+ * THE CALENDAR  (v1.4.0)
+ *
+ * 🔴 A CONFIRMED DAY THAT IS NOT ON A CALENDAR IS NOT CONFIRMED.
+ *
+ * Until this existed, clicking Confirm wrote 'confirmed' to a row, emailed the
+ * client, and stopped. No crew ever saw the day. The studio was free to be
+ * booked over it. On Aug 11 that happened for real and nothing on any screen
+ * said so — which is the part that makes it dangerous rather than merely
+ * missing: the producer walks away believing the day is real.
+ *
+ * So this pushes to the machine and — unlike the studio path, which fast-ACKs
+ * because a paying client is waiting on the HTTP response — it WAITS for the
+ * verdict and hands it back. The producer is already looking at the screen.
+ * Two seconds buys an honest answer.
+ * ======================================================================== */
+
+function mwm_rm_shoot_webhook_url() {
+	return get_option( 'mwm_rm_webhook_url',
+		'https://mwm-sales-agent-production.up.railway.app/webhook/roadmap-shoot' );
+}
+
+/**
+ * Push a shoot event to the machine. Returns array( ok, state, note ).
+ *
+ * 'note' is written for the producer standing in wp-admin, not for a log. It
+ * must always be safe to print, and it must never say something happened when
+ * it didn't.
+ */
+function mwm_rm_push_shoot( $event, $row, $client ) {
+
+	$secret = get_option( 'mwm_portal_provision_secret' );
+	if ( ! $secret ) {
+		return array( 'ok' => false, 'state' => 'unconfigured',
+			'note' => 'no calendar event was created — the portal secret is not set on this site' );
+	}
+
+	$payload = array(
+		'event'          => $event,
+		'campaign_id'    => (int) $row->id,
+		'campaign_no'    => (int) $row->month_no,
+		'campaign_title' => $row->title,
+		'client_name'    => $client ? $client->client_name : '',
+		'client_email'   => $client ? $client->email : '',
+		'date'           => $row->shoot_at ? substr( $row->shoot_at, 0, 10 ) : '',
+		'start_time'     => $row->shoot_at ? substr( $row->shoot_at, 11, 5 ) : '',
+		'end_time'       => $row->shoot_end ? substr( $row->shoot_end, 11, 5 ) : '',
+		'kind'           => $row->shoot_kind,
+		'location'       => $row->shoot_location,
+		'confirmed_by'   => wp_get_current_user()->user_email,
+	);
+
+	$res = wp_remote_post( mwm_rm_shoot_webhook_url(), array(
+		'timeout' => 20,   // it writes to Google inline; a short timeout would lie
+		'headers' => array(
+			'Content-Type'         => 'application/json',
+			'X-MWM-Portal-Secret'  => $secret,
+		),
+		'body'    => wp_json_encode( $payload ),
+	) );
+
+	if ( is_wp_error( $res ) ) {
+		return array( 'ok' => false, 'state' => 'unreachable',
+			'note' => 'no calendar event was created — could not reach the scheduler ('
+				. $res->get_error_message() . ')' );
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $res );
+	$data = json_decode( wp_remote_retrieve_body( $res ), true );
+	$state = is_array( $data ) && isset( $data['state'] ) ? $data['state'] : '';
+
+	if ( $code !== 200 || ! is_array( $data ) || empty( $data['ok'] ) ) {
+		$why = is_array( $data ) && ! empty( $data['error'] ) ? $data['error'] : ( 'HTTP ' . $code );
+		return array( 'ok' => false, 'state' => $state ? $state : 'failed',
+			'note' => 'NO CALENDAR EVENT WAS CREATED — ' . $why );
+	}
+
+	if ( $state === 'degraded' ) {
+		return array( 'ok' => true, 'state' => $state,
+			'note' => 'the day is on the calendar, but the client could not be added as a guest, '
+				. 'so no calendar invitation was sent to them' );
+	}
+	if ( $state === 'removed' ) {
+		return array( 'ok' => true, 'state' => $state, 'note' => 'the calendar event was removed' );
+	}
+	if ( $state === 'nothing_to_remove' || $state === 'already_gone' ) {
+		return array( 'ok' => true, 'state' => $state, 'note' => 'there was no calendar event to remove' );
+	}
+	return array( 'ok' => true, 'state' => 'ok', 'note' => 'it is on the calendar' );
+}
+
+/* ===========================================================================
  * MWM SIDE — confirm or decline
  * Without this the portal is a request box that goes nowhere, which is worse
  * than no request box at all.
@@ -510,6 +603,7 @@ function mwm_rm_requests_screen() {
 	$tc = $wpdb->prefix . 'mwm_roadmap_campaigns';
 	$tl = $wpdb->prefix . 'mwm_roadmap_clients';
 	$notice = '';
+	$notice_type = 'info';
 
 	if ( isset( $_POST['rm_action'] ) && check_admin_referer( 'mwm_rm_decide' ) ) {
 		$id     = (int) $_POST['campaign_id'];
@@ -523,13 +617,66 @@ function mwm_rm_requests_screen() {
 				'confirmed_at'    => current_time( 'mysql' ),
 				'hold_expires_at' => null,
 			), array( 'id' => $id ) );
-			$notice = 'Confirmed. The client now sees it as confirmed on their portal.';
+
+			// 🔴 The row says confirmed. Whether a CREW will ever see it is a
+			// separate question, and it is the one that matters. Ask it here and
+			// say the answer out loud — the DB write is deliberately NOT rolled
+			// back on failure, because the client has already been promised the
+			// day and a producer can add a calendar entry by hand in ten seconds.
+			// What a producer cannot do is find out about a missing one.
+			$cl  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tl} WHERE id = %d", (int) $row->client_id ) );
+			$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tc} WHERE id = %d", $id ) );
+			$cal = mwm_rm_push_shoot( 'shoot_confirmed', $row, $cl );
+
+			if ( $cal['ok'] ) {
+				$notice = 'Confirmed — ' . $cal['note'] . '. The client now sees it as confirmed on their portal.';
+				$notice_type = ( $cal['state'] === 'degraded' ) ? 'warning' : 'success';
+			} else {
+				$notice = 'CONFIRMED ON THE PORTAL, BUT ' . strtoupper( $cal['note'] ) . '. '
+					. 'The client has been told the day is confirmed and nothing is holding it on '
+					. 'the calendar — put it there by hand now: '
+					. mwm_rm_fmt_date( $row->shoot_at, 'l j F' ) . ', '
+					. substr( $row->shoot_at, 11, 5 ) . '–' . substr( (string) $row->shoot_end, 11, 5 ) . ', '
+					. ( $row->shoot_location ? $row->shoot_location : 'the studio' ) . '.';
+				$notice_type = 'error';
+			}
+
+		} elseif ( $row && $_POST['rm_action'] === 'release' ) {
+			// 🔴 For a test booking, a duplicate, or anything the client never
+			// actually asked for. Same reset as a decline, but NO EMAIL — telling
+			// someone you cannot do a day they never requested is worse than
+			// silence. Without this, the only way to clear a row was to email
+			// the client about it.
+			$wpdb->update( $tc, array(
+				'shoot_at'        => null,
+				'shoot_end'       => null,
+				'shoot_state'     => 'none',
+				'status'          => 'planned',
+				'hold_expires_at' => null,
+			), array( 'id' => $id ) );
+			delete_option( 'mwm_rm_nudged_' . $id );
+			// If it had already been confirmed, an event exists. Freeing the day in
+			// the portal while leaving it blocked on the calendar is the same defect
+			// in the other direction.
+			$cl  = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tl} WHERE id = %d", (int) $row->client_id ) );
+			$cal = mwm_rm_push_shoot( 'shoot_cancelled', $row, $cl );
+			$notice = 'Released. The day is free again and the client was NOT emailed. '
+				. ucfirst( $cal['note'] ) . '.';
+			$notice_type = $cal['ok'] ? 'success' : 'error';
 
 		} elseif ( $row && $_POST['rm_action'] === 'decline' ) {
 			// 🔴 A decline REQUIRES a reason and it goes to the client verbatim.
 			// "No" with no reason is the thing that costs a round trip.
 			if ( $reason === '' ) {
-				$notice = 'A decline needs a reason — it goes to the client word for word.';
+				// 🔴 A REFUSED ACTION MUST NOT LOOK LIKE A COMPLETED ONE.
+				// The first version showed a quiet blue notice and left the row
+				// looking identical, so it was possible to click Decline, read
+				// nothing, and walk away believing the request was gone. It was not.
+				// Name the object, say plainly that nothing happened.
+				$notice = 'NOTHING WAS DECLINED. ' . ( $row ? ( $row->title . ' for ' ) : '' )
+					. 'this request still needs a reason — the reason is emailed to the client '
+					. 'word for word, so it cannot be blank. The day is still held.';
+				$notice_type = 'error';
 			} else {
 				$wpdb->update( $tc, array(
 					'shoot_at'        => null,
@@ -549,7 +696,9 @@ function mwm_rm_requests_screen() {
 						. home_url( '/roadmap-portal/' ) . "\n"
 					);
 				}
-				$notice = 'Declined, and the client has been told why.';
+				$cal = mwm_rm_push_shoot( 'shoot_cancelled', $row, $cl );
+				$notice = 'Declined, and the client has been told why. ' . ucfirst( $cal['note'] ) . '.';
+				$notice_type = $cal['ok'] ? 'success' : 'error';
 			}
 		}
 	}
@@ -563,7 +712,9 @@ function mwm_rm_requests_screen() {
 	?>
 	<div class="wrap">
 		<h1>ROADMAP filming requests</h1>
-		<?php if ( $notice ) : ?><div class="notice notice-info"><p><?php echo esc_html( $notice ); ?></p></div><?php endif; ?>
+		<?php if ( $notice ) : ?>
+			<div class="notice notice-<?php echo esc_attr( $notice_type ); ?>"><p><strong><?php echo esc_html( $notice ); ?></strong></p></div>
+		<?php endif; ?>
 
 		<?php if ( empty( $rows ) ) : ?>
 			<p>No requests waiting. When a client picks a day it appears here.</p>
@@ -590,7 +741,11 @@ function mwm_rm_requests_screen() {
 								<input type="hidden" name="campaign_id" value="<?php echo (int) $r->id; ?>">
 								<button class="button button-primary" name="rm_action" value="confirm">Confirm</button>
 								<input type="text" name="reason" placeholder="Reason, sent to the client" style="flex:1;min-width:150px">
-								<button class="button" name="rm_action" value="decline">Decline</button>
+								<button class="button" name="rm_action" value="decline"
+									onclick="var r=this.form.reason; if(!r.value.trim()){ r.focus(); r.style.outline='2px solid #d03b3b'; alert('A decline needs a reason. It is emailed to the client word for word.'); return false; }">Decline</button>
+								<button class="button button-link-delete" name="rm_action" value="release"
+									title="Clear this request without emailing the client — for a test or something they never asked for."
+									onclick="return confirm('Release this day without emailing the client?');">Release quietly</button>
 							</form>
 						</td>
 					</tr>

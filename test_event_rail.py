@@ -2049,5 +2049,80 @@ check_true("that refusal also quotes $349", "$349" in _whyc)
 
 print("\nPATCH79_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+# ═══════════════════════════════════════════════════════════════════
+# PATCH #90 — a confirmed ROADMAP filming day reaches a calendar
+# ═══════════════════════════════════════════════════════════════════
+#
+# On Aug 11 a filming day was confirmed in the ROADMAP portal and no calendar
+# event was created. Nothing on any screen said so. These tests cover the half
+# of that fix that can be wrong quietly: the event body.
+
+from event_rail import roadmap_shoot_event_body as _rsb
+
+_STUDIO = "1234 Studio Way, Winter Park, FL 32789"
+
+def _body(**kw):
+    args = dict(client_name="Dr. Luiz Bolfer", client_email="drbolfer@gmail.com",
+                campaign_no=1, campaign_title="The Educational Library",
+                date="2026-08-25", start_time="09:00", end_time="13:00",
+                kind="studio", location="", studio_address=_STUDIO,
+                timezone="America/New_York")
+    args.update(kw)
+    return _rsb(**args)
+
+def _refused(**kw):
+    try:
+        _body(**kw)
+        return ""
+    except EventRailRejected as e:
+        return str(e)
+    except Exception as e:
+        return "WRONG EXCEPTION: " + repr(e)
+
+_b, _lab = _body()
+check_true("a studio day falls back to the studio address", _b["location"] == _STUDIO)
+check_true("a studio day is labelled as the studio", _lab == "MWM studio")
+check_true("the summary names the client", "Dr. Luiz Bolfer" in _b["summary"])
+check_true("the summary names the campaign number", "C1" in _b["summary"])
+check_true("the summary names the campaign", "Educational Library" in _b["summary"])
+check_true("the description carries the client email so the day is traceable",
+           "drbolfer@gmail.com" in _b["description"])
+check_true("start is the requested clock time",
+           _b["start"]["dateTime"] == "2026-08-25T09:00:00")
+check_true("end is the requested clock time",
+           _b["end"]["dateTime"] == "2026-08-25T13:00:00")
+check_true("the event is stamped with the timezone, never a bare local string",
+           _b["start"]["timeZone"] == "America/New_York")
+
+# 🔴 The rule the function exists for.
+_loc_body, _loc_lab = _body(kind="location",
+                            location="900 Clinic Drive, Orlando, FL 32835")
+check_true("an on-location day uses the CLIENT's address",
+           _loc_body["location"] == "900 Clinic Drive, Orlando, FL 32835")
+check_true("an on-location day says so in the description",
+           "on location" in _loc_body["description"])
+check_true("an on-location day is labelled on location", _loc_lab == "on location")
+check_true("an on-location day with NO address is refused, not defaulted",
+           "on-location" in _refused(kind="location", location=""))
+check_false("...and it never quietly becomes the studio address",
+            _STUDIO in (_refused(kind="location", location="") or ""))
+check_true("an on-location day with a scrap of text for an address is refused",
+           _refused(kind="location", location="tbd") != "")
+
+check_true("a day with no date is refused", _refused(date="") != "")
+check_true("a day with no times is refused", _refused(start_time="", end_time="") != "")
+check_true("a day that ends before it starts is refused",
+           _refused(start_time="13:00", end_time="09:00") != "")
+check_true("a day with no client name is refused", _refused(client_name="") != "")
+
+# The four portal rules (Spec §2) apply to anything the machine writes about a
+# campaign — a calendar event is not exempt just because only staff read it.
+_full = (_b["summary"] + _b["description"]).lower()
+check_false("no edit-day number appears on the event", "edit day" in _full)
+check_false("no hours figure is promised against the campaign", "hours" in _full)
+check_false("no deliverable count is promised", "videos" in _full)
+
+print("\nPATCH90_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)
