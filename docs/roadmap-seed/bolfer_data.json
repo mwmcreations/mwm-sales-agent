@@ -2,11 +2,10 @@
   "_note": "Canonical Dr. Luiz Bolfer portal data. Campaigns 1-4 are HIS OWN WORDS from the 17 Jul 2026 strategy call; 5-12 are authored by MWM. One source, two consumers: the local harness and the WordPress seeder.",
   "_sources": {
     "call": "Luiz Bolfer and Michael Moraes - 2026/07/17 15:01 EDT - Notes by Gemini, Drive 16owdoXO7qzAlLATprAhq84nExx4EKONmXkI9OYZ_m9c (full transcript)",
-    "plan": "Stripe GOLD, drbolfer@gmail.com, $2,497/mo",
+    "plan": "Stripe LIVE acct_1Ikzv0DAWlnEb9Rf, cus_OAIT5FBVwNzay9, drbolfer@gmail.com, GOLD PLAN price_1SfP8BDAWlnEb9RfhdwyDoFQ, $2,497/mo, active",
     "history": "Seven postponements, all his (Michael, Aug 11). Saturdays only. Nothing filmed. MWM now comes to his practice."
   },
-  "_open": "contract_start and contract_end are NULL on purpose. Michael says three months paid, which puts the start around June 2026, but DEV will not print a contract date on a client-facing screen that it is not sure of. Set them and re-seed.",
-
+  "_open": "contract_start/contract_end SETTLED from Stripe (Aug 11, Michael's instruction): subscription sub_1TguIpDAWlnEb9RfnICCGLUm, GOLD $2,497/mo, created 10 Jun 2026 18:08 EDT, first invoice C0F18C5E-0002 paid 11 Jun 2026. Three cycles paid to date (11 Jun, 10 Jul, 10 Aug); current period runs 10 Aug - 10 Sep 2026. A 12-campaign plan on a monthly subscription, so the contract year is 10 Jun 2026 - 9 Jun 2027, plus the 30-day grace in Strategy 7.1.",
   "client": {
     "client_name": "Dr. Luiz Bolfer",
     "company": "",
@@ -17,113 +16,171 @@
     "studio_hours_allowed": 12,
     "studio_hours_used": 0,
     "conversions_used": 0,
-    "contract_start": null,
-    "contract_end": null,
+    "contract_start": "2026-06-10",
+    "contract_end": "2027-06-09",
     "strategist": "Michael Moraes",
     "language": "en",
     "status": "active",
     "studio_client_id": null
   },
-
   "campaigns": [
     {
       "month_no": 1,
       "title": "The Educational Library",
       "theme_desc": "The five or six conditions you see most, starting with mitral valve disease. Ten to fifteen minutes each, filmed with a teleprompter in your own room, and the heart animations from your iPad cut in full-screen while you explain. The point is that a patient arrives already knowing what they have, so the appointment starts at the question instead of the explanation.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 2,
       "title": "The Surgery, Explained",
       "theme_desc": "The operation you perform, told so that a patient understands it before they consent to it — what happens, why, and what it is like afterwards. Longer than the others, and filmed where the work actually happens.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 3,
       "title": "Coming In For Surgery",
       "theme_desc": "What the day is actually like, from arriving to going home. The film that answers the questions nobody has time to ask in a consultation, and takes the fear out of the part patients imagine worst.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 4,
       "title": "The Process, Updated",
       "theme_desc": "Your words: the existing film no longer matches how you work. A re-make rather than a repair, filmed alongside the two campaigns above so it costs you no extra time.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 5,
       "title": "Meet Dr. Bolfer",
       "theme_desc": "Who you are and why you practise the way you do. Deliberately not first — by the time this exists, your patients have already watched you explain their own condition, so the film about you lands on people who have decided they trust you.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 6,
       "title": "A Patient's Story",
       "theme_desc": "One person: their condition, their operation, their life afterwards. The most persuasive thing a cardiologist can publish, and the only one you cannot make on your own.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 7,
       "title": "Ask the Cardiologist",
       "theme_desc": "Short, direct answers to the questions you are asked in almost every appointment. A lot of finished pieces from a single sitting, and they feed the library you are already building.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 8,
       "title": "Myths About Your Heart",
       "theme_desc": "The things patients arrive already believing that are simply wrong. Corrective, easy to share, and it reaches further than anything else in the plan.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 9,
       "title": "A Second Story",
       "theme_desc": "A different patient and a different route in — someone who came through a referral, or who waited longer than they should have. One story is an anecdote; two is a pattern.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 10,
       "title": "Referring Physicians",
       "theme_desc": "Films made with the doctors who send you patients. Your growth comes through them, and their audience meets you in their words rather than in your own.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 11,
       "title": "The Library, Part Two",
       "theme_desc": "The next set of conditions, once the first library has been out in the world long enough to show which explanations patients actually watch to the end.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     },
     {
       "month_no": 12,
       "title": "The Year, Told Back",
       "theme_desc": "The library you built, the patients it reached, and what you want to say next.",
-      "status": "planned", "shoot_at": null, "shoot_kind": "location",
-      "shoot_location": "", "shoot_state": "none", "delivered_at": null,
-      "folder_url": null, "assets": []
+      "status": "planned",
+      "shoot_at": null,
+      "shoot_kind": "location",
+      "shoot_location": "",
+      "shoot_state": "none",
+      "delivered_at": null,
+      "folder_url": null,
+      "assets": []
     }
   ],
-
   "actions": [
     {
       "title": "Pick your first filming day",

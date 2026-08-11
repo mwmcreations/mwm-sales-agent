@@ -1,6 +1,6 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ · SEED: Dr. Luiz Bolfer
-// WP Code Snippets ID 42 · ACTIVE · DEV · Aug 11 2026 · seed v1 · key "bolfer"
+// DEV · Aug 11 2026 · seed v2 · key "bolfer"
 //
 // GENERATED from docs/roadmap-seed/bolfer_data.json by tools/gen_seed.py.
 // DO NOT HAND-EDIT — change the JSON and regenerate.
@@ -16,7 +16,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_BOLFER_VERSION', '1' );
+define( 'MWM_RM_SEED_BOLFER_VERSION', '2' );
 
 function mwm_rm_seed_bolfer() {
 
@@ -52,8 +52,8 @@ function mwm_rm_seed_bolfer() {
 			'captures_allowed'     => 4,
 			'studio_hours_allowed' => 12,
 			'conversions_used'     => 0,
-			'contract_start'       => null,
-			'contract_end'         => null,
+			'contract_start'       => '2026-06-10',
+			'contract_end'         => '2027-06-09',
 			'strategist'           => 'Michael Moraes',
 			'language'             => 'en',
 			'status'               => 'active',
@@ -74,8 +74,8 @@ function mwm_rm_seed_bolfer() {
 		'captures_allowed'     => 4,
 		'studio_hours_allowed' => 12,
 		'studio_client_id'     => null,
-		'contract_start'       => null,
-		'contract_end'         => null,
+		'contract_start'       => '2026-06-10',
+		'contract_end'         => '2027-06-09',
 	), array( 'id' => $client_id ) );
 
 	// 🔴 Rebuild ONLY the rows we author. A shoot the client has already requested
