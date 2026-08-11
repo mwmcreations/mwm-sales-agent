@@ -1,6 +1,7 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ Portal · LOGIN + READ-ONLY RENDER
-// WP Code Snippets ID 30 · ACTIVE · DEV · Aug 11 2026 · v1.0.2
+// WP Code Snippets ID 37 · ACTIVE · DEV · Aug 11 2026 · v1.2.1
+// (IDs churn on every import — see wordpress/SNIPPET-INVENTORY-ROADMAP.md)
 //
 // 🔴 FILENAME RULE CHANGED FOR THESE THREE FILES. wordpress/SNIPPET-INVENTORY.md
 // says a mirror is named for its Code Snippets ID. That rule assumed IDs are
@@ -187,21 +188,32 @@ add_filter( 'mwm_rm_studio_hours_used', function ( $default, $client ) {
 	if ( empty( $client->studio_client_id ) ) { return $default; }
 
 	$bookings = $wpdb->prefix . 'mwm_studio_bookings';
+	$clients  = $wpdb->prefix . 'mwm_studio_clients';
 	if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $bookings ) ) !== $bookings ) {
 		return $default;
 	}
 
-	// Scope to the roadmap contract window when we have one, so a studio hour
-	// used under last year's contract does not eat this year's allowance.
-	if ( ! empty( $client->contract_start ) && ! empty( $client->contract_end ) ) {
+	// 🔴 USE THE STUDIO CONTRACT'S OWN WINDOW, NOT THE ROADMAP ONE.
+	// The first version scoped this to the roadmap contract year, which is wider.
+	// It swept up bookings from an EARLIER studio contract and reported 8 hours
+	// used where the studio product reports 1 — two screens disagreeing about the
+	// same client, which is the one thing this filter exists to prevent.
+	// Mirroring the studio product's own window means they cannot drift.
+	$sc = $wpdb->get_row( $wpdb->prepare(
+		"SELECT contract_start_date, contract_end_date FROM {$clients} WHERE id = %d",
+		(int) $client->studio_client_id
+	) );
+
+	if ( $sc && ! empty( $sc->contract_start_date ) && ! empty( $sc->contract_end_date ) ) {
 		$used = $wpdb->get_var( $wpdb->prepare(
 			"SELECT COALESCE(SUM(duration_hours),0) FROM {$bookings}
 			 WHERE client_id = %d
 			   AND status IN ('confirmed','completed','cancelled_late')
 			   AND booking_date >= %s AND booking_date <= %s",
-			(int) $client->studio_client_id, $client->contract_start, $client->contract_end
+			(int) $client->studio_client_id, $sc->contract_start_date, $sc->contract_end_date
 		) );
 	} else {
+		// No dates on the studio row — same fallback the studio product uses.
 		$used = $wpdb->get_var( $wpdb->prepare(
 			"SELECT COALESCE(SUM(duration_hours),0) FROM {$bookings}
 			 WHERE client_id = %d AND status IN ('confirmed','completed','cancelled_late')",
@@ -302,6 +314,295 @@ function mwm_rm_confirmations( $campaign, $participants, $assets ) {
 }
 
 /* ===========================================================================
+ * PRE-SCHEDULING — the client picks a day, MWM confirms  (Spec §6)
+ *
+ * 🔴 A PRE-SCHEDULE IS NOT A BOOKING. Picking a day files a request and holds
+ * the slot; the shoot is not real until a producer confirms it. That single
+ * distinction is what makes it safe to hand a client a calendar at all, and
+ * every string below is written so the client can never mistake one for the
+ * other.
+ *
+ * 🔴 THE NOTICE RULE HAS EXACTLY ONE IMPLEMENTATION: mwm_rm_notice_days().
+ * The browser uses it (via the min= attribute this file emits) and the submit
+ * handler re-checks it. When two places must agree on a rule, one function has
+ * to produce both — otherwise the day comes when they disagree and the crew
+ * eats it.
+ *
+ * 🔴 Days inside the notice window are UNPICKABLE, not warned about. A rule you
+ * can click through is a rule you will be asked to break.
+ * ======================================================================== */
+
+// Studio 48 hours · on location 7 days. Michael's rule, spec §6.2.
+function mwm_rm_notice_days( $kind ) {
+	return ( $kind === 'studio' ) ? 2 : 7;
+}
+
+function mwm_rm_is_closed_day( $ymd ) {
+	// Sundays closed by default (spec §6.3).
+	return ( (int) date( 'w', strtotime( $ymd ) ) === 0 );
+}
+
+/**
+ * The earliest day that BOTH clears the notice window and is open.
+ * Named separately from the raw cutoff on purpose: the raw cutoff can land on a
+ * Sunday, and telling a client "from the 14th" when the 14th is closed is the
+ * kind of small lie that costs a phone call.
+ */
+function mwm_rm_earliest_open( $kind ) {
+	$d = strtotime( current_time( 'Y-m-d' ) . ' +' . mwm_rm_notice_days( $kind ) . ' days' );
+	for ( $i = 0; $i < 14; $i++ ) {
+		$ymd = date( 'Y-m-d', $d );
+		if ( ! mwm_rm_is_closed_day( $ymd ) ) { return $ymd; }
+		$d = strtotime( '+1 day', $d );
+	}
+	return date( 'Y-m-d', $d );
+}
+
+/** Server-side gate. Returns '' when the date is acceptable, else the reason. */
+function mwm_rm_reject_reason( $ymd, $kind ) {
+	if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $ymd ) || ! strtotime( $ymd ) ) {
+		return 'That date did not look like a date.';
+	}
+	if ( mwm_rm_is_closed_day( $ymd ) ) {
+		return 'We are closed on Sundays.';
+	}
+	if ( strtotime( $ymd ) < strtotime( mwm_rm_earliest_open( $kind ) ) ) {
+		return ( $kind === 'studio' )
+			? 'Studio days need 48 hours of notice. The earliest we can take is ' . mwm_rm_fmt_date( mwm_rm_earliest_open( 'studio' ), 'l j F' ) . '.'
+			: 'Filming on location needs 7 days of notice. The earliest we can take is ' . mwm_rm_fmt_date( mwm_rm_earliest_open( 'location' ), 'l j F' ) . '.';
+	}
+	return '';
+}
+
+function mwm_rm_windows() {
+	return array(
+		'morning'   => array( 'label' => 'Morning · 9am – 12pm',   'start' => '09:00', 'end' => '12:00' ),
+		'afternoon' => array( 'label' => 'Afternoon · 1pm – 4pm',  'start' => '13:00', 'end' => '16:00' ),
+		'fullday'   => array( 'label' => 'Full day · 9am – 5pm',   'start' => '09:00', 'end' => '17:00' ),
+	);
+}
+
+/**
+ * Handle a request. Returns array( 'error' => string ) or array( 'ok' => campaign row ).
+ * Every check here is duplicated in the browser for convenience only — the
+ * browser is never trusted on a rule that costs a crew day.
+ */
+function mwm_rm_handle_request( $client ) {
+
+	global $wpdb;
+	$t = $wpdb->prefix . 'mwm_roadmap_campaigns';
+
+	$campaign_id = isset( $_POST['campaign_id'] ) ? (int) $_POST['campaign_id'] : 0;
+	$kind        = ( isset( $_POST['shoot_kind'] ) && $_POST['shoot_kind'] === 'studio' ) ? 'studio' : 'location';
+	$date        = isset( $_POST['shoot_date'] ) ? sanitize_text_field( wp_unslash( $_POST['shoot_date'] ) ) : '';
+	$window      = isset( $_POST['window'] ) ? sanitize_text_field( wp_unslash( $_POST['window'] ) ) : '';
+	$address     = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : '';
+	$notes       = isset( $_POST['notes'] ) ? sanitize_textarea_field( wp_unslash( $_POST['notes'] ) ) : '';
+
+	$windows = mwm_rm_windows();
+	if ( ! isset( $windows[ $window ] ) ) { return array( 'error' => 'Please choose a time of day.' ); }
+
+	// The campaign must be THIS client's, and must not already be spent or held.
+	$campaign = $wpdb->get_row( $wpdb->prepare(
+		"SELECT * FROM {$t} WHERE id = %d AND client_id = %d", $campaign_id, $client->id
+	) );
+	if ( ! $campaign ) { return array( 'error' => 'Please choose which campaign this is for.' ); }
+	if ( $campaign->status !== 'planned' ) {
+		return array( 'error' => 'That campaign has already been filmed.' );
+	}
+	if ( in_array( $campaign->shoot_state, array( 'pre_scheduled', 'confirmed' ), true ) ) {
+		return array( 'error' => 'That campaign already has a day held. Speak to your strategist to move it.' );
+	}
+
+	$why = mwm_rm_reject_reason( $date, $kind );
+	if ( $why !== '' ) { return array( 'error' => $why ); }
+
+	// 🔴 A full street address is mandatory on location (Strategy §8). A crew
+	// cannot be sent to "the new house".
+	if ( $kind === 'location' && strlen( trim( $address ) ) < 8 ) {
+		return array( 'error' => 'We need the full street address for an on-location day.' );
+	}
+
+	$start = $date . ' ' . $windows[ $window ]['start'] . ':00';
+	$end   = $date . ' ' . $windows[ $window ]['end'] . ':00';
+
+	$ok = $wpdb->update( $t, array(
+		'shoot_at'        => $start,
+		'shoot_end'       => $end,
+		'shoot_kind'      => $kind,
+		'shoot_location'  => ( $kind === 'studio' ) ? 'MWM Creations & Studios' : $address,
+		'shoot_state'     => 'pre_scheduled',
+		'status'          => 'scheduled',
+		'requested_by'    => $client->email,
+		'requested_at'    => current_time( 'mysql' ),
+		// Spec §6.3 — an unconfirmed hold must not sit on a day forever.
+		'hold_expires_at' => date( 'Y-m-d H:i:s', strtotime( current_time( 'mysql' ) . ' +48 hours' ) ),
+	), array( 'id' => (int) $campaign->id ) );
+
+	if ( $ok === false ) { return array( 'error' => 'Something went wrong saving that. Please try again.' ); }
+
+	if ( $notes !== '' ) {
+		$wpdb->insert( $wpdb->prefix . 'mwm_roadmap_actions', array(
+			'client_id'   => $client->id,
+			'campaign_id' => (int) $campaign->id,
+			'title'       => 'Notes for ' . $campaign->title,
+			'detail'      => $notes,
+			'resolved'    => 0,
+		) );
+	}
+
+	mwm_rm_notify_request( $client, $campaign, $date, $windows[ $window ]['label'], $kind, $address, $notes );
+
+	return array( 'ok' => $campaign, 'date' => $date, 'window' => $windows[ $window ]['label'] );
+}
+
+/**
+ * 🔴 A pre-schedule is not an FYI, it is a task with a clock on it (spec §7.2).
+ * An on-location request carries 7 days of runway; if this sits unread for three
+ * of them, half the notice Michael just set is gone before anyone looks.
+ * So the subject line carries the decision inputs, not just a notification.
+ */
+function mwm_rm_notify_request( $client, $campaign, $date, $window_label, $kind, $address, $notes ) {
+
+	$where = ( $kind === 'studio' ) ? 'STUDIO' : 'ON LOCATION';
+	$subj  = sprintf(
+		'🎬 Pre-scheduled — %s · %s, %s · %s',
+		$client->company ? $client->company : $client->client_name,
+		mwm_rm_fmt_date( $date, 'D j M' ),
+		$window_label,
+		$where
+	);
+
+	$body  = "A ROADMAP client has requested a filming day. NOTHING IS BOOKED until you confirm it.\n\n";
+	$body .= "Client:    " . ( $client->company ? $client->company : $client->client_name ) . "\n";
+	$body .= "Requested: " . $client->email . "\n";
+	$body .= "Campaign:  " . (int) $campaign->month_no . " — " . $campaign->title . "\n";
+	$body .= "Date:      " . mwm_rm_fmt_date( $date, 'l j F Y' ) . "\n";
+	$body .= "Time:      " . $window_label . "\n";
+	$body .= "Type:      " . $where . "\n";
+	if ( $kind === 'location' ) { $body .= "Address:   " . $address . "\n"; }
+	if ( $notes !== '' )        { $body .= "\nNotes from the client:\n" . $notes . "\n"; }
+	$body .= "\nConfirm or decline here:\n" . admin_url( 'admin.php?page=mwm-roadmap-requests' ) . "\n";
+	$body .= "\nThe hold expires in 48 hours. If nobody acts, the day is released and the\n";
+	$body .= "client is told — silence must never be the thing that decides.\n";
+
+	wp_mail( 'info@mwmcreations.com', $subj, $body );
+}
+
+/* ===========================================================================
+ * MWM SIDE — confirm or decline
+ * Without this the portal is a request box that goes nowhere, which is worse
+ * than no request box at all.
+ * ======================================================================== */
+
+add_action( 'admin_menu', function () {
+	add_menu_page(
+		'ROADMAP requests', 'ROADMAP requests', 'manage_options',
+		'mwm-roadmap-requests', 'mwm_rm_requests_screen', 'dashicons-video-alt2', 26
+	);
+} );
+
+function mwm_rm_requests_screen() {
+
+	if ( ! current_user_can( 'manage_options' ) ) { return; }
+
+	global $wpdb;
+	$tc = $wpdb->prefix . 'mwm_roadmap_campaigns';
+	$tl = $wpdb->prefix . 'mwm_roadmap_clients';
+	$notice = '';
+
+	if ( isset( $_POST['rm_action'] ) && check_admin_referer( 'mwm_rm_decide' ) ) {
+		$id     = (int) $_POST['campaign_id'];
+		$reason = isset( $_POST['reason'] ) ? sanitize_text_field( wp_unslash( $_POST['reason'] ) ) : '';
+		$row    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tc} WHERE id = %d", $id ) );
+
+		if ( $row && $_POST['rm_action'] === 'confirm' ) {
+			$wpdb->update( $tc, array(
+				'shoot_state'     => 'confirmed',
+				'confirmed_by'    => wp_get_current_user()->user_email,
+				'confirmed_at'    => current_time( 'mysql' ),
+				'hold_expires_at' => null,
+			), array( 'id' => $id ) );
+			$notice = 'Confirmed. The client now sees it as confirmed on their portal.';
+
+		} elseif ( $row && $_POST['rm_action'] === 'decline' ) {
+			// 🔴 A decline REQUIRES a reason and it goes to the client verbatim.
+			// "No" with no reason is the thing that costs a round trip.
+			if ( $reason === '' ) {
+				$notice = 'A decline needs a reason — it goes to the client word for word.';
+			} else {
+				$wpdb->update( $tc, array(
+					'shoot_at'        => null,
+					'shoot_end'       => null,
+					'shoot_state'     => 'none',
+					'status'          => 'planned',
+					'hold_expires_at' => null,
+				), array( 'id' => $id ) );
+				$cl = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tl} WHERE id = %d", (int) $row->client_id ) );
+				if ( $cl ) {
+					wp_mail(
+						$cl->email,
+						'About the day you asked for',
+						"Hi,\n\nWe can't do " . mwm_rm_fmt_date( $row->shoot_at, 'l j F' ) . " for "
+						. $row->title . ". Here's why:\n\n" . $reason
+						. "\n\nThe day is back in your portal — pick another whenever you're ready.\n\n"
+						. home_url( '/roadmap-portal/' ) . "\n"
+					);
+				}
+				$notice = 'Declined, and the client has been told why.';
+			}
+		}
+	}
+
+	$rows = $wpdb->get_results(
+		"SELECT c.*, l.company, l.client_name, l.email
+		   FROM {$tc} c JOIN {$tl} l ON l.id = c.client_id
+		  WHERE c.shoot_state = 'pre_scheduled'
+		  ORDER BY c.shoot_at ASC"
+	);
+	?>
+	<div class="wrap">
+		<h1>ROADMAP filming requests</h1>
+		<?php if ( $notice ) : ?><div class="notice notice-info"><p><?php echo esc_html( $notice ); ?></p></div><?php endif; ?>
+
+		<?php if ( empty( $rows ) ) : ?>
+			<p>No requests waiting. When a client picks a day it appears here.</p>
+		<?php else : ?>
+			<p>These days are <strong>held, not booked</strong>. The client has been told the same thing.</p>
+			<table class="widefat striped">
+				<thead><tr><th>Client</th><th>Campaign</th><th>Day</th><th>Where</th><th>Asked</th><th style="width:34%">Decide</th></tr></thead>
+				<tbody>
+				<?php foreach ( $rows as $r ) : ?>
+					<tr>
+						<td><strong><?php echo esc_html( $r->company ?: $r->client_name ); ?></strong><br>
+							<span class="description"><?php echo esc_html( $r->email ); ?></span></td>
+						<td>Campaign <?php echo (int) $r->month_no; ?><br>
+							<span class="description"><?php echo esc_html( $r->title ); ?></span></td>
+						<td><?php echo esc_html( mwm_rm_fmt_date( $r->shoot_at, 'D j M Y' ) ); ?><br>
+							<span class="description"><?php echo esc_html( mwm_rm_fmt_date( $r->shoot_at, 'g:ia' ) ); ?>–<?php echo esc_html( mwm_rm_fmt_date( $r->shoot_end, 'g:ia' ) ); ?></span></td>
+						<td><?php echo $r->shoot_kind === 'studio' ? 'Studio' : '<strong>On location</strong>'; ?><br>
+							<span class="description"><?php echo esc_html( $r->shoot_location ); ?></span></td>
+						<td><span class="description"><?php echo esc_html( mwm_rm_fmt_date( $r->requested_at, 'j M, g:ia' ) ); ?><br>
+							hold ends <?php echo esc_html( mwm_rm_fmt_date( $r->hold_expires_at, 'j M g:ia' ) ); ?></span></td>
+						<td>
+							<form method="post" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+								<?php wp_nonce_field( 'mwm_rm_decide' ); ?>
+								<input type="hidden" name="campaign_id" value="<?php echo (int) $r->id; ?>">
+								<button class="button button-primary" name="rm_action" value="confirm">Confirm</button>
+								<input type="text" name="reason" placeholder="Reason, sent to the client" style="flex:1;min-width:150px">
+								<button class="button" name="rm_action" value="decline">Decline</button>
+							</form>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+		<?php endif; ?>
+	</div>
+	<?php
+}
+
+/* ===========================================================================
  * SHORTCODE
  * ======================================================================== */
 
@@ -371,12 +672,25 @@ function mwm_rm_render( $atts = array() ) {
 
 	$client = mwm_rm_current_client();
 
+	// ── a filming-day request (the first place a client writes to the DB) ──
+	$req_error = '';
+	$req_ok    = null;
+	if ( $client && isset( $_POST['mwm_rm_request'] ) ) {
+		if ( ! isset( $_POST['mwm_rm_rnonce'] ) || ! wp_verify_nonce( wp_unslash( $_POST['mwm_rm_rnonce'] ), 'mwm_rm_request' ) ) {
+			$req_error = 'Your session expired. Please try again.';
+		} else {
+			$res = mwm_rm_handle_request( $client );
+			if ( isset( $res['error'] ) ) { $req_error = $res['error']; }
+			else { $req_ok = $res; }
+		}
+	}
+
 	ob_start();
 	echo mwm_rm_styles();
 	if ( ! $client ) {
 		mwm_rm_login_screen( $error );
 	} else {
-		mwm_rm_portal_screen( $client );
+		mwm_rm_portal_screen( $client, $req_error, $req_ok );
 	}
 	return ob_get_clean();
 }
@@ -420,7 +734,7 @@ function mwm_rm_login_screen( $error = '' ) { ?>
  * PORTAL
  * ======================================================================== */
 
-function mwm_rm_portal_screen( $client ) {
+function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
 
 	$campaigns    = mwm_rm_campaigns( $client->id );
 	$ids          = wp_list_pluck( $campaigns, 'id' );
@@ -510,6 +824,166 @@ function mwm_rm_portal_screen( $client ) {
     </div>
   </div>
 
+  <!-- ── WHAT YOU CAN BOOK ─────────────────────────────────────────── -->
+  <section class="rm-sec">
+    <h2 class="rm-h2">What you can book, and how</h2>
+    <div class="rm-book">
+      <div class="rm-brow">
+        <div class="rm-bk">Campaign day <span class="rm-bmini">in your plan</span></div>
+        <div class="rm-bd">A full production day. Tell us the campaign and we will build the day around it.</div>
+        <div class="rm-bn"><b>7 days'</b> notice on location<br><b>48 hours'</b> notice in the studio</div>
+      </div>
+      <div class="rm-brow">
+        <div class="rm-bk">Capture · series <span class="rm-bmini">does not draw down</span></div>
+        <div class="rm-bd">A property you want filmed repeatedly — before, during and after a build. Register it once and we plan it into our route.</div>
+        <div class="rm-bn">We schedule it with you</div>
+      </div>
+      <div class="rm-brow">
+        <div class="rm-bk">Capture · standard <span class="rm-bmini">draws 1</span></div>
+        <div class="rm-bd">Name the property. We choose the day and group it with other visits nearby.</div>
+        <div class="rm-bn">Filmed within <b>10 working days</b></div>
+      </div>
+      <div class="rm-brow">
+        <div class="rm-bk">Studio hours <span class="rm-bmini">in your plan</span></div>
+        <div class="rm-bd">Our studio, already lit. Good for talking-head pieces, interviews and social sets.</div>
+        <div class="rm-bn"><b>48 hours'</b> notice</div>
+      </div>
+    </div>
+
+    <div class="rm-cost">
+      <div class="rm-costh">What costs extra</div>
+      <ul>
+        <li><b>Priority Capture</b> — you name the day, or you need it within 5 days. That is a dedicated trip, so it is charged at our rate card and does not come out of your allowance.</li>
+        <li><b>Captures beyond your allowance</b> — charged at rate card.</li>
+        <li><b>Studio time beyond your included hours</b> — charged at our hourly rate.</li>
+        <li><b>Moving or cancelling inside the notice window</b> — 7 days on location, 48 hours in the studio. The crew day is committed by then, so it uses up that campaign day. <b>Outside the window, changes are free.</b></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── REQUEST A FILMING DAY (spec §6) ───────────────────────────── -->
+  <?php
+  $bookable = array();
+  foreach ( $campaigns as $c ) {
+    if ( $c->status === 'planned' && $c->shoot_state === 'none' ) { $bookable[] = $c; }
+  }
+  if ( ! empty( $bookable ) ) :
+    $min_studio   = mwm_rm_earliest_open( 'studio' );
+    $min_location = mwm_rm_earliest_open( 'location' );
+    $last_day     = $client->contract_end ? $client->contract_end : date( 'Y-m-d', strtotime( '+1 year' ) );
+  ?>
+  <section class="rm-sec">
+    <h2 class="rm-h2">Book your next filming day</h2>
+
+    <?php if ( $req_ok ) : ?>
+      <div class="rm-held">
+        <div class="rm-heldh">We are holding <?php echo esc_html( mwm_rm_fmt_date( $req_ok['date'], 'l j F' ) ); ?> for you.</div>
+        <p>That day is now off the calendar for everyone else while we look at it.
+           <strong>It is not confirmed yet</strong> — <?php echo esc_html( $client->strategist ? $client->strategist : 'your strategist' ); ?>
+           will come back to you, and you will see it change to Confirmed right here.</p>
+      </div>
+    <?php endif; ?>
+
+    <?php if ( $req_error ) : ?>
+      <div class="rm-err" role="alert"><?php echo esc_html( $req_error ); ?></div>
+    <?php endif; ?>
+
+    <form method="post" class="rm-book-form" id="rm-book"
+          data-min-studio="<?php echo esc_attr( $min_studio ); ?>"
+          data-min-location="<?php echo esc_attr( $min_location ); ?>">
+      <?php wp_nonce_field( 'mwm_rm_request', 'mwm_rm_rnonce' ); ?>
+
+      <!-- 🔴 Shoot type comes FIRST because it changes which days exist. -->
+      <div class="rm-f">
+        <label class="rm-flab">Where are we filming?</label>
+        <div class="rm-seg">
+          <label class="rm-segopt">
+            <input type="radio" name="shoot_kind" value="location" checked>
+            <span><b>On location</b><em>Your site, a finished home, an event</em></span>
+          </label>
+          <label class="rm-segopt">
+            <input type="radio" name="shoot_kind" value="studio">
+            <span><b>In our studio</b><em>Already lit and ready for you</em></span>
+          </label>
+        </div>
+        <div class="rm-rule" id="rm-rule"></div>
+      </div>
+
+      <div class="rm-grid2">
+        <div class="rm-f">
+          <label class="rm-flab" for="rm-date">Which day?</label>
+          <input class="rm-in" type="date" name="shoot_date" id="rm-date" required
+                 min="<?php echo esc_attr( $min_location ); ?>" max="<?php echo esc_attr( $last_day ); ?>">
+          <div class="rm-hint">Sundays are closed.</div>
+        </div>
+        <div class="rm-f">
+          <label class="rm-flab" for="rm-window">What time?</label>
+          <select class="rm-in" name="window" id="rm-window" required>
+            <?php foreach ( mwm_rm_windows() as $k => $w ) : ?>
+              <option value="<?php echo esc_attr( $k ); ?>"><?php echo esc_html( $w['label'] ); ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+      </div>
+
+      <div class="rm-f" id="rm-addr-wrap">
+        <label class="rm-flab" for="rm-addr">Full address</label>
+        <input class="rm-in" type="text" name="address" id="rm-addr" placeholder="Street, city, ZIP — gate codes go in the notes">
+        <div class="rm-hint">We need the whole address so the crew can get there without calling you.</div>
+      </div>
+
+      <div class="rm-f">
+        <label class="rm-flab" for="rm-campaign">Which campaign is this day for?</label>
+        <select class="rm-in" name="campaign_id" id="rm-campaign" required>
+          <?php foreach ( $bookable as $c ) : ?>
+            <option value="<?php echo (int) $c->id; ?>">Campaign <?php echo (int) $c->month_no; ?> · <?php echo esc_html( $c->title ); ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+
+      <div class="rm-f">
+        <label class="rm-flab" for="rm-notes">Anything we should know? <span class="rm-opt">Optional</span></label>
+        <textarea class="rm-in" name="notes" id="rm-notes" rows="3"
+                  placeholder="Who is on camera, gate codes, parking, guests to invite, anything happening that day"></textarea>
+      </div>
+
+      <div class="rm-actions">
+        <button class="rm-btn" type="submit" name="mwm_rm_request" value="1">Request this day</button>
+        <span class="rm-actnote">This holds the day and sends it to us. <strong>It is not booked until we confirm</strong> — you will see it change here.</span>
+      </div>
+    </form>
+  </section>
+
+  <script>
+  (function(){
+    var f = document.getElementById('rm-book'); if(!f) return;
+    var date = document.getElementById('rm-date'),
+        rule = document.getElementById('rm-rule'),
+        addr = document.getElementById('rm-addr-wrap'),
+        addrIn = document.getElementById('rm-addr');
+    // 🔴 The minimums come from PHP. The browser never computes the notice rule.
+    var mins = { studio: f.dataset.minStudio, location: f.dataset.minLocation };
+    function human(s){
+      var d = new Date(s + 'T12:00:00');
+      return d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
+    }
+    function apply(){
+      var kind = f.querySelector('input[name=shoot_kind]:checked').value;
+      date.min = mins[kind];
+      if (date.value && date.value < date.min) { date.value = ''; }
+      rule.textContent = (kind === 'studio')
+        ? 'Studio days need 48 hours\u2019 notice — the earliest we can take is ' + human(mins.studio) + '.'
+        : 'Filming on location needs 7 days\u2019 notice — the earliest we can take is ' + human(mins.location) + '.';
+      var loc = (kind === 'location');
+      addr.style.display = loc ? '' : 'none';
+      addrIn.required = loc;
+    }
+    f.querySelectorAll('input[name=shoot_kind]').forEach(function(r){ r.addEventListener('change', apply); });
+    apply();
+  })();
+  </script>
+  <?php endif; ?>
+
   <!-- ── NEXT FILMING SESSION ──────────────────────────────────────── -->
   <?php if ( $next ) :
     $conf = mwm_rm_confirmations( $next,
@@ -557,7 +1031,7 @@ function mwm_rm_portal_screen( $client ) {
         <?php if ( $remaining !== null && $remaining > 0 && $days_left !== null ) : ?>
           You have <strong><?php echo (int) $remaining; ?></strong> campaign <?php echo $remaining === 1 ? 'day' : 'days'; ?>
           and <strong><?php echo (int) max( 0, $days_left ); ?></strong> days left in your year.
-          Speak to your strategist and we will get the next one in the diary.
+          Pick a day above and we will get it in the diary.
         <?php else : ?>
           Speak to your strategist to plan your next filming day.
         <?php endif; ?>
@@ -588,6 +1062,7 @@ function mwm_rm_portal_screen( $client ) {
     </div>
   </section>
   <?php endif; ?>
+
 
   <!-- ── ALLOWANCES ────────────────────────────────────────────────── -->
   <section class="rm-sec">
@@ -639,7 +1114,7 @@ function mwm_rm_portal_screen( $client ) {
         foreach ( $ca as $a ) { if ( $a->kind !== 'script' ) { $films[] = $a; } } ?>
         <details class="rm-cam" <?php echo ( $c->status === 'editing' || ( $next && $c->id === $next->id ) ) ? 'open' : ''; ?>>
           <summary class="rm-camsum">
-            <span class="rm-cmonth">Month <?php echo (int) $c->month_no; ?></span>
+            <span class="rm-cmonth">Campaign <?php echo (int) $c->month_no; ?></span>
             <span class="rm-ctitle"><?php echo esc_html( $c->title ); ?></span>
             <span class="rm-pill rm-p<?php echo (int) $step; ?>"><?php echo esc_html( mwm_rm_status_label( $c->status ) ); ?></span>
           </summary>
@@ -679,50 +1154,13 @@ function mwm_rm_portal_screen( $client ) {
                 <?php endforeach; ?>
               </ul>
             <?php elseif ( $c->status === 'planned' ) : ?>
-              <p class="rm-cempty">Not filmed yet — this month is still yours.</p>
+              <p class="rm-cempty">Not filmed yet — this campaign is still yours.</p>
             <?php elseif ( $c->status === 'editing' ) : ?>
               <p class="rm-cempty">In the edit now. We will let you know the moment it is ready for you.</p>
             <?php endif; ?>
           </div>
         </details>
       <?php endforeach; ?>
-    </div>
-  </section>
-
-  <!-- ── WHAT YOU CAN BOOK ─────────────────────────────────────────── -->
-  <section class="rm-sec">
-    <h2 class="rm-h2">What you can book, and how</h2>
-    <div class="rm-book">
-      <div class="rm-brow">
-        <div class="rm-bk">Campaign day <span class="rm-bmini">in your plan</span></div>
-        <div class="rm-bd">A full production day. Tell us the month and the theme and we will build the day around it.</div>
-        <div class="rm-bn"><b>7 days'</b> notice on location<br><b>48 hours'</b> notice in the studio</div>
-      </div>
-      <div class="rm-brow">
-        <div class="rm-bk">Capture · series <span class="rm-bmini">does not draw down</span></div>
-        <div class="rm-bd">A property you want filmed repeatedly — before, during and after a build. Register it once and we plan it into our route.</div>
-        <div class="rm-bn">We schedule it with you</div>
-      </div>
-      <div class="rm-brow">
-        <div class="rm-bk">Capture · standard <span class="rm-bmini">draws 1</span></div>
-        <div class="rm-bd">Name the property. We choose the day and group it with other visits nearby.</div>
-        <div class="rm-bn">Filmed within <b>10 working days</b></div>
-      </div>
-      <div class="rm-brow">
-        <div class="rm-bk">Studio hours <span class="rm-bmini">in your plan</span></div>
-        <div class="rm-bd">Our studio, already lit. Good for talking-head pieces, interviews and social sets.</div>
-        <div class="rm-bn"><b>48 hours'</b> notice</div>
-      </div>
-    </div>
-
-    <div class="rm-cost">
-      <div class="rm-costh">What costs extra</div>
-      <ul>
-        <li><b>Priority Capture</b> — you name the day, or you need it within 5 days. That is a dedicated trip, so it is charged at our rate card and does not come out of your allowance.</li>
-        <li><b>Captures beyond your allowance</b> — charged at rate card.</li>
-        <li><b>Studio time beyond your included hours</b> — charged at our hourly rate.</li>
-        <li><b>Moving or cancelling inside the notice window</b> — 7 days on location, 48 hours in the studio. The crew day is committed by then, so it uses up that campaign day. <b>Outside the window, changes are free.</b></li>
-      </ul>
     </div>
   </section>
 
@@ -808,6 +1246,45 @@ body.mwm-roadmap-page .content-area{max-width:1200px !important;width:100% !impo
   color:var(--cr);border-radius:9px;padding:11px 13px;font-size:13.4px;margin-bottom:16px;font-weight:560}
 .rm-lfoot{font-size:12.4px;color:var(--i3);margin-top:18px !important;line-height:1.55}
 
+
+/* booking form */
+.rm-book-form{background:var(--pa);border:1px solid var(--ln);border-radius:12px;padding:20px 22px;box-shadow:var(--sh)}
+.rm-f{margin-bottom:17px}
+.rm-f:last-of-type{margin-bottom:0}
+.rm-flab{display:block;font-size:12.4px;font-weight:660;color:var(--i2);margin-bottom:7px}
+.rm-opt{font-weight:500;color:var(--i3);font-size:11.6px}
+.rm-grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:620px){.rm-grid2{grid-template-columns:1fr;gap:0}}
+.rm-book-form .rm-in{width:100%;padding:11px 13px;border:1px solid var(--ln);border-radius:9px;
+  background:var(--su);color:var(--ink);font-size:15px;font-family:inherit;margin-bottom:0}
+.rm-book-form textarea.rm-in{resize:vertical;line-height:1.5}
+.rm-hint{font-size:12px;color:var(--i3);margin-top:6px}
+.rm-seg{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:620px){.rm-seg{grid-template-columns:1fr}}
+.rm-segopt{position:relative;display:block;cursor:pointer}
+.rm-segopt input{position:absolute;opacity:0;width:0;height:0}
+.rm-segopt span{display:block;border:1px solid var(--ln);border-radius:10px;padding:12px 14px;background:var(--su)}
+.rm-segopt b{display:block;font-size:14px;font-weight:640}
+.rm-segopt em{display:block;font-style:normal;font-size:12.2px;color:var(--i3);margin-top:3px}
+.rm-segopt input:checked + span{border-color:var(--s3);box-shadow:inset 0 0 0 1px var(--s3);background:color-mix(in srgb,var(--s1) 12%,var(--pa))}
+html[data-theme="dark"] .rm-segopt input:checked + span{background:color-mix(in srgb,var(--s1) 34%,var(--pa))}
+.rm-segopt input:focus-visible + span{outline:2px solid var(--s3);outline-offset:2px}
+.rm-rule{margin-top:11px;font-size:12.8px;color:var(--i2);background:var(--p2);border:1px solid var(--ln);
+  border-left:3px solid var(--s3);border-radius:8px;padding:10px 12px}
+.rm-actions{margin-top:20px;padding-top:17px;border-top:1px solid var(--ln);display:flex;align-items:center;gap:15px;flex-wrap:wrap}
+.rm-btn{padding:12px 22px;border:0;border-radius:9px;background:var(--s4);color:#fff;font-size:15px;
+  font-weight:640;cursor:pointer;font-family:inherit;width:auto}
+html[data-theme="dark"] .rm-btn{background:var(--s3)}
+.rm-btn:hover{background:var(--s5)}
+html[data-theme="dark"] .rm-btn:hover{background:var(--s4);color:#0d2440}
+.rm-actnote{font-size:12.6px;color:var(--i3);max-width:44ch;line-height:1.5}
+.rm-actnote strong{color:var(--i2)}
+.rm-held{background:var(--pa);border:1px solid var(--ln);border-left:3px solid var(--gd);border-radius:11px;
+  padding:15px 17px;margin-bottom:14px;box-shadow:var(--sh)}
+.rm-heldh{font-size:17px;font-weight:650;letter-spacing:-.012em;margin-bottom:5px}
+.rm-held p{font-size:13.4px;color:var(--i2);line-height:1.6}
+.rm-held strong{color:var(--ink)}
+
 /* header */
 .rm-top{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap;margin-bottom:24px}
 .rm-brand{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--i3);font-weight:700}
@@ -882,7 +1359,7 @@ body.mwm-roadmap-page .content-area{max-width:1200px !important;width:100% !impo
 .rm-camsum::-webkit-details-marker{display:none}
 .rm-camsum:hover{background:var(--p2)}
 .rm-cmonth{font-size:10.6px;letter-spacing:.1em;text-transform:uppercase;color:var(--i3);font-weight:680;
-  flex:none;width:80px;white-space:nowrap}
+  flex:none;width:96px;white-space:nowrap}
 .rm-ctitle{font-size:15px;font-weight:620;letter-spacing:-.008em;flex:1;min-width:120px}
 .rm-cambody{padding:0 16px 16px 16px;border-top:1px solid var(--ln);padding-top:14px}
 .rm-ctheme{font-size:13.6px;color:var(--i2);line-height:1.6}

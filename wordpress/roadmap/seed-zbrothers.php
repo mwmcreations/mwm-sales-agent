@@ -1,15 +1,6 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ · SEED: Zerlotini Brothers Construction
-// WP Code Snippets ID 29 · DEV · Aug 11 2026 · seed v1
-//
-// 🔴 FILENAME RULE CHANGED FOR THESE THREE FILES. wordpress/SNIPPET-INVENTORY.md
-// says a mirror is named for its Code Snippets ID. That rule assumed IDs are
-// stable. They are not: the Import screen's "Replace any existing snippets"
-// option DOES NOT REPLACE — every re-import mints a NEW ID, so this file was
-// snippet 23 then 29 inside one afternoon. Renaming the mirror each time
-// is how a repo ends up with three stale copies of the same code.
-// These three keep a STABLE name; the live ID is recorded on the line above and
-// in SNIPPET-INVENTORY.md. Verify it against the snippets list, never assume.
+// WP Code Snippets ID 34 · ACTIVE · DEV · Aug 11 2026 · seed v3
 //
 // GENERATED from docs/roadmap-seed/zbrothers_data.json by gen_wp_seeder.py.
 // DO NOT HAND-EDIT. Change the JSON and regenerate, or the portal Michael
@@ -30,7 +21,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_ZB_VERSION', '2' );
+define( 'MWM_RM_SEED_ZB_VERSION', '3' );
 
 function mwm_rm_seed_zbrothers() {
 
@@ -607,7 +598,7 @@ function mwm_rm_seed_zbrothers() {
 	$wpdb->insert( $actions, array(
 		'client_id' => $client_id,
 		'title'     => 'Four campaign days left, and 95 days to use them',
-		'detail'    => 'Months 9 to 12 of your roadmap are still to film. On location we need 7 days\' notice, so the last comfortable booking date is early November.',
+		'detail'    => 'Campaigns 9 to 12 of your roadmap are still to film. On location we need 7 days\' notice, so the last comfortable booking date is early November.',
 		'due_date'  => '2026-11-14',
 		'resolved'  => 0,
 	) );
@@ -621,7 +612,7 @@ function mwm_rm_seed_zbrothers() {
 	$wpdb->insert( $actions, array(
 		'client_id' => $client_id,
 		'title'     => 'We need a partner named for the Realtor Series',
-		'detail'    => 'Month 9 films with agents who sell your homes. Give us one or two names and we will handle the invitation and the scheduling.',
+		'detail'    => 'Campaign 9 films with agents who sell your homes. Give us one or two names and we will handle the invitation and the scheduling.',
 		'due_date'  => null,
 		'resolved'  => 0,
 	) );

@@ -43,7 +43,7 @@ w("""<?php
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_ZB_VERSION', '2' );
+define( 'MWM_RM_SEED_ZB_VERSION', '3' );
 
 function mwm_rm_seed_zbrothers() {
 

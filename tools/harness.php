@@ -60,6 +60,16 @@ function wp_list_pluck( $rows, $field ) {
 }
 function setcookie_stub() {}
 
+function sanitize_textarea_field( $v ) { return trim( strip_tags( (string) $v ) ); }
+function add_action( $t, $cb, $p = 10, $a = 1 ) {}
+function add_menu_page() {}
+function current_user_can( $c ) { return false; }
+function wp_get_current_user() { return (object) array( 'user_email' => 'x' ); }
+function check_admin_referer( $a ) { return true; }
+function admin_url( $p = '' ) { return 'https://mwmcreations.com/wp-admin/' . $p; }
+function wp_mail( $to, $s, $b ) { return true; }
+
+
 // ── fake $wpdb ──────────────────────────────────────────────────────────
 class HarnessWPDB {
 	public $prefix = 'wp_';
@@ -119,7 +129,7 @@ function mwm_rm_current_client() {
 	return $wpdb->data['wp_mwm_roadmap_clients'][0];
 }
 
-require __DIR__ . '/wp-snippet-27-roadmap-portal.php';
+require __DIR__ . '/portal_work.php';
 
 $html = call_user_func( $GLOBALS['__sc']['mwm_roadmap_portal'] );
 

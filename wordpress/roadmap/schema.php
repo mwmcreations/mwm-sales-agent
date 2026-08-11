@@ -1,17 +1,8 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ Portal · SCHEMA
-// WP Code Snippets ID 28 · ACTIVE · deployed Aug 11 2026 (Michael's named approval
+// WP Code Snippets ID 28 · ACTIVE · ACTIVE · deployed Aug 11 2026 (Michael's named approval
 // to run this on the production WP DB). Mirror of what is live in wp-admin.
 // DEV · Aug 9 2026 · v1.1.0 Aug 11 · v1.2.0 Aug 11 · Spec: docs/ROADMAP_Portal_Spec.md §10
-//
-// 🔴 FILENAME RULE CHANGED FOR THESE THREE FILES. wordpress/SNIPPET-INVENTORY.md
-// says a mirror is named for its Code Snippets ID. That rule assumed IDs are
-// stable. They are not: the Import screen's "Replace any existing snippets"
-// option DOES NOT REPLACE — every re-import mints a NEW ID, so this file was
-// snippet 21 then 28 inside one afternoon. Renaming the mirror each time
-// is how a repo ends up with three stale copies of the same code.
-// These three keep a STABLE name; the live ID is recorded on the line above and
-// in SNIPPET-INVENTORY.md. Verify it against the snippets list, never assume.
 //
 // v1.2.0 adds studio_client_id. The studio portal and the ROADMAP portal are
 // SEPARATE PRODUCTS with separate logins (Michael, Aug 11 — this reverses the
