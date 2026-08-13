@@ -86,3 +86,63 @@ Buy button on `/studio-hour/` clicked through to Stripe checkout with no
 
 🔴 **Never edit the label without reading what the field does.** Three weeks and
 four rejections went into rewording a control that discarded its own value.
+
+---
+
+# Addendum — Aug 12 evening · findings 3 and 4
+
+Two more arrived after the afternoon fixes went live, and they are the same thing
+said twice.
+
+**The automated rejection (#5)** — *"Opt-In Error: We are unable to submit the
+form as there is no submit button is present. Kindly provide the compliant opt in
+link."*
+
+**Salic Shabbir, 4:41pm** — *"We are not seeing a submit option that allows users
+to complete the opt-in process… Please update your form so that users can submit
+even if neither consent box is checked."* His screenshot showed our **new** two
+checkboxes, so the morning's fix was reviewed and accepted.
+
+## Finding 3 — a checkout cannot be the opt-in link
+
+Verified on the live page: on a cold load of `/book-studio/` there is **no submit
+button anywhere in the DOM**. `#bs-rs-pay` does not exist until the visitor picks
+hours, then a date, then a time slot — only then does the widget build it.
+
+A reviewer opens the URL, sees a phone field and two consent boxes, and has
+nothing to press. They cannot complete the opt-in, so they cannot verify it.
+
+🔑 **`/book-studio/` is a checkout, not a sign-up form.** Its consent boxes live
+inside a purchase flow that only reveals its button once you are buying
+something. Fine for customers, useless for a reviewer. Giving it as the opt-in
+URL was our error, and it plausibly contributed to more than one rejection.
+
+## Finding 4 — neither checkbox may be required
+
+Twilio's position: a user must be able to submit the opt-in form with **neither**
+box ticked. Our first version of the new form required at least one, which felt
+sensible and was wrong.
+
+## What shipped
+
+**`https://mwmcreations.com/sms-signup/`** — a real opt-in form and nothing else.
+No login, no query string, no purchase. Name, mobile, optional email, the same
+two consent checkboxes, and a **Submit button present on first paint**.
+Submitting with neither box ticked succeeds and writes **no** consent row — a
+ledger of non-consents is not a consent record. Writes to the same ledger as the
+booking form.
+
+`/book-studio/` keeps both checkboxes and keeps recording consent. It simply
+stops being the URL a reviewer is asked to complete.
+
+## Verified
+
+- Transactional only → row written, `+1407…`, `transactional=1 marketing=0`, UTC stamp, source URL, IP
+- Neither box → submits, confirmation shown, **no row written**
+- Test rows removed; ledger holds only real consents
+
+## The rule, restated
+
+🔴 **Never hand a reviewer a URL you have not opened cold yourself.** Five
+rejections, and three of them come down to nobody loading the opt-in link the way
+a stranger would.
