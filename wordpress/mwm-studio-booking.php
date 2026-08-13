@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.5.5
+ * Version: 2.7.0
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.5.0' ); // S19c: magic-link manage page + .ics + reminders
+define( 'MWM_STUDIO_VERSION', '2.7.0' ); // S27: phone quick-book page + daily calendar drift watch
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -30,6 +30,9 @@ class MWM_Studio_Booking {
 
 	/** @var string */
 	private $bookings_table;
+
+	/** @var string S26: admin audit trail. */
+	private $audit_table;
 
 	/** @var string */
 	private $login_attempts_option = 'mwm_studio_login_attempts';
@@ -48,6 +51,7 @@ class MWM_Studio_Booking {
 		global $wpdb;
 		$this->clients_table  = $wpdb->prefix . 'mwm_studio_clients';
 		$this->bookings_table = $wpdb->prefix . 'mwm_studio_bookings';
+		$this->audit_table    = $wpdb->prefix . 'mwm_studio_audit';
 
 		register_activation_hook( MWM_STUDIO_FILE, array( $this, 'activate' ) );
 
@@ -75,6 +79,9 @@ class MWM_Studio_Booking {
 			'mwm_studio_manage_get',
 			'mwm_studio_manage_cancel',
 			'mwm_studio_manage_reschedule',
+			// S27: quick-book. No WP session by design; qb_guard() checks token + PIN cookie.
+			'mwm_qb_slots',
+			'mwm_qb_create',
 			// S8.5 (Jul 8 2026): 'mwm_studio_record_calendly_booking' de-registered — portal-only booking; legacy Calendly path had no contract/date/hours checks.
 		);
 		foreach ( $ajax_actions as $action ) {
@@ -91,6 +98,13 @@ class MWM_Studio_Booking {
 		add_action( 'mwm_studio_reminders_event', array( $this, 'run_reminder_cron' ) );
 		add_action( 'init', array( $this, 'ensure_reminder_cron' ) );
 		add_action( 'init', array( $this, 'ensure_manage_page' ) );
+		// S27
+		add_action( 'init', array( $this, 'ensure_quick_book_page' ) );
+		add_action( 'init', array( $this, 'ensure_drift_cron' ) );
+		add_action( 'template_redirect', array( $this, 'qb_handle_gate' ) );
+		add_action( 'template_redirect', array( $this, 'qb_maybe_standalone' ), 20 );
+		add_action( 'wp_head', array( $this, 'qb_noindex' ) );
+		add_action( 'mwm_studio_drift_event', array( $this, 'run_drift_check' ) );
 
 		// S19c: force base64 transfer encoding — the host mail chain QP-decodes 8bit
 		// bodies, corrupting '=XX' hex sequences (manage URLs ?b=45&t=<hex> were eaten).
@@ -209,8 +223,27 @@ class MWM_Studio_Booking {
 			KEY hold_expires_at (hold_expires_at)
 		) {$charset_collate};";
 
+		// S26: audit trail — who changed what, when, and the value it held before.
+		$sql_audit = "CREATE TABLE {$this->audit_table} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			booking_id BIGINT UNSIGNED NULL,
+			client_id BIGINT UNSIGNED NULL,
+			actor_id BIGINT UNSIGNED NULL,
+			actor_name VARCHAR(191) NULL,
+			action VARCHAR(40) NOT NULL,
+			before_json LONGTEXT NULL,
+			after_json LONGTEXT NULL,
+			reason VARCHAR(255) NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (id),
+			KEY booking_id (booking_id),
+			KEY client_id (client_id),
+			KEY created_at (created_at)
+		) {$charset_collate};";
+
 		dbDelta( $sql_clients );
 		dbDelta( $sql_bookings );
+		dbDelta( $sql_audit );
 	}
 
 	private function default_settings() {
@@ -249,6 +282,7 @@ class MWM_Studio_Booking {
 	public function register_shortcode() {
 		add_shortcode( 'mwm_studio_portal', array( $this, 'render_portal' ) );
 		add_shortcode( 'mwm_manage_booking', array( $this, 'render_manage_page' ) );
+		add_shortcode( 'mwm_quick_book', array( $this, 'render_quick_book' ) ); // S27
 	}
 
 	public function frontend_assets() {
@@ -2372,6 +2406,13 @@ MWMJS;
 		add_submenu_page( 'mwm-studio-dashboard', __( 'Clients', 'mwm-studio' ), __( 'Clients', 'mwm-studio' ), 'manage_options', 'mwm-studio-clients', array( $this, 'render_clients_page' ) );
 		add_submenu_page( 'mwm-studio-dashboard', __( 'Bookings', 'mwm-studio' ), __( 'Bookings', 'mwm-studio' ), 'manage_options', 'mwm-studio-bookings', array( $this, 'render_bookings_page' ) );
 		add_submenu_page( 'mwm-studio-dashboard', __( 'Settings', 'mwm-studio' ), __( 'Settings', 'mwm-studio' ), 'manage_options', 'mwm-studio-settings', array( $this, 'render_settings_page' ) );
+		// S26 — admin booking control.
+		add_submenu_page( 'mwm-studio-dashboard', __( 'Reconciliation', 'mwm-studio' ), __( 'Reconciliation', 'mwm-studio' ), 'manage_options', 'mwm-studio-reconcile', array( $this, 'render_reconcile_page' ) );
+		add_submenu_page( 'mwm-studio-dashboard', __( 'Audit Trail', 'mwm-studio' ), __( 'Audit Trail', 'mwm-studio' ), 'manage_options', 'mwm-studio-audit', array( $this, 'render_audit_page' ) );
+		// Kept as a real submenu row on purpose: remove_submenu_page() would strip the
+		// entry user_can_access_admin_page() walks to resolve the parent, and every
+		// ?page=mwm-studio-booking-edit hit would 'Sorry, you are not allowed'.
+		add_submenu_page( 'mwm-studio-dashboard', __( 'Add / Edit Booking', 'mwm-studio' ), __( 'Add / Edit Booking', 'mwm-studio' ), 'manage_options', 'mwm-studio-booking-edit', array( $this, 'render_booking_edit_page' ) );
 	}
 
 	/**
@@ -2396,6 +2437,14 @@ MWMJS;
 		} elseif ( 'save_settings' === $action ) {
 			check_admin_referer( 'mwm_studio_save_settings' );
 			$this->admin_save_settings();
+		} elseif ( 'save_booking' === $action ) {
+			// S26: create or edit a booking through the single write path.
+			check_admin_referer( 'mwm_studio_save_booking' );
+			$this->admin_save_booking();
+		} elseif ( 'adjust_hours' === $action ) {
+			// S26: add hours to a package / change the contract total.
+			check_admin_referer( 'mwm_studio_adjust_hours' );
+			$this->admin_adjust_hours();
 		}
 	}
 
@@ -2417,13 +2466,13 @@ MWMJS;
 		if ( 'cancel_booking' === $mwm_action && isset( $_GET['id'] ) ) {
 			check_admin_referer( 'mwm_studio_cancel_booking_' . (int) $_GET['id'] );
 			$id = (int) $_GET['id'];
-			$wpdb->update(
-				$this->bookings_table,
-				array( 'status' => 'cancelled', 'cancelled_at' => current_time( 'mysql' ) ),
-				array( 'id' => $id ),
-				array( '%s', '%s' ),
-				array( '%d' )
-			);
+			// S26: was a bare $wpdb->update — it wrote the row and pushed nothing, so
+			// cancelling here left the Google Calendar event in place, blocking the
+			// studio forever. Now it goes through the single write path.
+			$res = $this->admin_write_booking( $id, array( 'status' => 'cancelled' ), array( 'action' => 'booking.cancel', 'reason' => 'Cancelled from the Bookings list' ) );
+			if ( ! $res['ok'] ) {
+				set_transient( 'mwm_studio_admin_error', $res['message'], 60 );
+			}
 			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-bookings&cancelled=1' ) );
 			exit;
 		}
@@ -2431,14 +2480,25 @@ MWMJS;
 		if ( 'complete_booking' === $mwm_action && isset( $_GET['id'] ) ) {
 			check_admin_referer( 'mwm_studio_complete_booking_' . (int) $_GET['id'] );
 			$id = (int) $_GET['id'];
-			$wpdb->update(
-				$this->bookings_table,
-				array( 'status' => 'completed' ),
-				array( 'id' => $id ),
-				array( '%s' ),
-				array( '%d' )
-			);
+			// S26: same write path. Completing does not move the session, so the
+			// calendar event is deliberately left alone.
+			$res = $this->admin_write_booking( $id, array( 'status' => 'completed' ), array( 'action' => 'booking.complete', 'reason' => 'Marked completed from the Bookings list' ) );
+			if ( ! $res['ok'] ) {
+				set_transient( 'mwm_studio_admin_error', $res['message'], 60 );
+			}
 			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-bookings&completed=1' ) );
+			exit;
+		}
+
+		if ( 'rotate_qb' === $mwm_action ) {
+			// S27: kills the old quick-book link AND the PIN in one move — the
+			// recovery path for a lost phone or a forgotten PIN.
+			check_admin_referer( 'mwm_studio_rotate_qb' );
+			delete_option( 'mwm_studio_qb_token' );
+			delete_option( 'mwm_studio_qb_pin' );
+			$this->qb_token(); // mint a fresh one straight away
+			$this->audit_log( 'quickbook.rotate', 0, 0, null, null, 'Link rotated and PIN cleared from Settings' );
+			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-settings&rotated=1' ) );
 			exit;
 		}
 
@@ -2531,6 +2591,11 @@ MWMJS;
 	private function admin_save_settings() {
 		$settings = $this->get_settings();
 
+		// S27: stored on its own so it never rides in the settings blob.
+		if ( isset( $_POST['drift_slack'] ) ) {
+			update_option( 'mwm_studio_drift_slack', esc_url_raw( wp_unslash( $_POST['drift_slack'] ) ), false );
+		}
+
 		$settings['studio_name']        = isset( $_POST['studio_name'] ) ? sanitize_text_field( wp_unslash( $_POST['studio_name'] ) ) : $settings['studio_name'];
 		$settings['studio_address']     = isset( $_POST['studio_address'] ) ? sanitize_text_field( wp_unslash( $_POST['studio_address'] ) ) : $settings['studio_address'];
 		$settings['min_booking_hours']  = isset( $_POST['min_booking_hours'] ) ? (float) $_POST['min_booking_hours'] : $settings['min_booking_hours'];
@@ -2562,6 +2627,1530 @@ MWMJS;
 	 * ADMIN PAGE: DASHBOARD
 	 * ========================================================================= */
 
+
+	/* =========================================================================
+	 * S26 — ADMIN BOOKING CONTROL (Aug 13 2026, Michael)
+	 *
+	 * "we need to be able to add hours, have more control... they wanna go over
+	 *  and use more time, and we need to be able to have that flexibility to go
+	 *  into their portal and adjust that... I don't want you to have to manually
+	 *  code times like you had to do this time."
+	 *
+	 * 🔴 THE DESIGN RULE: ONE WRITE PATH. Every admin mutation of a booking goes
+	 * through admin_write_booking(). In a single operation it writes the row,
+	 * pushes the calendar to match, and records an audit entry with the before
+	 * value. Nothing else in this plugin may UPDATE the bookings table from an
+	 * admin screen.
+	 *
+	 * The hours ledger is DERIVED, not stored — hours_used_in_contract() SUMs
+	 * duration_hours over the contract window. Writing the row IS moving the
+	 * ledger; there is no second number that can drift from it.
+	 *
+	 * Why the calendar is removed-and-recreated rather than updated: the machine
+	 * webhook (/webhook/studio-booking) accepts only booking_created /
+	 * booking_cancelled / booking_cancelled_late and 400s on anything else.
+	 * There is no booking_updated. The client-facing reschedule already solves
+	 * this with a bumped idempotency id (61, 61-r1, 61-r2...) via event_bid();
+	 * this reuses that exact mechanism, so S26 ships WordPress-side with no
+	 * machine deploy.
+	 *
+	 * Background — what this replaced: booking #61 (Jonathan Pineda, Aug 13
+	 * 2026) read 15:00 in the row and 14:15 on the calendar because the calendar
+	 * event had been hand-edited and nothing reconciled the two. The reminder
+	 * email reads the ROW, so the client was told the wrong time. Admin Cancel
+	 * and Mark Completed also wrote the row and pushed nothing, leaving orphan
+	 * events that block the studio forever. Both are closed here.
+	 * ========================================================================= */
+
+	/** S26: statuses whose booking occupies the studio and must have a calendar event. */
+	private function status_holds_calendar( $status ) {
+		return in_array( (string) $status, array( 'confirmed', 'completed' ), true );
+	}
+
+	/**
+	 * S26: statuses that DRAW HOURS from the package. Deliberately not the same
+	 * set as status_holds_calendar(): a late cancellation frees the studio but
+	 * still charges the hours (S7.6, Michael, Jul 6 2026). Mixing the two sets up
+	 * is how a ledger double-counts.
+	 */
+	private function status_counts_hours( $status ) {
+		return in_array( (string) $status, array( 'confirmed', 'completed', 'cancelled_late' ), true );
+	}
+
+	/** S26: statuses an admin may set. */
+	private function admin_allowed_statuses() {
+		return array( 'confirmed', 'completed', 'cancelled', 'cancelled_late' );
+	}
+
+	/** S26: audit trail — who changed what, when, and the value it held before. */
+	private function audit_log( $action, $booking_id, $client_id, $before, $after, $reason = '', $actor = '' ) {
+		global $wpdb;
+		$user = wp_get_current_user();
+		// S27: the quick-book page has no WordPress session, so it names itself.
+		$actor_name = $actor ? $actor : ( $user && $user->ID ? $user->user_login : 'system' );
+		$wpdb->insert(
+			$this->audit_table,
+			array(
+				'booking_id'  => $booking_id ? (int) $booking_id : null,
+				'client_id'   => $client_id ? (int) $client_id : null,
+				'actor_id'    => $user ? (int) $user->ID : null,
+				'actor_name'  => $actor_name,
+				'action'      => substr( (string) $action, 0, 40 ),
+				'before_json' => null === $before ? null : wp_json_encode( $before ),
+				'after_json'  => null === $after ? null : wp_json_encode( $after ),
+				'reason'      => substr( (string) $reason, 0, 255 ),
+				'created_at'  => current_time( 'mysql' ),
+			),
+			array( '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s' )
+		);
+	}
+
+	/** S26: display label for a booking's client (package client or rental guest). */
+	private function booking_client_label( $client_id, $booking = null ) {
+		if ( $client_id ) {
+			$c = $this->get_client( $client_id );
+			if ( $c ) {
+				return $c->name;
+			}
+		}
+		if ( $booking && ! empty( $booking->guest_name ) ) {
+			return $booking->guest_name . ' (rental)';
+		}
+		return 'Studio booking';
+	}
+
+	/** S26: client email for a booking (package client or rental guest). */
+	private function booking_client_email( $client_id, $booking = null ) {
+		if ( $client_id ) {
+			$c = $this->get_client( $client_id );
+			if ( $c ) {
+				return $c->email;
+			}
+		}
+		return $booking && ! empty( $booking->guest_email ) ? $booking->guest_email : '';
+	}
+
+	/**
+	 * S26 — THE SINGLE WRITE PATH.
+	 *
+	 * @param int   $booking_id 0 to create, otherwise the booking to change.
+	 * @param array $fields     client_id, booking_date, start_time (H:i), duration_hours, status, notes.
+	 *                          Omitted keys keep their current value on an edit.
+	 * @param array $opts       reason, notify_client (bool), allow_conflict (bool), action (audit label).
+	 * @return array{ok:bool,booking_id:int,message:string,warnings:string[]}
+	 */
+	private function admin_write_booking( $booking_id, $fields, $opts = array() ) {
+		global $wpdb;
+
+		$opts = wp_parse_args(
+			$opts,
+			array(
+				'reason'         => '',
+				'notify_client'  => false,
+				'allow_conflict' => false,
+				'action'         => '',
+				'actor'          => '',
+			)
+		);
+		$warnings = array();
+
+		$booking_id = (int) $booking_id;
+		$before     = $booking_id
+			? $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $booking_id ) )
+			: null;
+
+		if ( $booking_id && ! $before ) {
+			return array( 'ok' => false, 'booking_id' => 0, 'message' => __( 'That booking no longer exists.', 'mwm-studio' ), 'warnings' => array() );
+		}
+
+		/* ---- resolve target state (omitted keys keep their current value) ---- */
+		$client_id = array_key_exists( 'client_id', $fields ) ? (int) $fields['client_id'] : ( $before ? (int) $before->client_id : 0 );
+		$date      = array_key_exists( 'booking_date', $fields ) ? trim( (string) $fields['booking_date'] ) : ( $before ? $before->booking_date : '' );
+		$start     = array_key_exists( 'start_time', $fields ) ? substr( trim( (string) $fields['start_time'] ), 0, 5 ) : ( $before ? substr( $before->start_time, 0, 5 ) : '' );
+		$duration  = array_key_exists( 'duration_hours', $fields ) ? (float) $fields['duration_hours'] : ( $before ? (float) $before->duration_hours : 0.0 );
+		$status    = array_key_exists( 'status', $fields ) ? (string) $fields['status'] : ( $before ? (string) $before->status : 'confirmed' );
+		$notes     = array_key_exists( 'notes', $fields ) ? (string) $fields['notes'] : ( $before ? (string) $before->notes : '' );
+
+		/* ---- validate ---- */
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) || ! strtotime( $date ) ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Enter a valid date (YYYY-MM-DD).', 'mwm-studio' ), 'warnings' => array() );
+		}
+		if ( ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $start ) ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Enter a valid start time (HH:MM, 24-hour).', 'mwm-studio' ), 'warnings' => array() );
+		}
+		// Free-form duration: any quarter hour from 0.25 to 12. 1.5 is exactly as easy as 1.0.
+		if ( $duration < 0.25 || $duration > 12 ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Duration must be between 0.25 and 12 hours.', 'mwm-studio' ), 'warnings' => array() );
+		}
+		if ( abs( ( $duration * 4 ) - round( $duration * 4 ) ) > 0.0001 ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Duration must be a multiple of 0.25 hours (15 minutes).', 'mwm-studio' ), 'warnings' => array() );
+		}
+		$duration = round( $duration * 4 ) / 4;
+		if ( ! in_array( $status, $this->admin_allowed_statuses(), true ) ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Unknown status.', 'mwm-studio' ), 'warnings' => array() );
+		}
+		$is_rental = $before ? (int) $before->is_rental : 0;
+		if ( ! $client_id && ! $is_rental ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'Pick a client.', 'mwm-studio' ), 'warnings' => array() );
+		}
+		$client = $client_id ? $this->get_client( $client_id ) : null;
+		if ( $client_id && ! $client ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'That client no longer exists.', 'mwm-studio' ), 'warnings' => array() );
+		}
+
+		$start_sql = $start . ':00';
+		$end_ts    = strtotime( $date . ' ' . $start_sql ) + (int) round( $duration * HOUR_IN_SECONDS );
+		$end_sql   = date( 'H:i:s', $end_ts );
+		if ( date( 'Y-m-d', $end_ts ) !== $date ) {
+			return array( 'ok' => false, 'booking_id' => $booking_id, 'message' => __( 'That session would run past midnight. Shorten it or move the start time.', 'mwm-studio' ), 'warnings' => array() );
+		}
+
+		/* ---- studio double-booking guard (overridable, never silent) ---- */
+		if ( $this->status_holds_calendar( $status ) ) {
+			$clash = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT id, booking_date, start_time, end_time FROM {$this->bookings_table}
+					WHERE booking_date = %s AND id <> %d
+					AND status IN ('confirmed','completed')
+					AND start_time < %s AND end_time > %s
+					LIMIT 1",
+					$date,
+					$booking_id,
+					$end_sql,
+					$start_sql
+				)
+			);
+			if ( $clash ) {
+				if ( ! $opts['allow_conflict'] ) {
+					return array(
+						'ok'         => false,
+						'booking_id' => $booking_id,
+						'message'    => sprintf(
+							/* translators: 1: booking id, 2: start, 3: end */
+							__( 'That overlaps booking #%1$d (%2$s–%3$s). Tick "allow overlap" if you really mean to double-book the studio.', 'mwm-studio' ),
+							(int) $clash->id,
+							substr( $clash->start_time, 0, 5 ),
+							substr( $clash->end_time, 0, 5 )
+						),
+						'warnings'   => array(),
+					);
+				}
+				$warnings[] = sprintf( __( 'Overlaps booking #%d — saved anyway because you allowed it.', 'mwm-studio' ), (int) $clash->id );
+			}
+		}
+
+		/* ---- hours ledger (derived) — allow past total, flag it loudly ---- */
+		$over_by = 0.0;
+		if ( $client ) {
+			// hours_used_in_contract() already includes the CURRENT state of this row,
+			// so subtract what it contributes today before adding what it will contribute.
+			$used_now  = $this->hours_used_in_contract( $client->id, $client->contract_start_date, $client->contract_end_date );
+			$was       = ( $before && $this->status_counts_hours( $before->status ) && $this->booking_in_contract( $before, $client ) ) ? (float) $before->duration_hours : 0.0;
+			$will      = ( $this->status_counts_hours( $status ) && $this->booking_in_contract( (object) array( 'booking_date' => $date ), $client ) ) ? $duration : 0.0;
+			$projected = $used_now - $was + $will;
+			if ( $projected > (float) $client->contract_hours + 0.001 ) {
+				$over_by    = $projected - (float) $client->contract_hours;
+				$warnings[] = sprintf(
+					/* translators: 1: client name, 2: hours over, 3: used, 4: total */
+					__( '%1$s is now %2$s hours OVER contract (%3$s / %4$s). Saved — add hours to the package or bill the overage.', 'mwm-studio' ),
+					$client->name,
+					number_format( $over_by, 2 ),
+					number_format( $projected, 2 ),
+					number_format( (float) $client->contract_hours, 2 )
+				);
+			}
+		}
+
+		/* ---- decide what the calendar must do, before touching the row ---- */
+		$cal_before = $before ? $this->status_holds_calendar( $before->status ) : false;
+		$cal_after  = $this->status_holds_calendar( $status );
+		$moved      = ! $before
+			|| $before->booking_date !== $date
+			|| substr( $before->start_time, 0, 5 ) !== $start
+			|| abs( (float) $before->duration_hours - $duration ) > 0.001
+			|| (string) $before->notes !== (string) $notes;
+		$touch_cal  = ( $cal_before !== $cal_after ) || ( $cal_after && $moved );
+
+		$label = $this->booking_client_label( $client_id, $before );
+		$email = $this->booking_client_email( $client_id, $before );
+
+		// 1 of 3 — remove the OLD calendar event under its OLD idempotency id.
+		// The marker in client_name keeps the machine's Slack alert honest: a move
+		// is not a cancellation and must not read like one.
+		if ( $touch_cal && $cal_before ) {
+			$this->push_booking_event(
+				'booking_cancelled',
+				array(
+					'booking_id'   => $this->event_bid( $before ),
+					'client_name'  => $label . ( $cal_after ? ' (admin edit — moving)' : ' (cancelled in wp-admin)' ),
+					'client_email' => $email,
+					'date'         => $before->booking_date,
+					'start_time'   => substr( $before->start_time, 0, 5 ),
+					'end_time'     => substr( $before->end_time, 0, 5 ),
+				)
+			);
+		}
+
+		/* ---- 2 of 3 — write the row (this IS the ledger move) ---- */
+		$new_rc = $before ? (int) $before->reschedule_count : 0;
+		if ( $before && $touch_cal && $cal_after ) {
+			$new_rc++; // fresh idempotency id for the machine, fresh SEQUENCE for .ics
+		}
+
+		$row = array(
+			'booking_date'     => $date,
+			'start_time'       => $start_sql,
+			'end_time'         => $end_sql,
+			'duration_hours'   => $duration,
+			'status'           => $status,
+			'notes'            => $notes,
+			'reschedule_count' => $new_rc,
+		);
+		$fmt = array( '%s', '%s', '%s', '%f', '%s', '%s', '%d' );
+
+		if ( in_array( $status, array( 'cancelled', 'cancelled_late' ), true ) ) {
+			$row['cancelled_at'] = current_time( 'mysql' );
+			$fmt[]               = '%s';
+		} elseif ( $before && ! empty( $before->cancelled_at ) ) {
+			$row['cancelled_at'] = null; // un-cancelled: don't leave a stale timestamp behind
+			$fmt[]               = '%s';
+		}
+
+		if ( $before ) {
+			$ok = false !== $wpdb->update( $this->bookings_table, $row, array( 'id' => $booking_id ), $fmt, array( '%d' ) );
+		} else {
+			$row['client_id']  = $client_id;
+			$fmt[]             = '%d';
+			$row['created_at'] = current_time( 'mysql' );
+			$fmt[]             = '%s';
+			$ok                = (bool) $wpdb->insert( $this->bookings_table, $row, $fmt );
+			$booking_id        = $wpdb->insert_id;
+		}
+
+		if ( ! $ok ) {
+			// The old calendar event is already gone at this point; say so rather
+			// than leaving Michael to discover it.
+			return array(
+				'ok'         => false,
+				'booking_id' => $booking_id,
+				'message'    => __( 'The database write failed. If this was an edit, the old calendar event was already removed — re-save the booking to put it back.', 'mwm-studio' ),
+				'warnings'   => $warnings,
+			);
+		}
+
+		$this->clear_rental_day_cache( $date );
+		if ( $before && $before->booking_date !== $date ) {
+			$this->clear_rental_day_cache( $before->booking_date );
+		}
+
+		// 3 of 3 — create the NEW calendar event under a fresh idempotency id.
+		if ( $touch_cal && $cal_after ) {
+			$this->push_booking_event(
+				'booking_created',
+				array(
+					'booking_id'   => $this->event_bid( (object) array( 'id' => $booking_id, 'reschedule_count' => $new_rc ) ),
+					'client_name'  => $label,
+					'client_email' => $email,
+					'date'         => $date,
+					'start_time'   => $start,
+					'end_time'     => substr( $end_sql, 0, 5 ),
+					'duration'     => $duration,
+					'notes'        => $notes ? $notes : ( $before ? 'Adjusted in wp-admin' : 'Created in wp-admin' ),
+				)
+			);
+		}
+
+		/* ---- audit ---- */
+		$snap = function ( $b ) {
+			if ( ! $b ) {
+				return null;
+			}
+			return array(
+				'date'     => $b->booking_date,
+				'start'    => substr( $b->start_time, 0, 5 ),
+				'end'      => substr( $b->end_time, 0, 5 ),
+				'duration' => (float) $b->duration_hours,
+				'status'   => $b->status,
+				'notes'    => (string) $b->notes,
+			);
+		};
+		$this->audit_log(
+			$opts['action'] ? $opts['action'] : ( $before ? 'booking.edit' : 'booking.create' ),
+			$booking_id,
+			$client_id,
+			$snap( $before ),
+			array(
+				'date'     => $date,
+				'start'    => $start,
+				'end'      => substr( $end_sql, 0, 5 ),
+				'duration' => $duration,
+				'status'   => $status,
+				'notes'    => $notes,
+			),
+			$opts['reason'],
+			$opts['actor']
+		);
+
+		/* ---- loud flag when the client is past their contract total ---- */
+		if ( $over_by > 0 && $client ) {
+			$this->notify_admin(
+				sprintf( '[MWM Studio] %s is OVER contract by %s h', $client->name, number_format( $over_by, 2 ) ),
+				sprintf(
+					"Booking #%d (%s %s, %sh, %s) puts %s past their contract total of %s hours by %s.\n\nThis was allowed on purpose — the booking is saved. Decide whether to add hours to the package or bill the overage.\n\nClients screen: %s",
+					$booking_id,
+					$date,
+					$start,
+					$duration,
+					$status,
+					$client->name,
+					number_format( (float) $client->contract_hours, 2 ),
+					number_format( $over_by, 2 ),
+					admin_url( 'admin.php?page=mwm-studio-clients' )
+				)
+			);
+		}
+
+		/* ---- optional client email (OFF by default: admin edits are silent) ---- */
+		if ( $opts['notify_client'] && $email && $cal_after ) {
+			$settings = $this->get_settings();
+			$html     = $this->get_branded_email_html(
+				array(
+					'eyebrow'    => $before ? 'Booking Updated' : 'Booking Confirmed',
+					'title'      => $before ? 'Your Studio Session Was Updated' : 'Your Studio Session Is Booked',
+					'preheader'  => sprintf( 'Your studio session on %s at %s.', date_i18n( 'F j, Y', strtotime( $date ) ), $start ),
+					'name'       => $label,
+					'intro'      => $before ? 'Your studio session has been updated. Here are the current details:' : 'Your studio session is confirmed. Here are your details:',
+					'rows'       => array(
+						'Date'     => date_i18n( 'l, F j, Y', strtotime( $date ) ),
+						'Time'     => $start . ' – ' . substr( $end_sql, 0, 5 ),
+						'Duration' => $duration . ' hour(s)',
+						'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
+					),
+					'body_after' => 'This booking appears under <strong>Upcoming Bookings</strong> in your client portal.',
+					'cta_label'  => 'Open Your Client Portal',
+					'cta_url'    => 'https://mwmcreations.com/studio-portal/',
+					'outro'      => 'See you at the studio!',
+				)
+			);
+			$this->notify_client_html_ics(
+				$email,
+				sprintf( '%s — %s at %s | %s', $before ? 'Booking updated' : 'Booking confirmed', $date, $start, $settings['studio_name'] ),
+				$html,
+				(object) array(
+					'id'               => $booking_id,
+					'booking_date'     => $date,
+					'start_time'       => $start_sql,
+					'end_time'         => $end_sql,
+					'is_rental'        => $is_rental,
+					'reschedule_count' => $new_rc,
+					'guest_email'      => $email,
+					'created_at'       => '',
+				)
+			);
+		}
+
+		return array(
+			'ok'         => true,
+			'booking_id' => $booking_id,
+			'message'    => $before
+				? sprintf( __( 'Booking #%d updated.', 'mwm-studio' ), $booking_id )
+				: sprintf( __( 'Booking #%d created.', 'mwm-studio' ), $booking_id ),
+			'warnings'   => $warnings,
+		);
+	}
+
+	/** S26: does this booking's date fall inside the client's contract window? */
+	private function booking_in_contract( $booking, $client ) {
+		if ( empty( $client->contract_start_date ) || empty( $client->contract_end_date ) ) {
+			return true; // no window set: hours_used_in_contract() sums everything
+		}
+		$d = $booking->booking_date;
+		return ( $d >= $client->contract_start_date && $d <= $client->contract_end_date );
+	}
+
+	/* ---- POST handlers ------------------------------------------------- */
+
+	private function admin_save_booking() {
+		$id     = isset( $_POST['booking_id'] ) ? (int) $_POST['booking_id'] : 0;
+		$fields = array(
+			'booking_date'   => isset( $_POST['booking_date'] ) ? sanitize_text_field( wp_unslash( $_POST['booking_date'] ) ) : '',
+			'start_time'     => isset( $_POST['start_time'] ) ? sanitize_text_field( wp_unslash( $_POST['start_time'] ) ) : '',
+			'duration_hours' => isset( $_POST['duration_hours'] ) ? (float) $_POST['duration_hours'] : 0,
+			'status'         => isset( $_POST['status'] ) ? sanitize_text_field( wp_unslash( $_POST['status'] ) ) : 'confirmed',
+			'notes'          => isset( $_POST['notes'] ) ? sanitize_textarea_field( wp_unslash( $_POST['notes'] ) ) : '',
+		);
+		if ( ! $id ) {
+			$fields['client_id'] = isset( $_POST['client_id'] ) ? (int) $_POST['client_id'] : 0;
+		}
+
+		$repeat = isset( $_POST['repeat_weekly'] ) ? max( 0, min( 25, (int) $_POST['repeat_weekly'] ) ) : 0;
+		$opts   = array(
+			'reason'         => isset( $_POST['reason'] ) ? sanitize_text_field( wp_unslash( $_POST['reason'] ) ) : '',
+			'notify_client'  => ! empty( $_POST['notify_client'] ),
+			'allow_conflict' => ! empty( $_POST['allow_conflict'] ),
+		);
+
+		$results  = array();
+		$warnings = array();
+		$failed   = '';
+
+		$res = $this->admin_write_booking( $id, $fields, $opts );
+		if ( ! $res['ok'] ) {
+			set_transient( 'mwm_studio_admin_error', $res['message'], 60 );
+			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-booking-edit' . ( $id ? '&id=' . $id : '' ) ) );
+			exit;
+		}
+		$results[] = $res['booking_id'];
+		$warnings  = array_merge( $warnings, $res['warnings'] );
+
+		// Weekly repeat — same weekday, same time, N further weeks. Created one at a
+		// time through the same write path, so each gets its own row, calendar event
+		// and audit entry. A failure stops the run and says which week it stopped on.
+		if ( ! $id && $repeat > 0 ) {
+			for ( $w = 1; $w <= $repeat; $w++ ) {
+				$next          = date( 'Y-m-d', strtotime( $fields['booking_date'] . ' +' . ( 7 * $w ) . ' days' ) );
+				$more          = $fields;
+				$more['booking_date'] = $next;
+				$r             = $this->admin_write_booking( 0, $more, $opts );
+				if ( ! $r['ok'] ) {
+					$failed = sprintf( __( 'Stopped at %s: %s', 'mwm-studio' ), $next, $r['message'] );
+					break;
+				}
+				$results[] = $r['booking_id'];
+				$warnings  = array_merge( $warnings, $r['warnings'] );
+			}
+		}
+
+		set_transient( 'mwm_studio_admin_notice', array( 'ids' => $results, 'warnings' => $warnings, 'failed' => $failed ), 60 );
+		wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-bookings&saved=1' ) );
+		exit;
+	}
+
+	private function admin_adjust_hours() {
+		global $wpdb;
+		$id = isset( $_POST['client_id'] ) ? (int) $_POST['client_id'] : 0;
+		$c  = $id ? $this->get_client( $id ) : null;
+		if ( ! $c ) {
+			set_transient( 'mwm_studio_admin_error', __( 'Client not found.', 'mwm-studio' ), 60 );
+			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-clients' ) );
+			exit;
+		}
+
+		$mode  = isset( $_POST['hours_mode'] ) ? sanitize_text_field( wp_unslash( $_POST['hours_mode'] ) ) : 'add';
+		$value = isset( $_POST['hours_value'] ) ? (float) $_POST['hours_value'] : 0;
+		$old   = (float) $c->contract_hours;
+		$new   = ( 'set' === $mode ) ? $value : $old + $value;
+
+		if ( $new < 0 || $new > 999 ) {
+			set_transient( 'mwm_studio_admin_error', __( 'Contract total must be between 0 and 999 hours.', 'mwm-studio' ), 60 );
+			wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-clients' ) );
+			exit;
+		}
+
+		$wpdb->update(
+			$this->clients_table,
+			array( 'contract_hours' => $new, 'updated_at' => current_time( 'mysql' ) ),
+			array( 'id' => $id ),
+			array( '%f', '%s' ),
+			array( '%d' )
+		);
+
+		$this->audit_log(
+			'client.hours_adjust',
+			0,
+			$id,
+			array( 'contract_hours' => $old ),
+			array( 'contract_hours' => $new ),
+			isset( $_POST['reason'] ) ? sanitize_text_field( wp_unslash( $_POST['reason'] ) ) : ''
+		);
+
+		set_transient(
+			'mwm_studio_admin_notice',
+			array(
+				'ids'      => array(),
+				'warnings' => array( sprintf( __( '%1$s: contract total %2$s → %3$s hours.', 'mwm-studio' ), $c->name, number_format( $old, 2 ), number_format( $new, 2 ) ) ),
+				'failed'   => '',
+			),
+			60
+		);
+		wp_safe_redirect( admin_url( 'admin.php?page=mwm-studio-clients' ) );
+		exit;
+	}
+
+	/* ---- Screens -------------------------------------------------------- */
+
+	/** S26: shared notice renderer for the admin screens. */
+	private function print_admin_notice() {
+		if ( $err = get_transient( 'mwm_studio_admin_error' ) ) {
+			delete_transient( 'mwm_studio_admin_error' );
+			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $err ) . '</p></div>';
+		}
+		$n = get_transient( 'mwm_studio_admin_notice' );
+		if ( ! $n ) {
+			return;
+		}
+		delete_transient( 'mwm_studio_admin_notice' );
+		if ( ! empty( $n['ids'] ) ) {
+			echo '<div class="notice notice-success is-dismissible"><p>'
+				. esc_html( sprintf( _n( 'Booking #%s saved.', 'Bookings #%s saved.', count( $n['ids'] ), 'mwm-studio' ), implode( ', #', array_map( 'intval', $n['ids'] ) ) ) )
+				. '</p></div>';
+		}
+		foreach ( (array) $n['warnings'] as $w ) {
+			echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html( $w ) . '</p></div>';
+		}
+		if ( ! empty( $n['failed'] ) ) {
+			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $n['failed'] ) . '</p></div>';
+		}
+	}
+
+	public function render_booking_edit_page() {
+		global $wpdb;
+		$id = isset( $_GET['id'] ) ? (int) $_GET['id'] : 0;
+		$b  = $id ? $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $id ) ) : null;
+		if ( $id && ! $b ) {
+			echo '<div class="wrap"><h1>' . esc_html__( 'Booking not found', 'mwm-studio' ) . '</h1></div>';
+			return;
+		}
+		$clients   = $wpdb->get_results( "SELECT id, name, contract_hours, contract_start_date, contract_end_date FROM {$this->clients_table} WHERE active = 1 ORDER BY name ASC" );
+		$pre_client = isset( $_GET['client_id'] ) ? (int) $_GET['client_id'] : ( $b ? (int) $b->client_id : 0 );
+		$this->print_admin_notice();
+		?>
+		<div class="wrap mwm-studio-admin">
+			<h1><?php echo $b ? esc_html( sprintf( __( 'Edit Booking #%d', 'mwm-studio' ), $id ) ) : esc_html__( 'Add Booking', 'mwm-studio' ); ?></h1>
+			<p style="max-width:640px;color:#555;">
+				<?php esc_html_e( 'Saving here writes the booking, moves the client\'s hours, and updates the Google Calendar event in one operation. The three cannot drift apart.', 'mwm-studio' ); ?>
+			</p>
+
+			<form method="post" class="mwm-card" style="max-width:640px;">
+				<?php wp_nonce_field( 'mwm_studio_save_booking' ); ?>
+				<input type="hidden" name="mwm_studio_action" value="save_booking" />
+				<input type="hidden" name="booking_id" value="<?php echo esc_attr( $id ); ?>" />
+
+				<p><label><strong><?php esc_html_e( 'Client', 'mwm-studio' ); ?></strong></label><br />
+				<?php if ( $b && ! $b->client_id ) : ?>
+					<input type="text" class="widefat" value="<?php echo esc_attr( $b->guest_name . ' (rental — ' . $b->guest_email . ')' ); ?>" disabled />
+					<small style="color:#666;"><?php esc_html_e( 'This is a paid rental. The client cannot be changed.', 'mwm-studio' ); ?></small>
+				<?php elseif ( $b ) : ?>
+					<input type="text" class="widefat" value="<?php echo esc_attr( $this->booking_client_label( (int) $b->client_id, $b ) ); ?>" disabled />
+					<small style="color:#666;"><?php esc_html_e( 'To move a booking to a different client, cancel it and create a new one.', 'mwm-studio' ); ?></small>
+				<?php else : ?>
+					<select name="client_id" class="widefat" required>
+						<option value=""><?php esc_html_e( '— pick a client —', 'mwm-studio' ); ?></option>
+						<?php foreach ( $clients as $c ) : ?>
+							<option value="<?php echo esc_attr( $c->id ); ?>" <?php selected( $pre_client, $c->id ); ?>>
+								<?php
+								$used = $this->hours_used_in_contract( $c->id, $c->contract_start_date, $c->contract_end_date );
+								echo esc_html( sprintf( '%s — %s / %s h used', $c->name, number_format( $used, 1 ), number_format( $c->contract_hours, 1 ) ) );
+								?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+				<?php endif; ?>
+				</p>
+
+				<p style="display:flex;gap:12px;flex-wrap:wrap;">
+					<span style="flex:1 1 180px;"><label><strong><?php esc_html_e( 'Date', 'mwm-studio' ); ?></strong></label><br />
+					<input type="date" name="booking_date" class="widefat" required value="<?php echo esc_attr( $b ? $b->booking_date : '' ); ?>" /></span>
+
+					<span style="flex:1 1 140px;"><label><strong><?php esc_html_e( 'Start time', 'mwm-studio' ); ?></strong></label><br />
+					<input type="time" name="start_time" class="widefat" required step="300" value="<?php echo esc_attr( $b ? substr( $b->start_time, 0, 5 ) : '' ); ?>" /></span>
+
+					<span style="flex:1 1 140px;"><label><strong><?php esc_html_e( 'Duration (hours)', 'mwm-studio' ); ?></strong></label><br />
+					<input type="number" name="duration_hours" class="widefat" required min="0.25" max="12" step="0.25" value="<?php echo esc_attr( $b ? rtrim( rtrim( number_format( (float) $b->duration_hours, 2, '.', '' ), '0' ), '.' ) : '1' ); ?>" />
+					<small style="color:#666;"><?php esc_html_e( 'Any quarter hour. 1.5 is as easy as 1.', 'mwm-studio' ); ?></small></span>
+				</p>
+
+				<p><label><strong><?php esc_html_e( 'Status', 'mwm-studio' ); ?></strong></label><br />
+				<select name="status" class="widefat">
+					<?php
+					$labels = array(
+						'confirmed'      => __( 'Confirmed — holds the studio, counts hours', 'mwm-studio' ),
+						'completed'      => __( 'Completed — happened, counts hours', 'mwm-studio' ),
+						'cancelled'      => __( 'Cancelled — hours returned, calendar event removed', 'mwm-studio' ),
+						'cancelled_late' => __( 'Cancelled late — hours forfeited, calendar event removed', 'mwm-studio' ),
+					);
+					$cur    = $b ? $b->status : 'confirmed';
+					foreach ( $labels as $k => $v ) :
+						?>
+						<option value="<?php echo esc_attr( $k ); ?>" <?php selected( $cur, $k ); ?>><?php echo esc_html( $v ); ?></option>
+					<?php endforeach; ?>
+				</select></p>
+
+				<p><label><strong><?php esc_html_e( 'Notes', 'mwm-studio' ); ?></strong></label><br />
+				<textarea name="notes" class="widefat" rows="2"><?php echo esc_textarea( $b ? (string) $b->notes : '' ); ?></textarea></p>
+
+				<?php if ( ! $b ) : ?>
+					<p><label><strong><?php esc_html_e( 'Repeat weekly', 'mwm-studio' ); ?></strong></label><br />
+					<input type="number" name="repeat_weekly" min="0" max="25" step="1" value="0" style="width:90px;" />
+					<small style="color:#666;"><?php esc_html_e( 'extra weeks after this one, same weekday and time (0 = just this one)', 'mwm-studio' ); ?></small></p>
+				<?php endif; ?>
+
+				<p><label><strong><?php esc_html_e( 'Reason (kept in the audit trail)', 'mwm-studio' ); ?></strong></label><br />
+				<input type="text" name="reason" class="widefat" placeholder="<?php esc_attr_e( 'e.g. ran 30 minutes over', 'mwm-studio' ); ?>" /></p>
+
+				<p><label><input type="checkbox" name="notify_client" value="1" /> <?php esc_html_e( 'Email the client a confirmation', 'mwm-studio' ); ?></label><br />
+				<small style="color:#666;"><?php esc_html_e( 'Off by default — admin changes are silent so you can send one message yourself.', 'mwm-studio' ); ?></small></p>
+
+				<p><label><input type="checkbox" name="allow_conflict" value="1" /> <?php esc_html_e( 'Allow this even if it overlaps another booking', 'mwm-studio' ); ?></label></p>
+
+				<p>
+					<button class="button button-primary"><?php echo $b ? esc_html__( 'Save Booking', 'mwm-studio' ) : esc_html__( 'Create Booking', 'mwm-studio' ); ?></button>
+					<a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-bookings' ) ); ?>"><?php esc_html_e( 'Cancel', 'mwm-studio' ); ?></a>
+				</p>
+			</form>
+
+			<?php if ( $id ) : ?>
+				<?php
+				$hist = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$this->audit_table} WHERE booking_id = %d ORDER BY id DESC LIMIT 25", $id ) );
+				if ( $hist ) :
+					?>
+					<h2 style="margin-top:28px;"><?php esc_html_e( 'History', 'mwm-studio' ); ?></h2>
+					<table class="widefat striped" style="max-width:900px;">
+						<thead><tr>
+							<th><?php esc_html_e( 'When', 'mwm-studio' ); ?></th>
+							<th><?php esc_html_e( 'Who', 'mwm-studio' ); ?></th>
+							<th><?php esc_html_e( 'Action', 'mwm-studio' ); ?></th>
+							<th><?php esc_html_e( 'Before', 'mwm-studio' ); ?></th>
+							<th><?php esc_html_e( 'After', 'mwm-studio' ); ?></th>
+							<th><?php esc_html_e( 'Reason', 'mwm-studio' ); ?></th>
+						</tr></thead>
+						<tbody>
+						<?php foreach ( $hist as $h ) : ?>
+							<tr>
+								<td><?php echo esc_html( date_i18n( 'M j, Y g:i a', strtotime( $h->created_at ) ) ); ?></td>
+								<td><?php echo esc_html( $h->actor_name ); ?></td>
+								<td><code><?php echo esc_html( $h->action ); ?></code></td>
+								<td><small><?php echo esc_html( $this->audit_summary( $h->before_json ) ); ?></small></td>
+								<td><small><?php echo esc_html( $this->audit_summary( $h->after_json ) ); ?></small></td>
+								<td><small><?php echo esc_html( $h->reason ); ?></small></td>
+							</tr>
+						<?php endforeach; ?>
+						</tbody>
+					</table>
+				<?php endif; ?>
+			<?php endif; ?>
+		</div>
+		<?php
+		$this->print_admin_css();
+	}
+
+	/** S26: one-line rendering of an audit snapshot. */
+	private function audit_summary( $json ) {
+		if ( ! $json ) {
+			return '—';
+		}
+		$d = json_decode( $json, true );
+		if ( ! is_array( $d ) ) {
+			return '—';
+		}
+		if ( array_key_exists( 'contract_hours', $d ) ) {
+			return number_format( (float) $d['contract_hours'], 2 ) . ' h total';
+		}
+		return sprintf(
+			'%s %s–%s · %sh · %s',
+			isset( $d['date'] ) ? $d['date'] : '?',
+			isset( $d['start'] ) ? $d['start'] : '?',
+			isset( $d['end'] ) ? $d['end'] : '?',
+			isset( $d['duration'] ) ? $d['duration'] : '?',
+			isset( $d['status'] ) ? $d['status'] : '?'
+		);
+	}
+
+	/**
+	 * S26: reconciliation check — flags any booking whose row has no matching
+	 * block on the MWM CREATIONS calendar.
+	 *
+	 * It compares against the SAME /studio-availability feed the portal uses for
+	 * slots, so there is no second view of the calendar to drift. The feed gives
+	 * anonymous busy blocks, not event ids — so this answers "does a calendar
+	 * block exist with exactly this start and end?", which is precisely the
+	 * question that would have caught #61 before the client did.
+	 */
+	public function render_reconcile_page() {
+		global $wpdb;
+		$from = isset( $_GET['from'] ) ? sanitize_text_field( wp_unslash( $_GET['from'] ) ) : date( 'Y-m-d', strtotime( current_time( 'Y-m-d' ) . ' -30 days' ) );
+		$to   = isset( $_GET['to'] ) ? sanitize_text_field( wp_unslash( $_GET['to'] ) ) : date( 'Y-m-d', strtotime( current_time( 'Y-m-d' ) . ' +90 days' ) );
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $from ) ) {
+			$from = current_time( 'Y-m-d' );
+		}
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $to ) ) {
+			$to = current_time( 'Y-m-d' );
+		}
+
+		// S27: one implementation, shared with the daily drift cron.
+		$drift   = $this->find_calendar_drift( $from, $to );
+		$checked = $drift['checked'];
+		$unknown = $drift['unknown'];
+		$bad     = $drift['bad'];
+		?>
+		<div class="wrap mwm-studio-admin">
+			<h1><?php esc_html_e( 'Booking ↔ Calendar Reconciliation', 'mwm-studio' ); ?></h1>
+			<form method="get" class="mwm-filters">
+				<input type="hidden" name="page" value="mwm-studio-reconcile" />
+				<label><?php esc_html_e( 'From', 'mwm-studio' ); ?> <input type="date" name="from" value="<?php echo esc_attr( $from ); ?>" /></label>
+				<label><?php esc_html_e( 'To', 'mwm-studio' ); ?> <input type="date" name="to" value="<?php echo esc_attr( $to ); ?>" /></label>
+				<button class="button"><?php esc_html_e( 'Check', 'mwm-studio' ); ?></button>
+			</form>
+
+			<p><strong><?php echo esc_html( sprintf( __( '%1$d bookings checked · %2$d disagree with the calendar', 'mwm-studio' ), $checked, count( $bad ) ) ); ?></strong>
+			<?php if ( $unknown ) : ?>
+				<br /><span style="color:#c62828;"><?php echo esc_html( sprintf( __( '%d could not be checked — the availability feed was unreachable for those dates.', 'mwm-studio' ), $unknown ) ); ?></span>
+			<?php endif; ?>
+			</p>
+
+			<?php if ( ! $bad && $checked ) : ?>
+				<div class="notice notice-success inline"><p><?php esc_html_e( 'Every booking has a calendar block with exactly its start and end time.', 'mwm-studio' ); ?></p></div>
+			<?php elseif ( $bad ) : ?>
+				<table class="widefat striped" style="max-width:1000px;">
+					<thead><tr>
+						<th>#</th>
+						<th><?php esc_html_e( 'Client', 'mwm-studio' ); ?></th>
+						<th><?php esc_html_e( 'Booking row says', 'mwm-studio' ); ?></th>
+						<th><?php esc_html_e( 'Calendar has', 'mwm-studio' ); ?></th>
+						<th></th>
+					</tr></thead>
+					<tbody>
+					<?php foreach ( $bad as $x ) : $r = $x['b']; ?>
+						<tr>
+							<td><?php echo esc_html( $r->id ); ?></td>
+							<td><?php echo esc_html( $r->client_name ? $r->client_name : ( $r->guest_name . ' (rental)' ) ); ?></td>
+							<td><strong><?php echo esc_html( $r->booking_date . ' ' . substr( $r->start_time, 0, 5 ) . '–' . substr( $r->end_time, 0, 5 ) ); ?></strong></td>
+							<td><?php echo esc_html( $x['near'] ? implode( ', ', $x['near'] ) : __( 'nothing overlapping — no event at all', 'mwm-studio' ) ); ?></td>
+							<td><a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-booking-edit&id=' . $r->id ) ); ?>"><?php esc_html_e( 'Open', 'mwm-studio' ); ?></a></td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+				<p style="color:#555;max-width:720px;">
+					<?php esc_html_e( 'Re-saving a flagged booking from its edit screen removes the stale calendar event and writes a fresh one that matches the row. The row is the source of truth.', 'mwm-studio' ); ?>
+				</p>
+			<?php endif; ?>
+		</div>
+		<?php
+		$this->print_admin_css();
+	}
+
+	/** S26: the full audit trail, newest first. */
+	public function render_audit_page() {
+		global $wpdb;
+		$rows = $wpdb->get_results( "SELECT * FROM {$this->audit_table} ORDER BY id DESC LIMIT 200" );
+		?>
+		<div class="wrap mwm-studio-admin">
+			<h1><?php esc_html_e( 'Studio Audit Trail', 'mwm-studio' ); ?></h1>
+			<table class="widefat striped">
+				<thead><tr>
+					<th><?php esc_html_e( 'When', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'Who', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'Action', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'Booking', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'Before', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'After', 'mwm-studio' ); ?></th>
+					<th><?php esc_html_e( 'Reason', 'mwm-studio' ); ?></th>
+				</tr></thead>
+				<tbody>
+				<?php if ( $rows ) : ?>
+					<?php foreach ( $rows as $h ) : ?>
+						<tr>
+							<td><?php echo esc_html( date_i18n( 'M j, Y g:i a', strtotime( $h->created_at ) ) ); ?></td>
+							<td><?php echo esc_html( $h->actor_name ); ?></td>
+							<td><code><?php echo esc_html( $h->action ); ?></code></td>
+							<td><?php echo $h->booking_id ? '<a href="' . esc_url( admin_url( 'admin.php?page=mwm-studio-booking-edit&id=' . (int) $h->booking_id ) ) . '">#' . esc_html( $h->booking_id ) . '</a>' : '—'; ?></td>
+							<td><small><?php echo esc_html( $this->audit_summary( $h->before_json ) ); ?></small></td>
+							<td><small><?php echo esc_html( $this->audit_summary( $h->after_json ) ); ?></small></td>
+							<td><small><?php echo esc_html( $h->reason ); ?></small></td>
+						</tr>
+					<?php endforeach; ?>
+				<?php else : ?>
+					<tr><td colspan="7"><?php esc_html_e( 'Nothing recorded yet.', 'mwm-studio' ); ?></td></tr>
+				<?php endif; ?>
+				</tbody>
+			</table>
+		</div>
+		<?php
+		$this->print_admin_css();
+	}
+
+
+	/* =========================================================================
+	 * S27 — QUICK BOOK (phone) + DRIFT WATCH (Aug 13 2026, Michael)
+	 *
+	 * Michael: *"most of the time I'm on my phone… going to WordPress through my
+	 * phone is not very convenient."*
+	 *
+	 * A client asks him in the studio to book an hour. He should not have to log
+	 * into wp-admin on a phone to do it. So this is a STANDALONE page —
+	 * /studio-quick-book/ — outside wp-admin entirely: no WordPress login, no
+	 * menus, no admin chrome. He adds it to his home screen once and it opens
+	 * like an app.
+	 *
+	 * 🔴 It creates bookings through admin_write_booking() — the same single
+	 * write path as the admin screens. It is a new DOOR, not a new write path.
+	 * That distinction is the whole lesson of #61.
+	 *
+	 * AUTH, since there is no WordPress session:
+	 *   1. a long random token in the URL (?k=…), compared with hash_equals —
+	 *      the same pattern the /manage-booking/ magic link already uses;
+	 *   2. a 4-digit PIN that MICHAEL sets himself on first open. Only its hash
+	 *      is stored — DEV never sees or handles the value.
+	 * A pass sets a signed cookie good for 7 days, so it asks about once a week.
+	 * PIN attempts are rate limited. Losing the phone costs one token rotation.
+	 *
+	 * What it deliberately CANNOT do: cancel a booking, change anyone's hours,
+	 * edit a client, or show money. It creates a booking for a client who
+	 * already exists. Anything destructive stays behind a real wp-admin login.
+	 * ========================================================================= */
+
+	/** S27: the secret in the quick-book URL. Generated on demand, rotatable. */
+	private function qb_token( $create = true ) {
+		$t = get_option( 'mwm_studio_qb_token' );
+		if ( ! $t && $create ) {
+			$t = wp_generate_password( 48, false, false );
+			update_option( 'mwm_studio_qb_token', $t, false );
+		}
+		return $t ? $t : '';
+	}
+
+	private function qb_url() {
+		return home_url( '/studio-quick-book/' ) . '?k=' . rawurlencode( $this->qb_token() );
+	}
+
+	/** S27: constant-time check of the ?k= token. */
+	private function qb_token_ok() {
+		$given = isset( $_REQUEST['k'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['k'] ) ) : '';
+		$real  = $this->qb_token( false );
+		return ( $real && strlen( $given ) === strlen( $real ) && hash_equals( $real, $given ) );
+	}
+
+	private function qb_pin_hash() {
+		return (string) get_option( 'mwm_studio_qb_pin', '' );
+	}
+
+	/** S27: signed 7-day cookie, bound to the current PIN hash and token. */
+	private function qb_cookie_value( $expiry ) {
+		return $expiry . '|' . hash_hmac( 'sha256', $expiry . '|' . $this->qb_pin_hash() . '|' . $this->qb_token( false ), wp_salt( 'auth' ) );
+	}
+
+	private function qb_cookie_ok() {
+		$c = isset( $_COOKIE['mwm_qb'] ) ? sanitize_text_field( wp_unslash( $_COOKIE['mwm_qb'] ) ) : '';
+		if ( ! $c || false === strpos( $c, '|' ) ) {
+			return false;
+		}
+		list( $expiry ) = explode( '|', $c, 2 );
+		$expiry         = (int) $expiry;
+		if ( $expiry < time() ) {
+			return false;
+		}
+		return hash_equals( $this->qb_cookie_value( $expiry ), $c );
+	}
+
+	/** S27: crude per-IP throttle so a 4-digit PIN cannot be walked. */
+	private function qb_throttle_key() {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'x';
+		return 'mwm_qb_fail_' . md5( $ip );
+	}
+
+	/**
+	 * S27: PIN set / PIN entry, handled on template_redirect because a shortcode
+	 * runs after headers are sent and could not set the cookie.
+	 */
+	public function qb_handle_gate() {
+		if ( empty( $_POST['mwm_qb_gate'] ) || ! $this->qb_token_ok() ) {
+			return;
+		}
+		$key   = $this->qb_throttle_key();
+		$fails = (int) get_transient( $key );
+		if ( $fails >= 5 ) {
+			set_transient( 'mwm_qb_msg', __( 'Too many tries. Wait fifteen minutes.', 'mwm-studio' ), 60 );
+			wp_safe_redirect( $this->qb_url() );
+			exit;
+		}
+
+		$pin  = isset( $_POST['pin'] ) ? preg_replace( '/\D/', '', (string) wp_unslash( $_POST['pin'] ) ) : '';
+		$have = $this->qb_pin_hash();
+
+		if ( ! $have ) {
+			// First open: Michael chooses the PIN. Only the hash is ever stored.
+			if ( strlen( $pin ) !== 4 ) {
+				set_transient( 'mwm_qb_msg', __( 'Pick exactly four digits.', 'mwm-studio' ), 60 );
+				wp_safe_redirect( $this->qb_url() );
+				exit;
+			}
+			update_option( 'mwm_studio_qb_pin', wp_hash_password( $pin ), false );
+		} elseif ( ! wp_check_password( $pin, $have ) ) {
+			set_transient( $key, $fails + 1, 15 * MINUTE_IN_SECONDS );
+			set_transient( 'mwm_qb_msg', __( 'That PIN is not right.', 'mwm-studio' ), 60 );
+			wp_safe_redirect( $this->qb_url() );
+			exit;
+		}
+
+		delete_transient( $key );
+		$expiry = time() + 7 * DAY_IN_SECONDS;
+		setcookie( 'mwm_qb', $this->qb_cookie_value( $expiry ), $expiry, COOKIEPATH ? COOKIEPATH : '/', COOKIE_DOMAIN, is_ssl(), true );
+		wp_safe_redirect( $this->qb_url() );
+		exit;
+	}
+
+	/** S27: the standalone page, created once like the manage-booking page. */
+	public function ensure_quick_book_page() {
+		$known = (int) get_option( 'mwm_studio_qb_page_id' );
+		if ( $known && get_post( $known ) ) {
+			return;
+		}
+		$existing = get_page_by_path( 'studio-quick-book' );
+		if ( $existing ) {
+			update_option( 'mwm_studio_qb_page_id', $existing->ID );
+			return;
+		}
+		$pid = wp_insert_post( array(
+			'post_title'   => 'Quick Book',
+			'post_name'    => 'studio-quick-book',
+			'post_type'    => 'page',
+			'post_status'  => 'publish',
+			'post_content' => '[mwm_quick_book]',
+		) );
+		if ( $pid && ! is_wp_error( $pid ) ) {
+			update_option( 'mwm_studio_qb_page_id', $pid );
+			update_option( 'mwm_studio_qb_noindex', 1, false );
+		}
+	}
+
+	/** S27: keep the quick-book page out of search engines and sitemaps. */
+	public function qb_noindex() {
+		$pid = (int) get_option( 'mwm_studio_qb_page_id' );
+		if ( $pid && is_page( $pid ) ) {
+			echo '<meta name="robots" content="noindex,nofollow,noarchive" />' . "\n";
+		}
+	}
+
+	private function qb_gate_screen( $mode ) {
+		$msg = get_transient( 'mwm_qb_msg' );
+		if ( $msg ) {
+			delete_transient( 'mwm_qb_msg' );
+		}
+		ob_start();
+		?>
+		<div class="qb-wrap qb-gate">
+			<div class="qb-lock">🎬</div>
+			<h1><?php echo 'set' === $mode ? esc_html__( 'Choose a PIN', 'mwm-studio' ) : esc_html__( 'Quick Book', 'mwm-studio' ); ?></h1>
+			<p class="qb-sub">
+				<?php
+				echo 'set' === $mode
+					? esc_html__( 'Four digits. You will be asked for it about once a week. Only its fingerprint is stored — nobody can read it back, so pick something you will remember.', 'mwm-studio' )
+					: esc_html__( 'Enter your PIN.', 'mwm-studio' );
+				?>
+			</p>
+			<?php if ( $msg ) : ?><p class="qb-err"><?php echo esc_html( $msg ); ?></p><?php endif; ?>
+			<form method="post">
+				<input type="hidden" name="mwm_qb_gate" value="1" />
+				<input type="hidden" name="k" value="<?php echo esc_attr( $this->qb_token( false ) ); ?>" />
+				<input class="qb-pin" type="password" name="pin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" autofocus placeholder="••••" />
+				<button class="qb-go" type="submit"><?php echo 'set' === $mode ? esc_html__( 'Set PIN', 'mwm-studio' ) : esc_html__( 'Open', 'mwm-studio' ); ?></button>
+			</form>
+		</div>
+		<?php
+		return ob_get_clean();
+	}
+
+	/**
+	 * S27: render the page as a BARE document, outside the theme.
+	 *
+	 * Michael asked for something that "opens like an app". Inside the theme it
+	 * would inherit the global nav bar, the footer and the site's typography —
+	 * a website on a phone, which is the thing he said was inconvenient. This
+	 * takes over the response for that one page only and emits a minimal
+	 * document with the iOS home-screen meta, so once it is saved to the home
+	 * screen it opens full-screen with no browser chrome.
+	 */
+	public function qb_maybe_standalone() {
+		$pid = (int) get_option( 'mwm_studio_qb_page_id' );
+		if ( ! $pid || ! is_page( $pid ) ) {
+			return;
+		}
+		nocache_headers();
+		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+			define( 'DONOTCACHEPAGE', true ); // S7 lesson: a cached page serves a stale gate
+		}
+		header( 'X-Robots-Tag: noindex, nofollow', true );
+		?><!doctype html>
+<html <?php language_attributes(); ?>>
+<head>
+<meta charset="<?php bloginfo( 'charset' ); ?>" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex,nofollow,noarchive" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Quick Book" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="theme-color" content="#ffffff" />
+<title><?php esc_html_e( 'Quick Book', 'mwm-studio' ); ?></title>
+</head>
+<body style="margin:0;background:#fff;">
+<?php
+		echo $this->render_quick_book(); // phpcs:ignore WordPress.Security.EscapeOutput
+		?>
+</body>
+</html>
+		<?php
+		exit;
+	}
+
+	public function render_quick_book( $atts = array() ) {
+		if ( ! $this->qb_token_ok() ) {
+			// Don't confirm the page exists to someone without the link.
+			return '<div class="qb-wrap"><h1>Not found</h1></div>' . $this->qb_css();
+		}
+		if ( ! $this->qb_pin_hash() ) {
+			return $this->qb_gate_screen( 'set' ) . $this->qb_css();
+		}
+		if ( ! $this->qb_cookie_ok() ) {
+			return $this->qb_gate_screen( 'enter' ) . $this->qb_css();
+		}
+
+		global $wpdb;
+		$settings = $this->get_settings();
+		$clients  = $wpdb->get_results( "SELECT id, name, contract_hours, contract_start_date, contract_end_date FROM {$this->clients_table} WHERE active = 1 ORDER BY name ASC" );
+		$out      = array();
+		$today    = current_time( 'Y-m-d' );
+		foreach ( $clients as $c ) {
+			$used = $this->hours_used_in_contract( $c->id, $c->contract_start_date, $c->contract_end_date );
+			$out[] = array(
+				'id'        => (int) $c->id,
+				'name'      => $c->name,
+				'left'      => round( (float) $c->contract_hours - $used, 2 ),
+				'total'     => (float) $c->contract_hours,
+				'expired'   => ( $c->contract_end_date && $today > $c->contract_end_date ),
+				'ends'      => $c->contract_end_date ? $c->contract_end_date : '',
+			);
+		}
+
+		ob_start();
+		?>
+		<div class="qb-wrap" id="qb-app"
+			data-k="<?php echo esc_attr( $this->qb_token( false ) ); ?>"
+			data-ajax="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>"
+			data-clients="<?php echo esc_attr( wp_json_encode( $out ) ); ?>"
+			data-today="<?php echo esc_attr( $today ); ?>">
+
+			<header class="qb-head"><span class="qb-dot">🎬</span> <?php echo esc_html( $settings['studio_name'] ); ?> — <?php esc_html_e( 'Quick Book', 'mwm-studio' ); ?></header>
+
+			<section class="qb-step" id="qb-step-who">
+				<h2><?php esc_html_e( 'Who', 'mwm-studio' ); ?></h2>
+				<div class="qb-clients" id="qb-clients"></div>
+			</section>
+
+			<section class="qb-step qb-hidden" id="qb-step-when">
+				<h2><?php esc_html_e( 'When', 'mwm-studio' ); ?></h2>
+				<div class="qb-days" id="qb-days"></div>
+			</section>
+
+			<section class="qb-step qb-hidden" id="qb-step-long">
+				<h2><?php esc_html_e( 'How long', 'mwm-studio' ); ?></h2>
+				<div class="qb-dur">
+					<button type="button" class="qb-step-btn" id="qb-minus">−</button>
+					<span id="qb-dur-label">1 h</span>
+					<button type="button" class="qb-step-btn" id="qb-plus">+</button>
+				</div>
+			</section>
+
+			<section class="qb-step qb-hidden" id="qb-step-time">
+				<h2><?php esc_html_e( 'What time', 'mwm-studio' ); ?></h2>
+				<div class="qb-note qb-hidden" id="qb-time-note"></div>
+				<div class="qb-slots" id="qb-slots"></div>
+				<div class="qb-other">
+					<label><?php esc_html_e( 'Other time', 'mwm-studio' ); ?>
+						<input type="time" id="qb-custom" step="900" />
+					</label>
+				</div>
+			</section>
+
+			<section class="qb-step qb-hidden" id="qb-step-go">
+				<label class="qb-check"><input type="checkbox" id="qb-notify" checked /> <?php esc_html_e( 'Email them a confirmation', 'mwm-studio' ); ?></label>
+				<div class="qb-summary" id="qb-summary"></div>
+				<button type="button" class="qb-book" id="qb-book"><?php esc_html_e( 'BOOK IT', 'mwm-studio' ); ?></button>
+				<p class="qb-err qb-hidden" id="qb-err"></p>
+			</section>
+
+			<section class="qb-done qb-hidden" id="qb-done">
+				<div class="qb-tick">✓</div>
+				<div id="qb-done-text"></div>
+				<button type="button" class="qb-again" id="qb-again"><?php esc_html_e( 'Book another', 'mwm-studio' ); ?></button>
+			</section>
+		</div>
+		<?php
+		return ob_get_clean() . $this->qb_css() . $this->qb_js();
+	}
+
+	private function qb_css() {
+		return <<<'QBCSS'
+<style>
+#qb-app,.qb-wrap{max-width:520px;margin:0 auto;padding:16px 14px 60px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#14142b;-webkit-text-size-adjust:100%;}
+.qb-wrap *{box-sizing:border-box;}
+.qb-head{font-weight:700;font-size:15px;color:#6b7280;margin-bottom:18px;}
+.qb-dot{font-size:17px;}
+.qb-step{margin-bottom:26px;}
+.qb-step h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#9096a6;margin:0 0 10px;font-weight:700;}
+.qb-hidden{display:none!important;}
+.qb-clients{display:flex;flex-direction:column;gap:8px;}
+.qb-c{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:16px 16px;border:2px solid #e6e7ee;border-radius:14px;background:#fff;font-size:17px;font-weight:600;text-align:left;width:100%;cursor:pointer;line-height:1.25;}
+.qb-c small{display:block;font-weight:500;color:#8a90a0;font-size:13px;margin-top:2px;}
+.qb-c .qb-left{font-size:14px;font-weight:700;color:#2e7d32;white-space:nowrap;}
+.qb-c .qb-left.qb-low{color:#c62828;}
+.qb-c.qb-on{border-color:#e05a6d;background:#fff5f6;}
+.qb-days{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;}
+.qb-d{flex:0 0 auto;width:64px;padding:10px 0;border:2px solid #e6e7ee;border-radius:14px;background:#fff;text-align:center;cursor:pointer;}
+.qb-d b{display:block;font-size:20px;line-height:1.1;}
+.qb-d span{font-size:11px;color:#8a90a0;text-transform:uppercase;letter-spacing:.06em;}
+.qb-d.qb-on{border-color:#e05a6d;background:#fff5f6;}
+.qb-dur{display:flex;align-items:center;justify-content:center;gap:22px;}
+.qb-dur span{font-size:26px;font-weight:700;min-width:96px;text-align:center;}
+.qb-step-btn{width:56px;height:56px;border-radius:50%;border:2px solid #e6e7ee;background:#fff;font-size:26px;line-height:1;cursor:pointer;color:#14142b;}
+.qb-slots{display:flex;flex-wrap:wrap;gap:8px;}
+.qb-s{padding:14px 18px;border:2px solid #e6e7ee;border-radius:12px;background:#fff;font-size:17px;font-weight:600;cursor:pointer;}
+.qb-s.qb-on{border-color:#e05a6d;background:#fff5f6;}
+.qb-other{margin-top:14px;font-size:14px;color:#6b7280;}
+.qb-other input{margin-left:8px;padding:10px;border:2px solid #e6e7ee;border-radius:10px;font-size:16px;}
+.qb-check{display:block;font-size:15px;margin-bottom:14px;}
+.qb-check input{margin-right:8px;transform:scale(1.3);}
+.qb-summary{font-size:16px;line-height:1.5;background:#f6f7fb;border-radius:14px;padding:14px 16px;margin-bottom:14px;}
+.qb-book,.qb-go,.qb-again{width:100%;padding:20px;border:0;border-radius:16px;background:#e05a6d;color:#fff;font-size:19px;font-weight:800;letter-spacing:.04em;cursor:pointer;}
+.qb-book[disabled]{opacity:.5;}
+.qb-err{color:#c62828;font-weight:600;margin-top:12px;font-size:15px;}
+.qb-note{background:#fff7e6;border:1px solid #f0c987;border-radius:12px;padding:10px 12px;font-size:14px;margin-bottom:10px;color:#7a5b16;}
+.qb-done{text-align:center;padding-top:40px;}
+.qb-tick{font-size:64px;color:#2e7d32;line-height:1;}
+.qb-done div{font-size:18px;line-height:1.5;margin:14px 0 22px;}
+.qb-gate{text-align:center;padding-top:60px;}
+.qb-lock{font-size:52px;}
+.qb-gate h1{font-size:24px;margin:12px 0 6px;}
+.qb-sub{color:#6b7280;font-size:15px;line-height:1.5;margin-bottom:22px;}
+.qb-pin{width:100%;padding:20px;font-size:34px;text-align:center;letter-spacing:.5em;border:2px solid #e6e7ee;border-radius:16px;margin-bottom:14px;}
+</style>
+QBCSS;
+	}
+
+	private function qb_js() {
+		return <<<'QBJS'
+<script>
+(function(){
+  var app = document.getElementById('qb-app');
+  if (!app) return;
+  var K = app.dataset.k, AJAX = app.dataset.ajax;
+  var CLIENTS = JSON.parse(app.dataset.clients || '[]');
+  var st = { client:null, date:null, dur:1, time:null };
+  var $ = function(id){ return document.getElementById(id); };
+  function show(id, on){ $(id).classList[on ? 'remove' : 'add']('qb-hidden'); }
+  function pad(n){ return n < 10 ? '0'+n : ''+n; }
+  function iso(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function post(action, data){
+    var fd = new FormData();
+    fd.append('action', action); fd.append('k', K);
+    Object.keys(data).forEach(function(x){ fd.append(x, data[x]); });
+    return fetch(AJAX, {method:'POST', body:fd, credentials:'same-origin'}).then(function(r){ return r.json(); });
+  }
+  function durLabel(d){ return (d % 1 === 0 ? d : d.toFixed(2).replace(/0$/,'')) + ' h'; }
+
+  // WHO
+  var wrap = $('qb-clients');
+  CLIENTS.forEach(function(c){
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'qb-c';
+    b.innerHTML = '<span>' + c.name + (c.expired ? '<small>contract ended ' + c.ends + '</small>' : '') + '</span>' +
+                  '<span class="qb-left' + (c.left <= 1 ? ' qb-low' : '') + '">' + c.left + ' h left</span>';
+    b.addEventListener('click', function(){
+      st.client = c;
+      Array.prototype.forEach.call(wrap.children, function(x){ x.classList.remove('qb-on'); });
+      b.classList.add('qb-on');
+      show('qb-step-when', true); show('qb-step-long', true);
+      buildDays(); loadSlots();
+      $('qb-step-when').scrollIntoView({behavior:'smooth', block:'start'});
+    });
+    wrap.appendChild(b);
+  });
+
+  // WHEN
+  function buildDays(){
+    var box = $('qb-days'); if (box.children.length) return;
+    var base = new Date(app.dataset.today + 'T12:00:00');
+    var DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    for (var i = 0; i < 21; i++){
+      (function(){
+        var d = new Date(base.getTime() + i*86400000);
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'qb-d';
+        b.innerHTML = '<b>'+d.getDate()+'</b><span>'+DOW[d.getDay()]+'</span>';
+        b.addEventListener('click', function(){
+          st.date = iso(d); st.time = null;
+          Array.prototype.forEach.call(box.children, function(x){ x.classList.remove('qb-on'); });
+          b.classList.add('qb-on');
+          loadSlots();
+        });
+        box.appendChild(b);
+      })();
+    }
+  }
+
+  // HOW LONG
+  function setDur(v){
+    st.dur = Math.min(8, Math.max(0.5, Math.round(v*4)/4));
+    $('qb-dur-label').textContent = durLabel(st.dur);
+    st.time = null; loadSlots(); summarise();
+  }
+  $('qb-minus').addEventListener('click', function(){ setDur(st.dur - 0.25); });
+  $('qb-plus').addEventListener('click', function(){ setDur(st.dur + 0.25); });
+
+  // WHAT TIME
+  function loadSlots(){
+    if (!st.date) { summarise(); return; }
+    show('qb-step-time', true);
+    var box = $('qb-slots'); box.innerHTML = '<em style="color:#8a90a0">checking…</em>';
+    post('mwm_qb_slots', {date: st.date, duration: st.dur}).then(function(res){
+      box.innerHTML = '';
+      var note = $('qb-time-note');
+      if (!res || !res.success) { note.textContent = 'Could not load times — you can still type one below.'; show('qb-time-note', true); summarise(); return; }
+      if (res.data.unknown) {
+        note.textContent = 'Cannot reach the calendar right now, so these are only checked against bookings. Type a time below if you know it is free.';
+        show('qb-time-note', true);
+      } else { show('qb-time-note', false); }
+      if (!res.data.slots.length) {
+        box.innerHTML = '<em style="color:#8a90a0">No open slot that long — try a shorter session or another day, or type a time below.</em>';
+      }
+      res.data.slots.forEach(function(t){
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'qb-s'; b.textContent = t;
+        b.addEventListener('click', function(){
+          st.time = t; $('qb-custom').value = '';
+          Array.prototype.forEach.call(box.children, function(x){ x.classList && x.classList.remove('qb-on'); });
+          b.classList.add('qb-on'); summarise();
+        });
+        box.appendChild(b);
+      });
+      summarise();
+    });
+  }
+  $('qb-custom').addEventListener('change', function(){
+    st.time = this.value || null;
+    Array.prototype.forEach.call($('qb-slots').children, function(x){ x.classList && x.classList.remove('qb-on'); });
+    summarise();
+  });
+
+  // GO
+  function summarise(){
+    var ok = st.client && st.date && st.time;
+    show('qb-step-go', !!ok);
+    if (!ok) return;
+    var d = new Date(st.date + 'T12:00:00');
+    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var after = (st.client.left - st.dur);
+    $('qb-summary').innerHTML = '<strong>' + st.client.name + '</strong><br>' +
+      days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate() + ' at ' + st.time + '<br>' +
+      durLabel(st.dur) + ' — leaves ' + (Math.round(after*100)/100) + ' h' +
+      (after < 0 ? ' <strong style="color:#c62828">(over contract)</strong>' : '');
+  }
+
+  $('qb-book').addEventListener('click', function(){
+    var btn = this; btn.disabled = true; show('qb-err', false);
+    post('mwm_qb_create', {
+      client_id: st.client.id, date: st.date, start_time: st.time,
+      duration: st.dur, notify: $('qb-notify').checked ? 1 : 0
+    }).then(function(res){
+      btn.disabled = false;
+      if (!res || !res.success) {
+        $('qb-err').textContent = (res && res.data && res.data.message) ? res.data.message : 'Something went wrong. Try again.';
+        show('qb-err', true); return;
+      }
+      ['qb-step-who','qb-step-when','qb-step-long','qb-step-time','qb-step-go'].forEach(function(x){ show(x, false); });
+      $('qb-done-text').innerHTML = res.data.message;
+      show('qb-done', true);
+      window.scrollTo(0,0);
+    }).catch(function(){
+      btn.disabled = false;
+      $('qb-err').textContent = 'Network error. Try again.'; show('qb-err', true);
+    });
+  });
+
+  $('qb-again').addEventListener('click', function(){ window.location.reload(); });
+})();
+</script>
+QBJS;
+	}
+
+	/* ---- S27 AJAX (token + PIN cookie, no WordPress session) ------------- */
+
+	private function qb_guard() {
+		if ( ! $this->qb_token_ok() || ! $this->qb_cookie_ok() ) {
+			wp_send_json_error( array( 'message' => __( 'Session expired — reopen the link.', 'mwm-studio' ) ), 403 );
+		}
+	}
+
+	public function mwm_qb_slots() {
+		$this->qb_guard();
+		$date = isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '';
+		$dur  = isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 1;
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+			wp_send_json_error( array( 'message' => 'bad date' ) );
+		}
+		$slots = $this->get_available_slots( $date, $dur );
+		wp_send_json_success( array(
+			'slots'   => ( null === $slots ) ? array() : array_values( $slots ),
+			'unknown' => ( null === $slots ),
+		) );
+	}
+
+	public function mwm_qb_create() {
+		$this->qb_guard();
+		$client_id = isset( $_POST['client_id'] ) ? (int) $_POST['client_id'] : 0;
+		$res = $this->admin_write_booking(
+			0,
+			array(
+				'client_id'      => $client_id,
+				'booking_date'   => isset( $_POST['date'] ) ? sanitize_text_field( wp_unslash( $_POST['date'] ) ) : '',
+				'start_time'     => isset( $_POST['start_time'] ) ? sanitize_text_field( wp_unslash( $_POST['start_time'] ) ) : '',
+				'duration_hours' => isset( $_POST['duration'] ) ? (float) $_POST['duration'] : 0,
+				'status'         => 'confirmed',
+				'notes'          => 'Booked from the phone (quick book)',
+			),
+			array(
+				'action'        => 'booking.quickbook',
+				'reason'        => 'Quick Book — client asked Michael to book it',
+				'notify_client' => ! empty( $_POST['notify'] ),
+				'actor'         => 'quick-book (phone)',
+			)
+		);
+
+		if ( ! $res['ok'] ) {
+			wp_send_json_error( array( 'message' => $res['message'] ) );
+		}
+
+		$c    = $this->get_client( $client_id );
+		$used = $c ? $this->hours_used_in_contract( $c->id, $c->contract_start_date, $c->contract_end_date ) : 0;
+		$msg  = sprintf(
+			/* translators: 1: client, 2: date, 3: time */
+			__( 'Booked — <strong>%1$s</strong><br>%2$s at %3$s', 'mwm-studio' ),
+			esc_html( $c ? $c->name : '' ),
+			esc_html( date_i18n( 'l, F j', strtotime( sanitize_text_field( wp_unslash( $_POST['date'] ) ) ) ) ),
+			esc_html( sanitize_text_field( wp_unslash( $_POST['start_time'] ) ) )
+		);
+		if ( $c ) {
+			$msg .= '<br><small style="color:#6b7280">' . esc_html( sprintf( __( '%1$s of %2$s hours used', 'mwm-studio' ), number_format( $used, 2 ), number_format( (float) $c->contract_hours, 2 ) ) ) . '</small>';
+		}
+		foreach ( $res['warnings'] as $w ) {
+			$msg .= '<br><small style="color:#c62828">' . esc_html( $w ) . '</small>';
+		}
+		wp_send_json_success( array( 'message' => $msg ) );
+	}
+
+	/* =========================================================================
+	 * S27 — DRIFT WATCH
+	 *
+	 * The Reconciliation screen only tells you the truth on the day you think to
+	 * open it. #61 drifted on Aug 12 and was found on Aug 13, by the client's
+	 * time being wrong. This runs the same check every morning and speaks up
+	 * only when something disagrees. Silence means clean.
+	 * ========================================================================= */
+
+	/** S27: shared by the Reconciliation screen and the daily cron. */
+	private function find_calendar_drift( $from, $to ) {
+		global $wpdb;
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT b.*, c.name AS client_name FROM {$this->bookings_table} b
+				LEFT JOIN {$this->clients_table} c ON c.id = b.client_id
+				WHERE b.status IN ('confirmed','completed')
+				AND b.booking_date >= %s AND b.booking_date <= %s
+				ORDER BY b.booking_date ASC, b.start_time ASC",
+				$from,
+				$to
+			)
+		);
+
+		$checked = 0;
+		$unknown = 0;
+		$bad     = array();
+		foreach ( $rows as $r ) {
+			$blocks = $this->get_gcal_busy_blocks( $r->booking_date );
+			if ( null === $blocks ) {
+				$unknown++;
+				continue;
+			}
+			$checked++;
+			$s     = substr( $r->start_time, 0, 5 );
+			$e     = substr( $r->end_time, 0, 5 );
+			$match = false;
+			$near  = array();
+			foreach ( $blocks as $bl ) {
+				if ( $bl['start'] === $s && $bl['end'] === $e ) {
+					$match = true;
+					break;
+				}
+				if ( $bl['start'] < $e && $bl['end'] > $s ) {
+					$near[] = $bl['start'] . '–' . $bl['end'];
+				}
+			}
+			if ( ! $match ) {
+				$bad[] = array( 'b' => $r, 'near' => $near );
+			}
+		}
+		return array( 'checked' => $checked, 'unknown' => $unknown, 'bad' => $bad );
+	}
+
+	public function ensure_drift_cron() {
+		if ( ! wp_next_scheduled( 'mwm_studio_drift_event' ) ) {
+			// ~7:10am local, daily.
+			$first = strtotime( 'tomorrow 07:10', current_time( 'timestamp' ) ) - ( (int) get_option( 'gmt_offset' ) * HOUR_IN_SECONDS );
+			wp_schedule_event( $first, 'daily', 'mwm_studio_drift_event' );
+		}
+	}
+
+	public function run_drift_check() {
+		$from = date( 'Y-m-d', strtotime( current_time( 'Y-m-d' ) . ' -7 days' ) );
+		$to   = date( 'Y-m-d', strtotime( current_time( 'Y-m-d' ) . ' +60 days' ) );
+		$r    = $this->find_calendar_drift( $from, $to );
+
+		if ( empty( $r['bad'] ) ) {
+			update_option( 'mwm_studio_drift_last', array( 'at' => current_time( 'mysql' ), 'checked' => $r['checked'], 'bad' => 0 ), false );
+			return; // silence means clean
+		}
+
+		$lines = array();
+		foreach ( $r['bad'] as $x ) {
+			$b       = $x['b'];
+			$lines[] = sprintf(
+				"#%d  %s — booking says %s %s–%s · calendar has %s",
+				(int) $b->id,
+				$b->client_name ? $b->client_name : ( $b->guest_name . ' (rental)' ),
+				$b->booking_date,
+				substr( $b->start_time, 0, 5 ),
+				substr( $b->end_time, 0, 5 ),
+				$x['near'] ? implode( ', ', $x['near'] ) : 'nothing at all'
+			);
+		}
+		$body = sprintf(
+			"%d booking(s) no longer match their Google Calendar event.\n\n%s\n\nThe BOOKING ROW is the source of truth — reminder emails read it, not the calendar.\nOpen each one and re-save it to rewrite the calendar event to match:\n%s\n\n%d checked%s.\n",
+			count( $r['bad'] ),
+			implode( "\n", $lines ),
+			admin_url( 'admin.php?page=mwm-studio-reconcile' ),
+			$r['checked'],
+			$r['unknown'] ? sprintf( ', %d could not be checked (availability feed unreachable)', $r['unknown'] ) : ''
+		);
+
+		$this->notify_admin( sprintf( '[MWM Studio] ⚠️ %d booking(s) drifted from the calendar', count( $r['bad'] ) ), $body );
+
+		// Optional Slack relay — paste an incoming-webhook URL in Settings to use it.
+		$hook = trim( (string) get_option( 'mwm_studio_drift_slack', '' ) );
+		if ( $hook ) {
+			wp_remote_post( $hook, array(
+				'timeout' => 5,
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => wp_json_encode( array(
+					'text' => "⚠️ *Studio booking drifted from the calendar*\n```" . implode( "\n", $lines ) . '```',
+				) ),
+			) );
+		}
+
+		update_option( 'mwm_studio_drift_last', array( 'at' => current_time( 'mysql' ), 'checked' => $r['checked'], 'bad' => count( $r['bad'] ) ), false );
+	}
+
 	public function render_dashboard_page() {
 		global $wpdb;
 		$total_clients = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$this->clients_table} WHERE active = 1" );
@@ -2590,7 +4179,7 @@ MWMJS;
 		$upcoming = $wpdb->get_results(
 			$wpdb->prepare(
 				"SELECT b.*, c.name AS client_name FROM {$this->bookings_table} b
-				JOIN {$this->clients_table} c ON c.id = b.client_id
+				LEFT JOIN {$this->clients_table} c ON c.id = b.client_id
 				WHERE b.status = 'confirmed' AND TIMESTAMP(b.booking_date,b.start_time) >= %s
 				ORDER BY b.booking_date ASC, b.start_time ASC LIMIT 10",
 				current_time( 'mysql' )
@@ -2632,7 +4221,7 @@ MWMJS;
 				<?php if ( $upcoming ) : ?>
 					<?php foreach ( $upcoming as $b ) : ?>
 						<tr>
-							<td><?php echo esc_html( $b->client_name ); ?></td>
+							<td><?php echo esc_html( $b->client_name ? $b->client_name : ( $b->guest_name ? $b->guest_name . ' (rental)' : '—' ) ); ?></td>
 							<td><?php echo esc_html( date_i18n( 'M j, Y', strtotime( $b->booking_date ) ) ); ?></td>
 							<td><?php echo esc_html( substr( $b->start_time, 0, 5 ) . ' - ' . substr( $b->end_time, 0, 5 ) ); ?></td>
 							<td><?php echo esc_html( $b->duration_hours ); ?>h</td>
@@ -2667,6 +4256,8 @@ MWMJS;
 			delete_transient( 'mwm_studio_admin_error' );
 			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $err ) . '</p></div>';
 		}
+
+		$this->print_admin_notice(); // S26
 
 		$edit_id = isset( $_GET['edit'] ) ? (int) $_GET['edit'] : 0;
 		$editing = null;
@@ -2782,10 +4373,27 @@ MWMJS;
 											<br><small style="color:#c62828;font-weight:600;"><?php esc_html_e( 'EXPIRED', 'mwm-studio' ); ?></small>
 										<?php endif; ?>
 									<?php endif; ?>
+									<?php if ( $used > (float) $c->contract_hours + 0.001 ) : ?>
+										<br><small style="color:#c62828;font-weight:600;"><?php echo esc_html( sprintf( __( 'OVER by %s h', 'mwm-studio' ), number_format( $used - (float) $c->contract_hours, 2 ) ) ); ?></small>
+									<?php endif; ?>
+									<?php // S26: adjust the package without editing the database by hand. ?>
+									<form method="post" style="margin-top:6px;display:flex;gap:4px;align-items:center;">
+										<?php wp_nonce_field( 'mwm_studio_adjust_hours' ); ?>
+										<input type="hidden" name="mwm_studio_action" value="adjust_hours" />
+										<input type="hidden" name="client_id" value="<?php echo esc_attr( $c->id ); ?>" />
+										<select name="hours_mode" style="font-size:11px;height:26px;padding:0 4px;">
+											<option value="add"><?php esc_html_e( 'Add', 'mwm-studio' ); ?></option>
+											<option value="set"><?php esc_html_e( 'Set total', 'mwm-studio' ); ?></option>
+										</select>
+										<input type="number" name="hours_value" step="0.25" style="width:70px;height:26px;" placeholder="0.5" required />
+										<button class="button button-small"><?php esc_html_e( 'Apply', 'mwm-studio' ); ?></button>
+									</form>
 								</td>
 									<td><?php echo $c->active ? '<span style="color:#2e7d32;">' . esc_html__( 'Active', 'mwm-studio' ) . '</span>' : '<span style="color:#c62828;">' . esc_html__( 'Inactive', 'mwm-studio' ) . '</span>'; ?></td>
 									<td>
 										<a href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-clients&edit=' . $c->id ) ); ?>"><?php esc_html_e( 'Edit', 'mwm-studio' ); ?></a>
+										|
+										<a href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-booking-edit&client_id=' . $c->id ) ); ?>"><?php esc_html_e( 'New Booking', 'mwm-studio' ); ?></a>
 										|
 										<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=mwm-studio-clients&mwm_action=regenerate_code&id=' . $c->id ), 'mwm_studio_regen_' . $c->id ) ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Generate a new access code? The old one will stop working.', 'mwm-studio' ) ); ?>');"><?php esc_html_e( 'New Code', 'mwm-studio' ); ?></a>
 										|
@@ -2826,6 +4434,7 @@ MWMJS;
 		if ( isset( $_GET['completed'] ) ) {
 			echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Booking marked completed.', 'mwm-studio' ) . '</p></div>';
 		}
+		$this->print_admin_notice(); // S26
 
 		$filter_client = isset( $_GET['client_id'] ) ? (int) $_GET['client_id'] : 0;
 		$filter_status = isset( $_GET['status'] ) ? sanitize_text_field( wp_unslash( $_GET['status'] ) ) : '';
@@ -2839,7 +4448,7 @@ MWMJS;
 			$where[]  = 'b.client_id = %d';
 			$params[] = $filter_client;
 		}
-		if ( $filter_status && in_array( $filter_status, array( 'confirmed', 'cancelled', 'completed' ), true ) ) {
+		if ( $filter_status && in_array( $filter_status, array( 'confirmed', 'cancelled', 'completed', 'cancelled_late' ), true ) ) {
 			$where[]  = 'b.status = %s';
 			$params[] = $filter_status;
 		}
@@ -2852,8 +4461,10 @@ MWMJS;
 			$params[] = $filter_to;
 		}
 
+		// S26: LEFT JOIN — an inner JOIN hid every rental (client_id = 0) from this
+		// screen, so paid rentals existed on the calendar and nowhere in wp-admin.
 		$sql = "SELECT b.*, c.name AS client_name FROM {$this->bookings_table} b
-				JOIN {$this->clients_table} c ON c.id = b.client_id
+				LEFT JOIN {$this->clients_table} c ON c.id = b.client_id
 				WHERE " . implode( ' AND ', $where ) . '
 				ORDER BY b.booking_date DESC, b.start_time DESC LIMIT 200';
 
@@ -2862,7 +4473,10 @@ MWMJS;
 		$clients = $wpdb->get_results( "SELECT id, name FROM {$this->clients_table} ORDER BY name ASC" );
 		?>
 		<div class="wrap mwm-studio-admin">
-			<h1><?php esc_html_e( 'Studio Bookings', 'mwm-studio' ); ?></h1>
+			<h1 class="wp-heading-inline"><?php esc_html_e( 'Studio Bookings', 'mwm-studio' ); ?></h1>
+			<a href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-booking-edit' ) ); ?>" class="page-title-action"><?php esc_html_e( 'Add Booking', 'mwm-studio' ); ?></a>
+			<a href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-reconcile' ) ); ?>" class="page-title-action"><?php esc_html_e( 'Check against calendar', 'mwm-studio' ); ?></a>
+			<hr class="wp-header-end" />
 
 			<form method="get" class="mwm-filters">
 				<input type="hidden" name="page" value="mwm-studio-bookings" />
@@ -2899,24 +4513,25 @@ MWMJS;
 				<?php if ( $bookings ) : ?>
 					<?php foreach ( $bookings as $b ) : ?>
 						<tr>
-							<td><?php echo esc_html( $b->client_name ); ?></td>
+							<td><?php echo esc_html( $b->client_name ? $b->client_name : ( $b->guest_name ? $b->guest_name . ' (rental)' : '—' ) ); ?></td>
 							<td><?php echo esc_html( date_i18n( 'M j, Y', strtotime( $b->booking_date ) ) ); ?></td>
 							<td><?php echo esc_html( substr( $b->start_time, 0, 5 ) . ' - ' . substr( $b->end_time, 0, 5 ) ); ?></td>
 							<td><?php echo esc_html( $b->duration_hours ); ?>h</td>
 							<td>
 								<?php
-								$colors = array( 'confirmed' => '#2e7d32', 'cancelled' => '#c62828', 'completed' => '#666' );
+								$colors = array( 'confirmed' => '#2e7d32', 'cancelled' => '#c62828', 'cancelled_late' => '#c62828', 'completed' => '#666' );
 								$color  = isset( $colors[ $b->status ] ) ? $colors[ $b->status ] : '#333';
 								?>
 								<span style="color:<?php echo esc_attr( $color ); ?>;font-weight:600;text-transform:capitalize;"><?php echo esc_html( $b->status ); ?></span>
 							</td>
 							<td>
+								<?php // S26: Edit is available on every status — "he ran 30 minutes over" is always discovered after the fact. ?>
+								<a href="<?php echo esc_url( admin_url( 'admin.php?page=mwm-studio-booking-edit&id=' . $b->id ) ); ?>"><strong><?php esc_html_e( 'Edit', 'mwm-studio' ); ?></strong></a>
 								<?php if ( 'confirmed' === $b->status ) : ?>
+									|
 									<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=mwm-studio-bookings&mwm_action=complete_booking&id=' . $b->id ), 'mwm_studio_complete_booking_' . $b->id ) ); ?>"><?php esc_html_e( 'Mark Completed', 'mwm-studio' ); ?></a>
 									|
-									<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=mwm-studio-bookings&mwm_action=cancel_booking&id=' . $b->id ), 'mwm_studio_cancel_booking_' . $b->id ) ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Cancel this booking?', 'mwm-studio' ) ); ?>');" style="color:#c62828;"><?php esc_html_e( 'Cancel', 'mwm-studio' ); ?></a>
-								<?php else : ?>
-									&mdash;
+									<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=mwm-studio-bookings&mwm_action=cancel_booking&id=' . $b->id ), 'mwm_studio_cancel_booking_' . $b->id ) ); ?>" onclick="return confirm('<?php echo esc_js( __( 'Cancel this booking? The calendar event will be removed too.', 'mwm-studio' ) ); ?>');" style="color:#c62828;"><?php esc_html_e( 'Cancel', 'mwm-studio' ); ?></a>
 								<?php endif; ?>
 							</td>
 						</tr>
@@ -3041,6 +4656,23 @@ MWMJS;
 							<td><input type="number" min="1" id="stripe_contract_months" name="stripe_contract_months" value="<?php echo esc_attr( $settings['stripe_contract_months'] ); ?>"></td>
 						</tr>
 					</table>
+				</div>
+
+				<div class="mwm-card">
+					<h2><?php esc_html_e( 'Quick Book (phone)', 'mwm-studio' ); ?></h2>
+					<p style="color:#666;margin-top:0;"><?php esc_html_e( 'Open this on your phone and add it to your home screen. It books for existing clients only — it cannot cancel, change hours or edit a client. Treat the link like a key.', 'mwm-studio' ); ?></p>
+					<p><input type="text" class="widefat" readonly onclick="this.select();" value="<?php echo esc_attr( $this->qb_url() ); ?>" /></p>
+					<p>
+						<a class="button" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=mwm-studio-settings&mwm_action=rotate_qb' ), 'mwm_studio_rotate_qb' ) ); ?>" onclick="return confirm('<?php echo esc_js( __( 'This kills the old link and clears the PIN. You will set a new PIN next time you open it. Continue?', 'mwm-studio' ) ); ?>');"><?php esc_html_e( 'New link + reset PIN', 'mwm-studio' ); ?></a>
+						<span style="color:#666;margin-left:8px;"><?php echo esc_html( $this->qb_pin_hash() ? __( 'A PIN is set.', 'mwm-studio' ) : __( 'No PIN yet — the first person to open the link sets it.', 'mwm-studio' ) ); ?></span>
+					</p>
+					<h3 style="margin-bottom:4px;"><?php esc_html_e( 'Daily calendar drift alert', 'mwm-studio' ); ?></h3>
+					<p style="color:#666;margin-top:0;"><?php esc_html_e( 'Every morning, every booking is checked against the calendar. You only hear about it when something disagrees. Emails you either way; paste a Slack incoming-webhook URL to also post there.', 'mwm-studio' ); ?></p>
+					<p><input type="url" name="drift_slack" class="widefat" placeholder="https://hooks.slack.com/services/..." value="<?php echo esc_attr( get_option( 'mwm_studio_drift_slack', '' ) ); ?>" /></p>
+					<?php $mwm_last = get_option( 'mwm_studio_drift_last' ); ?>
+					<?php if ( is_array( $mwm_last ) ) : ?>
+						<p style="color:#666;"><?php echo esc_html( sprintf( __( 'Last run %1$s — %2$d checked, %3$d disagreed.', 'mwm-studio' ), $mwm_last['at'], (int) $mwm_last['checked'], (int) $mwm_last['bad'] ) ); ?></p>
+					<?php endif; ?>
 				</div>
 
 				<p><button type="submit" class="button button-primary button-hero"><?php esc_html_e( 'Save Settings', 'mwm-studio' ); ?></button></p>

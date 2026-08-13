@@ -173,3 +173,199 @@ VERIFIED after the fix (logged out, cache-busted):
 
 The portal template is ONE shortcode output shared by every client, so this is
 fixed for all 12 portal clients at once, not just Juliane's account.
+
+### S26 — ADMIN BOOKING CONTROL (Aug 13 2026) — ✅ **LIVE, VERIFIED** · v2.6.1
+
+Michael: *"we need to be able to add hours, have more control… they wanna go over
+and use more time, and we need to be able to have that flexibility to go into
+their portal and adjust that… I don't want you to have to manually code times
+like you had to do this time."*
+
+Before this, wp-admin could **list** bookings and offer only *Mark Completed* /
+*Cancel*. There was no way to create a booking and no way to edit one. The only
+paths that created a booking were the client-facing portal and code.
+
+#### 🔴 The design rule: ONE WRITE PATH
+
+Every admin mutation goes through **`admin_write_booking()`**. In one operation
+it writes the booking row, pushes the calendar to match, and records an audit
+entry with the before value. Nothing else in the plugin may `UPDATE` the
+bookings table from an admin screen.
+
+The hours ledger is **derived, not stored** — `hours_used_in_contract()` SUMs
+`duration_hours` over the contract window. Writing the row *is* moving the
+ledger; there is no second number that can drift from it. That is why "three
+things in one operation" is really two.
+
+#### Why the calendar is removed-and-recreated, not updated
+
+The machine webhook `/webhook/studio-booking` accepts only `booking_created` /
+`booking_cancelled` / `booking_cancelled_late` and **400s on anything else.
+There is no `booking_updated`.** The client-facing reschedule already solves
+this with a bumped idempotency id (`61`, `61-r1`, `61-r2`…) via `event_bid()`;
+S26 reuses that exact mechanism. **So S26 ships WordPress-side with no machine
+deploy.**
+
+The `client_name` sent with the removal carries a marker — `(admin edit —
+moving)` vs `(cancelled in wp-admin)` — so the machine's Slack alert does not
+read a move as a cancellation.
+
+#### What was broken and is now closed
+
+1. **Booking #61 (Jonathan Pineda, Aug 13 2026)** read `15:00` in the row and
+   `14:15` on the calendar. The calendar event had been hand-edited Aug 12 and
+   nothing reconciled the two. Reminder emails read the **row**, so the 1:46 PM
+   reminder told the client 15:00 for a 14:15 session.
+2. 🔴 **wp-admin Cancel and Mark Completed pushed nothing.** Cancelling from the
+   Bookings list wrote the row and left the Google Calendar event in place,
+   blocking the studio forever. Never hit in production only because every
+   cancellation so far came through the portal. Both now route through
+   `admin_write_booking()`.
+3. ⚠️ **Rentals were invisible in wp-admin.** Both the Bookings list and the
+   Dashboard "Upcoming Bookings" used `JOIN {clients} ON c.id = b.client_id`,
+   and rentals carry `client_id = 0`. A real paid rental (Priti, Aug 29) existed
+   on the calendar and nowhere in wp-admin. Both are now `LEFT JOIN`.
+
+#### What was added
+
+| | |
+|---|---|
+| `admin_write_booking()` | the single write path — row + calendar + audit |
+| Add / Edit Booking screen | free-form duration (any ¼ hour, 0.25–12), any status, incl. already-Completed bookings |
+| Repeat weekly | N extra weeks, each created through the same write path |
+| Adjust hours | Add / Set total, inline on the Clients row; no hand-edited DB |
+| Audit Trail screen | who · when · before · after · reason (`wp_mwm_studio_audit`) |
+| Reconciliation screen | flags any row with no calendar block at exactly its start/end |
+| Double-booking guard | blocks overlaps unless "allow overlap" is ticked; never silent |
+| Client email | **OFF by default** — admin changes are silent so Michael sends one message himself |
+
+**Ledger policy settled with Michael (Aug 13):** overage **draws from the
+package** (Pineda: 1.5 drawn), and going past the contract total is **allowed
+and flagged loudly** — the booking saves, the Clients row shows `OVER by N h`,
+and an admin email fires. Never blocks you at 6pm on a Thursday.
+
+`status_counts_hours()` is deliberately a different set from
+`status_holds_calendar()`: `cancelled_late` charges the hours but frees the
+studio (S7.6). Conflating the two is how a ledger double-counts.
+
+#### Deploy method (better than the S22 in-page diff replay)
+
+Built the file locally, `php -l` clean, packaged as a plugin zip, uploaded via
+**Plugins → Add New → Upload Plugin → "Replace current with uploaded"**. No code
+passes through the editor textarea and WordPress does its own fatal-error check.
+Before replacing, the live file was hashed in-page and confirmed **byte-identical
+to the repo baseline** (`726f7203…`) — no undocumented live drift. After
+replacing, the live file was re-hashed and matched the built file exactly.
+
+⚠️ **`remove_submenu_page()` broke the hidden edit screen** (v2.6.0). It strips
+the `$submenu` entry that `user_can_access_admin_page()` walks to resolve the
+parent, so every `?page=mwm-studio-booking-edit` hit returned *"Sorry, you are
+not allowed to access this page."* Fixed in **v2.6.1** by keeping it as a real
+submenu row (*Add / Edit Booking*). Do not re-hide it that way.
+
+#### POST-DEPLOY VERIFICATION (Aug 13 2026)
+
+| check | result |
+|---|---|
+| live file hash == built file | ✅ byte-identical, 243,261 b |
+| `#61` corrected via the new screen | ✅ `14:15–15:45`, 1.5h |
+| old gcal event `2qqgqr3bov…` | ✅ deleted (404 on fetch) |
+| new gcal event `#61-r1` | ✅ Aug 13 14:15–15:45, "🎬 Studio: Jonathan Pineda (1.5h)", attendee + 30/60/1440 reminders |
+| four Thursdays `#71–#74` | ✅ Aug 20 · Aug 27 · Sep 3 · Sep 10, all 14:15–15:15 |
+| four gcal events | ✅ all present, attendee + correct reminders |
+| Pineda hours | ✅ **5.5 / 12.0** |
+| audit trail | ✅ 5 rows, before/after/reason all populated |
+| Reconciliation (Jul 14 – Nov 11) | ✅ 17 checked, 0 disagree |
+| Reconciliation negative control (Jun 30 – Jul 10) | ✅ 7 flagged — the July one-time-import rows and two early test rentals, all pre-S12 and expected. Proves the detector fires. **Do not "fix" these** — re-saving would push historical events and fire invites for past sessions. |
+| REGRESSION `/studio-portal/` | ✅ 200, 71,716 b — same byte count as post-S22b, no fatal, one calendar |
+| REGRESSION `/book-studio/` | ✅ 200, 92,990 b, widget intact, no fatal |
+| REGRESSION `mwm_studio_rental_slots` Aug 20 | ✅ 16:00, 17:00 — the new 14:15 booking correctly blocks its slot |
+
+🔑 **Google calendar invites DID go to the client** for all five events
+(`sendUpdates="all"` on the machine side, unchanged behaviour). The WP branded
+confirmation emails were suppressed as Michael asked, but Pineda still received
+a cancellation notice for the old Aug 13 event plus five invites. Any human
+email to him should acknowledge that.
+
+### S27 — QUICK BOOK (phone) + DRIFT WATCH (Aug 13 2026) — ✅ **LIVE, VERIFIED** · v2.7.0
+
+Michael: *"most of the time I'm on my phone… going to WordPress through my phone
+is not very convenient."* A client asks him in the studio to book an hour; he
+should not have to log into wp-admin on a phone to do it.
+
+#### Quick Book — `/studio-quick-book/`
+
+A **standalone page outside wp-admin**. `qb_maybe_standalone()` takes over
+`template_redirect` for that one page and emits a bare document with the iOS
+home-screen meta, so it opens full-screen with no theme, no nav bar, no browser
+chrome. Three taps — client, day, time — a duration stepper, one button.
+
+🔴 **It is a new DOOR, not a new write path.** It creates bookings through
+`admin_write_booking()`, the same S26 path as the admin screens. That
+distinction is the whole lesson of #61.
+
+**Auth, since there is no WordPress session on that page:**
+
+1. a 48-char token in the URL (`?k=…`), compared with `hash_equals` — the same
+   pattern `/manage-booking/` already uses;
+2. a 4-digit PIN **Michael sets himself on first open**. Only `wp_hash_password`
+   of it is stored; DEV never sees or handles the value.
+
+A pass sets an HMAC-signed, httpOnly cookie for 7 days, bound to both the PIN
+hash and the token — so rotating either invalidates every live session. PIN
+attempts are throttled 5 per 15 min per IP. `Settings → New link + reset PIN`
+kills the old link and the PIN together: one button, the recovery path for a
+lost phone or a forgotten PIN.
+
+**What it deliberately cannot do:** cancel a booking, change hours, edit a
+client, or show money. It creates a booking for a client who already exists.
+Everything destructive stays behind a real wp-admin login.
+
+Times come from `get_available_slots()`, so only genuinely free slots are
+offered — but that generator steps on the hour, and real sessions are not always
+on the hour (Pineda is 14:15). So there is an **"Other time"** field; the exact
+overlap guard in `admin_write_booking()` is what actually protects the studio,
+not the slot list. If the availability feed is down the page says so and still
+lets him type a time, rather than showing an empty screen.
+
+#### Drift Watch
+
+The Reconciliation screen only tells the truth on the day you open it. #61
+drifted Aug 12 and was found Aug 13 — by the client being told the wrong time.
+`run_drift_check()` runs the same check daily at ~07:10 over −7/+60 days and
+**speaks only when something disagrees.** Silence means clean. Emails
+`admin_email`; also posts to Slack if an incoming-webhook URL is set in
+Settings. The screen and the cron share one implementation,
+`find_calendar_drift()` — there is no second definition of "drifted".
+
+#### POST-DEPLOY VERIFICATION (Aug 13 2026, logged out, cache-busted)
+
+| check | result |
+|---|---|
+| live file hash == built file | ✅ byte-identical, 275,371 b |
+| `php -l` / `node --check` on the inline JS | ✅ both clean |
+| no `?k=` | ✅ HTTP 200, renders **Not found** — does not confirm the page exists |
+| wrong token, same length | ✅ **Not found** |
+| valid token | ✅ **Choose a PIN** screen |
+| page is the bare document | ✅ `web-app-capable` present, no theme markup |
+| `mwm_qb_slots` — valid token, no PIN cookie | ✅ **HTTP 403** "Session expired" |
+| `mwm_qb_create` — valid token, no PIN cookie | ✅ **HTTP 403** — the write is behind BOTH factors |
+| Reconciliation after the refactor | ✅ 17 checked, 0 disagree |
+| REGRESSION `/studio-portal/` | ✅ 200, 71,716 b, one calendar, no fatal |
+| REGRESSION `/book-studio/` | ✅ 200, 92,990 b, widget intact |
+
+The create test used `client_id = 999999` on purpose: had the guard failed, the
+write path would still have refused on an unknown client and written nothing.
+Test the lock without risking the door.
+
+#### Still to build (agreed with Michael, Aug 13)
+
+**Two-way Google Calendar → portal sync.** Dragging an event should move the
+booking. Needs: `events.watch` + a renewal cron on the machine, incremental sync
+by `syncToken`, a reverse `event_id → booking_id` index (pg_store only has the
+forward map today), a **loop guard** so the machine does not bounce its own
+writes, and a new authenticated WP REST route that calls `admin_write_booking()`
+— *not* direct DB writes, or S26's single write path is undone. Policy settled
+with Michael: a drag that breaks a rule is **accepted and flagged loudly**,
+never silently refused; a calendar deletion is **flagged, not auto-cancelled**,
+because an accidental delete must not silently hand hours back.
