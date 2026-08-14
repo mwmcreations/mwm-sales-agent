@@ -16094,6 +16094,16 @@ def studio_booking_webhook():
                             "IS blocked; calendar invites are off until DWD is "
                             "granted.", f"booking={bid}")
                     _sbpg.save_state(f"studio_booking_gcal:{bid}", {"event_id": _sb_created.get("id", "")})
+                    # S28 — three tiny writes that make the CALENDAR -> PORTAL
+                    # direction possible. pg_store has no key scan, so a reverse
+                    # index cannot be built later by walking the forward keys:
+                    # it has to be written at the moment the event is created.
+                    # Also stamps the self-write marker (loop guard, layer 3).
+                    try:
+                        _calsync.remember_event(bid, _sb_created.get("id", ""),
+                                                date=date, start=start, end=end)
+                    except Exception as _sb_rem:
+                        print(f"[GCAL SYNC] remember_event failed (non-fatal): {_sb_rem}")
                     gcal_note = "calendar ✅" if _sb_state == "ok" else "calendar ✅ (no invite)"
                 except Exception as _sb_e:
                     _sb_state = "failed"
@@ -16119,6 +16129,14 @@ def studio_booking_webhook():
                     if _sb_gid:
                         get_calendar_service().events().delete(calendarId=CALENDAR_ID, eventId=_sb_gid).execute(num_retries=3)
                         gcal_note = "calendar event removed ✅"
+                        # S28 — permanent marker, not a 90s window. wp-admin
+                        # edits delete the old event and create a new one; that
+                        # delete arrives in the sync feed minutes later and must
+                        # never be mistaken for "Michael deleted it on his phone".
+                        try:
+                            _calsync.mark_self_delete(_sb_gid)
+                        except Exception as _sb_md:
+                            print(f"[GCAL SYNC] mark_self_delete failed (non-fatal): {_sb_md}")
                     else:
                         gcal_note = "no calendar event on file (booked pre-S12?)"
                 except Exception as _sb_e:
@@ -18196,6 +18214,91 @@ _outcome_seq.configure(
     dev_channel=SLACK_DEV_CHANNEL,
 )
 threading.Thread(target=_outcome_seq.loop, daemon=True, name="outcome_sender").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S28 — GOOGLE CALENDAR -> PORTAL SYNC (calendar_sync.py)
+#
+# Until now the sync was one-way: WordPress writes, the calendar follows. Drag
+# an event in Google Calendar and the booking row did not move, the hours did
+# not move, and the reminder email still read the old time. That is exactly how
+# booking #61 told Jonathan Pineda the wrong time.
+#
+# Polling, not push: Google push notifications need the receiving URL on a
+# domain verified in the Google Cloud project, and the machine lives on
+# railway.app, which Michael does not own. Polling costs 720 near-empty calls a
+# day and needs no DNS change, no TLS cert and no channel-renewal loop.
+#
+# SHIPS DARK. MWM_GCAL_SYNC_ENABLED is unset, so the loop only heartbeats.
+# Rollback is that same variable back to 0 — the WP route is passive and
+# push_calendar defaults to true.
+# ══════════════════════════════════════════════════════════════════════
+import calendar_sync as _calsync
+
+
+def _calsync_service():
+    """PATCH #69 again: a bare service account may not touch attendee-bearing
+    events. Impersonate the delegate wherever one is configured, and fall back
+    only on the two delegation-config errors — never on anything else."""
+    _cs_delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")
+    if not _cs_delegate:
+        return get_calendar_service()
+    try:
+        return get_calendar_service(impersonate=_cs_delegate)
+    except Exception as _cs_err:
+        if "unauthorized_client" in str(_cs_err) or "invalid_grant" in str(_cs_err):
+            print(f"[GCAL SYNC] delegation unavailable ({_cs_err}) — direct access")
+            return get_calendar_service()
+        raise
+
+
+def _calsync_wp_post(payload):
+    """POST the intention to WordPress. RAISES on anything that is not a clean
+    200 with parseable JSON, because calendar_sync.py treats an exception as
+    'do not advance the syncToken' — a change that WordPress never confirmed
+    must be retried, not forgotten.
+
+    S21: the host WAF answers 406 to the default python-requests User-Agent.
+    Booking #51 was paid-but-unconfirmed for days because one call site missed
+    this header. It is not optional."""
+    _cs_url = os.getenv("WP_CALENDAR_SYNC_URL",
+                        "https://mwmcreations.com/wp-json/mwm-studio/v1/calendar-sync")
+    _cs_secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not _cs_secret:
+        raise RuntimeError("WP_PORTAL_SECRET not set — refusing to call the portal")
+    _cs_r = http_requests.post(
+        _cs_url,
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-MWM-Portal-Secret": _cs_secret,
+            "User-Agent": "MWM-SalesMachine/1.0 (+https://mwmcreations.com)",
+        },
+        timeout=15,
+    )
+    if _cs_r.status_code != 200:
+        raise RuntimeError(f"WP calendar-sync HTTP {_cs_r.status_code}: {(_cs_r.text or '')[:200]}")
+    try:
+        return _cs_r.json()
+    except Exception:
+        raise RuntimeError(f"WP calendar-sync returned non-JSON: {(_cs_r.text or '')[:200]}")
+
+
+_calsync.configure(
+    calendar_service=_calsync_service,
+    calendar_id=CALENDAR_ID,
+    wp_post=_calsync_wp_post,
+    pg_load=_pg.load_state,
+    pg_save=_pg.save_state,
+    post_slack=_post_to_slack_async,
+    report_error=_report_error,
+    heartbeat=_heartbeat,
+    matt_channel=SLACK_MATT_CHANNEL,
+    dev_channel=SLACK_DEV_CHANNEL,
+    to_local=lambda dt: dt.astimezone(pytz.timezone(TIMEZONE)),
+    now=lambda: datetime.now(pytz.timezone(TIMEZONE)),
+)
+threading.Thread(target=_calsync.loop, daemon=True, name="gcal_sync").start()
 
 # PATCH #67 — started HERE, with the other background threads, not beside its
 # own definition. Up there it launched before `email_ok` and `send_gmail` were

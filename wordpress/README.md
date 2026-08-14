@@ -358,14 +358,62 @@ The create test used `client_id = 999999` on purpose: had the guard failed, the
 write path would still have refused on an unknown client and written nothing.
 Test the lock without risking the door.
 
-#### Still to build (agreed with Michael, Aug 13)
+---
 
-**Two-way Google Calendar → portal sync.** Dragging an event should move the
-booking. Needs: `events.watch` + a renewal cron on the machine, incremental sync
-by `syncToken`, a reverse `event_id → booking_id` index (pg_store only has the
-forward map today), a **loop guard** so the machine does not bounce its own
-writes, and a new authenticated WP REST route that calls `admin_write_booking()`
-— *not* direct DB writes, or S26's single write path is undone. Policy settled
-with Michael: a drag that breaks a rule is **accepted and flagged loudly**,
-never silently refused; a calendar deletion is **flagged, not auto-cancelled**,
-because an accidental delete must not silently hand hours back.
+### S28 — GOOGLE CALENDAR → PORTAL SYNC (Aug 14 2026) — 🟡 **BUILT · NOT YET LIVE** · v2.8.0
+
+Michael: *"if I need to change on Google Calendar the time for someone that has
+booked… it's also now gonna move on the portal."*
+
+Until now the sync was one-way: WordPress wrote, the calendar followed. A drag
+in Google Calendar moved nothing — not the row, not the hours, not the reminder
+email. That is exactly how booking #61 told Jonathan Pineda the wrong time.
+
+Full design: `docs/Calendar_To_Portal_Sync_Spec.md`.
+
+#### The one idea
+
+The booking row stays the only source of truth. The calendar becomes an **input
+device**, not a second truth. A drag is Michael expressing an intention, and it
+goes through `admin_write_booking()` like every other change.
+
+And because the change came **from** the calendar, the calendar is already in
+the target state — so there is nothing to push back. That single observation is
+what keeps this small: no delete-and-recreate, so the event does not blink and
+does not change id; no cancellation notice and no fresh invite to the client for
+a move Michael made with his thumb; and a loop guard that has nowhere to start.
+
+#### What changed in the plugin (v2.7.0 → v2.8.0)
+
+| Change | Where |
+|---|---|
+| `push_calendar` opt (default **true**) | `admin_write_booking()` — when false, skips both `push_booking_event()` calls and the `reschedule_count` bump. Validation, the overlap check, the hours maths and the audit entry all still run. |
+| `calendar_recreate` opt (default **false**) | `admin_write_booking()` — create-only, for "No, put it back" after a deletion. There is nothing left to remove, and asking the machine to delete a deleted event posts a cancellation alert for a booking nobody cancelled. |
+| `POST /wp-json/mwm-studio/v1/calendar-sync` | `handle_calendar_sync()` — `X-MWM-Portal-Secret`, same shared secret as the availability feed. Actions `moved` / `deleted`. |
+| `?mwm_cal_answer=1&b=&a=&t=` | `cal_answer_handler()` on `template_redirect` — the two one-tap signed links from a deletion question. HMAC over `wp_salt('auth')` + a per-question nonce, **single use, consumed before the write**. |
+
+🔴 `push_calendar => false` is reachable **only** from those two handlers.
+It must never appear in a form, a query string, or the quick-book page.
+
+#### Policy (settled with Michael, Aug 13–14)
+
+| Situation | Behaviour |
+|---|---|
+| Drag to a free slot | Row follows. Silent. Audit entry records who/when/before. |
+| Drag onto another booking | **Accepted, flagged loudly** in Slack. Never silently refused — Michael is standing in a studio, not reading a validation error. |
+| Drag past the contract end / beyond remaining hours | Accepted, flagged. Ledger goes negative; the Clients row already shows `OVER by N h`. |
+| Resize | Same as a move. Hours follow. |
+| **Delete the event** | **Nothing is cancelled.** Two signed links go to Slack: *Yes, cancel it* / *No, put it back*. If he never answers, the booking stands and the daily drift check nags every morning — that nag *is* the fallback. |
+| Event with no `booking #NN` | Ignored. Michael's own shoots are not bookings. |
+
+#### Deploy
+
+Build locally → `php -l` → zip as `mwm-studio-booking/mwm-studio-booking.php` →
+**Plugins → Add New → Upload Plugin → Replace current with uploaded**, hash-verifying
+live against the repo before and after. Then prove it with `curl`: a wrong
+secret must 401, and a correct one must move a booking while leaving its
+calendar event untouched.
+
+The machine half (`calendar_sync.py`, polling every 2 min with a `syncToken`)
+ships dark behind `MWM_GCAL_SYNC_ENABLED`, so the order of the two deploys does
+not matter and rollback is that one variable.

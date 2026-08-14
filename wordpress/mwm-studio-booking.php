@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.7.0
+ * Version: 2.8.0
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.7.0' ); // S27: phone quick-book page + daily calendar drift watch
+define( 'MWM_STUDIO_VERSION', '2.8.0' ); // S28: Google Calendar -> portal sync (a drag moves the booking)
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -117,6 +117,10 @@ class MWM_Studio_Booking {
 
 		// Stripe webhook REST API endpoint.
 		add_action( 'rest_api_init', array( $this, 'register_stripe_webhook' ) );
+
+		// S28: Google Calendar -> portal sync (machine calls in; Michael answers a deletion).
+		add_action( 'rest_api_init', array( $this, 'register_calendar_sync_route' ) );
+		add_action( 'template_redirect', array( $this, 'cal_answer_handler' ) );
 	}
 
 	/* =========================================================================
@@ -2750,6 +2754,36 @@ MWMJS;
 				'allow_conflict' => false,
 				'action'         => '',
 				'actor'          => '',
+				/*
+				 * S28 — push_calendar (default TRUE) is the ONE change S26's write
+				 * path needed to accept a change that came FROM the calendar.
+				 *
+				 * When the drag happened on Google Calendar, the calendar is
+				 * ALREADY in the target state. Pushing would delete the event
+				 * Michael just dragged and replace it with an identical one under
+				 * a new id, e-mailing the client a cancellation and a fresh invite
+				 * for no reason. This is not skipping reconciliation; it is
+				 * recognising the reconciliation has already happened.
+				 *
+				 * Validation, the overlap check, the hours maths and the audit
+				 * entry all still run. Only the two push_booking_event() calls and
+				 * the reschedule_count bump are skipped.
+				 *
+				 * WARNING: reachable ONLY from handle_calendar_sync() and
+				 * cal_answer_handler(). It must NEVER be exposed in a form, a query
+				 * string, or the quick-book page — the next person will be tempted.
+				 */
+				'push_calendar'     => true,
+				/*
+				 * S28 — calendar_recreate: "No, put it back" after a deletion. The
+				 * event is already gone, so the usual remove-the-old-one push would
+				 * ask the machine to delete something that does not exist and post a
+				 * STUDIO CANCELLATION alert for a booking nobody cancelled. This
+				 * skips the removal and forces the creation, with a fresh
+				 * reschedule_count so the new event gets its own idempotency id.
+				 * Same access rule as push_calendar: internal callers only.
+				 */
+				'calendar_recreate' => false,
 			)
 		);
 		$warnings = array();
@@ -2870,6 +2904,13 @@ MWMJS;
 			|| abs( (float) $before->duration_hours - $duration ) > 0.001
 			|| (string) $before->notes !== (string) $notes;
 		$touch_cal  = ( $cal_before !== $cal_after ) || ( $cal_after && $moved );
+		if ( $opts['calendar_recreate'] && $cal_after ) {
+			$touch_cal = true; // S28: the event was deleted out from under a live row.
+		}
+		// S28: which of the two pushes actually fire. Everything above this line
+		// behaves identically whichever way these resolve.
+		$push_remove = $opts['push_calendar'] && $touch_cal && $cal_before && ! $opts['calendar_recreate'];
+		$push_create = $opts['push_calendar'] && $touch_cal && $cal_after;
 
 		$label = $this->booking_client_label( $client_id, $before );
 		$email = $this->booking_client_email( $client_id, $before );
@@ -2877,7 +2918,7 @@ MWMJS;
 		// 1 of 3 — remove the OLD calendar event under its OLD idempotency id.
 		// The marker in client_name keeps the machine's Slack alert honest: a move
 		// is not a cancellation and must not read like one.
-		if ( $touch_cal && $cal_before ) {
+		if ( $push_remove ) {
 			$this->push_booking_event(
 				'booking_cancelled',
 				array(
@@ -2893,7 +2934,7 @@ MWMJS;
 
 		/* ---- 2 of 3 — write the row (this IS the ledger move) ---- */
 		$new_rc = $before ? (int) $before->reschedule_count : 0;
-		if ( $before && $touch_cal && $cal_after ) {
+		if ( $before && $push_create ) {
 			$new_rc++; // fresh idempotency id for the machine, fresh SEQUENCE for .ics
 		}
 
@@ -2944,7 +2985,7 @@ MWMJS;
 		}
 
 		// 3 of 3 — create the NEW calendar event under a fresh idempotency id.
-		if ( $touch_cal && $cal_after ) {
+		if ( $push_create ) {
 			$this->push_booking_event(
 				'booking_created',
 				array(
@@ -4685,6 +4726,364 @@ QBJS;
 	/* =========================================================================
 	 * STRIPE WEBHOOK — AUTO-ONBOARDING
 	 * ========================================================================= */
+
+	/* =========================================================================
+	 * S28 — GOOGLE CALENDAR -> PORTAL SYNC
+	 *
+	 * The booking row stays the only source of truth. The calendar becomes an
+	 * INPUT DEVICE, not a second truth: a drag is Michael expressing an
+	 * intention, and that intention is run through admin_write_booking() like
+	 * every other change. What comes out the other side is the row.
+	 *
+	 * Because the change came FROM the calendar, the calendar is already in the
+	 * target state — so these writes carry push_calendar => false. The event
+	 * does not blink, keeps its id, and the client gets no cancellation notice
+	 * and no fresh invite for a move Michael made with his thumb.
+	 *
+	 * POLICY (settled with Michael, Aug 13–14):
+	 *   drag to a free slot ............ row follows, silent
+	 *   drag onto another booking ...... accepted, flagged loudly
+	 *   drag past the contract end ..... accepted, flagged
+	 *   drag beyond remaining hours .... accepted, flagged, ledger goes negative
+	 *   resize ......................... same as a move, hours follow
+	 *   DELETE the event ............... asks first. Nothing is cancelled.
+	 * Never silently refused: Michael is standing in a studio, not reading a
+	 * validation error.
+	 * ========================================================================= */
+
+	public function register_calendar_sync_route() {
+		register_rest_route( 'mwm-studio/v1', '/calendar-sync', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'handle_calendar_sync' ),
+			'permission_callback' => '__return_true', // Shared secret checked inside, like the Stripe route.
+		) );
+	}
+
+	/** S28: the machine and WordPress already share this secret in both directions. */
+	private function cal_sync_authorized( $request ) {
+		$secret = (string) get_option( 'mwm_portal_provision_secret', '' );
+		$given  = (string) $request->get_header( 'x-mwm-portal-secret' );
+		return ( '' !== $secret && '' !== $given && hash_equals( $secret, $given ) );
+	}
+
+	/** S28: what the machine stores as "the position we last agreed on". */
+	private function cal_booking_snapshot( $b ) {
+		return array(
+			'date'     => $b->booking_date,
+			'start'    => substr( $b->start_time, 0, 5 ),
+			'end'      => substr( $b->end_time, 0, 5 ),
+			'duration' => (float) $b->duration_hours,
+			'status'   => (string) $b->status,
+		);
+	}
+
+	public function handle_calendar_sync( \WP_REST_Request $request ) {
+		if ( ! $this->cal_sync_authorized( $request ) ) {
+			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'unauthorized' ), 401 );
+		}
+		global $wpdb;
+
+		$p = $request->get_json_params();
+		if ( ! is_array( $p ) ) {
+			$p = $request->get_params();
+		}
+		$booking_id = isset( $p['booking_id'] ) ? (int) $p['booking_id'] : 0;
+		$event_id   = isset( $p['event_id'] ) ? sanitize_text_field( (string) $p['event_id'] ) : '';
+		$action     = isset( $p['action'] ) ? sanitize_text_field( (string) $p['action'] ) : '';
+
+		if ( ! $booking_id || ! in_array( $action, array( 'moved', 'deleted' ), true ) ) {
+			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'bad payload' ), 400 );
+		}
+
+		$b = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $booking_id ) );
+		if ( ! $b ) {
+			// Not an error worth retrying forever: the row is gone, the event is stray.
+			return new \WP_REST_Response( array( 'ok' => true, 'state' => 'noop', 'booking_id' => $booking_id, 'reason' => 'booking not found' ), 200 );
+		}
+		$label = $this->booking_client_label( (int) $b->client_id, $b );
+
+		if ( ! $this->status_holds_calendar( $b->status ) ) {
+			return new \WP_REST_Response( array(
+				'ok'         => true,
+				'state'      => 'noop',
+				'booking_id' => $booking_id,
+				'client'     => $label,
+				'reason'     => sprintf( 'booking is %s', $b->status ),
+				'booking'    => $this->cal_booking_snapshot( $b ),
+			), 200 );
+		}
+
+		if ( 'deleted' === $action ) {
+			return $this->cal_sync_deleted( $b, $event_id, $label );
+		}
+
+		$date  = isset( $p['date'] ) ? sanitize_text_field( (string) $p['date'] ) : '';
+		$start = isset( $p['start_time'] ) ? substr( sanitize_text_field( (string) $p['start_time'] ), 0, 5 ) : '';
+		$end   = isset( $p['end_time'] ) ? substr( sanitize_text_field( (string) $p['end_time'] ), 0, 5 ) : '';
+		if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date )
+			|| ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $start )
+			|| ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $end ) ) {
+			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'bad times' ), 400 );
+		}
+
+		/*
+		 * Loop guard, layer 2 — and this is the copy that counts, because this is
+		 * the code that owns the row. Every echo of our own write dies here
+		 * without a database call, an audit entry, or an alert.
+		 */
+		if ( $b->booking_date === $date
+			&& substr( $b->start_time, 0, 5 ) === $start
+			&& substr( $b->end_time, 0, 5 ) === $end ) {
+			return new \WP_REST_Response( array(
+				'ok'         => true,
+				'state'      => 'unchanged',
+				'booking_id' => $booking_id,
+				'client'     => $label,
+				'booking'    => $this->cal_booking_snapshot( $b ),
+			), 200 );
+		}
+
+		$duration = ( strtotime( $date . ' ' . $end . ':00' ) - strtotime( $date . ' ' . $start . ':00' ) ) / HOUR_IN_SECONDS;
+		if ( $duration <= 0 ) {
+			// An event dragged across midnight. The row cannot hold it, and
+			// guessing which day Michael meant is how #61 happened.
+			return new \WP_REST_Response( array(
+				'ok'         => true,
+				'state'      => 'refused',
+				'booking_id' => $booking_id,
+				'client'     => $label,
+				'message'    => sprintf( 'The calendar event for booking #%d now runs past midnight (%s %s–%s). The booking was left where it was — move it in wp-admin instead.', $booking_id, $date, $start, $end ),
+				'booking'    => $this->cal_booking_snapshot( $b ),
+			), 200 );
+		}
+
+		$res = $this->admin_write_booking(
+			$booking_id,
+			array(
+				'booking_date'   => $date,
+				'start_time'     => $start,
+				'duration_hours' => $duration,
+			),
+			array(
+				'action'         => 'booking.calendar_drag',
+				'reason'         => sprintf( 'Moved on Google Calendar (event %s)', $event_id ? $event_id : 'unknown' ),
+				'actor'          => 'google-calendar',
+				'push_calendar'  => false, // the calendar is already in the target state
+				'allow_conflict' => true,  // accept and flag; never refuse a drag
+				'notify_client'  => false,
+			)
+		);
+
+		if ( empty( $res['ok'] ) ) {
+			// ok => true on purpose. The machine treats a hard failure as "do not
+			// advance the syncToken", which is right for an unreachable portal and
+			// wrong for a write the portal has considered and declined: that would
+			// re-fire and re-alert every two minutes forever. This is flagged once,
+			// loudly, and the morning drift check keeps nagging until it is fixed.
+			return new \WP_REST_Response( array(
+				'ok'         => true,
+				'state'      => 'refused',
+				'booking_id' => $booking_id,
+				'client'     => $label,
+				'message'    => sprintf( 'Booking #%d could not follow the calendar to %s %s–%s: %s', $booking_id, $date, $start, $end, isset( $res['message'] ) ? $res['message'] : 'the write was refused' ),
+				'booking'    => $this->cal_booking_snapshot( $b ),
+			), 200 );
+		}
+
+		$after = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $booking_id ) );
+		return new \WP_REST_Response( array(
+			'ok'         => true,
+			'state'      => 'updated',
+			'booking_id' => $booking_id,
+			'client'     => $label,
+			'warnings'   => isset( $res['warnings'] ) ? array_values( $res['warnings'] ) : array(),
+			'booking'    => $after ? $this->cal_booking_snapshot( $after ) : null,
+		), 200 );
+	}
+
+	/**
+	 * S28 · 4.1 — A DELETION IS A QUESTION, NOT A COMMAND.
+	 *
+	 * The client is only an attendee: deleting from their own calendar marks
+	 * them declined and leaves ours untouched, and the sync ignores that. A real
+	 * deletion means someone with write access to MWM CREATIONS removed it,
+	 * which in practice means Michael on his phone. So the two realistic cases
+	 * are "I meant to cancel this" and "I fat-fingered it".
+	 *
+	 * The event stays gone. Nothing is cancelled, no hours move, no email goes
+	 * to the client. Two one-tap signed links go to Slack instead — the same
+	 * HMAC pattern /manage-booking/ already uses, which works from his phone
+	 * with no login and needs no Slack app change (the machine holds a bot
+	 * token and can only post messages; interactive buttons would need an
+	 * interactivity request URL configured).
+	 *
+	 * If he never answers, nothing happens: the booking stands and the daily
+	 * drift check flags it every morning until it is resolved. That nag IS the
+	 * fallback — no timeout logic, and no state expiring into a silent wrong
+	 * answer.
+	 */
+	private function cal_sync_deleted( $b, $event_id, $label ) {
+		$bid   = (int) $b->id;
+		$nonce = wp_generate_password( 20, false, false );
+		update_option(
+			$this->cal_del_key( $bid ),
+			array(
+				'event_id' => $event_id,
+				'nonce'    => $nonce,
+				'asked_at' => current_time( 'mysql' ),
+				'answered' => '',
+			),
+			false
+		);
+
+		$question = sprintf(
+			"Booking #%d · %s · %s, %s–%s\nYou deleted the calendar event. Cancel the booking and return the %s hour(s)?",
+			$bid,
+			$label,
+			date_i18n( 'D M j', strtotime( $b->booking_date ) ),
+			substr( $b->start_time, 0, 5 ),
+			substr( $b->end_time, 0, 5 ),
+			rtrim( rtrim( number_format( (float) $b->duration_hours, 2 ), '0' ), '.' )
+		);
+
+		return new \WP_REST_Response( array(
+			'ok'         => true,
+			'state'      => 'ask',
+			'booking_id' => $bid,
+			'client'     => $label,
+			'question'   => $question,
+			'yes_url'    => $this->cal_answer_url( $bid, $nonce, 'yes' ),
+			'no_url'     => $this->cal_answer_url( $bid, $nonce, 'no' ),
+			'booking'    => $this->cal_booking_snapshot( $b ),
+		), 200 );
+	}
+
+	private function cal_del_key( $bid ) {
+		return 'mwm_studio_caldel_' . (int) $bid;
+	}
+
+	private function cal_answer_token( $bid, $nonce, $answer ) {
+		return substr( hash_hmac( 'sha256', 'caldel|' . (int) $bid . '|' . $nonce . '|' . $answer, wp_salt( 'auth' ) ), 0, 32 );
+	}
+
+	private function cal_answer_url( $bid, $nonce, $answer ) {
+		return add_query_arg(
+			array(
+				'mwm_cal_answer' => 1,
+				'b'              => (int) $bid,
+				'a'              => $answer,
+				't'              => $this->cal_answer_token( $bid, $nonce, $answer ),
+			),
+			home_url( '/' )
+		);
+	}
+
+	/**
+	 * S28: Michael taps one of the two links. Single use — the answer is
+	 * consumed BEFORE the write, so a stale link in Slack scrollback, a double
+	 * tap, or a link-preview fetch cannot re-fire it.
+	 */
+	public function cal_answer_handler() {
+		if ( ! isset( $_GET['mwm_cal_answer'] ) ) {
+			return;
+		}
+		$bid = isset( $_GET['b'] ) ? (int) $_GET['b'] : 0;
+		$ans = isset( $_GET['a'] ) ? sanitize_text_field( wp_unslash( $_GET['a'] ) ) : '';
+		$tok = isset( $_GET['t'] ) ? sanitize_text_field( wp_unslash( $_GET['t'] ) ) : '';
+
+		if ( ! $bid || ! in_array( $ans, array( 'yes', 'no' ), true ) || strlen( $tok ) < 20 ) {
+			$this->cal_answer_page( 'That link is not valid', 'Nothing was changed.' );
+		}
+
+		$rec = get_option( $this->cal_del_key( $bid ) );
+		if ( ! is_array( $rec ) || empty( $rec['nonce'] ) ) {
+			$this->cal_answer_page( 'Nothing to answer', 'There is no open question about booking #' . $bid . '. Nothing was changed.' );
+		}
+		if ( ! hash_equals( $this->cal_answer_token( $bid, $rec['nonce'], $ans ), $tok ) ) {
+			$this->cal_answer_page( 'That link is not valid', 'Nothing was changed.' );
+		}
+		if ( ! empty( $rec['answered'] ) ) {
+			$this->cal_answer_page(
+				'Already answered',
+				sprintf( 'Booking #%d was already answered "%s"%s. Nothing was changed this time.', $bid, $rec['answered'], empty( $rec['answered_at'] ) ? '' : ' on ' . $rec['answered_at'] )
+			);
+		}
+
+		// Consume first. A write that runs twice is worse than a link that dies once.
+		$rec['answered']    = $ans;
+		$rec['answered_at'] = current_time( 'mysql' );
+		update_option( $this->cal_del_key( $bid ), $rec, false );
+
+		global $wpdb;
+		$b = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $bid ) );
+		if ( ! $b ) {
+			$this->cal_answer_page( 'That booking is gone', 'Booking #' . $bid . ' no longer exists. Nothing was changed.' );
+		}
+		$label = $this->booking_client_label( (int) $b->client_id, $b );
+		$when  = sprintf( '%s %s–%s', $b->booking_date, substr( $b->start_time, 0, 5 ), substr( $b->end_time, 0, 5 ) );
+
+		if ( 'yes' === $ans ) {
+			$res = $this->admin_write_booking(
+				$bid,
+				array( 'status' => 'cancelled' ),
+				array(
+					'action'         => 'booking.calendar_delete',
+					'reason'         => 'Calendar event deleted — cancellation confirmed by Michael',
+					'actor'          => 'google-calendar (confirmed)',
+					'push_calendar'  => false, // the event is already gone
+					'allow_conflict' => true,
+					'notify_client'  => false,
+				)
+			);
+			if ( empty( $res['ok'] ) ) {
+				$this->cal_answer_page( 'Could not cancel it', isset( $res['message'] ) ? $res['message'] : 'The write was refused. Open wp-admin and cancel it there.' );
+			}
+			$this->cal_answer_page(
+				'Cancelled',
+				sprintf( 'Booking #%d — %s, %s — is cancelled and the hours are back on the package. No email was sent to the client.', $bid, $label, $when )
+			);
+		}
+
+		$res = $this->admin_write_booking(
+			$bid,
+			array(),
+			array(
+				'action'            => 'booking.calendar_restore',
+				'reason'            => 'Calendar event deleted by mistake — event put back, booking untouched',
+				'actor'             => 'google-calendar (confirmed)',
+				'push_calendar'     => true,
+				'calendar_recreate' => true, // create only; there is nothing left to remove
+				'allow_conflict'    => true,
+				'notify_client'     => false,
+			)
+		);
+		if ( empty( $res['ok'] ) ) {
+			$this->cal_answer_page( 'Could not put it back', isset( $res['message'] ) ? $res['message'] : 'The write was refused. Re-save the booking in wp-admin to rewrite the calendar event.' );
+		}
+		$this->cal_answer_page(
+			'Put back',
+			sprintf( 'Booking #%d — %s, %s — stands, and the calendar event is being recreated. Give it a minute, then pull to refresh your calendar.', $bid, $label, $when )
+		);
+	}
+
+	/** S28: a phone-sized answer page. Ends the request — nothing renders after it. */
+	private function cal_answer_page( $title, $body ) {
+		status_header( 200 );
+		nocache_headers();
+		header( 'Content-Type: text/html; charset=utf-8' );
+		echo '<!DOCTYPE html><html><head><meta charset="utf-8">'
+			. '<meta name="viewport" content="width=device-width,initial-scale=1">'
+			. '<meta name="robots" content="noindex,nofollow">'
+			. '<title>' . esc_html( $title ) . '</title></head>'
+			. '<body style="margin:0;background:#faf6eb;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;">'
+			. '<div style="max-width:520px;margin:12vh auto;padding:32px 28px;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.08);">'
+			. '<div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#c9a84c;font-weight:700;">MWM Creations &amp; Studios</div>'
+			. '<h1 style="font-size:24px;color:#1a1a2e;margin:10px 0 14px;">' . esc_html( $title ) . '</h1>'
+			. '<p style="font-size:16px;line-height:1.55;color:#444;margin:0;">' . esc_html( $body ) . '</p>'
+			. '<p style="margin:22px 0 0;"><a href="' . esc_url( admin_url( 'admin.php?page=mwm-studio-bookings' ) ) . '" style="color:#0f3460;">Open bookings in wp-admin</a></p>'
+			. '</div></body></html>';
+		exit;
+	}
 
 	public function register_stripe_webhook() {
 		register_rest_route( 'mwm-studio/v1', '/stripe-webhook', array(
