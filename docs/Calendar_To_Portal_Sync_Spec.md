@@ -211,29 +211,50 @@ page. Add a comment saying so, because the next person will be tempted.
 | Drag past the client's contract end | Accepted, flagged. |
 | Drag/stretch beyond remaining hours | Accepted, flagged. Ledger goes negative; Clients row already shows `OVER by N h` (S26). |
 | Resize an event (duration change) | Same as a move. Hours follow. |
-| **Delete the event** | **Booking is NOT cancelled.** See below. |
+| **Delete the event** | **Booking is NOT cancelled — it asks first.** See 4.1. |
 | Event with no `booking #NN` | Ignored. |
 | Event on any other calendar | Ignored. Only `CALENDAR_ID`. |
 
-### 4.1 Deletion — one open question for Michael
+### 4.1 Deletion — SETTLED (Michael, Aug 14)
 
-Michael's instruction was *flagged, not auto-cancelled* — an accidental delete
-must never silently hand hours back to a client. Agreed. But that leaves a
-booking with no calendar event, which the daily drift alert will then flag every
-single morning until someone acts.
+**First, who can even do this.** The client is only an *attendee* on the event —
+they do not own it. A client deleting it from their own calendar removes it from
+*their* view and marks them **declined** on our copy; the studio calendar is
+untouched. That is a different signal and the sync ignores it. A real deletion
+means someone with write access to MWM CREATIONS deleted it, which in practice
+means **Michael, on his phone**. So the realistic cases are "I meant to cancel
+this" and "I fat-fingered it" — not a stranger doing something unexpected.
 
-**Proposed: restore the event and say so.** Re-create it from the row (the row
-is truth), then notify: *"Booking #71's calendar event was deleted — I put it
-back. If you meant to cancel it, cancel it in wp-admin."* This keeps the
-invariant (calendar always matches the row), stops the daily nag, and still
-never cancels anything on its own.
+**Decision: treat the deletion as a QUESTION, not a command.**
 
-Restoring terminates cleanly: the new event matches the row, so layer 2 no-ops.
+The event stays gone. Nothing is cancelled, no hours move, no email goes to the
+client. Michael gets asked:
 
-**Ask Michael to confirm before building this branch.** The alternative — leave
-the hole and flag once — is a one-line change either way.
+> Booking #71 · Jonathan Pineda · Thu Aug 20, 2:15–3:15
+> You deleted the calendar event. Cancel the booking and return the hour?
+> **[ Yes, cancel it ]   [ No, put it back ]**
 
----
+- **Yes** → cancel through `admin_write_booking()` like any other cancellation:
+  row, ledger, audit entry. (The event is already gone, so `push_calendar` stays
+  false here too.)
+- **No** → re-create the event from the row and carry on.
+
+This makes deleting on the calendar a genuine shortcut for cancelling — the
+gesture he would naturally reach for, since he lives in the calendar — while a
+slip of the thumb can never quietly hand an hour back to a client.
+
+**🔑 Implementation note: confirm with two signed links, not Slack buttons.**
+Slack interactive buttons need an interactivity request URL configured on the
+Slack app; the machine only holds a bot token and posts with `chat.postMessage`.
+Two one-tap signed URLs into WordPress — the same HMAC pattern as
+`/manage-booking/?b=…&t=…` — work from his phone with no login, no Slack app
+change, and no new infrastructure. Each link is single-use: consume it by
+storing the answer, so a stale link in Slack scrollback cannot re-fire.
+
+**If he never answers:** nothing happens. The booking stands, the calendar has a
+gap, and the daily drift check flags it each morning until it is resolved. That
+nag *is* the fallback — no timeout logic needed, and no state expires into a
+silent wrong answer.
 
 ## PART 5 · BUILD ORDER
 
