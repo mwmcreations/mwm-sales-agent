@@ -360,7 +360,7 @@ Test the lock without risking the door.
 
 ---
 
-### S28 — GOOGLE CALENDAR → PORTAL SYNC (Aug 14 2026) — 🟡 **BUILT · NOT YET LIVE** · v2.8.0
+### S28 — GOOGLE CALENDAR → PORTAL SYNC (Aug 14 2026) — ✅ **LIVE, VERIFIED** · v2.8.0
 
 Michael: *"if I need to change on Google Calendar the time for someone that has
 booked… it's also now gonna move on the portal."*
@@ -417,3 +417,36 @@ calendar event untouched.
 The machine half (`calendar_sync.py`, polling every 2 min with a `syncToken`)
 ships dark behind `MWM_GCAL_SYNC_ENABLED`, so the order of the two deploys does
 not matter and rollback is that one variable.
+
+#### Deployed and verified — Aug 14 2026, ~7:55 PM ET
+
+Machine: Patch #96, commit `6b52f96`, pushed by the autodeploy runner with
+`test_calendar_sync.py` gating the commit (99 assertions, 0 failed).
+
+Plugin: uploaded as `mwm-studio-booking-v2.8.0.zip` → *Replace current with
+uploaded*. wp-admin reported **"Plugin updated successfully"** and the Plugins
+screen now reads **Version 2.8.0**, still active. The zipped file's sha256 is
+`22ace227…`, byte-identical to the repo mirror; the v2.7.0 it replaced hashed
+`918d330f…` and a rollback zip of exactly that byte sequence sits in
+`~/Downloads/mwm-studio-booking-v2.7.0-ROLLBACK.zip`.
+
+Checked cold against the live site after the replace:
+
+| Check | Result |
+|---|---|
+| `POST /wp-json/mwm-studio/v1/calendar-sync`, wrong secret | **401** `{"ok":false,"error":"unauthorized"}` |
+| ...with no secret header at all | **401** |
+| `GET` the same route | **404** `rest_no_route` — POST only |
+| Route registered in the namespace index | ✅ listed beside `/stripe-webhook` |
+| Forged answer link (`?mwm_cal_answer=1&b=71&a=yes&t=0…`) | "Nothing to answer" — **nothing was written** |
+| `/studio-portal/` | 200, 230,783 b |
+| Bookings screen | renders, 17 bookings listed |
+| Reconciliation screen | **17 checked · 0 disagree with the calendar** |
+
+⚠️ **Not yet proven: the authorised write.** That needs the shared secret,
+which only the machine holds — so the honest proof is the machine making the
+call itself. Set `MWM_GCAL_SYNC_ENABLED=1` on Railway, then drag booking **#75**
+(`QA Test — Michael`, Sat Aug 15 12:00–14:00) on the calendar and watch the row
+follow. It is Michael's own test client, so a wrong answer costs nothing, and
+#75 is slated for cancellation anyway — which makes it the right subject for
+testing the deletion question straight afterwards.
