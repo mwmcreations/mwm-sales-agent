@@ -146,3 +146,68 @@ stops being the URL a reviewer is asked to complete.
 🔴 **Never hand a reviewer a URL you have not opened cold yourself.** Five
 rejections, and three of them come down to nobody loading the opt-in link the way
 a stranger would.
+
+
+---
+
+# Addendum — Aug 14 2026 evening · finding 5
+
+**Found by opening the pages cold, as a reviewer's tooling would.**
+
+## Finding 5 — /studio-hour/ is only compliant *after JavaScript runs*
+
+Patch #93's fix for page 1193 is a **client-side** patch. `mwm_a2p_studio_hour()`
+prints a script at `wp_footer` that finds `#sh-buy` and `#sh-consent-box` in the
+browser and rewrites them. The Elementor page content was never changed.
+
+So the HTML the server sends still contains, as live markup — not inside
+`<noscript>`, not inside `<template>`:
+
+```
+div#sh > div.shc > div#order > label.consent > input#sh-consent-box
+div#sh > div.shc > div#order > button#sh-buy.cta  [disabled]
+```
+
+plus the `smsconsent-` Stripe stamp. Counted in the served response on Aug 14:
+`sh-buy` x3, `sh-consent-box` x3, `smsconsent-` x1.
+
+| Who is looking | What they see |
+|---|---|
+| A human with JavaScript | No consent box. Buy button enabled. ✅ Verified in the rendered DOM. |
+| An automated reviewer reading the HTML | An SMS consent checkbox and a **disabled** purchase button. ❌ |
+
+🔑 That second row is Finding 2 all over again — consent as a condition of
+purchase, on the paid-traffic landing page — and rejection #5 was produced by an
+automated tool reading exactly this way (*"there is no submit button is
+present"*). We fixed the picture and left the page underneath it unchanged.
+
+**The fix is at source, not in the browser.** Remove the `label.consent` block
+and the `disabled` attribute from page 1193's content (or strip them server-side
+for that page only), then re-check the served HTML — not the rendered page. The
+runtime script can stay as a belt-and-braces fallback; it is idempotent.
+
+⚠️ Not done tonight on purpose: 1193 is the live $349 paid-traffic landing page
+and this was found at 8pm on a Friday. A broken buy button over a weekend costs
+more than the risk it removes. It needs doing before the next resubmission.
+
+## What IS clean — checked against the served HTML, not the rendered page
+
+`https://mwmcreations.com/sms-signup/` — the campaign's new opt-in URL:
+
+```
+server_rendered_form=true   server_rendered_submit=true   submit_text="Submit"
+submit_disabled=false       inside_noscript=false         method=post
+checkboxes: mwm_txn(unchecked, not required) · mwm_mkt(unchecked, not required)
+required fields: mwm_name, mwm_phone only
+```
+
+`/book-studio/` rendered: two consent boxes (`bs-sms-consent-box`,
+`bs-sms-marketing-box`), both unchecked, neither required, phone field present —
+and still **no submit button on cold load**, which is exactly why it must not be
+the opt-in URL.
+
+## The rule, restated again
+
+🔴 **Read what the server sends, not what the browser shows.** A fix that only
+exists after JavaScript is a fix that only exists for humans, and the reviewer
+that rejected us five times is not one.
