@@ -761,6 +761,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 SHEETS_LEADS_ID = os.getenv("GOOGLE_SHEETS_LEADS_ID", "")
+_LEAD_ROW_CONFIG_ALERTED = False  # PATCH #97: alert once per process, not per lead
 
 # ── Slack Integration ─────────────────────────────────────────────────────────────
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
@@ -6249,8 +6250,39 @@ def _lead_source_for(sender: str) -> str:
 def log_new_contact_to_sheets(sender: str):
     """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
     This ensures every person who messages Maya is captured, even if they never share their info.
-    The row is updated later when lead info is captured or a booking is made."""
+    The row is updated later when lead info is captured or a booking is made.
+
+    PATCH #97 - THIS FUNCTION COULD NOT BE ASKED WHAT IT DID.
+
+    `Maya Leads Report` took its last new-lead row on Aug 3 and none since,
+    while #pipeline kept posting NEW LEAD every day - so this function was
+    being called and was not writing. Nothing was in #dev either, so it was
+    not throwing. It was returning silently.
+
+    Patch #72 built /health's lead-row verdict to settle exactly this. Verified
+    Aug 14: `sheets.lead_row_created` and `sheets.lead_row_FAILED` are READ by
+    that verdict and were bumped NOWHERE in the codebase. The two counters that
+    decide between "ok", "broken" and "degraded" were always zero, so the
+    instrument could only ever answer "idle" or "attempted but nothing made".
+    Eleven days of a known-wrong report, and the diagnostic built to explain it
+    was blind by construction. Sixth time on this board that something was
+    computed and never invoked.
+
+    Every exit from here now moves a counter, and the config exit shouts once.
+    One inbound lead is now enough to settle it - read /health after the next.
+    """
     if not SHEETS_LEADS_ID:
+        # Was a bare `return`. Six functions in this file skip on this flag and
+        # every one of them was silent about it, so an unset variable looked
+        # exactly like no traffic.
+        _TALLY.bump("sheets.lead_row_FAILED", "no SHEETS_LEADS_ID")
+        global _LEAD_ROW_CONFIG_ALERTED
+        if not _LEAD_ROW_CONFIG_ALERTED:
+            _LEAD_ROW_CONFIG_ALERTED = True
+            _report_error("sheets.lead_row_no_sheet_id",
+                          "GOOGLE_SHEETS_LEADS_ID is not set - every lead row is "
+                          "being dropped. This is a config problem, not quiet "
+                          "traffic. (Alerted once per process.)")
         return
     try:
         now = datetime.now(pytz.timezone(TIMEZONE))
@@ -6294,8 +6326,10 @@ def log_new_contact_to_sheets(sender: str):
             insertDataOption="INSERT_ROWS",
             body={"values": [row]},
         ).execute(num_retries=3)
+        _TALLY.bump("sheets.lead_row_created", clean_phone)  # PATCH #97
         print(f"â First-contact row logged for {clean_phone}")
     except Exception as e:
+        _TALLY.bump("sheets.lead_row_FAILED", clean_phone)   # PATCH #97
         _report_error("Sheets CRM create (log_new_contact_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
 
 
