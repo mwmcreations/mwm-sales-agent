@@ -72,6 +72,21 @@ ACTION_DELETED = "deleted"
 
 _deps = {}
 
+# PATCH #99 — what the last tick actually did. S28 shipped with no way to ask.
+# Aug 15 07:50: the switch went on, a real event was dragged 12:00 -> 15:00, the
+# row did not follow, and nothing anywhere said why: no Slack, no error, no
+# counter. Reconciliation could see the drift; the sync could not be questioned.
+# That is the same defect Patch #97 fixed in the lead rows, shipped by the same
+# hand twelve hours later. An instrument is not optional.
+_LAST = {"mode": "never run", "at": None}
+_CONSECUTIVE_BOOTSTRAPS = 0
+_NO_PERSISTENCE_ALERTED = False
+
+
+def last_run():
+    """Read by /health. Never raises, never empty."""
+    return dict(_LAST)
+
 
 def configure(**kwargs):
     """Inject app.py's collaborators.
@@ -524,56 +539,113 @@ def sync_once():
     summary = _blank_summary()
     if not enabled():
         summary["mode"] = "disabled"
-        return summary
+        return _record(summary)
     svc = _service()
     if svc is None:
         summary["mode"] = "no-service"
-        return summary
+        return _record(summary)
 
     try:
         if _load(KEY_REPAIR):
             _repair(svc, summary)
             if summary["failed"]:
-                return summary       # retry the whole window next tick
+                return _record(summary)      # retry the whole window next tick
             _save(KEY_REPAIR, {})
 
         rec = _load(KEY_SYNCTOKEN)
         token = rec.get("token") if isinstance(rec, dict) else None
         if not token:
-            return _bootstrap(svc, summary)
+            # No early return: the tail of this function is what records the
+            # tick and checks that the token persisted. A bootstrap that skips
+            # both is a bootstrap nobody can see — which is precisely how S28
+            # spent its first hour live being unquestionable.
+            _bootstrap(svc, summary)
+        else:
+            summary["mode"] = "incremental"
+            try:
+                items, new_token = _list(svc, syncToken=token, singleEvents=True,
+                                         showDeleted=True)
+            except Exception as exc:
+                if is_gone_error(exc):
+                    # Drop the token and arm a bounded repair for the next tick.
+                    _save(KEY_SYNCTOKEN, {})
+                    _save(KEY_REPAIR, {"at": _now().isoformat()})
+                    print("[GCAL SYNC] syncToken expired (410) — bounded re-list armed")
+                    _slack("dev_channel",
+                           ":arrows_counterclockwise: *Calendar sync token expired* — "
+                           "re-listing today\u2212{}d \u2192 +{}d on the next tick, then taking a "
+                           "fresh token. No changes were lost.".format(
+                               RELIST_BACK_DAYS, RELIST_FORWARD_DAYS))
+                    summary["mode"] = "token-expired"
+                    return _record(summary)
+                raise
 
-        summary["mode"] = "incremental"
-        try:
-            items, new_token = _list(svc, syncToken=token, singleEvents=True, showDeleted=True)
-        except Exception as exc:
-            if is_gone_error(exc):
-                # Drop the token and arm a bounded repair for the next tick.
-                _save(KEY_SYNCTOKEN, {})
-                _save(KEY_REPAIR, {"at": _now().isoformat()})
-                print("[GCAL SYNC] syncToken expired (410) — bounded re-list armed")
-                _slack("dev_channel",
-                       ":arrows_counterclockwise: *Calendar sync token expired* — "
-                       "re-listing today−{}d → +{}d on the next tick, then taking a "
-                       "fresh token. No changes were lost.".format(
-                           RELIST_BACK_DAYS, RELIST_FORWARD_DAYS))
-                summary["mode"] = "token-expired"
-                return summary
-            raise
+            summary["listed"] += len(items)
+            for ev in items:
+                _handle_event(ev, summary, adopt_unknown=True)
 
-        summary["listed"] = len(items)
-        for ev in items:
-            _handle_event(ev, summary, adopt_unknown=True)
-
-        # 🔴 THE RULE THAT MATTERS MOST (spec test 11): never advance the token
-        # until WordPress has confirmed every write. Advancing past a failure
-        # loses that change forever, and silence is the defect this whole
-        # project exists to kill.
-        if new_token and not summary["failed"]:
-            _save(KEY_SYNCTOKEN, {"token": new_token})
+            # \U0001f534 THE RULE THAT MATTERS MOST (spec test 11): never advance the
+            # token until WordPress has confirmed every write. Advancing past a
+            # failure loses that change forever, and silence is the defect this
+            # whole project exists to kill.
+            if new_token and not summary["failed"]:
+                _save(KEY_SYNCTOKEN, {"token": new_token})
     except Exception as exc:
         summary["failed"] += 1
         _report("sync_once", exc, "mode={}".format(summary["mode"]))
+    try:
+        _check_persistence(summary)
+    except Exception as exc:
+        _report("check_persistence", exc)
+    return _record(summary)
+
+
+def _record(summary):
+    """Stamp the tick so /health can be asked what happened."""
+    global _LAST
+    rec = dict(summary)
+    try:
+        rec["at"] = _now().isoformat()
+    except Exception:
+        rec["at"] = None
+    _LAST = rec
     return summary
+
+
+def _check_persistence(summary):
+    """A syncToken that does not come back is a sync that can never act.
+
+    pg_store never raises — it returns the default on any failure. So if
+    DATABASE_URL is unset, or Postgres is unreachable, or the write is refused,
+    every tick reads no token, runs the bootstrap again, adopts the calendar's
+    CURRENT state as the baseline, and writes nothing. Forever. Silently. A drag
+    would be absorbed rather than applied, which is indistinguishable from
+    'nothing happened' to anyone watching from outside.
+
+    So the bootstrap now reads its own token back, and says so when it cannot.
+    """
+    global _CONSECUTIVE_BOOTSTRAPS, _NO_PERSISTENCE_ALERTED
+    if summary.get("mode") != "bootstrap":
+        _CONSECUTIVE_BOOTSTRAPS = 0
+        return
+    _CONSECUTIVE_BOOTSTRAPS += 1
+    rec = _load(KEY_SYNCTOKEN)
+    persisted = isinstance(rec, dict) and bool(rec.get("token"))
+    summary["token_persisted"] = persisted
+    summary["consecutive_bootstraps"] = _CONSECUTIVE_BOOTSTRAPS
+    if persisted or _NO_PERSISTENCE_ALERTED or _CONSECUTIVE_BOOTSTRAPS < 2:
+        return
+    _NO_PERSISTENCE_ALERTED = True
+    _report("no_persistence",
+            "syncToken did not survive a save/load round trip",
+            "bootstrapped {} ticks in a row".format(_CONSECUTIVE_BOOTSTRAPS))
+    _slack("dev_channel",
+           ":red_circle: *Calendar sync is inert.* It has bootstrapped {} ticks "
+           "running because the syncToken will not persist — pg_store returns "
+           "the default on any failure, so every tick re-adopts the calendar "
+           "and applies nothing. *A drag will be absorbed, not synced.* Check "
+           "DATABASE_URL and Postgres reachability on the service.".format(
+               _CONSECUTIVE_BOOTSTRAPS))
 
 
 def loop():

@@ -16414,6 +16414,13 @@ def health_check():
         },
         # PATCH #72 — countable answers instead of a Railway log nobody reads.
         "counters": _TALLY.snapshot(),
+        # PATCH #99 — S28 went live on Aug 15 and a real drag was not applied,
+        # and there was no way to ask the sync what it had done. This is that
+        # way. `mode` alone answers most of it: "disabled" (the env var never
+        # reached the process), "bootstrap" every tick (the syncToken is not
+        # persisting, so changes are absorbed rather than applied), or
+        # "incremental" (it is watching properly).
+        "gcal_sync": _calsync.last_run(),
         "lead_rows": {
             "verdict": _lead_row_verdict(
                 _TALLY.get("sheets.lead_row_created"),

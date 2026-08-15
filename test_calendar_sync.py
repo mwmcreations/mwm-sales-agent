@@ -521,6 +521,77 @@ check("a reschedule id maps back to the plain booking",
 
 # A gate line the autodeploy runner can grep for exactly. "0 failed" is a
 # substring of "10 failed", so the count alone is not a safe gate.
+# ══════════════════════════════════════════════════════════════════════
+section("16 · PATCH #99 — the tick can be asked what it did")
+
+# Aug 15, 07:50 ET: the switch went on, a real event was dragged 12:00 -> 15:00
+# on the live calendar, the booking row did not follow, and NOTHING could say
+# why. No Slack, no error, no counter. Reconciliation could see the drift; the
+# sync itself could not be questioned. These assertions exist so that never
+# costs an hour again.
+
+def _reset():
+    cs._CONSECUTIVE_BOOTSTRAPS = 0
+    cs._NO_PERSISTENCE_ALERTED = False
+
+_reset()
+os.environ["MWM_GCAL_SYNC_ENABLED"] = "1"
+rig = Rig(FakeCalendar([{"items": [event(start="16:00", end="17:00")], "nextSyncToken": "T2"}]),
+          store=seeded())
+cs.sync_once()
+check("an incremental tick records its mode", cs.last_run()["mode"], "incremental")
+check("...and what it synced", cs.last_run()["synced"], 1)
+check_true("...and when", cs.last_run()["at"])
+
+_reset()
+_saved = os.environ.pop("MWM_GCAL_SYNC_ENABLED", None)
+rig = Rig(store=seeded())
+cs.sync_once()
+check("a disabled tick says so out loud rather than looking like silence",
+      cs.last_run()["mode"], "disabled")
+os.environ["MWM_GCAL_SYNC_ENABLED"] = _saved or "1"
+
+# 🔴 The failure mode that cost the live test. pg_store NEVER raises — it
+# returns the default on any failure. So a token that cannot be written means
+# every tick bootstraps, re-adopts the calendar's CURRENT state, and applies
+# nothing. A drag is absorbed rather than synced, and from outside that is
+# identical to "nothing happened".
+_reset()
+rig = Rig(FakeCalendar([{"items": [event()], "nextSyncToken": "T1"},
+                        {"items": [event()], "nextSyncToken": "T2"},
+                        {"items": [event()], "nextSyncToken": "T3"}]),
+          store={})
+rig._save = lambda k, v: False          # writes silently go nowhere
+cs.configure(pg_save=rig._save)
+s1 = cs.sync_once()
+check("tick 1 bootstraps", s1["mode"], "bootstrap")
+check("...and notices the token did not come back", s1["token_persisted"], False)
+check("one bootstrap alone does not cry wolf — a first run is a bootstrap",
+      "inert" in rig.slack_text, False)
+s2 = cs.sync_once()
+check("tick 2 bootstraps AGAIN, which is the tell", s2["mode"], "bootstrap")
+check("...and it is counted", s2["consecutive_bootstraps"], 2)
+check_true("#dev is told the sync is inert", "Calendar sync is inert" in rig.slack_text)
+check_true("...and told the consequence in plain words",
+           "absorbed, not synced" in rig.slack_text)
+check_true("...and where to look", "DATABASE_URL" in rig.slack_text)
+_before = rig.slack_text.count("inert")
+cs.sync_once()
+check("it says it once, not every two minutes forever",
+      rig.slack_text.count("inert"), _before)
+
+# With a store that works, the same first tick is unremarkable.
+_reset()
+rig = Rig(FakeCalendar([{"items": [event()], "nextSyncToken": "T1"},
+                        {"items": [event()], "nextSyncToken": "T2"}]), store={})
+s1 = cs.sync_once()
+check("a bootstrap that persists reports so", s1["token_persisted"], True)
+s2 = cs.sync_once()
+check("...and the next tick is incremental, not another bootstrap", s2["mode"], "incremental")
+check("...so the counter is back to zero", cs._CONSECUTIVE_BOOTSTRAPS, 0)
+check_true("nothing was cried about", "inert" not in rig.slack_text)
+
+
 print("\nS28_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
 print("\n" + "=" * 60)
