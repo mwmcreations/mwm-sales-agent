@@ -3340,7 +3340,74 @@ STUDIO_ROLES_ALLOWED = {
 STUDIO_ROLES_BLOCKED = {
     "employee_no_authority",
     "freelancer_hobbyist_student",
+    # S29 · PATCH #101 — Michael, Aug 15: a music artist or creator with no
+    # stated budget is "call or link only", never his calendar.
+    "artist_musician_creator",
+    "music_artist",
+    "artist",
+    "creator",
 }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S29 · PATCH #101 — THE LABEL IS NOT THE FACT
+#
+# Aug 24, 3pm, on Michael's calendar: "Studio Visit — James Perry (1wayy5
+# (music artist))", booked by Maya off an Instagram ad. Michael: "this lead
+# is not a studio visit candidate."
+#
+# #74 was written for exactly this lead. Its own comments name the last one:
+# Joseph Joel Hernandez, "a hobbyist musician with no business and no
+# budget", who "carried a 'business' too — 'Cositø (proyecto musical)' — so
+# a non-empty business string is not enough either."
+#
+# 🔴 So why did it pass? Because BOTH of #74's tests are answered by the
+# model that wants to make the booking. It checks `role` against an
+# allow-list and `business` for non-emptiness — and Maya supplies both. She
+# wrote the business as "1wayy5 (music artist)" and must have filed the role
+# under `professional_personal_brand`, which the code defines as an EARNING
+# practice: lawyer, doctor, coach, consultant, realtor. To a language model
+# a music artist IS a personal brand. The gate was auditing its own witness.
+#
+# This reads the words instead. A field that says "music artist" blocks the
+# visit whatever label came with it.
+#
+# ⚠️ DELIBERATELY NARROW. Only music markers, plus a field that is exactly
+# "artist" or "creator". A tattoo artist, a makeup artist and a visual
+# artist run earning practices and are real clients — and PODCASTERS ARE THE
+# CORE PRODUCT, so nothing here may touch them. Over-blocking costs Michael
+# leads he wants; the failure this fixes costs him an hour. Both are real.
+# ══════════════════════════════════════════════════════════════════════
+
+_MUSIC_MARKERS = (
+    r"music artist", r"musician", r"recording artist", r"rapper", r"\brap\b",
+    r"singer", r"songwriter", r"vocalist", r"beatmaker", r"music producer",
+    r"music project", r"proyecto musical", r"artista musical", r"cantor",
+    r"\bband\b", r"\bdj\b", r"hip[- ]?hop", r"r&b", r"\brnb\b", r"mixtape",
+    r"\bep\b", r"my music", r"indie artist", r"music career",
+)
+
+_BARE_ARTIST = {"artist", "creator", "artiste", "artista"}
+
+
+def looks_like_music_artist(*fields):
+    """True when the lead's own words place them as a music artist/creator.
+
+    Reads role AND business, because the two are filled in independently and
+    either can carry the tell. `1wayy5 (music artist)` was in the business
+    field; the role field said something respectable.
+    """
+    import re as _re
+    for f in fields:
+        t = str(f or "").strip().lower()
+        if not t:
+            continue
+        if t in _BARE_ARTIST:
+            return True
+        for m in _MUSIC_MARKERS:
+            if _re.search(m, t):
+                return True
+    return False
 
 
 def studio_visit_verdict(role=None, business=None, stated_budget=None,
@@ -3383,6 +3450,19 @@ def studio_visit_verdict(role=None, business=None, stated_budget=None,
         return False, ("This lead is not a decision-maker with budget "
                        "authority. Offer the free 30-minute strategy call and "
                        "the direct booking link — not an in-person visit.")
+
+    # PATCH #101 — read the words, not the label. This fires even when the
+    # role field says `professional_personal_brand`, because that is exactly
+    # what it said for James Perry on Aug 15.
+    if looks_like_music_artist(role, business):
+        return False, ("Music artists and creators do not get an in-person "
+                       "studio visit — Michael's calendar is for owners, "
+                       "decision-makers and earning practices. Send them the "
+                       "studio booking page at "
+                       "https://mwmcreations.com/studio-hour/ so they can book "
+                       "and pay for an hour themselves, or offer the free "
+                       "30-minute call. Do not offer a visit and do not "
+                       "present time slots.")
 
     if role not in STUDIO_ROLES_ALLOWED:
         return False, ("You have not established what this person does. Ask "
