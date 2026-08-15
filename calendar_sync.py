@@ -332,11 +332,18 @@ def _calendar_id():
 
 
 def _list(svc, **params):
-    """Page through events.list. Returns (items, next_sync_token)."""
+    """Page through events.list. Returns (items, next_sync_token).
+
+    PATCH #100: the page cap was a silent backstop. If it is ever reached the
+    result is a partial view of the calendar presented as a complete one, which
+    is the "no silent caps" rule the spec sets out. It now says so.
+    """
     items = []
     token = None
     page = None
+    pages = 0
     for _ in range(MAX_PAGES):
+        pages += 1
         call = dict(params)
         if page:
             call["pageToken"] = page
@@ -346,6 +353,14 @@ def _list(svc, **params):
         page = resp.get("nextPageToken")
         if not page:
             break
+    if page:
+        _report("list_truncated",
+                "hit the {}-page cap with more pages remaining".format(MAX_PAGES),
+                "params={} items={}".format(sorted(params.keys()), len(items)))
+        _slack("dev_channel",
+               ":warning: *Calendar sync read {} pages and stopped with more to "
+               "come.* It is working from a partial view of the calendar. "
+               "Params: `{}`.".format(pages, sorted(params.keys())))
     return items, token
 
 
@@ -357,7 +372,35 @@ def _bootstrap(svc, summary):
     is how a quiet feature becomes a loud incident.
     """
     summary["mode"] = "bootstrap"
-    items, token = _list(svc, singleEvents=True, showDeleted=False, maxResults=PAGE_SIZE)
+
+    # PATCH #100 — THIS LINE USED TO READ THE WHOLE CALENDAR, EXPANDED.
+    #
+    #     _list(svc, singleEvents=True, showDeleted=False, maxResults=PAGE_SIZE)
+    #
+    # No timeMin, no timeMax, and singleEvents=True. `singleEvents` expands every
+    # recurring series into one entry per occurrence, and a series with no end
+    # date expands without end. So the first tick after the switch went on at
+    # 07:46 on Aug 15 walked pages of generated occurrences and never returned.
+    # The thread heartbeat froze at the top of the cycle and aged past 5 minutes;
+    # a real drag sat unapplied; nothing errored, because nothing had failed yet.
+    # It was still working.
+    #
+    # The spec said this in as many words for the 410 path — "do not attempt a
+    # full-calendar sync" — and I bounded that one and left this one open.
+    #
+    # Two calls now, each cheap, each doing one job:
+    #   1. ADOPT over the window anything actually cares about (a week back, a
+    #      quarter forward), expanded, so positions are real.
+    #   2. TAKE A TOKEN with expansion OFF. Google forbids timeMin/timeMax
+    #      alongside syncToken, so the token call cannot be time-bounded — but
+    #      unexpanded it walks stored events, not generated ones, which is a
+    #      list with an end. A recurring series counts once instead of forever.
+    now = _now()
+    lo = (now - timedelta(days=RELIST_BACK_DAYS)).strftime("%Y-%m-%dT00:00:00Z")
+    hi = (now + timedelta(days=RELIST_FORWARD_DAYS)).strftime("%Y-%m-%dT00:00:00Z")
+    items, _ = _list(svc, singleEvents=True, showDeleted=False, maxResults=PAGE_SIZE,
+                     timeMin=lo, timeMax=hi, orderBy="startTime")
+    _, token = _list(svc, singleEvents=False, showDeleted=True, maxResults=PAGE_SIZE)
     summary["listed"] += len(items)
     for ev in items:
         bid = resolve_booking_id(ev)
@@ -563,7 +606,11 @@ def sync_once():
         else:
             summary["mode"] = "incremental"
             try:
-                items, new_token = _list(svc, syncToken=token, singleEvents=True,
+                # singleEvents=False to match the parameters the token was
+                # taken under (PATCH #100). A syncToken is only valid for the
+                # query shape that produced it; mismatched parameters are a 400,
+                # not a quiet degradation.
+                items, new_token = _list(svc, syncToken=token, singleEvents=False,
                                          showDeleted=True)
             except Exception as exc:
                 if is_gone_error(exc):

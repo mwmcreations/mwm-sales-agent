@@ -83,6 +83,14 @@ class _Events(object):
 
     def list(self, **params):
         self.cal.list_calls.append(params)
+        # PATCH #100 — the bootstrap now makes TWO calls with different jobs:
+        # a time-bounded listing to adopt positions, and an unexpanded walk
+        # whose only purpose is to come back with a syncToken. Modelling them
+        # as one call is what let an unbounded read look reasonable in tests
+        # while grinding for ever against a real calendar.
+        _is_token_call = ("syncToken" not in params and "timeMin" not in params)
+        if _is_token_call:
+            return _Exec({"items": [], "nextSyncToken": self.cal.token})
         if self.cal.responses:
             return _Exec(self.cal.responses.pop(0))
         return _Exec({"items": [], "nextSyncToken": self.cal.token})
@@ -448,10 +456,9 @@ check_true("#dev is told, so an expiry is never silent", "token expired" in rig.
 # Next tick: the bounded window is re-listed, the drag we were blind to lands,
 # and only then is a fresh token taken.
 rig.calendar.responses.append({"items": [event(start="16:00", end="17:00")]})   # the repair re-list
-rig.calendar.responses.append({"items": [event(start="16:00", end="17:00")],
-                               "nextSyncToken": "TOKEN-FRESH"})                 # the re-bootstrap
+rig.calendar.token = "TOKEN-FRESH"                                              # the re-bootstrap's token
 s2 = cs.sync_once()
-_relist = rig.calendar.list_calls[-2]
+_relist = [c for c in rig.calendar.list_calls if "timeMin" in c][-2]
 check("the re-list is bounded, not the whole calendar",
       ("timeMin" in _relist and "timeMax" in _relist), True)
 check("it starts 7 days back", _relist["timeMin"][:10], (NOW - timedelta(days=7)).strftime("%Y-%m-%d"))
@@ -471,15 +478,28 @@ check("a repair that could not complete stays armed", bool(rig.store[cs.KEY_REPA
 # ══════════════════════════════════════════════════════════════════════
 section("13 · the first tick ever adopts the calendar — it does not replay it")
 
-rig = Rig(FakeCalendar([{"items": [event(), event(eid="ev2", bid_text="Studio Package portal booking #72",
-                                                 date="2026-08-21", start="10:00", end="12:00"),
-                                   event(eid="own", bid_text="Michael — personal")],
-                         "nextSyncToken": "TOKEN-FIRST"}]),
-          store={})
+rig = Rig(FakeCalendar([{"items": [
+    event(),
+    event(eid="ev2", bid_text="Studio Package portal booking #72",
+          date="2026-08-21", start="10:00", end="12:00"),
+    event(eid="own", bid_text="Michael — personal"),
+]}], token="TOKEN-FIRST"), store={})
 s = cs.sync_once()
 check("a bootstrap writes NOTHING to the portal", len(rig.portal.calls), 0)
 check("it adopts only the events that are bookings", s["adopted"], 2)
 check("it takes a token", rig.store[cs.KEY_SYNCTOKEN], {"token": "TOKEN-FIRST"})
+
+# 🔴 PATCH #100 — the assertion that would have saved Aug 15's live test.
+_adopt, _tok = rig.calendar.list_calls[0], rig.calendar.list_calls[1]
+check("the adopting read is TIME-BOUNDED, never the whole calendar",
+      ("timeMin" in _adopt and "timeMax" in _adopt), True)
+check("...a week back", _adopt["timeMin"][:10], (NOW - timedelta(days=7)).strftime("%Y-%m-%d"))
+check("...and 90 days forward", _adopt["timeMax"][:10], (NOW + timedelta(days=90)).strftime("%Y-%m-%d"))
+check("the token call does NOT expand recurring series",
+      _tok.get("singleEvents"), False)
+check("...because expanding an endless series is a read with no end",
+      "timeMin" in _tok, False)
+check("no other calls were made", len(rig.calendar.list_calls), 2)
 check("and remembers where each booking's event sits",
       rig.store[cs.KEY_SEEN + "ev2"]["end"], "12:00")
 check("the reverse index is filled in on the way past",
