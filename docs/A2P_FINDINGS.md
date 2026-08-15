@@ -186,9 +186,62 @@ and the `disabled` attribute from page 1193's content (or strip them server-side
 for that page only), then re-check the served HTML — not the rendered page. The
 runtime script can stay as a belt-and-braces fallback; it is idempotent.
 
-⚠️ Not done tonight on purpose: 1193 is the live $349 paid-traffic landing page
-and this was found at 8pm on a Friday. A broken buy button over a weekend costs
-more than the risk it removes. It needs doing before the next resubmission.
+## FIXED AT SOURCE — Aug 14 2026, 21:47 ET
+
+Page 1193's `post_content` was edited directly. Elementor holds nothing for this
+page (`_elementor_data` is `[]`, `_elementor_edit_mode` empty, template
+`elementor_canvas`), so `post_content` **is** the source. Four changes:
+
+| # | Change |
+|---|---|
+| 1 | The `<label class="consent">` block containing `#sh-consent-box` removed entirely — 492 characters. |
+| 2 | `disabled` attribute dropped from `<button id="sh-buy">`. |
+| 3 | `<p id="sh-hint">Tick the box above to continue.</p>` removed. |
+| 4 | The page's inline script rewritten: `[data-go]` still scrolls to `#order`, the buy button goes straight to Stripe, and the consent gate, the `.checked` guard and the `client_reference_id=smsconsent-…` stamp are gone. |
+
+The Stripe link was **read out of the page**, not retyped — and it matched the
+value the snippet had been using, which is the cross-check that the rewrite kept
+the same destination.
+
+`post_content` 14,117 → 13,267 bytes.
+
+### Rollback
+
+**Revision 1197** (Aug 8 18:31) is byte-identical to the pre-edit content —
+verified by comparing it against what was live immediately before the write, not
+by trusting the date. Restore it from Pages → Studio Hour → Revisions.
+Revision 1211 is the new state.
+
+### Verified after the write
+
+Anonymous request — `credentials:'omit'`, no cookies, so this is what a visitor
+and a reviewer's scraper actually receive, cache included:
+
+```
+status=200  bytes=49,529
+checkboxes in page: none
+button#sh-buy: present, NOT disabled, "Reserve My Studio Hour — $349"
+smsconsent- : 0 hits     gating JS (!box.checked / btn.disabled=) : 0 hits
+"Tick the box" copy : absent
+```
+
+Rendered page: buy button enabled, no consent control, both `[data-go]` jump
+links still scroll to the order block, layout unchanged. Clicking the button
+lands on Stripe Checkout — *Studio Hour + Professional Editing, $349.00* — at the
+bare payment-link URL with **no `client_reference_id`**. Revenue path intact and
+the consent stamp we were never entitled to write is gone.
+
+WP Fastest Cache clears page caches on update (`Update Post` is enabled), which
+the anonymous fetch above confirms rather than assumes.
+
+### One thing deliberately left alone
+
+`mwm_a2p_studio_hour()` in the v2.1 snippet still runs its footer script, so the
+string `sh-consent-box` still appears once on the page — inside JavaScript, now
+referring to an element that no longer exists. It is dead code, and it is also
+the fallback if page 1193's content is ever restored from an old revision. It
+clones the button and re-points it at the same Stripe link, which is idempotent.
+Remove it once this campaign is approved, not before.
 
 ## What IS clean — checked against the served HTML, not the rendered page
 
