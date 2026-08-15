@@ -46,6 +46,7 @@ DESIGN NOTES
 from datetime import datetime, timedelta
 
 from event_rail import (CH_INSTAGRAM, CH_UNKNOWN, CH_WEB, CH_WHATSAPP,
+                        greeting_name,
                         STEP_EMAIL_ASK, STEP_NUDGE, STEP_REBOOK, STEP_RECAP,
                         STEP_REVIEW, STEP_VALUE, next_due_step,
                         seq_should_close, seq_stop_reason, within_send_window,
@@ -93,13 +94,13 @@ def _slack(channel_key, text):
 
 
 def _first_name(name):
-    n = str(name or "").strip()
-    if not n:
-        return "there"
-    # Patch #42 taught us records can hold two people: "Krista Neeley (with
-    # Michael Neeley)". Greet the first one, never the parenthetical.
-    n = n.split("(")[0].strip()
-    return n.split()[0] if n.split() else "there"
+    """Delegates to event_rail.greeting_name — one definition, not two.
+
+    This copy already handled None and whitespace correctly. It did NOT handle
+    the invisible characters IG display names carry, which is the actual cause
+    of the `"Hi ,"` greetings ERIC reported on Aug 8.
+    """
+    return greeting_name(name)
 
 
 # ══════════════════════════════════════════════════════════════════════════

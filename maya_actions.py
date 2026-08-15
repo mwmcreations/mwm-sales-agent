@@ -12,6 +12,8 @@ already configured in Railway.
 
 import os
 import re
+
+from event_rail import greeting_name as _greeting_name  # ERIC's "Hi ," — one definition
 import json
 import pytz
 from datetime import datetime, timedelta
@@ -981,7 +983,9 @@ def send_reengagement_template(phone, name, template_name):
                 pass
         return False
 
-    first_name = (name or "there").split()[0]
+    # The Meta template body is `Hi {{1}},` — whatever we put here IS the
+    # greeting a lead reads. An invisible character renders as "Hi ,".
+    first_name = _greeting_name(name)
 
     # Determine header type for this template
     header_type = REENGAGEMENT_TEMPLATE_HEADERS.get(template_name)

@@ -9492,7 +9492,7 @@ def _post_visit_checker():
                     _golden_hour_morning.add(event_id)
                     _save_golden_hour_state()
                     _name_parts = (_lead_name or "").split()
-                    first_name = _name_parts[0] if _name_parts else "there"
+                    first_name = event_rail.greeting_name(" ".join(_name_parts))
                     print(f"📋 [Daily Report] Next-morning check-in for {_lead_name} (event {event_id})")
 
                     if _wa_phone:
@@ -10149,7 +10149,7 @@ def _lead_reminder_thread():
                                     _v.get("name", "").strip().lower() == _ln.strip().lower():
                                 _lp = re.sub(r"\D", "", _k)
                                 break
-                    _fn = (_ln or "there").split()[0] if _ln else "there"
+                    _fn = event_rail.greeting_name(_ln, "there") if _ln else "there"
                     _email = _event_rail_client_email(event)
 
                     # ── CREW stage: always an assignment ────────────
@@ -10270,7 +10270,7 @@ def _notify_cold_lead_pipeline(phone, name, business):
     Eric (Traffic Manager): Gets the phone number to add to Meta retargeting
     custom audiences so the lead sees MWM content in their feed.
     """
-    first_name = (name or "Unknown").split()[0]
+    first_name = event_rail.greeting_name(name, "Unknown")
     try:
         maya_msg = (
             f"*Cold Lead - Personalized WhatsApp Outreach Needed*\n"
@@ -10317,7 +10317,7 @@ def _notify_cold_lead_pipeline(phone, name, business):
             _cold_email_count.update({"date": _today, "n": 0})
         if _email and _cold_email_count["n"] < 5:
             from susan_gmail import send_gmail
-            _fn = (name or "there").split()[0]
+            _fn = event_rail.greeting_name(name, "there")
             _subj = f"{_fn}, the studio door stays open"
             _body = (
                 f"<p>Hi {_fn},</p>"
@@ -10388,7 +10388,7 @@ def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=Fa
     if not SLACK_MAYA_SHADOW_CHANNEL:
         return
     try:
-        first_name = (name or "there").split()[0]
+        first_name = event_rail.greeting_name(name, "there")
         _channel_tag = "[IG DM] " if is_ig else ""
         if is_cold:
             if is_ig:
@@ -10570,7 +10570,7 @@ def _reengagement_checker():
                             print(f"[Re-engagement] [IG DM] {phone} ({name}) — skipped, 403-blocked (window closed)")
                             _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
                             continue
-                        _first = (name or "there").split()[0]
+                        _first = event_rail.greeting_name(name, "there")
                         _ig_msg = IG_REENGAGEMENT_MESSAGES.get(next_stage, "").format(name=_first)
                         _do_send = (lambda _sid=_igsid, _msg=_ig_msg:
                                     send_instagram_dm(_sid, body=_msg) is not None)
@@ -15223,7 +15223,7 @@ def record_outcome_api():
 
 def _build_welcome_email_html(lead_name):
     """Build the approved welcome email HTML template."""
-    first_name = (lead_name or "").split()[0] if lead_name else "there"
+    first_name = event_rail.greeting_name(lead_name)
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -16711,7 +16711,7 @@ def form_webhook():
 
     # Auto-send WhatsApp greeting if we have a phone number
     if phone_digits and len(phone_digits) >= 10:
-        first_name = name.split()[0] if name else "there"
+        first_name = event_rail.greeting_name(name)
         wa_target = f"whatsapp:+{phone_digits}"
         greeting = (
             f"Hi {first_name}! Thanks for reaching out to MWM Creations & Studios. "
@@ -16981,7 +16981,7 @@ def meta_leads_webhook():
 
             # Auto-send WhatsApp greeting if we have a phone number
             if phone_digits and len(phone_digits) >= 10:
-                first_name = name.split()[0] if name else "there"
+                first_name = event_rail.greeting_name(name)
                 wa_target = f"whatsapp:+{phone_digits}"
                 greeting = (
                     f"Hi {first_name}! Thanks for your interest in MWM Creations & Studios! "
@@ -20552,7 +20552,7 @@ def meeting_report_submit():
             # Instagram leads: try IG DM first. If 24h window is closed (403),
             # fall back to WhatsApp template (if we have their phone). If neither
             # works, Susan's no-show email (sent separately) is the safety net.
-            first_name = (name or "there").split()[0]
+            first_name = event_rail.greeting_name(name, "there")
             if outcome == "no_show":
                 ig_msg = (
                     f"Hi {first_name}! We missed you today — no worries at all, things happen! "
@@ -20970,7 +20970,7 @@ def _send_post_visit_template(phone, name, outcome, notes=""):
         return False
 
     clean_phone = re.sub(r"\D", "", phone.replace("whatsapp:", ""))
-    first_name = (name or "there").split()[0]
+    first_name = event_rail.greeting_name(name, "there")
 
     url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
     headers = {

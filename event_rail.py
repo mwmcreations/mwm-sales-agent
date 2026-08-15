@@ -1596,7 +1596,7 @@ def confirmation_copy(stage_h, first_name, when_long, time_str, location=""):
     of days at 10" is not, and a client reading it a week out has nothing to
     write in a calendar.
     """
-    fn = str(first_name or "there").strip() or "there"
+    fn = greeting_name(first_name)
     phrase = stage_horizon_phrase(stage_h)
     try:
         h = float(stage_h)
@@ -3127,6 +3127,58 @@ TALLY = Tally()
 # attempted, "nobody new happened to write in" stops being a credible
 # explanation. ERIC's real report was 12.
 LEAD_ROW_GATE_SUSPECT_AT = 10
+
+
+GREETING_FALLBACK = "there"
+
+# Whitespace .strip() does not touch these. They are why a greeting can render
+# as "Hi ," with nothing between the words.
+_INVISIBLE = "".join((
+    "\u200b\u200c\u200d\u200e\u200f",   # zero-width space/non-joiner/joiner, LTR/RTL marks
+    "\u2060\ufeff",                       # word joiner, BOM
+    "\u00a0\u2007\u202f",                # non-breaking spaces
+    "\u180e\u061c",                       # Mongolian vowel separator, Arabic letter mark
+))
+
+
+def greeting_name(name, fallback=GREETING_FALLBACK):
+    """The name to greet someone by. Never empty, never raises.
+
+    ERIC, Aug 8 2026: every ad conversation opened on a greeting reading
+    `"Hi ,"` — and he mapped it as systemic across 8+ templates. It sat for a
+    week because the string is not in this repo: the Meta template holds
+    `Hi {{1}},` and we supply {{1}}. Nothing was wrong with the template. We
+    were handing it a character you cannot see.
+
+    Two real defects, both reproduced Aug 15 before this was written:
+
+      (name or "there").split()[0]
+        · name = "   "     -> IndexError. A whitespace-only name did not
+          degrade the greeting, it KILLED THE SEND. `or` only catches falsy,
+          and "   " is truthy.
+        · name = "\u200e"  -> returns "\u200e". `.strip()` removes whitespace,
+          and a left-to-right mark is not whitespace. Meta renders the
+          parameter as nothing at all: "Hi ,". IG display names are full of
+          these — they arrive with emoji, ZWJ sequences and direction marks.
+
+    So the guard everyone wrote is right about None and wrong about everything
+    that merely LOOKS empty. This is the one place that decides, and it strips
+    by what a reader would see rather than by what `str.strip()` knows about.
+    """
+    # `if name` rather than `is not None`: the guard this replaces was
+    # `(name or "there")`, and 0 / False / [] must keep resolving to the
+    # fallback. Widening that to "anything not None" would greet someone
+    # "Hi 0," — a new defect introduced while fixing an old one. Caught by
+    # test_greeting_name.py before it shipped, which is the point of it.
+    n = str(name) if name else ""
+    for ch in _INVISIBLE:
+        n = n.replace(ch, " ")
+    n = n.strip()
+    # Patch #42: a record can hold two people — "Krista Neeley (with Michael
+    # Neeley)". Greet the first one, never the parenthetical.
+    n = n.split("(")[0].strip()
+    parts = [p for p in n.split() if p.strip()]
+    return parts[0] if parts else fallback
 
 
 def lead_row_verdict(created=0, failed=0, skipped_dup=0, gate_not_new=0):
