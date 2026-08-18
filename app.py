@@ -8061,6 +8061,20 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         is_michael = bool(_sender_digits and _michael_digits_m and _sender_digits == _michael_digits_m)
         if is_michael:
             print(f"🤖 MAYA COMMAND MODE: Michael ({sender}) — routing to autonomous handler")
+            # PATCH #102 — Michael's inbound must refresh the 24h window mark.
+            # This branch returns before the customer flow, so the ONLY writes of
+            # `last_message_time` (further down this function) never ran for him.
+            # `_wa_last_inbound` reads exactly that field, so `wa_send_eligibility`
+            # saw a stale timestamp and refused EVERY free-form reply with
+            # `window_expired` — and because the gate's "a newer inbound reopens
+            # the window" test reads the same field, Michael writing in could never
+            # clear it. Command Mode was mute to him permanently, by construction.
+            # Proven in Railway logs 2026-08-17 23:01:11 EDT:
+            #   [WA-GATE] BLOCKED free-form send to ...1224 — window_expired
+            if sender not in lead_data:
+                lead_data[sender] = {"source": "WhatsApp",
+                                     "first_contact_time": datetime.now(pytz.timezone(TIMEZONE))}
+            lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
             threading.Thread(
                 target=_handle_michael_command,
                 args=(sender, incoming_msg, was_audio),
