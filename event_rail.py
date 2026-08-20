@@ -829,6 +829,81 @@ def client_description(kind, studio_address=None, callback_number=None,
     return "\n".join(lines).strip()
 
 
+# ── the TITLE is client-facing too ──────────────────────────────────
+# Michael, after the descriptions were fixed: "make the titles clean as well."
+# He is right, and the title is the MORE exposed of the two — it is what shows
+# in the client's month view without opening anything.
+#
+#   "🎬 Studio: Todd Berger (rental) (1.00h)"      (rental) is a billing category
+#   "🎬 Studio: Priti (rental — rescheduled)"      our bookkeeping, in his invite
+#   "Studio Visit — Angie Starrz (Starrz Talk — podcast/radio show (98.5 The Wire))"
+#   "Studio Visit — Pastiche Graham (… brand name pending)"   an internal to-do
+#
+# DANGER, AND WHY THIS IS NARROW: classify_event matches _TITLE_PATTERNS on
+# these exact shapes, and the whole reminder ladder hangs off that match. A
+# title rewrite that breaks the prefix silently un-books every confirmation.
+# So the PREFIX IS NEVER TOUCHED. Only the trailing parenthetical — which is
+# the client's own business name (they know it) or our category for them
+# (they should not see it) — and internal tokens inside the name itself.
+
+_TITLE_INTERNAL_TOKEN_RE = re.compile(
+    r"(?i)\b(rental|rescheduled|re-?booked|wp-?admin|brand name pending|"
+    r"internal|do not book|test booking|comp(?:limentary)?|package)\b")
+
+# The shapes our own write-paths produce. Group 1 is the prefix that
+# classify_event depends on; group 2 is the client's name; group 3 is the
+# trailing parenthetical that goes.
+_TITLE_SHAPES = [
+    re.compile(r"^(\s*(?:Studio Visit|Strategy Call)\s*[—-]\s*)(.+?)"
+               r"(\s*\(.*\))?\s*$"),
+    re.compile(r"^(\s*\W*\s*Studio\s*:\s*)(.+?)"
+               r"(\s*\([\d.]+\s*h\))?\s*$", re.I),
+]
+
+
+def _strip_internal_parens(name):
+    """Remove parenthetical asides that carry internal vocabulary."""
+    out = re.sub(r"\s*\(([^()]*)\)",
+                 lambda m: "" if _TITLE_INTERNAL_TOKEN_RE.search(m.group(1)) else m.group(0),
+                 name)
+    return re.sub(r"\s{2,}", " ", out).strip(" -—·")
+
+
+def client_safe_title(summary):
+    """(clean_title, removed). Pure.
+
+    Conservative by construction: a title that does not match one of our own
+    shapes is returned UNCHANGED. Michael types his own titles by hand and
+    they are his to write; this only tidies what our code composed, plus the
+    internal words we know we put there.
+    """
+    original = str(summary or "")
+    if not original.strip():
+        return original, []
+    for rx in _TITLE_SHAPES:
+        m = rx.match(original)
+        if not m:
+            continue
+        prefix, name, paren = m.group(1), m.group(2), (m.group(3) or "")
+        removed = []
+        clean_name = _strip_internal_parens(name)
+        if clean_name != name.strip():
+            removed.append(name.strip())
+        # The trailing parenthetical is the business name or our category for
+        # it. Either way the client does not need it in their month view.
+        if paren.strip():
+            removed.append(paren.strip())
+        rebuilt = (prefix + clean_name).strip()
+        if not clean_name:
+            return original, []      # never produce a nameless title
+        return (rebuilt, removed) if removed else (original, [])
+    return original, []
+
+
+def title_is_client_safe(summary):
+    return not client_safe_title(summary)[1]
+
+
 # ── reading back what we stopped publishing ─────────────────────────
 # Moving the lead facts out of the description is not free: THREE places read
 # them back out of it — the no-show detector, the pre-meeting briefer, and
@@ -894,8 +969,8 @@ def event_lead_facts(event):
         m = re.match(r"^\s*(?:Studio Visit|Strategy Call)\s*[—-]\s*(.+?)"
                      r"(?:\s*\((.+)\))?\s*$", summ)
         if not m:
-            m2 = re.match(r"^\s*\W*\s*Studio\s*:\s*(.+?)\s*\(([\d.]+\s*h)\)\s*$",
-                          summ, re.I)
+            m2 = re.match(r"^\s*\W*\s*Studio\s*:\s*(.+?)"
+                          r"(?:\s*\([\d.]+\s*h\))?\s*$", summ, re.I)
             if m2:
                 out["lead_name"] = m2.group(1).strip()
                 out["name_source"] = "title"
@@ -1021,6 +1096,20 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
     # code that CREATES events would have caught that. Every path that writes
     # an event funnels through this function; so this is where the guarantee
     # can actually be made.
+    # The TITLE first — it is the more exposed of the two, being what shows in
+    # a client's month view without opening anything. The prefix is preserved
+    # untouched because classify_event matches on it and the entire reminder
+    # ladder hangs off that match.
+    _title_before = body.get("summary") or ""
+    _title_clean, _title_removed = client_safe_title(_title_before)
+    if _title_removed:
+        _priv_t = (body.get("extendedProperties") or {}).get("private") or {}
+        _priv_t["redacted_from_title"] = ("; ".join(_title_removed))[:400]
+        body.setdefault("extendedProperties", {})["private"] = _priv_t
+        body["summary"] = _title_clean
+        notes.append("title tidied for the client (kept privately): %s"
+                     % "; ".join(_title_removed)[:120])
+
     _desc_before = body.get("description") or ""
     _clean, _removed = client_safe_description(_desc_before)
     if _removed:

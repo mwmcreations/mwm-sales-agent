@@ -255,6 +255,72 @@ check("None", client_safe_description(None), ("", []))
 ok("a description of only internal text yields empty, not garbage",
    client_safe_description("Booked by: Maya")[0] == "")
 
+print("\n=== 7. the TITLE is client-facing too ===")
+from event_rail import client_safe_title, title_is_client_safe
+for raw, want in [
+    ("🎬 Studio: Todd Berger (rental) (1.00h)", "🎬 Studio: Todd Berger"),
+    ("🎬 Studio: Priti (rental — rescheduled) (1.00h)", "🎬 Studio: Priti"),
+    ("🎬 Studio: Jonathan Pineda (1h)", "🎬 Studio: Jonathan Pineda"),
+    ("Studio Visit — Marc Holmes (In the Driver's Seat (motorsports podcast brand))",
+     "Studio Visit — Marc Holmes"),
+    ("Studio Visit — Angie Starrz (Starrz Talk — podcast/radio show (98.5 The Wire))",
+     "Studio Visit — Angie Starrz"),
+    ("Strategy Call — Prime Vacation Orlando (Prime Vacation Orlando)",
+     "Strategy Call — Prime Vacation Orlando"),
+]:
+    check("cleaned: %s" % raw[:40], client_safe_title(raw)[0], want)
+
+# THE DANGER: classify_event matches _TITLE_PATTERNS and the whole reminder
+# ladder hangs off that match. A title rewrite that breaks the prefix silently
+# un-books every confirmation.
+for t, want_kind in [("Studio Visit — Marc Holmes", KIND_STUDIO_VISIT),
+                     ("🎬 Studio: Todd Berger", KIND_PORTAL_BOOKING),
+                     ("Strategy Call — Prime Vacation Orlando", KIND_STRATEGY_CALL)]:
+    k, is_client, _ = classify_event({"summary": t, "description": "clean copy"})
+    check("PREFIX SURVIVES — %s still classifies" % t[:28], k, want_kind)
+    ok("...and is still a client event", is_client)
+    check("...and the name is still recoverable",
+          event_lead_facts({"summary": t, "description": ""}).get("lead_name") is not None, True)
+
+print("\n=== 8. titles Michael typed himself are HIS ===")
+for t in ["🏋️ TREINO EMS Vida Fit",
+          "🎥 VICTORY — Grand Master VonSchmeling · Book Tour Launch",
+          "FILM SHOOT — ENZO AUTO SERVICE (On Location)",
+          "GRAVAÇÃO Natalia Tavares",
+          "✈️ Levar o sogro ao aeroporto — MCO Terminal B",
+          "🎉 Aniversário River (9) & Riley (7)"]:
+    check("untouched: %s" % t[:34], client_safe_title(t)[0], t)
+    ok("...and reported as needing nothing", title_is_client_safe(t))
+check("an empty title", client_safe_title(""), ("", []))
+check("None", client_safe_title(None)[0], "")
+ok("a title that would clean to nothing is left ALONE, never made nameless",
+   client_safe_title("🎬 Studio: (rental)")[0] == "🎬 Studio: (rental)")
+
+print("\n=== 9. the sweep: the gap the gate cannot close ===")
+APP = io.open("app.py", encoding="utf-8").read()
+SW = APP.split("def _sweep_client_visible_leaks")[1].split("\ndef ")[0]
+ok("it only touches events with an EXTERNAL attendee",
+   "mwmcreations.com" in SW and "if not ext:" in SW)
+ok("...which is the entire safety margin — it edits only what is already client-facing",
+   "continue" in SW.split("if not ext:")[1][:40])
+ok("nothing is removed before it is preserved",
+   SW.index("redacted_from_description") < SW.index("events().patch"))
+ok("the client is NEVER mailed about our tidy-up",
+   'sendUpdates="none"' in SW)
+ok("an empty description is replaced with real client copy, not left blank",
+   "client_description(" in SW)
+ok("the alert quotes what was removed, verbatim",
+   "removed" in SW and "_post_to_slack_async" in SW)
+ok("...and says it was almost certainly typed by hand",
+   "typed by hand" in SW)
+ok("it reports each event ONCE, not every 15 minutes",
+   "_LEAK_SWEEP_DONE" in SW)
+ok("one bad event cannot abort the sweep",
+   "non-fatal" in SW)
+ok("it rides the existing 15-minute pass rather than a new thread",
+   "_sweep_client_visible_leaks()" in
+   APP.split("def _lead_reminder_thread")[1].split("while True")[1][:2000])
+
 print("\n" + "=" * 64)
 print("  %d passed, %d failed" % (_passed, _failed))
 for f_ in _FAILS:

@@ -101,7 +101,8 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         # document, not a scratchpad.
                         client_description, client_safe_description,
                         description_is_client_safe, event_lead_facts,
-                        machine_created,
+                        machine_created, client_safe_title,
+                        title_is_client_safe,
                         KIND_STRATEGY_CALL, KIND_STUDIO_VISIT,
                         KIND_PORTAL_BOOKING)
 # Patch #50 — the direct-booking vocabulary. The form is a thin shell over
@@ -3971,11 +3972,17 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             # Non-fatal: if the scan fails, still proceed with creating the new event.
             print(f"[book_appointment] AUTO-CLEANUP SCAN ERROR (non-fatal, proceeding): {cleanup_err}")
 
+        # PATCH #106b — the business name is dropped from the TITLE. The client
+        # knows their own business, and what we actually wrote there was our
+        # CRM note about it: "(motorsports podcast brand)", "(brand name
+        # pending)", "(podcast/radio show)". The prefix stays exactly as it is
+        # — classify_event matches it and the reminder ladder hangs off that.
+        # The business is kept in extendedProperties.private below.
         if appointment_type == "strategy_call":
-            event_title = f"Strategy Call — {lead_name} ({lead_business})"
+            event_title = f"Strategy Call — {lead_name}"
             event_desc_header = "Strategy Call with Michael Moraes / MWM Creations"
         else:
-            event_title = f"Studio Visit — {lead_name} ({lead_business})"
+            event_title = f"Studio Visit — {lead_name}"
             event_desc_header = "Studio Visit with Michael Moraes / MWM Creations Studios"
 
         # ── S-1/S-2 (Patch #30): resolve the channel, then harden the body ──
@@ -10234,6 +10241,119 @@ def _mark_conflict_reported(key, detail):
               f"this clash may be re-reported after the next deploy")
 
 
+# ─── PATCH #106c · the leak sweep ───────────────────────────────────────────
+# The gate closes every path our CODE takes. It does not close the one that
+# actually caused the incident: DEV opened Vanessa Serrano's event in Google
+# Calendar and typed a postmortem into it by hand. Nothing intercepts that.
+#
+# So the calendar itself is swept. It rides the same 15-minute pass as the
+# double-book scan, over data already fetched, and it is the only thing
+# standing between a typed note and a client's phone.
+#
+# TWO RULES THAT MAKE AUTO-CLEANING SAFE ENOUGH TO DO UNATTENDED:
+#
+#   1. EXTERNAL ATTENDEE ONLY. The leak exists only where a client can read
+#      it. Michael's own working notes live on events with no outside guest —
+#      the Dr. Robinson brief, the Bolfer RSVP note — and those are his, on
+#      his calendar, and are never touched. This is the whole safety margin:
+#      the sweep edits client-facing artifacts, so it only ever looks at
+#      artifacts that are already client-facing.
+#   2. REVERSIBLE. Everything removed is written to extendedProperties
+#      .private first, and the #dev post quotes it verbatim. Nothing is lost;
+#      it stops being SENT.
+#
+# Michael chose clean-then-tell over alert-only, on the reasoning that a leak
+# which sits live until somebody reads Slack can sit all night.
+#
+# sendUpdates="none" throughout — a client must never receive an "event
+# updated" mail because we tidied our own vocabulary out of their invite.
+_LEAK_SWEEP_DONE = set()
+
+
+def _sweep_client_visible_leaks(days=None):
+    """Redact internal text from events a client can read. Never raises."""
+    horizon = CONFLICT_HORIZON_DAYS if days is None else days
+    try:
+        tz = pytz.timezone(TIMEZONE)
+        now = datetime.now(tz)
+        service = get_calendar_service()
+        items = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=horizon)).isoformat(),
+            singleEvents=True, orderBy="startTime", maxResults=2500,
+        ).execute(num_retries=3).get("items", [])
+    except Exception as _sw_err:
+        _report_error("leak_sweep", _sw_err, f"horizon={horizon}d")
+        return 0
+
+    cleaned = 0
+    for ev in items:
+        try:
+            eid = ev.get("id") or ""
+            if not eid or ev.get("status") == "cancelled":
+                continue
+            # Rule 1 — only where a client can actually read it.
+            ext = [a.get("email", "") for a in (ev.get("attendees") or [])
+                   if isinstance(a, dict) and a.get("email")
+                   and not str(a["email"]).lower().endswith(
+                       ("mwmcreations.com", "mwmscreens.com"))]
+            if not ext:
+                continue
+            desc_clean, desc_removed = client_safe_description(
+                ev.get("description") or "")
+            title_clean, title_removed = client_safe_title(ev.get("summary") or "")
+            if not desc_removed and not title_removed:
+                continue
+            if not desc_clean.strip():
+                try:
+                    _k = classify_event(ev)[0]
+                except Exception:
+                    _k = None
+                desc_clean = client_description(
+                    _k, studio_address=(ev.get("location") or STUDIO_ADDRESS))
+
+            # Rule 2 — preserve before removing.
+            _priv = ((ev.get("extendedProperties") or {}).get("private") or {})
+            if desc_removed:
+                _priv["redacted_from_description"] = ("\n---\n".join(desc_removed))[:1000]
+            if title_removed:
+                _priv["redacted_from_title"] = ("; ".join(title_removed))[:400]
+            _priv["redacted_by"] = "leak_sweep"
+
+            _patch = {"description": desc_clean,
+                      "extendedProperties": {"private": _priv}}
+            if title_removed:
+                _patch["summary"] = title_clean
+            service.events().patch(
+                calendarId=CALENDAR_ID, eventId=eid, body=_patch,
+                sendUpdates="none",       # never mail a client about our tidy-up
+            ).execute(num_retries=3)
+            cleaned += 1
+
+            if eid not in _LEAK_SWEEP_DONE:
+                _LEAK_SWEEP_DONE.add(eid)
+                _bits = []
+                if title_removed:
+                    _bits.append("*Title* — removed: `%s`\n   now: `%s`"
+                                 % ("; ".join(title_removed)[:150], title_clean[:120]))
+                if desc_removed:
+                    _bits.append("*Description* — removed:\n```%s```"
+                                 % ("\n".join(desc_removed))[:600])
+                _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                    "🧹 *Internal text removed from a client-visible event*\n"
+                    "*%s* · %s could read this.\n%s\n"
+                    "_Kept in the event's private properties; the client was "
+                    "not notified. This event was edited outside the code "
+                    "paths — almost certainly typed by hand._"
+                    % (ev.get("summary", "?")[:70], ext[0], "\n".join(_bits))))
+        except Exception as _ev_err:
+            print(f"[LEAK-SWEEP] {ev.get('id')} failed (non-fatal): {_ev_err}")
+    if cleaned:
+        print(f"[LEAK-SWEEP] cleaned {cleaned} client-visible event(s)")
+    return cleaned
+
+
 def _scan_calendar_conflicts(days=None):
     """Find overlapping bookings and report the new ones to #dev.
 
@@ -10331,6 +10451,10 @@ def _lead_reminder_thread():
             # still be confirmed in time, and a clash three weeks out is a clash
             # you want three weeks to fix. It never raises.
             _scan_calendar_conflicts()
+            # PATCH #106c — the gate closes every path our code takes; this
+            # closes the one that caused the incident, a human typing into
+            # Google Calendar.
+            _sweep_client_visible_leaks()
 
             tz = pytz.timezone(TIMEZONE)
             now = datetime.now(tz)
@@ -16367,7 +16491,11 @@ def studio_booking_webhook():
                     # "Created in wp-admin". The booking id and the notes are
                     # ours; they move to private properties.
                     _sb_body = {
-                        "summary": f"🎬 Studio: {name} ({evt.get('duration')}h)",
+                        # PATCH #106b — the duration is on the calendar block
+                        # itself, and "(rental)" / "(rescheduled)" rode in on
+                        # the client name from wp-admin. Kept privately.
+                        "summary": "🎬 Studio: %s" % client_safe_title(
+                            "🎬 Studio: %s" % name)[0].split(":", 1)[1].strip(),
                         "description": client_description(
                             KIND_PORTAL_BOOKING,
                             studio_address=STUDIO_ADDRESS,
@@ -16377,6 +16505,8 @@ def studio_booking_webhook():
                             "portal_notes": str(evt.get("notes") or "")[:300],
                             "client_email": str(evt.get("client_email") or "")[:300],
                             "source": "portal (auto-synced by machine S12)",
+                        "portal_client_label": str(name)[:300],
+                        "portal_duration_h": str(evt.get("duration") or "")[:20],
                         }},
                         "start": {"dateTime": f"{date}T{start}:00", "timeZone": TIMEZONE},
                         "end": {"dateTime": f"{date}T{end}:00", "timeZone": TIMEZONE},
