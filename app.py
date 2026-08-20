@@ -870,9 +870,14 @@ _threading_hb.Thread(target=_thread_watchdog, daemon=True, name="thread-watchdog
 MAX_BOOKINGS_PER_DAY = int(os.getenv("MAX_BOOKINGS_PER_DAY", "4"))
 
 
-def _count_bookings_on_date(target_date):
+def _count_bookings_on_date(target_date, exclude_event_id=None):
     """Count how many bookings exist on a given date by checking the calendar.
-    Returns int count of timed events that look like studio visits or calls."""
+    Returns int count of timed events that look like studio visits or calls.
+
+    PATCH #104 — `exclude_event_id` skips one event. book_appointment uses it
+    for the lead's own existing booking, which is held for deletion and about
+    to be released: counting it would make a lead rebooking within the same
+    day hit the capacity ceiling against themselves."""
     try:
         service = get_calendar_service()
         tz = pytz.timezone(TIMEZONE)
@@ -887,6 +892,8 @@ def _count_bookings_on_date(target_date):
         booking_count = 0
         for event in events_result.get("items", []):
             summary = event.get("summary", "")
+            if exclude_event_id and event.get("id") == exclude_event_id:
+                continue
             if "dateTime" in event.get("start", {}):
                 # Count MWM-related events (studio visits, strategy calls, consultations)
                 if any(kw in summary for kw in ["Studio Visit", "Strategy Call", "MWM", "Consultation"]):
@@ -3736,6 +3743,68 @@ def get_available_slots():
         return []
 
 
+# ─── PATCH #104 — auto-cleanup identity matching ────────────────────────────
+# book_appointment's auto-cleanup used to decide "is this event this lead's?"
+# with `lead_name.lower() in (summary + description).lower()`. Every event this
+# system writes carries boilerplate in its body — "Studio Visit with Michael
+# Moraes / MWM Creations Studios", "Booked by: Maya", "Lead:", "Business:",
+# "Client:", "Source: portal" — so the boilerplate was part of the match
+# surface. Replayed against the live MWM CREATIONS calendar on Aug 20 2026, a
+# lead named "Ed" or "Al" matched the Bolfer follow-up and the Vida Fit block,
+# and a lead named "Jo" matched Jonathan Pineda's PAID Studio Package booking.
+# The old code then deleted that event with sendUpdates="all" — a cancellation
+# email to a client who had done nothing.
+#
+# These helpers narrow the match surface to the fields that actually name a
+# person, and require a whole name. A miss costs a duplicate event, which is
+# visible and repairable. A false hit destroys a booking. They are not
+# symmetric, so this errs toward the miss.
+
+def _cleanup_norm(s):
+    """Lowercase, strip punctuation, collapse whitespace."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", (s or "").lower())).strip()
+
+
+def _cleanup_identity_strings(ev):
+    """The names this event is ABOUT — not every word in its body."""
+    out = []
+    desc = ev.get("description", "") or ""
+    for line in desc.splitlines():
+        s = line.strip()
+        for tag in ("Lead:", "Client:", "Guests:"):
+            if s.lower().startswith(tag.lower()):
+                out.append(s[len(tag):].strip())
+    summ = (ev.get("summary", "") or "").strip()
+    # "Studio Visit — Marc Holmes (biz)" · "🎬 Studio: Jonathan Pineda (1h)"
+    m = re.search(r"(?:\u2014|\u2013|:)\s*([^(\u2014\u2013:]+?)\s*(?:\(|$)", summ)
+    if m:
+        out.append(m.group(1).strip())
+    return [o for o in out if o]
+
+
+def _cleanup_name_matches(lead_name, ev):
+    """True only for a confident whole-name match on an identity field."""
+    want = _cleanup_norm(lead_name)
+    if not want or " " not in want or len(want) < 5:
+        return False  # a single short token is never enough on its own
+    for cand in _cleanup_identity_strings(ev):
+        got = _cleanup_norm(cand)
+        if not got:
+            continue
+        if got == want:
+            return True
+        if len(got) >= 6 and (want in got or got in want):
+            return True
+    return False
+
+
+def _cleanup_phone_matches(cleanup_phone, ev):
+    """Phone is the strong identifier — checked FIRST, not as a fallback."""
+    if not cleanup_phone or len(cleanup_phone) < 7:
+        return False
+    return cleanup_phone in (ev.get("description", "") or "")
+
+
 def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None,
                      callback_phone=None):
     """
@@ -3805,9 +3874,22 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         start_dt = datetime.fromisoformat(slot_id).astimezone(tz)
         end_dt = start_dt + timedelta(minutes=60)
 
-        # ── Auto-cleanup: delete any existing event for this lead before creating a new one ──
-        # This prevents ghost events when a lead reschedules, even if Maya forgets to
-        # call cancel_appointment first. Belt-and-suspenders on top of the prompt rule.
+        # ── PATCH #104 — IDENTIFY the stale event here, DELETE it only after
+        # the replacement exists.
+        #
+        # This block used to delete the lead's existing event at this point,
+        # BEFORE the race guard, BEFORE the capacity guard and before a single
+        # insert had been attempted. Four paths below return None after here.
+        # On every one of them the client's confirmed appointment was already
+        # gone, no replacement was created, Maya said "could not book, please
+        # try again", and nothing told anyone a real booking had just been
+        # destroyed. That is exactly the shape of a booking that exists in the
+        # lead record and on no calendar.
+        #
+        # Matching was also a raw substring test against summary+description,
+        # which is mostly boilerplate this system writes itself. See
+        # _cleanup_name_matches for what that let through.
+        _stale = None  # {"id","start","summary"} — deleted only on success
         try:
             _cleanup_name = (lead_name or "").strip()
             _cleanup_phone = (lead_phone or "").replace("whatsapp:", "").replace("+", "")
@@ -3822,41 +3904,44 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     orderBy="startTime"
                 ).execute(num_retries=3).get("items", [])
 
+                # The lead record already stores the id of the event we
+                # created for them. That is the only identifier here that
+                # cannot be wrong, and the old code never looked at it — it
+                # went straight to guessing from text. Tightening the name
+                # match (see _cleanup_name_matches) would otherwise cost the
+                # single-name leads a cleanup they used to get, because a
+                # studio-visit body carries no phone number to fall back on.
+                _known_eid = None
+                try:
+                    _known_eid = (lead_data.get(lead_phone) or {}).get("event_id")
+                except Exception:
+                    _known_eid = None
+
                 for ev in existing_events:
-                    ev_summary = ev.get("summary", "")
-                    ev_description = ev.get("description", "")
-                    ev_text = f"{ev_summary} {ev_description}".lower()
-                    matched = False
-
-                    # Match by lead name in event summary/description
-                    if _cleanup_name and _cleanup_name.lower() in ev_text:
-                        matched = True
-                    # Match by phone number in event description
-                    elif _cleanup_phone and len(_cleanup_phone) >= 7 and _cleanup_phone in ev_description:
-                        matched = True
-
+                    matched = bool(_known_eid) and ev.get("id") == _known_eid
+                    _why = "stored event_id"
+                    if not matched:
+                        # Phone next — it is the strong TEXT identifier. The old
+                        # code only reached it when the name test had missed.
+                        matched = _cleanup_phone_matches(_cleanup_phone, ev)
+                        _why = "phone"
+                    if not matched:
+                        matched = _cleanup_name_matches(_cleanup_name, ev)
+                        _why = "name"
                     if matched:
-                        old_event_id = ev["id"]
-                        old_start = ev.get("start", {}).get("dateTime", "unknown")
-                        print(f"[book_appointment] AUTO-CLEANUP: Found existing event for {lead_name}: "
-                              f"'{ev_summary}' at {old_start} (ID: {old_event_id}) — deleting before rebooking")
-                        try:
-                            service.events().delete(
-                                calendarId=CALENDAR_ID,
-                                eventId=old_event_id,
-                                sendUpdates="all"
-                            ).execute(num_retries=3)
-                            print(f"[book_appointment] AUTO-CLEANUP: Deleted old event {old_event_id}")
-                            # Update lead_data if available
-                            if lead_phone and lead_phone in lead_data:
-                                lead_data[lead_phone]["event_id"] = None
-                                lead_data[lead_phone]["booked"] = False
-                        except Exception as del_err:
-                            print(f"[book_appointment] AUTO-CLEANUP WARNING: Could not delete old event {old_event_id}: {del_err}")
-                        break  # Only delete the first match — one lead, one event
+                        _stale = {
+                            "id": ev["id"],
+                            "start": ev.get("start", {}).get("dateTime", "unknown"),
+                            "summary": ev.get("summary", ""),
+                            "why": _why,
+                        }
+                        print(f"[book_appointment] AUTO-CLEANUP: existing event for {lead_name} "
+                              f"matched on {_why}: '{_stale['summary']}' at {_stale['start']} "
+                              f"(ID: {_stale['id']}) — HELD, will delete only after the new event exists")
+                        break  # one lead, one event
         except Exception as cleanup_err:
-            # Non-fatal: if cleanup fails, still proceed with creating the new event
-            print(f"[book_appointment] AUTO-CLEANUP ERROR (non-fatal, proceeding with booking): {cleanup_err}")
+            # Non-fatal: if the scan fails, still proceed with creating the new event.
+            print(f"[book_appointment] AUTO-CLEANUP SCAN ERROR (non-fatal, proceeding): {cleanup_err}")
 
         if appointment_type == "strategy_call":
             event_title = f"Strategy Call — {lead_name} ({lead_business})"
@@ -3930,6 +4015,12 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 ev for ev in conflict_events
                 if "dateTime" in ev.get("start", {})
                 and ev.get("transparency") != "transparent"
+                # PATCH #104 — the lead's OWN event, held for deletion, is not
+                # a double-booking. Before #104 it had already been deleted by
+                # this point, so it could never appear here; now that it
+                # survives until the new event exists, a lead rebooking into a
+                # nearby slot would otherwise be blocked by themselves.
+                and not (_stale and ev.get("id") == _stale["id"])
             ]
             if timed_conflicts:
                 conflict_names = [ev.get("summary", "Unknown") for ev in timed_conflicts]
@@ -3940,6 +4031,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     lead_info=f"{lead_name} ({lead_phone})",
                     severity="WARNING"
                 )
+                if _stale:
+                    print(f"[book_appointment] PATCH #104: kept existing event {_stale['id']} "
+                          f"({_stale['summary']} @ {_stale['start']}) — booking did not proceed")
                 return None
         except Exception as race_err:
             # Non-fatal: if re-check fails, still attempt the booking
@@ -3948,7 +4042,10 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         # ── Capacity guard: enforce daily booking limit ──
         try:
             _booking_date = start_dt.date()
-            _day_count = _count_bookings_on_date(_booking_date)
+            # PATCH #104 — same reason as the race guard: the held event is
+            # about to be released, so it must not count against the day.
+            _day_count = _count_bookings_on_date(
+                _booking_date, exclude_event_id=(_stale["id"] if _stale else None))
             if _day_count >= MAX_BOOKINGS_PER_DAY:
                 print(f"[Capacity] BLOCKED: {_booking_date} already has {_day_count} bookings (max {MAX_BOOKINGS_PER_DAY})")
                 _notify_error_to_dev(
@@ -3957,6 +4054,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                     lead_info=f"{lead_name} ({lead_phone})",
                     severity="WARNING"
                 )
+                if _stale:
+                    print(f"[book_appointment] PATCH #104: kept existing event {_stale['id']} "
+                          f"({_stale['summary']} @ {_stale['start']}) — booking did not proceed")
                 return None
         except Exception as _cap_err:
             print(f"[Capacity] Check failed (non-fatal): {_cap_err}")
@@ -4004,7 +4104,44 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
         if not created:
             print("â All booking attempts failed.")
+            if _stale:
+                print(f"[book_appointment] PATCH #104: kept existing event {_stale['id']} "
+                      f"({_stale['summary']} @ {_stale['start']}) — booking did not proceed")
             return None
+
+        # ── PATCH #104 — the replacement now exists, so the old one may go ──
+        # This delete used to run ~130 lines earlier, before anything had been
+        # verified or created. It runs here instead: past this point the lead
+        # provably has an appointment, so releasing the previous one cannot
+        # leave them with none.
+        if _stale:
+            try:
+                service.events().delete(
+                    calendarId=CALENDAR_ID,
+                    eventId=_stale["id"],
+                    sendUpdates="all"
+                ).execute(num_retries=3)
+                print(f"[book_appointment] AUTO-CLEANUP: deleted superseded event {_stale['id']} "
+                      f"('{_stale['summary']}' @ {_stale['start']}, matched on {_stale['why']})")
+                if lead_phone and lead_phone in lead_data:
+                    lead_data[lead_phone]["event_id"] = None
+                    lead_data[lead_phone]["booked"] = False
+            except Exception as del_err:
+                # The new booking stands. A leftover duplicate is visible and
+                # repairable; that is the failure this patch prefers.
+                print(f"[book_appointment] AUTO-CLEANUP WARNING: could not delete superseded "
+                      f"event {_stale['id']}: {del_err}")
+                try:
+                    _notify_error_to_dev(
+                        "Duplicate Calendar Event Left Behind",
+                        f"Rebooked {lead_name} but could not delete their previous event "
+                        f"'{_stale['summary']}' at {_stale['start']} (ID {_stale['id']}). "
+                        f"Both events are now on the calendar — delete the old one by hand.",
+                        lead_info=f"{lead_name} ({lead_phone})",
+                        severity="WARNING",
+                    )
+                except Exception:
+                    pass
 
         event_link = created.get("htmlLink", "")
 
