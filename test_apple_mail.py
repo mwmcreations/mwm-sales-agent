@@ -257,6 +257,24 @@ os.environ["APPLE_MAIL_PORT"] = "not-a-number"
 check("a junk port falls back rather than crashing at import", am.port(), 993)
 os.environ.pop("APPLE_MAIL_PORT")
 
+print("\n=== 9b. the dormant self-test answers the DEPLOYMENT question too ===")
+# Michael must create an app-specific password by hand before this can be
+# tested for real. It would be a poor trade to have him do that and only then
+# discover port 993 was blocked. The dormant self-test probes reachability
+# with no credentials at all, so the two unknowns are separable.
+_d = am.self_test()
+ok("dormant self-test still reports reachability", "reachable" in _d)
+ok("...as its own ok/kind result", "ok" in _d["reachable"])
+ok("this environment cannot reach Apple — device_bash/cloud never can",
+   _d["reachable"]["ok"] is False)
+check("...and says so as a NETWORK problem, not a credential one",
+      _d["reachable"]["kind"], am.ERR_NETWORK)
+ok("the probe names the host and port it tried",
+   "imap.mail.me.com:993" in _d["reachable"]["host"])
+ok("reachable() attempts NO login — credentials are a separate question",
+   "login" not in io.open("apple_mail.py", encoding="utf-8").read()
+   .split("def reachable")[1].split("\ndef ")[0])
+
 print("\n=== 10. the route layer: least privilege + fail closed ===")
 APP = io.open("app.py", encoding="utf-8").read()
 ok("the reader is guarded by its OWN secret",
@@ -280,10 +298,32 @@ print("\n=== 11. the self-test must not become noise ===")
 SEG = APP.split("def _apple_mail_selftest_thread")[1].split("threading.Thread")[0]
 ok("dormant posts NOTHING — he is in no rush and has not set it up",
    "Staying quiet" in SEG)
-ok("...and the dormant branch has no Slack call",
-   "_post_to_slack_async" not in SEG.split("else:")[-1])
-ok("a PASS posts nothing either — success is the expected state",
-   SEG.count("_post_to_slack_async") == 2)   # the DOWN alert + the RECOVERED one
+# This assertion USED to read "the dormant branch has no Slack call" and was
+# left passing vacuously when the one-shot reachability warning was added: it
+# split on the LAST "else:" and so inspected the innermost branch, not the
+# dormant one. A test that passes for a reason unrelated to its label is worse
+# than a missing test. Stated properly now:
+_DORMANT_BRANCH = SEG.split("[APPLE-MAIL] dormant")[1]
+ok("the dormant branch's ONLY Slack call is the unreachable warning",
+   _DORMANT_BRANCH.count("_post_to_slack_async") == 1)
+ok("...and it is guarded by the one-shot flag",
+   "if not _apple_mail_reach_warned[0]:" in _DORMANT_BRANCH)
+ok("...so dormant-and-reachable stays completely silent",
+   "Waiting on credentials only" in _DORMANT_BRANCH
+   and "_post_to_slack_async" not in _DORMANT_BRANCH.split("else:")[-1])
+# A pass must be silent. The ONLY Slack call reachable from the success
+# branch is the RECOVERED transition — assert that by reading the branch
+# itself rather than counting calls, which drifts the moment one is added.
+_SUCCESS_BRANCH = SEG.split('if _res.get("ok"):')[1].split("else:")[0]
+ok("a PASS posts nothing except the RECOVERED transition",
+   _SUCCESS_BRANCH.count("_post_to_slack_async") == 1
+   and "RECOVERED" in _SUCCESS_BRANCH)
+ok("...and that one is gated on having previously been down",
+   "_last_ok is False" in _SUCCESS_BRANCH)
+ok("the reachability warning is a ONE-SHOT, not a repeating nag",
+   "_apple_mail_reach_warned" in SEG and "= True" in SEG)
+ok("...and only fires when Apple is UNREACHABLE, not merely unconfigured",
+   'if not _reach.get("ok"):' in SEG)
 ok("failure is reported on the TRANSITION, not every cycle",
    "_last_ok is not False" in SEG)
 ok("recovery is reported too", "RECOVERED" in SEG)

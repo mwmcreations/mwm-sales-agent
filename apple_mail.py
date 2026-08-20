@@ -479,7 +479,32 @@ def self_test():
     if not enabled():
         out = _not_configured()
         out["dormant"] = True   # not a fault — nobody has switched it on yet
+        # Probe reachability anyway. Michael has to create an app-specific
+        # password by hand before this can be tested for real, and it would be
+        # a poor trade to have him do that only to discover the port was
+        # blocked all along. This answers "would it even work here?" for free,
+        # with no credentials involved — TCP only, no login attempted.
+        out["reachable"] = reachable()
         return out
+
+
+def reachable():
+    """Can this environment open a TCP connection to Apple's IMAP host?
+
+    Answers the deployment question independently of the credential question.
+    Both agent environments fail this (device_bash has no DNS, the cloud
+    container times out on 993) which is the entire reason the reader lives in
+    the sales machine — so it is worth being able to prove the same thing
+    about wherever this code has landed, rather than assuming.
+    """
+    try:
+        sock = socket.create_connection((host(), port()), timeout=10)
+        sock.close()
+        return {"ok": True, "host": f"{host()}:{port()}"}
+    except Exception as exc:
+        kind, why = _classify_error(exc)
+        return {"ok": False, "kind": kind, "error": why,
+                "host": f"{host()}:{port()}"}
     try:
         with _session("INBOX") as conn:
             typ, data = conn.status("INBOX", "(MESSAGES)")

@@ -19001,6 +19001,9 @@ def apple_mail_mailboxes():
     return jsonify(apple_mail.mailboxes())
 
 
+_apple_mail_reach_warned = [False]   # one-shot; a list so the thread can set it
+
+
 def _apple_mail_selftest_thread():
     """Prove the reader still works — and stay SILENT while it is dormant.
 
@@ -19046,6 +19049,31 @@ def _apple_mail_selftest_thread():
             else:
                 print("[APPLE-MAIL] dormant — APPLE_MAIL_USER / "
                       "APPLE_MAIL_APP_PASSWORD not set. Staying quiet.")
+                # ONE exception to the dormant-is-silent rule, and only ever
+                # once. Michael has to create an app-specific password by hand
+                # before any of this can be tested for real. If the port turns
+                # out to be blocked from this environment, he needs to know
+                # BEFORE he does that work, not after — so a dormant reader
+                # that also cannot REACH Apple speaks up a single time.
+                # Dormant-and-reachable stays completely silent: that is just
+                # "waiting on him", and he is in no hurry.
+                if not _apple_mail_reach_warned[0]:
+                    _apple_mail_reach_warned[0] = True
+                    _reach = apple_mail.reachable()
+                    if not _reach.get("ok"):
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                            f"🟠 *Apple mail reader: this environment cannot "
+                            f"reach `{_reach.get('host')}`.*\n"
+                            f"The reader is dormant anyway (no credentials "
+                            f"yet), so nothing is broken — but outbound IMAP "
+                            f"looks blocked here, which would defeat it even "
+                            f"once configured.\n"
+                            f"*Worth knowing before* creating an app-specific "
+                            f"password, not after.\n`{_reach.get('error')}`"))
+                    else:
+                        print(f"[APPLE-MAIL] reachability OK — "
+                              f"{_reach.get('host')} accepts connections. "
+                              f"Waiting on credentials only.")
         except Exception as _am_e:
             print(f"[APPLE-MAIL] self-test thread error (non-fatal): {_am_e}")
         _t.sleep(21600)   # every 6 hours; this is not a fast-moving failure
