@@ -342,6 +342,13 @@ ok("it does NOT publish the mailbox address on a public route",
 ok("it does NOT publish any credential", "PASSWORD" not in _H and "SECRET" not in _H)
 ok("reachability is CACHED, not dialled per request — /health is hot",
    "_apple_mail_reach_cache" in _H)
+# For the first seven minutes of every boot this reported `false`, which
+# asserts Apple is unreachable when in fact nothing had looked yet. A
+# negative result is only evidence if the test actually ran.
+ok("unknown is reported as null, never coerced to false",
+   "bool(_apple_mail_reach_cache[0])" not in _H)
+ok("...and checked_at is what distinguishes unknown from proven",
+   '"checked_at"' in _H)
 ok("the cache is written by the self-test thread",
    "_apple_mail_note_reach" in APP.split("def _apple_mail_selftest_thread")[1]
    .split("threading.Thread")[0])

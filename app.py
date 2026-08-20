@@ -16709,7 +16709,12 @@ def health_check():
         # is public.
         "apple_mail": {
             "configured": apple_mail.enabled(),
-            "reachable": bool(_apple_mail_reach_cache[0]),
+            # None until the first probe runs — NOT False. For the first
+            # seven minutes of every boot this field read `false`, which is a
+            # claim that Apple is unreachable when the truth is that nothing
+            # had looked yet. A negative result is only evidence if you can
+            # prove you performed the test.
+            "reachable": _apple_mail_reach_cache[0],
             "checked_at": _apple_mail_reach_cache[1],
         },
         # PATCH #99 — S28 went live on Aug 15 and a real drag was not applied,
