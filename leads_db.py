@@ -213,6 +213,31 @@ def count():
 
 # ── write-through tracked dicts ──────────────────────────────────────────────
 
+_requeue_stats = {"upsert": 0, "delete": 0}
+
+
+def requeue_stats():
+    """PATCH #103 — how many writes have been retried instead of lost.
+    Read this at /health; a number that climbs and never settles means
+    Postgres is unreachable and leads are queued in memory, not saved."""
+    return dict(_requeue_stats)
+
+
+def _requeued(kind, key):
+    """A write failed and was put back on the queue. Loud on the first one,
+    then counted — a per-record alert storm during an outage helps nobody."""
+    _requeue_stats[kind] = _requeue_stats.get(kind, 0) + 1
+    n = _requeue_stats[kind]
+    print(f"[LEADS_DB] {kind} REQUEUED (not lost) key={key} total={n}")
+    if n in (1, 10, 100):
+        _report_error(
+            f"leads_db.{kind}_requeued",
+            f"{n} {kind} write(s) have been retried, not lost",
+            f"latest={key} — records are queued in memory and will drain when "
+            f"Postgres returns. If this number keeps climbing, Postgres is down.",
+        )
+
+
 def _mark_dirty(key):
     with _dirty_lock:
         _dirty.add(key)
@@ -379,8 +404,26 @@ def flush(lead_data, full=False):
             continue
         if upsert_lead(k, snapshot):
             written += 1
+        else:
+            # PATCH #103 — a failed write used to be DISCARDED here. The dirty
+            # set is cleared at the top of flush(), so when Postgres blipped the
+            # record was simply gone: no retry, no queue, no second chance. That
+            # is how a real lead was lost on 2026-08-17 12:21 when the server
+            # closed the connection mid-flush.
+            # Re-queueing is the same move the RuntimeError branch above already
+            # makes, and it turns the existing dirty set into the retry queue:
+            # the next cycle (FLUSH_INTERVAL) tries again, and keeps trying until
+            # Postgres comes back. The set is keyed by lead_key, so a backlog is
+            # bounded by the number of leads — it cannot grow without limit.
+            _mark_dirty(k)
+            _requeued("upsert", k)
     for k in deleted:
-        delete_lead(k)
+        if not delete_lead(k):
+            # same bug, same fix: a failed delete was dropped and the row
+            # would have been resurrected by the next full sweep.
+            with _dirty_lock:
+                _deleted.add(k)
+            _requeued("delete", k)
     return written
 
 
