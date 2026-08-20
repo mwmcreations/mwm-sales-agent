@@ -96,7 +96,14 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         # deliberately in event_rail so the test suite can
                         # replay a real calendar against it without a network.
                         find_conflicts, describe_conflict,
-                        CONFLICT_HORIZON_DAYS, CLASH_ROOM)
+                        CONFLICT_HORIZON_DAYS, CLASH_ROOM,
+                        # Patch #106 — the description is a client-facing
+                        # document, not a scratchpad.
+                        client_description, client_safe_description,
+                        description_is_client_safe, event_lead_facts,
+                        machine_created,
+                        KIND_STRATEGY_CALL, KIND_STUDIO_VISIT,
+                        KIND_PORTAL_BOOKING)
 # Patch #50 — the direct-booking vocabulary. The form is a thin shell over
 # these; every rule about titles, venues and who may be sold to lives in
 # event_rail where the test suite can reach it.
@@ -3805,10 +3812,25 @@ def _cleanup_name_matches(lead_name, ev):
 
 
 def _cleanup_phone_matches(cleanup_phone, ev):
-    """Phone is the strong identifier — checked FIRST, not as a fallback."""
+    """Phone is the strong identifier — checked FIRST, not as a fallback.
+
+    PATCH #106 — this searched the DESCRIPTION, which no longer carries the
+    phone number (an attendee reads that field). It now checks the private
+    properties first and the description second, so events written before and
+    after the change both still match. Missing this would have quietly
+    disabled Patch #104's rebooking cleanup: no match means no delete, and a
+    rebooking would leave the old event standing alongside the new one.
+    """
     if not cleanup_phone or len(cleanup_phone) < 7:
         return False
+    _priv_phone = re.sub(r"\D", "", event_lead_facts(ev).get("lead_phone", "") or "")
+    if _priv_phone and cleanup_phone in _priv_phone:
+        return True
     return cleanup_phone in (ev.get("description", "") or "")
+
+
+def _is_call_kind(appointment_type):
+    return appointment_type == "strategy_call"
 
 
 def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None,
@@ -3962,19 +3984,45 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         # single line "Booked via: Maya (WhatsApp)" conflated the two, which
         # is what made the mislabel invisible for months.
         _true_channel = resolve_channel(lead_phone, hint=booked_via)
+        # ── PATCH #106 ─────────────────────────────────────────────
+        # This description used to read:
+        #     Lead: <name> / Business: <biz> / Booked by: Maya /
+        #     Booked via: <channel> / Call this number: <number>
+        # Google renders that in full to the attendee. "Lead" is our funnel
+        # word for a person we are selling to, "Booked by: Maya" names a bot
+        # the client has been talking to as a person, and "Call this number"
+        # is an instruction to MICHAEL sitting in the CLIENT's invite.
+        #
+        # The dial number is not dropped, it is re-voiced: Patch #57 put it
+        # here so whoever places the call would actually see it, and
+        # client_description keeps it visible — phrased as "Michael will call
+        # you at <number>", which serves Michael and the client at once. The
+        # rest moves to extendedProperties.private, which attendees cannot
+        # read and our own tooling still can.
+        _appt_kind = (KIND_STRATEGY_CALL if appointment_type == "strategy_call"
+                      else KIND_STUDIO_VISIT)
         event_base = {
             "summary": event_title,
-            "description": (
-                f"{event_desc_header}\n\n"
-                f"Lead: {lead_name}\n"
-                f"Business: {lead_business}\n"
-                f"Email: {lead_email}\n"
-                f"Booked by: Maya\n"
-                f"Booked via: {_true_channel}"
-                # Patch #57 — the number to dial, on the event, where the
-                # person who has to place the call will actually look.
-                + (f"\nCall this number: {_dial_number}" if _dial_number else "")
+            "description": client_description(
+                _appt_kind,
+                studio_address=(None if _is_call_kind(appointment_type)
+                                else STUDIO_ADDRESS),
+                callback_number=_dial_number or None,
             ),
+            "extendedProperties": {"private": {
+                "lead_name": str(lead_name or "")[:300],
+                "lead_business": str(lead_business or "")[:300],
+                "lead_email": str(lead_email or "")[:300],
+                "booked_by_agent": "Maya",
+                "booked_via_channel": str(_true_channel)[:300],
+                "dial_number": str(_dial_number or "")[:300],
+                # The confirmation rail resolves WHO to send a T-24 to from
+                # this. It used to read a "Phone:" line out of the
+                # description; that line is gone, so the fact has to be
+                # written here or every new booking silently loses its
+                # confirmation.
+                "lead_phone": str(lead_phone or "").replace("whatsapp:", "")[:300],
+            }},
             "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
             "location": (STRATEGY_CALL_LOCATION if appointment_type == "strategy_call"
@@ -9599,16 +9647,17 @@ def _post_visit_checker():
                 event_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
                 hours_since_end = (now - event_end).total_seconds() / 3600
 
-                # Extract lead phone from description (format: "Booked via: Maya (WhatsApp)")
-                _desc_lines = description.split("\n")
-                _lead_name = ""
+                # PATCH #106 — these facts used to be parsed straight out of
+                # the description. They are no longer published there (the
+                # attendee reads that field), so this asks the rail instead,
+                # which checks the private properties first and falls back to
+                # the old description lines for events created before the
+                # change. Without this the no-show detector would have gone on
+                # parsing, found empty strings, and reported nothing — silently.
+                _facts = event_lead_facts(event)
                 _lead_phone_raw = ""
-                _lead_email = ""
-                for line in _desc_lines:
-                    if line.startswith("Lead:"):
-                        _lead_name = line.replace("Lead:", "").strip()
-                    elif line.startswith("Email:"):
-                        _lead_email = line.replace("Email:", "").strip()
+                _lead_name = _facts.get("lead_name", "")
+                _lead_email = _facts.get("lead_email", "")
 
                 # Find phone from lead_data by name or email match (uses dedup utils)
                 _wa_phone = ""
@@ -9872,19 +9921,15 @@ def _pre_meeting_briefer():
                     _briefing_sent.add(event_id)
 
                     # Parse lead info from event description
-                    _lead_name = ""
-                    _lead_biz = ""
-                    _lead_email = ""
-                    _booked_via = ""
-                    for line in description.split("\n"):
-                        if line.startswith("Lead:"):
-                            _lead_name = line.replace("Lead:", "").strip()
-                        elif line.startswith("Business:"):
-                            _lead_biz = line.replace("Business:", "").strip()
-                        elif line.startswith("Email:"):
-                            _lead_email = line.replace("Email:", "").strip()
-                        elif line.startswith("Booked via:"):
-                            _booked_via = line.replace("Booked via:", "").strip()
+                    # PATCH #106 — same reason as the no-show detector: the
+                    # briefer used to read these off the description, and the
+                    # description no longer carries them. One accessor, private
+                    # properties first, legacy description second.
+                    _pf = event_lead_facts(event)
+                    _lead_name = _pf.get("lead_name", "")
+                    _lead_biz = _pf.get("lead_business", "")
+                    _lead_email = _pf.get("lead_email", "")
+                    _booked_via = _pf.get("booked_via_channel", "")
 
                     # Find conversation context from lead_data + conversation_history
                     _conv_summary = ""
@@ -10011,15 +10056,11 @@ def _noshow_detector():
                     # This event ended today, was NOT processed by Golden Hour
                     _noshow_processed.add(event_id)
 
-                    # Extract lead info from description
-                    _ns_name = ""
-                    _ns_email = ""
+                    # PATCH #106 — via the rail, not the description.
+                    _ns_f = event_lead_facts(event)
+                    _ns_name = _ns_f.get("lead_name", "")
+                    _ns_email = _ns_f.get("lead_email", "")
                     _ns_phone = ""
-                    for line in description.split("\n"):
-                        if line.startswith("Lead:"):
-                            _ns_name = line.replace("Lead:", "").strip()
-                        elif line.startswith("Email:"):
-                            _ns_email = line.replace("Email:", "").strip()
 
                     print(f"📋 [Daily Report] Event ended without report: {_ns_name or 'Unknown'} — {summary} (event {event_id})")
 
@@ -10054,10 +10095,8 @@ def _noshow_detector():
                     end_info = event.get("end", {})
                     if "dateTime" not in end_info:
                         continue
-                    _ao_name = ""
-                    for line in event.get("description", "").split("\n"):
-                        if line.startswith("Lead:"):
-                            _ao_name = line.replace("Lead:", "").strip()
+                    # PATCH #106 — via the rail, not the description.
+                    _ao_name = event_lead_facts(event).get("lead_name", "")
 
                     # ── PATCH #50B — do not sell to people who are not buying ──
                     # This branch marks ANY unreported meeting `follow_up` and
@@ -10378,13 +10417,16 @@ def _lead_reminder_thread():
                         continue
                     _lead_reminder_sent.add(mark)
 
-                    _ln = ""
-                    _lp = ""
-                    for line in str(event.get("description") or "").split("\n"):
-                        if line.startswith("Lead:"):
-                            _ln = line.replace("Lead:", "").strip()
-                        elif line.startswith("Phone:"):
-                            _lp = re.sub(r"\D", "", line.replace("Phone:", ""))
+                    # PATCH #106 — THE most load-bearing of these read-sites:
+                    # this is the confirmation rail deciding who to send a T-24
+                    # or T-2 to. It parsed "Lead:" and "Phone:" out of the
+                    # description, and the description no longer carries them.
+                    # Left as it was, every newly-booked client would have gone
+                    # unconfirmed, and the failure would have looked exactly
+                    # like a quiet week.
+                    _lr_f = event_lead_facts(event)
+                    _ln = _lr_f.get("lead_name", "")
+                    _lp = re.sub(r"\D", "", _lr_f.get("lead_phone", "") or "")
 
                     # ── PATCH #43 · resolve from the ATTENDEE, not the note ──
                     # A description is a note somebody typed; an attendee email
@@ -16316,14 +16358,26 @@ def studio_booking_webhook():
                             _sb_svc = get_calendar_service()
                         else:
                             raise
+                    # ── PATCH #106 ─────────────────────────────
+                    # Was: "Studio Package portal booking #N / Client: ... /
+                    # Notes: Created in wp-admin / Source: portal
+                    # (auto-synced by machine S12)". The paying client is an
+                    # attendee and reads all of it — including our internal
+                    # sync vocabulary and, on several bookings, the words
+                    # "Created in wp-admin". The booking id and the notes are
+                    # ours; they move to private properties.
                     _sb_body = {
                         "summary": f"🎬 Studio: {name} ({evt.get('duration')}h)",
-                        "description": (
-                            f"Studio Package portal booking #{bid}\n"
-                            f"Client: {name} ({evt.get('client_email','')})\n"
-                            f"Notes: {evt.get('notes') or '—'}\n"
-                            f"Source: portal (auto-synced by machine S12)"
+                        "description": client_description(
+                            KIND_PORTAL_BOOKING,
+                            studio_address=STUDIO_ADDRESS,
                         ),
+                        "extendedProperties": {"private": {
+                            "portal_booking_id": str(bid)[:300],
+                            "portal_notes": str(evt.get("notes") or "")[:300],
+                            "client_email": str(evt.get("client_email") or "")[:300],
+                            "source": "portal (auto-synced by machine S12)",
+                        }},
                         "start": {"dateTime": f"{date}T{start}:00", "timeZone": TIMEZONE},
                         "end": {"dateTime": f"{date}T{end}:00", "timeZone": TIMEZONE},
                         "location": STUDIO_ADDRESS,

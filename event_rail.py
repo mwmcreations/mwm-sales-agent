@@ -642,6 +642,287 @@ def looks_like_address(location):
     return has_digit and has_words
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #106 · THE DESCRIPTION IS A CLIENT-FACING DOCUMENT
+# ══════════════════════════════════════════════════════════════════════
+# Google renders the description in full to every attendee, and it travels
+# into their own calendar when they accept. It is not a scratchpad. It is a
+# document we hand the client.
+#
+# Michael raised this once already. §S87: he found "Sales rail: OFF" and a
+# list of creation issues sitting in a client's invite, and the rail stamp was
+# moved to extendedProperties.private — where our own reads still see it and
+# the guest never does.
+#
+# THAT FIX WAS TOO NARROW, AND THE PROOF ARRIVED ON AUG 20.
+# It moved ONE block. It did not stop the write-sites from composing the
+# description out of internal vocabulary in the first place, and it did not
+# touch anything already on the calendar. Vanessa Serrano's Aug 21 booking —
+# with her on the attendee list — was still carrying this, written BY HAND by
+# DEV during a repair:
+#
+#     REPAIRED BY DEV, Aug 10 2026 — attendee, location and reminders added.
+#     History: the automatic sync failed Aug 6 at 10:17:52 with HTTP 403
+#     forbiddenForServiceAccounts ... That diagnosis was wrong. Domain-Wide
+#     Delegation had been granted the whole time ... Fixed in Patch #69.
+#
+# A paying client's calendar invite, describing our own outage, naming our own
+# wrong diagnosis, with a patch number. Nine future events were carrying
+# something of this kind and the client was an attendee on all nine.
+#
+# The lesson is the one this codebase already knows and keeps re-learning:
+# fixing the INSTANCE is not fixing the CLASS. So this does not move one more
+# block. It makes the gate itself refuse to pass internal text, whatever
+# produced it — a write-site, a backfill, or a human typing into Google
+# Calendar during a repair.
+#
+# WHAT COUNTS AS INTERNAL
+# Two kinds, and they are separated on purpose:
+#   · LINE markers — a whole line that exists for us, not for them.
+#     "Booked by: Maya", "Source: portal (auto-synced by machine S12)".
+#   · CONTAGION markers — a phrase that means the surrounding prose is an
+#     engineering note, not client copy. "Patch #69", "HTTP 403", "REPAIRED
+#     BY DEV". These take the whole paragraph, because a postmortem does not
+#     confine itself to one line and half a postmortem is still a leak.
+#
+# NOTHING IS DESTROYED. Everything removed is preserved verbatim in
+# extendedProperties.private, which attendees cannot read. We keep our
+# provenance; the client stops receiving it.
+
+_INTERNAL_LINE_RE = [
+    re.compile(r"^\s*booked by\s*:", re.I),
+    re.compile(r"^\s*booked via\s*:", re.I),
+    re.compile(r"^\s*source\s*:", re.I),
+    re.compile(r"^\s*source channel\s*:", re.I),
+    re.compile(r"^\s*reminder channel\s*:", re.I),
+    re.compile(r"^\s*rail (notes|issues)\s*:", re.I),
+    re.compile(r"^\s*sales rail\s*:", re.I),
+    re.compile(r"^\s*rsvp[- ]note\s*:", re.I),
+    re.compile(r"^\s*notes\s*:\s*(created in wp-admin|—|-)?\s*$", re.I),
+    re.compile(r"^\s*[—-]{2,}\s*event rail\s*[—-]{2,}\s*$", re.I),
+    re.compile(r"^\s*lead\s*:", re.I),          # our funnel word, not theirs
+    re.compile(r"^\s*client\s*:.*@", re.I),     # their own address back at them
+    # CRM fields. Not secret — but the client already knows their own business
+    # name and email address, and being handed them back inside an invite
+    # reads as a database record rather than a booking.
+    re.compile(r"^\s*business\s*:", re.I),
+    re.compile(r"^\s*email\s*:", re.I),
+    re.compile(r"^\s*phone\s*:", re.I),
+    re.compile(r"^\s*call this number\s*:", re.I),   # an instruction to MICHAEL
+]
+
+# A phrase anywhere in a paragraph condemns the whole paragraph.
+_INTERNAL_CONTAGION_RE = [
+    re.compile(r"repaired by dev", re.I),
+    re.compile(r"patch\s*#\s*\d+", re.I),
+    re.compile(r"\bhttp\s*[45]\d\d\b", re.I),
+    re.compile(r"forbiddenforserviceaccounts", re.I),
+    re.compile(r"domain[- ]wide delegation|\bDWD\b"),
+    re.compile(r"service account", re.I),
+    re.compile(r"\bwebhook\b", re.I),
+    re.compile(r"auto[- ]synced|machine\s+S\d+", re.I),
+    re.compile(r"diagnosis was wrong|the automatic sync failed", re.I),
+    re.compile(r"\bbackfill\b|\bdry run\b", re.I),
+    re.compile(r"\bIGSID\b|instagram:\d+", re.I),
+    re.compile(r"resolved from identifier", re.I),
+    re.compile(r"\bunremindable\b|\bfails? open\b", re.I),
+    re.compile(r"spec\s+S-?\d|\bS1[0-9]\b\s*(sync|portal)", re.I),
+]
+
+
+def _paragraphs(text):
+    """Split on blank lines, keeping the separators recoverable."""
+    return re.split(r"\n\s*\n", text or "")
+
+
+def client_safe_description(desc):
+    """Strip everything a client should never read. Pure.
+
+    Returns (clean_text, removed_chunks). `removed_chunks` is every piece
+    taken out, verbatim, so the caller can preserve it privately rather than
+    lose it — provenance is worth keeping, it just is not worth SENDING.
+
+    Conservative in the direction that matters. If a paragraph is ambiguous it
+    is kept, because over-stripping deletes something the client needed and
+    under-stripping is caught by the reporter on the way out. The one
+    exception is contagion markers, which take the whole paragraph: an
+    engineering note does not politely confine itself to one line, and half a
+    postmortem in a client's invite is still a postmortem in a client's
+    invite.
+    """
+    if not desc or not str(desc).strip():
+        return "", []
+    removed = []
+    kept_paras = []
+    for para in _paragraphs(str(desc)):
+        if any(rx.search(para) for rx in _INTERNAL_CONTAGION_RE):
+            if para.strip():
+                removed.append(para.strip())
+            continue
+        kept_lines = []
+        for line in para.split("\n"):
+            if any(rx.search(line) for rx in _INTERNAL_LINE_RE):
+                if line.strip():
+                    removed.append(line.strip())
+                continue
+            kept_lines.append(line)
+        rebuilt = "\n".join(kept_lines).strip()
+        if rebuilt:
+            kept_paras.append(rebuilt)
+    clean = "\n\n".join(kept_paras).strip()
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    return clean, removed
+
+
+# ── what the client SHOULD read ─────────────────────────────────────
+# Redaction alone is not the fix. Run the stripper over Vanessa Serrano's
+# invite and the description comes back EMPTY — every line of it existed for
+# us. An empty invite is a different failure, not a solved one.
+#
+# So the rail can also COMPOSE the description. Client copy only: what this
+# is, where it happens, when to arrive, and how to reach a human to change
+# it. No funnel words, no channel, no booking machinery, no agent names —
+# "Booked by: Maya" tells the client nothing they need and quite a lot they
+# were never meant to know.
+
+MWM_PHONE = "(813) 503-1224"
+MWM_EMAIL = "info@mwmcreations.com"
+_CONTACT = ("Questions, or need to change this? Call or text %s, "
+            "or email %s." % (MWM_PHONE, MWM_EMAIL))
+
+
+def client_description(kind, studio_address=None, callback_number=None,
+                       virtual_note=None):
+    """The description a client should actually receive. Pure.
+
+    Written to be read by the person who booked, in their own calendar, three
+    weeks from now, on a phone.
+    """
+    if kind in (KIND_STRATEGY_CALL, KIND_CLIENT_CALL):
+        lines = ["Strategy call with Michael Moraes, MWM Creations.", ""]
+        if callback_number:
+            lines.append("Michael will call you at %s at the time above."
+                         % callback_number)
+        else:
+            lines.append("Michael will call you at the time above.")
+        if virtual_note:
+            lines.append(str(virtual_note))
+    elif kind == KIND_PRODUCTION_SHOOT:
+        lines = ["Production shoot with the MWM Creations crew.", ""]
+        if studio_address:
+            lines.append(str(studio_address))
+        lines.append("Our crew will confirm the call time and access "
+                     "arrangements with you beforehand.")
+    elif kind in (KIND_STUDIO_PRODUCTION, KIND_PORTAL_BOOKING):
+        lines = ["Studio session at MWM Creations & Studios.", ""]
+        if studio_address:
+            lines.append(str(studio_address))
+        lines.append("Please arrive a few minutes early so we can start "
+                     "on time.")
+    else:   # studio visit, and anything we are not sure about
+        lines = ["Studio visit with Michael Moraes at "
+                 "MWM Creations & Studios.", ""]
+        if studio_address:
+            lines.append(str(studio_address))
+        lines.append("Please arrive a few minutes early.")
+    lines += ["", _CONTACT]
+    return "\n".join(lines).strip()
+
+
+# ── reading back what we stopped publishing ─────────────────────────
+# Moving the lead facts out of the description is not free: THREE places read
+# them back out of it — the no-show detector, the pre-meeting briefer, and
+# classify_event's machine-write-path fallback. Left alone they would have
+# gone on parsing a description that no longer contains those lines, found
+# empty strings, and carried on without an error. A briefer that silently
+# stops knowing who the meeting is with is a worse bug than the leak.
+#
+# So there is one accessor, and it reads BOTH: the private properties first
+# (every event written from Patch #106 onward) and the old description lines
+# second (everything already on the calendar). Old events keep working
+# without a migration; new ones never expose the data.
+
+_LEGACY_DESC_FIELDS = {
+    "Lead:": "lead_name",
+    "Business:": "lead_business",
+    "Email:": "lead_email",
+    "Booked via:": "booked_via_channel",
+    "Client:": "client_email",
+    "Call this number:": "dial_number",
+    "Phone:": "lead_phone",
+}
+
+
+def event_lead_facts(event):
+    """Our own facts about an event, wherever they happen to live.
+
+    Returns a dict with lead_name / lead_business / lead_email /
+    booked_via_channel / booked_by_agent / portal_booking_id / dial_number,
+    missing keys absent rather than empty, so a caller can tell "we never
+    knew" from "it is blank".
+    """
+    out = {}
+    if not isinstance(event, dict):
+        return out
+    priv = ((event.get("extendedProperties") or {}).get("private") or {})
+    for k, v in priv.items():
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    # Legacy fallback — only fills what the private block did not.
+    for line in str(event.get("description") or "").split("\n"):
+        line = line.strip()
+        for prefix, key in _LEGACY_DESC_FIELDS.items():
+            if line.startswith(prefix) and key not in out:
+                val = line[len(prefix):].strip()
+                if val and val not in ("—", "-"):
+                    out[key] = val
+    if "booked_by_agent" not in out:
+        d = str(event.get("description") or "")
+        if "Booked by: Maya" in d:
+            out["booked_by_agent"] = "Maya"
+        elif "Studio Package portal booking" in d:
+            out["booked_by_agent"] = "Portal"
+    # Last resort — THE TITLE. Our own write-paths compose it, so its shape is
+    # known: "Studio Visit — NAME (BUSINESS)" and "🎬 Studio: NAME (1h)".
+    # This exists because the nine already-leaking events on the calendar had
+    # to have their descriptions rewritten in place, and the MCP write path
+    # cannot set extendedProperties — so without a title fallback, cleaning
+    # them would have cost the briefer every client name it knew. The title is
+    # client-visible anyway, so nothing is exposed by reading it.
+    if "lead_name" not in out:
+        summ = str(event.get("summary") or "")
+        m = re.match(r"^\s*(?:Studio Visit|Strategy Call)\s*[—-]\s*(.+?)"
+                     r"(?:\s*\((.+)\))?\s*$", summ)
+        if not m:
+            m2 = re.match(r"^\s*\W*\s*Studio\s*:\s*(.+?)\s*\(([\d.]+\s*h)\)\s*$",
+                          summ, re.I)
+            if m2:
+                out["lead_name"] = m2.group(1).strip()
+                out["name_source"] = "title"
+        else:
+            out["lead_name"] = m.group(1).strip()
+            if m.group(2):
+                out.setdefault("lead_business", m.group(2).strip())
+            out["name_source"] = "title"
+    return out
+
+
+def machine_created(event):
+    """True when one of our own write-paths made this event.
+
+    Reads the private stamp first, then the legacy description markers.
+    classify_event leaned on the description alone; that stops being true the
+    moment the description is client-safe.
+    """
+    f = event_lead_facts(event)
+    return bool(f.get("booked_by_agent") or f.get("portal_booking_id"))
+
+
+def description_is_client_safe(desc):
+    """True when nothing would be stripped. For tests and for the audit."""
+    return not client_safe_description(desc)[1]
+
+
 # ── S-1 · the one gate ───────────────────────────────────────────────
 
 def harden_event_body(body, source_identifier=None, attendee_email=None,
@@ -732,6 +1013,54 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
         body["reminders"] = {"useDefault": False, "overrides": [dict(r) for r in STANDARD_REMINDERS]}
         if isinstance(rem, dict) and rem.get("overrides"):
             notes.append("reminder block replaced with the standard block")
+
+    # ── PATCH #106 · the description is a client-facing document ──
+    # Enforced HERE rather than at each write-site, because the write-sites
+    # are not the only author. Vanessa Serrano's leak was typed by hand into
+    # Google Calendar by DEV during a repair, and no amount of tidying the
+    # code that CREATES events would have caught that. Every path that writes
+    # an event funnels through this function; so this is where the guarantee
+    # can actually be made.
+    _desc_before = body.get("description") or ""
+    _clean, _removed = client_safe_description(_desc_before)
+    if _removed:
+        # Never destroyed — kept privately, where our own reads see it and the
+        # attendee does not. We keep the provenance; the client stops being
+        # sent it.
+        _priv_red = (body.get("extendedProperties") or {}).get("private") or {}
+        _priv_red["redacted_from_description"] = ("\n---\n".join(_removed))[:1000]
+        body.setdefault("extendedProperties", {})["private"] = _priv_red
+        notes.append("%d internal passage(s) stripped from the description "
+                     "(kept privately)" % len(_removed))
+    if not _clean.strip():
+        # Redaction alone can empty a description completely — every line of
+        # Vanessa's existed for us. An empty invite is a different failure,
+        # not a solved one, so compose real client copy instead.
+        try:
+            _kind = classify_event(body)[0]
+        except Exception:
+            _kind = KIND_UNKNOWN
+        _clean = client_description(
+            _kind,
+            studio_address=(loc if venue_of(_kind) == VENUE_STUDIO else None),
+            callback_number=None,
+        )
+        notes.append("description was empty after redaction — replaced with "
+                     "standard client copy")
+    body["description"] = _clean
+    # A strip is not routine. It means SOMETHING still composes internal text
+    # into a client-facing field, and whoever owns that write-site should hear
+    # about it rather than have the gate quietly paper over it forever.
+    if _removed and reporter:
+        try:
+            reporter(
+                "event_rail.internal_text_in_description",
+                "Stripped %d internal passage(s) from a client-visible "
+                "description on %r" % (len(_removed), body.get("summary", "?")),
+                (" | ".join(_removed))[:400],
+            )
+        except Exception:
+            pass
 
     # ── stamp what we resolved — PRIVATELY ──
     # S87: this block used to be appended to the description, which Google
@@ -874,7 +1203,12 @@ def classify_event(ev):
             return kind, True, f"title matches {kind}"
 
     # Created by one of our own paths? The rail stamps this at creation.
-    if "Booked by: Maya" in desc or "Studio Package portal booking" in desc:
+    # PATCH #106 — reads the PRIVATE stamp first and the old description
+    # markers second. Those markers stopped being written the moment the
+    # description became client-safe; without this, every newly-created event
+    # with an unrecognised title would have quietly fallen through to
+    # "unknown" and lost its reminder ladder.
+    if machine_created(ev):
         return KIND_PORTAL_BOOKING, True, "created by a known machine write-path"
 
     # An external attendee is suggestive but NOT sufficient on its own —

@@ -60,7 +60,14 @@ def check(label, got, want):
 _APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
 _SRC = io.open(_APP, encoding="utf-8").read()
 
-_ns = {"re": re}
+# PATCH #106 — _cleanup_phone_matches now consults the event's PRIVATE
+# properties before its description, because the phone number stopped being
+# published in a field the attendee can read. That is a real dependency, so
+# the real function is injected rather than stubbed: a test that mocks the
+# lookup would pass while the live matcher failed.
+from event_rail import event_lead_facts
+
+_ns = {"re": re, "event_lead_facts": event_lead_facts}
 for _fn in ("_cleanup_norm", "_cleanup_identity_strings",
             "_cleanup_name_matches", "_cleanup_phone_matches"):
     _m = re.search(r"^def %s\(.*?(?=^\S)" % re.escape(_fn), _SRC, re.S | re.M)
@@ -237,6 +244,28 @@ _c_name = _scan.index("matched = _cleanup_name_matches")
 check("event_id is checked BEFORE the phone match",
       _scan.index('get("event_id")') < _c_phone, True)
 check("phone is still checked BEFORE the name match", _c_phone < _c_name, True)
+
+print("\n=== 6. Patch #106 — the phone moved out of the description ===")
+# The number is no longer written where an attendee can read it. If the
+# matcher had gone on searching the description alone, no match would mean no
+# delete, and a rebooking would leave the old event standing beside the new.
+PRIVATE_ONLY = {
+    "id": "p106",
+    "summary": "Studio Visit — Prime Vacation Orlando (Prime Vacation Orlando)",
+    "description": ("Studio visit with Michael Moraes at MWM Creations & Studios.\n\n"
+                    "1500 Park Center Dr, Suite 230, Orlando, FL 32835\n"
+                    "Please arrive a few minutes early."),
+    "extendedProperties": {"private": {"lead_phone": "14075551212",
+                                       "lead_name": "Prime Vacation Orlando"}},
+}
+check("the client-safe description contains no phone number",
+      "14075551212" in PRIVATE_ONLY["description"], False)
+check("...and the matcher still finds it, from the private properties",
+      _cleanup_phone_matches("14075551212", PRIVATE_ONLY), True)
+check("a different number still does not match",
+      _cleanup_phone_matches("19995551212", PRIVATE_ONLY), False)
+check("legacy events — number only in the description — still match",
+      _cleanup_phone_matches("14075551212", PRIME), True)
 
 print("\n" + "=" * 64)
 print("  %d passed, %d failed" % (_passed, _failed))
