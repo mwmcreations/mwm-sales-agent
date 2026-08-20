@@ -3747,3 +3747,200 @@ def roadmap_shoot_event_body(client_name, campaign_no, campaign_title, date,
         "end": {"dateTime": "%sT%s:00" % (date, end), "timeZone": timezone},
         "location": where,
     }, where_label
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #105 · THE DOUBLE-BOOK DETECTOR
+# ══════════════════════════════════════════════════════════════════════
+# Nothing in this system has ever looked at the calendar and asked "are two
+# of these on top of each other?" There were three partial guards and no
+# detector:
+#
+#   · book_appointment's race guard — ±15 min around ONE slot, at booking
+#     time, and only on the path Maya drives.
+#   · slot_conflicts (#50D) — correct, pure, and wired only to the admin
+#     booking form's client-side JS. It never sees anything Michael did not
+#     type into that form.
+#   · /studio-availability — tells the WordPress portal what is busy, then
+#     /webhook/studio-booking writes the event with NO server-side check at
+#     all. A paid portal booking lands on top of whatever is already there,
+#     and the 120s availability cache means two people filling the form at
+#     once can both be told the slot is free.
+#
+# So a clash created by the portal, by wp-admin, or by Michael's own hand was
+# invisible until a human happened to read the calendar. Aug 19: Victory HQ
+# 9:15–12:30 on Edgewater Drive against Z Brothers Construction's PAID studio
+# booking 10:00–11:00. The conflict was written inside the Victory event's own
+# description. It sat for seven days.
+#
+# ── WHAT THIS DELIBERATELY DOES NOT DO ──────────────────────────────
+# It does not refuse anything. A portal client has already paid; a booking
+# that vanishes because our checker disliked it is worse than a booking we
+# flag loudly. Detection and refusal are different jobs and only one of them
+# is safe to automate here.
+#
+# ── THE THREE RULES THAT KEEP IT QUIET ENOUGH TO BE READ ────────────
+# An alert rail that cries wolf gets muted, and a muted rail is worse than
+# none because it looks like coverage.
+#
+#   1. FREE means free. `transparency == "transparent"` is skipped. This is
+#      not a technicality — it is a convention Michael actively maintains:
+#      the Shelley Aug 27 hold is FREE *on purpose* so she can book that very
+#      slot herself, and the cancelled Victory class was downgraded to FREE
+#      rather than deleted. Flagging either would tell him his own careful
+#      bookkeeping is a double-book.
+#   2. Touching is not overlapping. Strict inequality on both sides. He runs
+#      back-to-back constantly and 09:00 after an 09:00 finish is not a clash.
+#      (Same rule as slot_conflicts, for the same reason.)
+#   3. Two INTERNAL events never clash with each other. His flights arrive
+#      twice — once from United, once from Expedia, same reservation EKZ915,
+#      identical times — and a detector that reported those every fifteen
+#      minutes forever would be muted within the day. This rail exists to
+#      protect client bookings, not to police his own blocks against
+#      themselves.
+
+CONFLICT_HORIZON_DAYS = 30   # a clash three weeks out is still a clash
+
+CLASH_ROOM = "room"      # both events are IN OUR STUDIO — physically impossible
+CLASH_PERSON = "person"  # Michael owed in two places at once
+CLASH_SEVERITY_ORDER = {CLASH_ROOM: 0, CLASH_PERSON: 1}
+
+
+def _conflict_window(ev):
+    """(start, end) as aware datetimes, or None if this event cannot clash.
+
+    Returns None for anything that is not a timed, busy, live event: all-day
+    entries, cancelled ones, and anything marked FREE.
+    """
+    if not isinstance(ev, dict):
+        return None
+    if str(ev.get("status") or "").lower() == "cancelled":
+        return None
+    if ev.get("transparency") == "transparent":
+        return None                     # rule 1 — FREE means free
+    s = (ev.get("start") or {}).get("dateTime")
+    e = (ev.get("end") or {}).get("dateTime")
+    if not s or not e:
+        return None                     # all-day, or malformed
+    try:
+        s_dt = datetime.fromisoformat(s)
+        e_dt = datetime.fromisoformat(e)
+    except (TypeError, ValueError):
+        return None                     # unparseable — skipped, never guessed
+    if e_dt <= s_dt:
+        return None
+    return s_dt, e_dt
+
+
+def _conflict_series(ev):
+    """The recurring series an instance belongs to, or its own id."""
+    return ev.get("recurringEventId") or ev.get("id") or ""
+
+
+def classify_clash(kind_a, is_client_a, kind_b, is_client_b):
+    """How bad is this overlap, and is it worth reporting at all?
+
+    Returns CLASH_ROOM, CLASH_PERSON, or None for "do not report".
+    """
+    if not is_client_a and not is_client_b:
+        return None                     # rule 3 — his own blocks, his business
+    if venue_of(kind_a) == VENUE_STUDIO and venue_of(kind_b) == VENUE_STUDIO:
+        return CLASH_ROOM               # one room, two bookings
+    return CLASH_PERSON
+
+
+def find_conflicts(events, classifier=None):
+    """Every pair of live BUSY events on this calendar that genuinely overlap.
+
+    Pure: `events` is whatever the Google list call returned, and nothing here
+    touches the network or the clock. Returns a list of dicts, worst first:
+
+        {"severity", "overlap_min", "a": {...}, "b": {...}, "key"}
+
+    where each side carries id / summary / start / end / kind / is_client, and
+    `key` is a stable identity for the pair so the caller can report a given
+    clash once rather than every fifteen minutes.
+
+    `classifier` exists so tests can pin a classification without depending on
+    title-pattern drift; it defaults to this module's own classify_event.
+    """
+    cls = classifier or classify_event
+    rows = []
+    for ev in (events or []):
+        win = _conflict_window(ev)
+        if not win:
+            continue
+        try:
+            kind, is_client, _why = cls(ev)
+        except Exception:
+            continue                    # a classifier that throws must not
+                                        # silently turn a clash into "clear"
+        rows.append({
+            "id": ev.get("id") or "",
+            "series": _conflict_series(ev),
+            "summary": str(ev.get("summary") or "(untitled)"),
+            "start": win[0],
+            "end": win[1],
+            "kind": kind,
+            "is_client": bool(is_client),
+        })
+    rows.sort(key=lambda r: r["start"])
+
+    out = []
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if b["start"] >= a["end"]:
+                break                   # sorted — nothing later can overlap a
+            if a["id"] and a["id"] == b["id"]:
+                continue                # never an event against itself
+            if a["series"] and a["series"] == b["series"]:
+                continue                # two instances of one recurring series
+            if not (a["start"] < b["end"] and b["start"] < a["end"]):
+                continue                # rule 2 — touching is not overlapping
+            sev = classify_clash(a["kind"], a["is_client"], b["kind"], b["is_client"])
+            if not sev:
+                continue
+            overlap = (min(a["end"], b["end"]) - max(a["start"], b["start"]))
+            out.append({
+                "severity": sev,
+                "overlap_min": int(overlap.total_seconds() // 60),
+                "a": a,
+                "b": b,
+                # The pair AND when they collide. Ids alone would report a
+                # given pair once ever, so if one of them is later moved back
+                # on top of the other the second clash is silent. Stamping the
+                # overlap start means a re-introduced clash reads as new,
+                # while the same unchanged clash stays reported-once.
+                "key": "clash:%s:%s@%s" % (
+                    tuple(sorted([a["id"], b["id"]]))[0],
+                    tuple(sorted([a["id"], b["id"]]))[1],
+                    max(a["start"], b["start"]).isoformat(),
+                ),
+            })
+    out.sort(key=lambda c: (CLASH_SEVERITY_ORDER.get(c["severity"], 9),
+                            c["a"]["start"], c["key"]))
+    return out
+
+
+def describe_conflict(c):
+    """One Slack-ready block for a single clash. Pure — no I/O, no clock."""
+    a, b = c["a"], c["b"]
+    if c["severity"] == CLASH_ROOM:
+        head = "🔴 *STUDIO DOUBLE-BOOKED* — two bookings in the same room"
+    else:
+        head = "🟠 *SCHEDULE CLASH* — Michael is needed in two places"
+    day = a["start"].strftime("%A %d %B")
+    return (
+        "%s\n"
+        "*%s*\n"
+        "• %s — %s\n"
+        "• %s — %s\n"
+        "_Overlap: %d min_" % (
+            head, day,
+            a["start"].strftime("%I:%M %p").lstrip("0") + "–" + a["end"].strftime("%I:%M %p").lstrip("0"),
+            a["summary"],
+            b["start"].strftime("%I:%M %p").lstrip("0") + "–" + b["end"].strftime("%I:%M %p").lstrip("0"),
+            b["summary"],
+            c["overlap_min"],
+        )
+    )

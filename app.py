@@ -91,7 +91,12 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
                         seq_stop_reason, next_due_step, seq_should_close,
                         within_send_window, CH_WEB,
                         classify_event, KIND_INTERNAL,       # Patch #45E.2
-                        REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS)  # Patch #43
+                        REMINDER_HORIZON_HOURS, RSVP_TIERS_HOURS,  # Patch #43
+                        # Patch #105 — the double-book detector. Pure, and
+                        # deliberately in event_rail so the test suite can
+                        # replay a real calendar against it without a network.
+                        find_conflicts, describe_conflict,
+                        CONFLICT_HORIZON_DAYS, CLASH_ROOM)
 # Patch #50 — the direct-booking vocabulary. The form is a thin shell over
 # these; every rule about titles, venues and who may be sold to lives in
 # event_rail where the test suite can reach it.
@@ -10145,6 +10150,109 @@ def _post_assignment(channel, title, owner, deadline, exact_text, why, event_whe
     ))
 
 
+# ─── PATCH #105 · the double-book scan ──────────────────────────────────────
+# The detector itself is pure and lives in event_rail. This is the only part
+# that touches the calendar and Slack.
+#
+# It runs inside _lead_reminder_thread rather than on a thread of its own, on
+# the same principle recorded for Patch #31: do not build a second rail beside
+# a rail that already polls this calendar every fifteen minutes. It does its
+# OWN query, though, because the reminder horizon (80h) is tuned for what can
+# still be confirmed in time, and a double-book three weeks out is a
+# double-book you want three weeks to fix.
+_CONFLICT_REPORTED = set()          # in-process cache in front of pg
+
+
+def _conflict_already_reported(key):
+    """Have we already told anyone about this exact pair?
+
+    pg-backed on purpose. `_lead_reminder_sent` is an in-memory set and every
+    deploy re-arms every alert it guards — a known defect in this same thread.
+    Repeating a reminder is noise; repeating a red DOUBLE-BOOKED banner after
+    each deploy is how a rail gets muted.
+    """
+    if key in _CONFLICT_REPORTED:
+        return True
+    try:
+        import pg_store as _cpg
+        if _cpg.load_state(key):
+            _CONFLICT_REPORTED.add(key)
+            return True
+    except Exception as _e:
+        print(f"[CONFLICT-SCAN] pg check failed for {key} ({_e}) — "
+              f"falling back to the in-process set for this boot")
+    return False
+
+
+def _mark_conflict_reported(key, detail):
+    _CONFLICT_REPORTED.add(key)
+    try:
+        import pg_store as _cpg
+        _cpg.save_state(key, detail)
+    except Exception as _e:
+        print(f"[CONFLICT-SCAN] pg write failed for {key} ({_e}) — "
+              f"this clash may be re-reported after the next deploy")
+
+
+def _scan_calendar_conflicts(days=None):
+    """Find overlapping bookings and report the new ones to #dev.
+
+    Returns the full list of conflicts found (including ones already
+    reported), so a caller can act on the result rather than re-deriving it.
+    Never raises: a broken checker must not take down the reminder thread it
+    rides on.
+    """
+    horizon = CONFLICT_HORIZON_DAYS if days is None else days
+    try:
+        tz = pytz.timezone(TIMEZONE)
+        now = datetime.now(tz)
+        service = get_calendar_service()
+        items = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=horizon)).isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+            maxResults=2500,
+        ).execute(num_retries=3).get("items", [])
+    except Exception as _scan_err:
+        _report_error("conflict_scan", _scan_err, f"horizon={horizon}d")
+        return []
+
+    conflicts = find_conflicts(items)
+    fresh = [c for c in conflicts if not _conflict_already_reported(c["key"])]
+    print(f"[CONFLICT-SCAN] {len(items)} events / {horizon}d — "
+          f"{len(conflicts)} clash(es), {len(fresh)} new")
+    if not fresh:
+        return conflicts
+
+    for c in fresh:
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, describe_conflict(c))
+            _mark_conflict_reported(c["key"], {
+                "severity": c["severity"],
+                "overlap_min": c["overlap_min"],
+                "a": c["a"]["summary"],
+                "b": c["b"]["summary"],
+                "start": c["a"]["start"].isoformat(),
+            })
+        except Exception as _post_err:
+            # Do NOT mark it reported — an alert that failed to send must be
+            # retried on the next pass, not swallowed.
+            print(f"[CONFLICT-SCAN] failed to post {c['key']}: {_post_err}")
+
+    _rooms = [c for c in fresh if c["severity"] == CLASH_ROOM]
+    if _rooms:
+        _notify_error_to_dev(
+            "Studio Double-Booked",
+            f"{len(_rooms)} slot(s) have two bookings in the studio at once. "
+            f"Soonest: {_rooms[0]['a']['summary']} vs {_rooms[0]['b']['summary']} "
+            f"on {_rooms[0]['a']['start'].strftime('%B %d at %I:%M %p')}.",
+            severity="CRITICAL",
+        )
+    return conflicts
+
+
 def _lead_reminder_thread():
     """S-3/S-4/S-5/S-6 (Patch #31) — ONE event-type-aware confirmation job.
 
@@ -10176,6 +10284,14 @@ def _lead_reminder_thread():
     while True:
         try:
             _heartbeat("lead_reminder")
+
+            # PATCH #105 — the double-book scan rides this thread's 15-minute
+            # cadence rather than starting a second one. Its own query, its own
+            # horizon: the reminder window below is 80h because that is what can
+            # still be confirmed in time, and a clash three weeks out is a clash
+            # you want three weeks to fix. It never raises.
+            _scan_calendar_conflicts()
+
             tz = pytz.timezone(TIMEZONE)
             now = datetime.now(tz)
             service = get_calendar_service()
@@ -16305,6 +16421,24 @@ def studio_booking_webhook():
                         f"🔴 *Portal booking #{bid} is NOT on the calendar* — "
                         f"{name}, {date} {start}–{end}. The slot reads as free "
                         f"and can be double-booked.\n`{_sb_degraded}`"))
+                # ── PATCH #105 ─────────────────────────────────────
+                # This is the write-path with NO conflict check of any
+                # kind. WordPress filters its slot picker against
+                # /studio-availability, but that feed is cached for 120s
+                # and nothing re-checks here, so two people filling the
+                # form in the same two minutes are both told the slot is
+                # free and both bookings land.
+                #
+                # It still does not refuse: the client has already paid,
+                # and a paid booking we silently drop is worse than one
+                # we flag loudly. It reports, immediately, instead of
+                # waiting up to fifteen minutes for the thread pass.
+                elif _sb_state in ("ok", "degraded"):
+                    try:
+                        _scan_calendar_conflicts()
+                    except Exception as _sb_cf:
+                        print(f"[CONFLICT-SCAN] post-portal-booking scan "
+                              f"failed (non-fatal): {_sb_cf}")
             else:
                 late = event == "booking_cancelled_late"
                 gcal_note = ""
