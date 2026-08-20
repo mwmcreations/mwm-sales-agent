@@ -332,6 +332,22 @@ ok("the alert explains the symptom looks like an empty inbox",
 ok("it runs on a slow cycle — this is not a fast-moving failure",
    "21600" in SEG)
 
+print("\n=== 12. /health surfaces the state without leaking anything ===")
+_H = APP.split('"apple_mail": {')[1].split("},")[0]
+ok("/health reports whether it is configured", '"configured"' in _H)
+ok("/health reports reachability", '"reachable"' in _H)
+ok("...and when that was last checked", '"checked_at"' in _H)
+ok("it does NOT publish the mailbox address on a public route",
+   "account()" not in _H and "APPLE_MAIL_USER" not in _H)
+ok("it does NOT publish any credential", "PASSWORD" not in _H and "SECRET" not in _H)
+ok("reachability is CACHED, not dialled per request — /health is hot",
+   "_apple_mail_reach_cache" in _H)
+ok("the cache is written by the self-test thread",
+   "_apple_mail_note_reach" in APP.split("def _apple_mail_selftest_thread")[1]
+   .split("threading.Thread")[0])
+ok("a successful self-test also counts as proof of reachability",
+   '_apple_mail_note_reach({"ok": True})' in APP)
+
 print("\n" + "=" * 64)
 print("  %d passed, %d failed" % (_passed, _failed))
 for f in _FAILS:

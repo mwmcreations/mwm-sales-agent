@@ -16700,6 +16700,18 @@ def health_check():
         },
         # PATCH #72 — countable answers instead of a Railway log nobody reads.
         "counters": _TALLY.snapshot(),
+        # Apple mail reader — observable WITHOUT the secret, because the two
+        # facts here are not sensitive and the alternative is a silence that
+        # proves nothing. `reachable` answers "can this environment even talk
+        # to Apple", which has to be settled before Michael spends effort
+        # creating an app-specific password; `configured` says whether he has.
+        # Deliberately NOT the address and never the credentials — this route
+        # is public.
+        "apple_mail": {
+            "configured": apple_mail.enabled(),
+            "reachable": bool(_apple_mail_reach_cache[0]),
+            "checked_at": _apple_mail_reach_cache[1],
+        },
         # PATCH #99 — S28 went live on Aug 15 and a real drag was not applied,
         # and there was no way to ask the sync what it had done. This is that
         # way. `mode` alone answers most of it: "disabled" (the env var never
@@ -19002,6 +19014,16 @@ def apple_mail_mailboxes():
 
 
 _apple_mail_reach_warned = [False]   # one-shot; a list so the thread can set it
+# [reachable, checked_at_iso] — filled by the self-test thread and surfaced on
+# /health. Cached rather than probed per request: /health is polled constantly
+# and a TCP dial to Apple on every hit would be rude and slow.
+_apple_mail_reach_cache = [None, None]
+
+
+def _apple_mail_note_reach(result):
+    _apple_mail_reach_cache[0] = bool(result.get("ok"))
+    _apple_mail_reach_cache[1] = datetime.now(
+        pytz.timezone(TIMEZONE)).isoformat()
 
 
 def _apple_mail_selftest_thread():
@@ -19032,6 +19054,7 @@ def _apple_mail_selftest_thread():
                             f"✅ *Apple mail reader RECOVERED* — "
                             f"`{apple_mail.account()}` is readable again."))
                     _last_ok = True
+                    _apple_mail_note_reach({"ok": True})
                     print(f"[APPLE-MAIL] self-test PASS — "
                           f"{_res.get('inbox_messages')} messages in INBOX")
                 else:
@@ -19057,9 +19080,10 @@ def _apple_mail_selftest_thread():
                 # that also cannot REACH Apple speaks up a single time.
                 # Dormant-and-reachable stays completely silent: that is just
                 # "waiting on him", and he is in no hurry.
+                _reach = apple_mail.reachable()
+                _apple_mail_note_reach(_reach)
                 if not _apple_mail_reach_warned[0]:
                     _apple_mail_reach_warned[0] = True
-                    _reach = apple_mail.reachable()
                     if not _reach.get("ok"):
                         _post_to_slack_async(SLACK_DEV_CHANNEL, (
                             f"🟠 *Apple mail reader: this environment cannot "
