@@ -100,6 +100,7 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
 # Patch #50 — the direct-booking vocabulary. The form is a thin shell over
 # these; every rule about titles, venues and who may be sold to lives in
 # event_rail where the test suite can reach it.
+import apple_mail          # read-only iCloud reader for ANA
 from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
                         RELATIONSHIPS, RELATIONSHIP_ORDER,
                         BILLING, BILLING_ORDER,
@@ -18909,6 +18910,148 @@ def _calendar_write_selftest():
 
 
 threading.Thread(target=_calendar_write_selftest, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# APPLE MAIL — read-only access to Michael's personal iCloud mailbox
+# ══════════════════════════════════════════════════════════════════════
+# ANA needs michaelmoraes@mac.com and there is no connector for it — verified
+# independently on Aug 20 2026, twice. Apple publishes no MCP server and no
+# third party bridges iCloud Mail.
+#
+# It has to be IMAP, and IMAP can only be spoken from HERE. Both agent
+# environments were tested that afternoon: device_bash cannot resolve DNS at
+# all, and the cloud container times out on port 993. That is a NETWORK fact,
+# not a permissions one, so no amount of agent-side cleverness reaches Apple.
+# This service is the only environment in the fleet with open outbound, which
+# is why the reader lives in the sales machine and ANA calls it over HTTP.
+#
+# ── WHY THIS DOES NOT USE UPLOAD_SECRET ─────────────────────────────
+# UPLOAD_SECRET unlocks EVERY /admin/* route on this machine, including ones
+# that send WhatsApp messages and mutate lead records. Handing that to a
+# personal-assistant agent so she can read email is a fantastic amount of
+# authority for the job. This gets its own secret, and if it ever leaks the
+# blast radius is "someone can read Michael's personal mail" — bad, but not
+# "someone can drive the sales machine".
+#
+# Fails closed, same as _admin_secret_ok and for the same reason: an unset
+# variable must refuse, never silently reopen the door.
+def _apple_mail_secret_ok(provided):
+    expected = os.getenv("APPLE_MAIL_READ_SECRET", "")
+    if not expected:
+        print("[APPLE-MAIL] REFUSED — APPLE_MAIL_READ_SECRET is not set. "
+              "Failing closed by design.")
+        return False
+    return hmac.compare_digest(str(provided or ""), expected)
+
+
+def _apple_mail_guard():
+    """None when the caller may proceed, else a ready-to-return response."""
+    if not _apple_mail_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    return None
+
+
+@app.route('/admin/apple-mail/selftest', methods=['GET'])
+def apple_mail_selftest():
+    _g = _apple_mail_guard()
+    if _g:
+        return _g
+    return jsonify(apple_mail.self_test())
+
+
+@app.route('/admin/apple-mail/search', methods=['GET'])
+def apple_mail_search():
+    """Structured search. Deliberately NOT a raw IMAP query string — the
+    caller passes fields and apple_mail builds valid criteria, so a stray
+    quote cannot become a protocol error that ANA has no way to read."""
+    _g = _apple_mail_guard()
+    if _g:
+        return _g
+    _a = request.args
+    return jsonify(apple_mail.search(
+        sender=_a.get("from") or None,
+        to=_a.get("to") or None,
+        subject=_a.get("subject") or None,
+        text=_a.get("text") or None,
+        since=_a.get("since") or None,
+        before=_a.get("before") or None,
+        unseen=str(_a.get("unseen", "")).lower() in ("1", "true", "yes"),
+        mailbox=_a.get("mailbox") or "INBOX",
+        limit=_a.get("limit") or 20,
+    ))
+
+
+@app.route('/admin/apple-mail/message', methods=['GET'])
+def apple_mail_message():
+    _g = _apple_mail_guard()
+    if _g:
+        return _g
+    return jsonify(apple_mail.message(
+        request.args.get("uid", ""),
+        mailbox=request.args.get("mailbox") or "INBOX",
+    ))
+
+
+@app.route('/admin/apple-mail/mailboxes', methods=['GET'])
+def apple_mail_mailboxes():
+    _g = _apple_mail_guard()
+    if _g:
+        return _g
+    return jsonify(apple_mail.mailboxes())
+
+
+def _apple_mail_selftest_thread():
+    """Prove the reader still works — and stay SILENT while it is dormant.
+
+    An app-specific password is revoked the moment the Apple ID password
+    changes, and it dies without an error anyone sees: the symptom is ANA
+    finding no mail and reporting an empty inbox. This turns that into a
+    named failure in #dev.
+
+    Two deliberate quiet rules, because an alert rail that nags gets muted:
+      · dormant (no credentials) posts NOTHING. Michael is in no hurry to set
+        this up and a daily reminder about an optional feature he has not
+        switched on is how a channel stops being read.
+      · a PASS posts nothing either. Only a transition into failure is worth
+        anyone's attention; success is the expected state.
+    """
+    import time as _t
+    _t.sleep(420)
+    _last_ok = None
+    while True:
+        try:
+            if apple_mail.enabled():
+                _res = apple_mail.self_test()
+                if _res.get("ok"):
+                    if _last_ok is False:
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                            f"✅ *Apple mail reader RECOVERED* — "
+                            f"`{apple_mail.account()}` is readable again."))
+                    _last_ok = True
+                    print(f"[APPLE-MAIL] self-test PASS — "
+                          f"{_res.get('inbox_messages')} messages in INBOX")
+                else:
+                    if _last_ok is not False:   # report the transition, once
+                        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                            f"🔴 *Apple mail reader is DOWN* — ANA cannot read "
+                            f"`{apple_mail.account() or 'the Apple mailbox'}`.\n"
+                            f"*Kind:* `{_res.get('kind')}`\n"
+                            f"{_res.get('error')}\n"
+                            f"_She will find no personal email until this is "
+                            f"fixed — which looks exactly like an empty inbox, "
+                            f"which is why this alert exists._"))
+                    _last_ok = False
+                    print(f"[APPLE-MAIL] self-test FAIL — {_res.get('kind')}")
+            else:
+                print("[APPLE-MAIL] dormant — APPLE_MAIL_USER / "
+                      "APPLE_MAIL_APP_PASSWORD not set. Staying quiet.")
+        except Exception as _am_e:
+            print(f"[APPLE-MAIL] self-test thread error (non-fatal): {_am_e}")
+        _t.sleep(21600)   # every 6 hours; this is not a fast-moving failure
+
+
+threading.Thread(target=_apple_mail_selftest_thread, daemon=True).start()
 
 
 # ══════════════════════════════════════════════════════════════════════
