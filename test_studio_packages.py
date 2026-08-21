@@ -613,11 +613,6 @@ if _p70:
     ok("month" not in _txt70 and "/mo" not in _txt70 and "recurring" not in _txt70,
        "nothing on the $349 product reads as monthly or recurring")
 
-print("\nPATCH70_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
-
-
-print("\n" + "=" * 62)
-print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 section("21 AUG 2026 — THE BILLING FOOTER (Michael's version, not ROB's)")
 # ROB specced a required checkout tick-box as the highest-priority item.
 # Michael overruled it, and the evidence backs him: Iris — the client who
@@ -680,5 +675,11 @@ ok("charged automatically" in _pkg_html, "the package welcome email carries the 
 _tr_html = sp._welcome_email_html("Sam", "XY99ZZ", TRIAL, sp.package_term(TRIAL, _d(2026, 6, 18)))
 ok("charged automatically" not in _tr_html, "the trial welcome email does NOT")
 
+
+print("\nPATCH70_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
+
+
+print("\n" + "=" * 62)
+print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
 print("=" * 62)
 sys.exit(1 if FAIL else 0)
