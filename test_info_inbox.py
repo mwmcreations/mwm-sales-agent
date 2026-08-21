@@ -191,6 +191,54 @@ ok("GMAIL_SCOPES now actually asks for readonly",
 ok("...and still asks for send, so nothing existing breaks",
    "gmail.send" in APP.split("GMAIL_SCOPES =")[1].split("]")[0])
 
+print("\n=== 10. CALIBRATED against the real mailbox, 21 Aug first run ===")
+# These are the actual messages the watcher read on its first live pass. The
+# first version scored Whitney's acknowledgement as URGENT because the word
+# "postponed" was in the Re: subject — and that subject was MICHAEL'S wording,
+# echoed back. On a reply, the subject is our words; only the snippet is the
+# client's. That distinction is the whole of this section.
+REAL = [
+  # sender, subject, snippet, expected
+  ("Chef Whitney Aronoff <whitney.aronoff@gmail.com>",
+   "Re: Thursday is postponed — please stand down",
+   "Noted. Thank you! Whitney C. Aronoff", ii.PRIORITY_HUMAN),
+  ("Luiz Bolfer <drbolfer@gmail.com>",
+   "Re: Confirming your session — Saturday, August 15",
+   "I need to cancel, something came up", ii.PRIORITY_URGENT),
+  ("marc holmes <mhholmes2000@gmail.com>",
+   "Re: Confirming your session — Tuesday, August 25",
+   "Yes see you then", ii.PRIORITY_HUMAN),
+  ("Anika Patel <anika.patel@frenchiesnails.com>",
+   "Re: Confirming your session — Tuesday, August 18",
+   "Thank you so much", ii.PRIORITY_HUMAN),
+  ("Jonathan Pineda <john.pineda@fidelityfl.com>",
+   "Re: Confirming your session — Thursday, August 13",
+   "Confirmed, thanks", ii.PRIORITY_HUMAN),
+  ("MWM Screens <info@dsbackend.com>",
+   "[MWM Screens] 1 of your players has been offline for some time.",
+   "Hello Michael", ii.PRIORITY_IGNORE),
+  ("Michael Moraes <michael@mwmcreations.com>",
+   "Thursday is postponed — please stand down", "", ii.PRIORITY_IGNORE),
+  ("Berkay Cansu SANDAL via TestFlight <testflight@email.apple.com>",
+   "Berkay Cansu SANDAL has invited you to test OpenAI Ads.",
+   "", ii.PRIORITY_IGNORE),
+]
+for sender, subj, snip, want in REAL:
+    check("real: %-34s -> %s" % (subj[:34], want),
+          pri(sender, subj, snip), want)
+
+ok("an acknowledgement is NOT an emergency",
+   pri("W <w@x.com>", "Re: your session is cancelled", "Ok, understood") != ii.PRIORITY_URGENT)
+ok("...but the same words FROM the client still are",
+   pri("W <w@x.com>", "Re: your session", "I need to cancel") == ii.PRIORITY_URGENT)
+ok("a FRESH (non-reply) subject still triggers on the subject alone",
+   pri("W <w@x.com>", "Cancelling my booking", "") == ii.PRIORITY_URGENT)
+ok("Fwd: is treated like Re: — also not the client's words",
+   pri("W <w@x.com>", "Fwd: cancellation notice", "fyi") != ii.PRIORITY_URGENT)
+ok("every real client in that batch still reaches a human",
+   all(ii.needs_attention(pri(s, su, sn))
+       for s, su, sn, w in REAL if w != ii.PRIORITY_IGNORE))
+
 print("\n" + "=" * 64)
 print("  %d passed, %d failed" % (_passed, _failed))
 for f in _FAILS:

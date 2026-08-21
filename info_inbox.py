@@ -67,7 +67,13 @@ _ROBOT_SENDER_RE = re.compile(
     r"alerts?@|mailer|postmaster|bounce|automated|support@twilio\.zendesk|"
     r"@dsbackend\.com|@stripe\.com|@railway\.app|@wordpress|@sentry\.|"
     r"@google\.com|@accounts\.google|@calendar-notification|@docusign|"
-    r"@intuit\.com|@quickbooks|@godaddy|@namecheap|@cloudflare)")
+    r"@intuit\.com|@quickbooks|@godaddy|@namecheap|@cloudflare|"
+    # Added after the 21 Aug calibration run. It scored `ignore` live only
+    # because the real address happens to contain "noreply"; the digest
+    # truncated it and the test fixture guessed wrong. Naming TestFlight and
+    # Apple's mailer explicitly makes that an intended rule rather than a
+    # lucky one — developer noise is never client mail.
+    r"via testflight|@email\.apple\.com|@testflight)")
 
 _ROBOT_SUBJECT_RE = re.compile(
     r"(?i)(unsubscribe|newsletter|your receipt|payment (received|of)|"
@@ -140,11 +146,30 @@ def classify(sender, subject, snippet=""):
         return PRIORITY_IGNORE, "from our own domain"
     if looks_automated(sender, subject):
         return PRIORITY_IGNORE, "automated sender or notification subject"
-    blob = "%s %s" % (subject or "", snippet or "")
-    if _URGENT_RE.search(blob):
-        return PRIORITY_URGENT, "mentions a booking change, cancellation or complaint"
-    if _BOOKING_RE.search(blob):
-        return PRIORITY_LEAD, "asking about booking, availability or pricing"
+    subj = str(subject or "")
+    snip = str(snippet or "")
+
+    # ── CALIBRATION, 21 Aug, off the real mailbox ────────────────
+    # The first live run scored Whitney Aronoff's "Re: Thursday is postponed —
+    # please stand down" as URGENT. Her actual message was "Noted. Thank you!"
+    # — an acknowledgement. The word "postponed" was MICHAEL'S, echoed back in
+    # the Re: subject.
+    #
+    # ⭐ On a reply, the subject line is OUR words, not theirs. So urgency on a
+    # "Re:" is judged from the SNIPPET — what the client actually wrote. The
+    # subject still counts for lead signals, because "Re: Confirming your
+    # session" genuinely is about a booking; it just is not evidence that
+    # anything is going wrong.
+    _is_reply = bool(re.match(r"(?i)^\s*(re|fwd?|enc)\s*:", subj))
+    _urgent_field = snip if _is_reply else ("%s %s" % (subj, snip))
+
+    if _URGENT_RE.search(_urgent_field):
+        return PRIORITY_URGENT, (
+            "the client's own words mention a change, cancellation or complaint"
+            if _is_reply else
+            "mentions a booking change, cancellation or complaint")
+    if _BOOKING_RE.search("%s %s" % (subj, snip)):
+        return PRIORITY_LEAD, "about a booking, availability or pricing"
     return PRIORITY_HUMAN, "a person wrote to us and it is not obviously routine"
 
 
