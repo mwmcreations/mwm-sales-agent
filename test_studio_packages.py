@@ -47,6 +47,27 @@ PKG = sp.PACKAGES[sp.STUDIO_PRICE_ID]
 
 
 # ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
+# 21 Aug 2026 — THE 3-MONTH GRACE PERIOD IS GONE. These assertions used to
+# guard the OPPOSITE behaviour, deliberately, and they are flipped here on
+# Michael's explicit ruling rather than deleted.
+#
+# WHY: Studio Package Terms v1.0 §4 — "The term itself is the window: any
+# hours not used by the final day of the package expire, with no grace period
+# and no carry-over." The running code granted 30 days and the welcome email
+# promised them in writing, so the terms MWM was about to publish contradicted
+# the product. That is the same class of contradiction the whole billing-
+# disclosure job exists to remove.
+#
+# NOT RETROACTIVE, and it needs no migration: package_term() computes
+# booking_deadline at PURCHASE time and WP stores it then. Existing clients
+# keep the 30 days they were told about.
+#
+# 🔴 THE TRIAL AND THE ONE-OFF HOUR ARE UNCHANGED — still zero grace, for the
+# original reason (Michael told those clients 30 days; grace would silently
+# make it 60). The guards below still protect that.
+# ══════════════════════════════════════════════════════════════════
 section("THE TERM — 30 days means 30 days, not 30 plus grace")
 # ══════════════════════════════════════════════════════════════════
 start = date(2026, 8, 5)
@@ -66,10 +87,10 @@ ok((t_trial["booking_deadline"] - start).days != 60,
 
 # and the existing package is untouched
 ok(t_pkg["term_end"] == date(2026, 11, 3), "3-month term still ends at 90 days")
-ok(t_pkg["booking_deadline"] == date(2026, 12, 3),
-   "3-month booking deadline is still term + 30 days grace")
-ok((t_pkg["booking_deadline"] - start).days == 120,
-   "3-month package still gets 120 bookable days — unchanged by this patch")
+ok(t_pkg["booking_deadline"] == t_pkg["term_end"],
+   "3-month booking deadline IS the term end — v1.0 removed the grace")
+ok((t_pkg["booking_deadline"] - start).days == 90,
+   "3-month package gets 90 bookable days — the term IS the window")
 
 ok(sp.package_term(TRIAL, datetime(2026, 8, 5, 23, 59))["term_end"] == date(2026, 9, 4),
    "a datetime is accepted as well as a date")
@@ -301,7 +322,7 @@ try:
     _sp3 = (_e3 - _s3).days
 except Exception:
     _sp3 = -1
-ok(_sp3 == 120, "the 3-month booking window is still 120 days (90 + 30 grace), got {}"
+ok(_sp3 == 90, "the 3-month booking window is 90 days — no grace (v1.0 §4), got {}"
    .format(_sp3))
 
 _, subj3, html3 = SENT["emails"][0] if SENT["emails"] else ("", "", "")
@@ -310,13 +331,14 @@ ok(subj3 == "Welcome to MWM Studios — your Studio Package is active 🎬",
    "the 3-month subject line is byte-identical to before: {!r}".format(subj3))
 ok("12 hours of professional studio time" in text3, "the body still says 12 hours")
 ok("3 months" in text3, "the body still says 3 months")
-ok("stay bookable for 30 days after" in text3, "the grace sentence is still there")
+ok("stay bookable for 30 days after" not in text3,
+   "the grace sentence is GONE — it contradicted Terms v1.0 §4")
 ok("4 hours of professional studio time" not in text3,
    "no trial hours language leaked into the package email")
 ok("must be used within 30 days" not in text3,
    "no trial deadline language leaked into the package email")
-ok("last day you can book" not in text3,
-   "the package email still has no hard booking date (it has grace instead)")
+ok("last day you can book" in text3,
+   "the package email now carries a hard booking date instead of grace")
 
 rec3 = LEADS2["dana@example.com"]
 ok(rec3.get("product") == "Studio Package", "product is still 'Studio Package'")
@@ -596,5 +618,67 @@ print("\nPATCH70_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
 
 print("\n" + "=" * 62)
 print("  STUDIO PACKAGES (#53): {} passed, {} failed".format(PASS, FAIL))
+section("21 AUG 2026 — THE BILLING FOOTER (Michael's version, not ROB's)")
+# ROB specced a required checkout tick-box as the highest-priority item.
+# Michael overruled it, and the evidence backs him: Iris — the client who
+# disputed — had MORE disclosure than anyone else on the account. She ticked a
+# consent box and Stripe rendered "$1,200.00 per month". The checkout was never
+# the failure. His words: "I don't wanna create something that the client is
+# gonna be feeling awkward having to check all of those things."
+# So the disclosure is a quiet footer on the welcome email instead.
+
+from datetime import date as _d
+_bd = sp.billing_dates(PKG, _d(2026, 6, 18))
+ok(_bd == [_d(2026, 6, 18), _d(2026, 7, 18), _d(2026, 8, 18)],
+   "the three payment dates are real calendar dates, got {}".format(_bd))
+
+# 🔴 THE BUG THIS SECTION EXISTS FOR. The first version of _add_calendar_month
+# used range(d.day, 27, -1), which is EMPTY for any day before the 28th — so
+# EVERY ordinary start date fell through to the fallback and a client starting
+# on 18 June would have been told they are billed on the 28th. Found by running
+# it on a real date, not by reading the loop.
+for _start, _want in [
+    (_d(2026, 6, 18), [18, 18, 18]),
+    (_d(2026, 6, 1),  [1, 1, 1]),
+    (_d(2026, 6, 5),  [5, 5, 5]),
+    (_d(2026, 6, 27), [27, 27, 27]),
+]:
+    ok([x.day for x in sp.billing_dates(PKG, _start)] == _want,
+       "day-of-month is preserved from a {} start".format(_start.day))
+
+ok([x.isoformat() for x in sp.billing_dates(PKG, _d(2026, 1, 31))]
+   == ["2026-01-31", "2026-02-28", "2026-03-31"],
+   "a 31st start clamps to 28 Feb and RECOVERS to 31 Mar — calendar months, "
+   "not 30-day steps (Terms v1.0 §1 says 'the same calendar day')")
+ok([x.isoformat() for x in sp.billing_dates(PKG, _d(2025, 12, 31))]
+   == ["2025-12-31", "2026-01-31", "2026-02-28"], "the year rolls over correctly")
+
+_foot = sp.billing_footer_html(PKG, sp.package_term(PKG, _d(2026, 6, 18)))
+_ftxt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _foot))
+ok("$1,200/month for 3 months" in _ftxt, "the footer names the amount and the count")
+ok("$3,600 total" in _ftxt, "...and the TOTAL, which Stripe's own sentence never says")
+ok("June 18, July 18, August 18" in _ftxt,
+   "...and the REAL DATES — the single line ROB said would have prevented the dispute")
+ok("charged automatically" in _ftxt, "...and that it is automatic")
+ok("expire at the end of it" in _ftxt, "...and that hours expire, matching v1.0 §4")
+ok("studio-terms" in _foot, "...and links to the terms the PDF promises exists")
+
+# 🔴 ONE-OFFS MUST NEVER SEE THIS. Telling a $349 single-hour buyer about
+# recurring charges would be both false and alarming.
+ok(sp.billing_footer_html(TRIAL, sp.package_term(TRIAL, _d(2026, 6, 18))) == "",
+   "the $1,400 trial gets NO billing footer")
+ok(sp.billing_footer_html(sp.PACKAGES[sp.HOUR_ONEOFF_PRICE_ID],
+                          sp.package_term(sp.PACKAGES[sp.HOUR_ONEOFF_PRICE_ID],
+                                          _d(2026, 6, 18))) == "",
+   "the $349 single hour gets NO billing footer")
+ok(sp.billing_dates(TRIAL, _d(2026, 6, 18)) == [], "one-offs have no billing dates")
+ok(sp.billing_footer_html({}, {}) == "", "an empty spec is silent, not a crash")
+ok(sp.billing_footer_html(None, None) == "", "None is silent too")
+
+_pkg_html = sp._welcome_email_html("Iris", "AB12CD", PKG, sp.package_term(PKG, _d(2026, 6, 18)))
+ok("charged automatically" in _pkg_html, "the package welcome email carries the footer")
+_tr_html = sp._welcome_email_html("Sam", "XY99ZZ", TRIAL, sp.package_term(TRIAL, _d(2026, 6, 18)))
+ok("charged automatically" not in _tr_html, "the trial welcome email does NOT")
+
 print("=" * 62)
 sys.exit(1 if FAIL else 0)

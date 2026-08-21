@@ -46,7 +46,28 @@ PACKAGE_NAME = "Studio Package"
 PACKAGE_MRR = 1200          # $/month
 CONTRACT_HOURS = 12         # per 3-month contract
 CONTRACT_MONTHS = 3
-GRACE_DAYS = 30             # S8.6: unused hours usable 30d past term end, then expire (Michael, Jul 8) — contract_end field = grace deadline
+# S8.6 (Michael, Jul 8): unused hours usable 30d past term end, then expire.
+# STILL 30 for the trial and the one-off hour — nothing about those changed.
+GRACE_DAYS = 30
+# ── 21 Aug 2026 · Studio Package Terms v1.0 ──────────────────────────
+# The 3-month package now gets NO grace. Terms v1.0 §4 is explicit:
+# "The term itself is the window: any hours not used by the final day of the
+# package expire, with no grace period and no carry-over."
+#
+# The code and the signed terms disagreed, and that is exactly the class of
+# contradiction this whole piece of work exists to remove — the welcome email
+# was promising 30 days of grace in writing while the terms about to be
+# published said there was none.
+#
+# 🔴 NOT RETROACTIVE, AND IT DOES NOT NEED TO BE MADE SO. `package_term`
+# computes `booking_deadline` at PURCHASE time and it is written into WP's
+# `contract_end_date` there and then. Every existing client's deadline is
+# already stored, so changing this number only reaches purchases from today
+# forward. Michael's ruling — new packages only, nobody loses something they
+# were told in writing — is satisfied by the existing architecture rather than
+# by a migration.
+PACKAGE_GRACE_DAYS = 0
+PACKAGE_CYCLES = 3          # payments in the 3-month package
 TIMEZONE = os.getenv("TIMEZONE", "US/Eastern")
 
 # ══════════════════════════════════════════════════════════════════════
@@ -94,7 +115,8 @@ PACKAGES = {
         "name": PACKAGE_NAME,
         "hours": CONTRACT_HOURS,          # 12
         "term_days": CONTRACT_MONTHS * 30,  # 90
-        "grace_days": GRACE_DAYS,         # 30 → booking deadline at 120d
+        "grace_days": PACKAGE_GRACE_DAYS,  # 0 → booking deadline IS the term end
+        "cycles": PACKAGE_CYCLES,          # 3 payments of $1,200
         "recurring": True,
         "mrr": PACKAGE_MRR,               # counts toward MRR
         "one_off": 0,
@@ -194,6 +216,97 @@ def package_term(spec, start):
     term_end = start_d + timedelta(days=days)
     return {"start": start_d, "term_end": term_end,
             "booking_deadline": term_end + timedelta(days=grace)}
+
+
+# ── 21 Aug 2026 · the billing footer ────────────────────────────────
+# Michael, after reading ROB's spec: he did NOT want a checkout tick-box.
+# "On Stripe you already have that very well made a sentence... I don't wanna
+# create something that the client is gonna be feeling awkward having to check
+# all of those things."
+#
+# He is right, and the evidence supports him: Iris — the client who disputed —
+# had MORE disclosure than anyone else on the account. She ticked a consent box
+# and Stripe rendered "$1,200.00 per month". The failure was never the
+# checkout. It was that nothing MWM wrote said how package billing works.
+#
+# So the disclosure moves to the two places that cost the client nothing: the
+# Terms, and a quiet footer on the welcome email. His words: "small lines at
+# the bottom, something subtle there that kinda let them know that this is an
+# automated charge. Once they do a package, of course."
+#
+# 🔴 THE DATES ARE THE WHOLE POINT. "The 18th of each month" is a description;
+# "June 18, July 18, August 18" is a record. ROB's spec called that the single
+# line that would have prevented the dispute, and it is the one thing here
+# worth being fussy about.
+
+STUDIO_TERMS_URL = os.getenv("STUDIO_TERMS_URL",
+                             "https://mwmcreations.com/studio-terms")
+
+
+def _add_calendar_month(d, n):
+    """d plus n calendar months, clamped to the last valid day.
+
+    Calendar months, NOT 30-day steps — Terms v1.0 §1 says "the same calendar
+    day of each billing cycle", and Stripe bills that way too. A 31 Jan start
+    bills 28 Feb; stepping by 30 days would say 2 March and be wrong on the
+    client's statement.
+    """
+    y, m = d.year, d.month + n
+    y += (m - 1) // 12
+    m = (m - 1) % 12 + 1
+    # Walk DOWN from the original day to the first one that exists in the
+    # target month. Must start at d.day and go to 1 — an earlier version used
+    # range(d.day, 27, -1), which is EMPTY for any day before the 28th, so
+    # every ordinary date silently fell through to the 28th and a client
+    # starting on 18 June was told they would be billed on the 28th. Caught by
+    # running it on a real date rather than trusting the loop.
+    for day in range(d.day, 0, -1):
+        try:
+            return d.replace(year=y, month=m, day=day)
+        except ValueError:
+            continue
+    return d.replace(year=y, month=m, day=1)
+
+
+def billing_dates(spec, start):
+    """Every date this package is charged on. Pure. [] for one-offs."""
+    if not (spec or {}).get("recurring"):
+        return []
+    cycles = int((spec or {}).get("cycles") or 0)
+    if cycles < 1:
+        return []
+    start_d = start.date() if hasattr(start, "date") else start
+    return [_add_calendar_month(start_d, i) for i in range(cycles)]
+
+
+def billing_footer_html(spec, term):
+    """The subtle billing line for the welcome email. "" for one-offs.
+
+    Deliberately returns EMPTY for anything non-recurring. A $349 single hour
+    is not on automatic billing and telling its buyer about recurring charges
+    would be both wrong and alarming.
+    """
+    spec = spec or {}
+    if not spec.get("recurring"):
+        return ""
+    dates = billing_dates(spec, (term or {}).get("start"))
+    if not dates:
+        return ""
+    amount = int(spec.get("mrr") or 0)
+    cycles = len(dates)
+    total = amount * cycles
+    when = ", ".join(d.strftime("%B %-d") if hasattr(d, "strftime") else str(d)
+                     for d in dates)
+    return (
+        '<p style="font-size:12px;line-height:1.6;color:#888;margin-top:22px;'
+        'padding-top:14px;border-top:1px solid #e8e8e8;">'
+        f'Your package is <strong style="color:#666;">${amount:,}/month for '
+        f'{cycles} months</strong> (${total:,} total), charged automatically to '
+        f'the card on file — <strong style="color:#666;">{when}</strong>. '
+        f'Hours can be used at any point during the term and expire at the end '
+        f'of it. '
+        f'<a href="{STUDIO_TERMS_URL}" style="color:#888;">Studio Package Terms →</a>'
+        '</p>')
 
 
 def package_by_name(name):
@@ -467,11 +580,13 @@ def _welcome_email_html(first_name: str, access_code: str,
         # Appended to the hours line rather than added as a new bullet, so the
         # 3-month email's list length does not change at all.
         expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
-    return _welcome_email_body(first_name, access_code, headline, total_li, expiry_li)
+    return _welcome_email_body(first_name, access_code, headline, total_li,
+                               expiry_li, billing_footer_html(spec, term))
 
 
 def _welcome_email_body(first_name: str, access_code: str, headline: str,
-                        total_li: str, expiry_li: str) -> str:
+                        total_li: str, expiry_li: str,
+                        billing_footer: str = "") -> str:
     code_block = (
         f'<div style="background:#111;color:#fff;font-size:28px;letter-spacing:6px;'
         f'padding:18px 24px;border-radius:10px;display:inline-block;font-family:monospace;">'
@@ -508,6 +623,7 @@ def _welcome_email_body(first_name: str, access_code: str, headline: str,
     <p style="font-size:15px;line-height:1.6;">We can't wait to create with you.</p>
     <p style="font-size:15px;">— Michael &amp; the MWM Creations team<br>
     <span style="color:#888;font-size:13px;">Orlando, FL · mwmcreations.com</span></p>
+    {billing_footer}
   </div>
 </div>"""
 
