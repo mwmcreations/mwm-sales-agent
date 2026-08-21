@@ -10297,6 +10297,48 @@ _LEAK_SWEEP_DONE = set()
 _INFO_SEEN = set()
 _INFO_WATCH_OK = [None]          # None = never run, True/False = last verdict
 _INFO_CALIBRATED = [False]
+_INFO_CALIBRATED_KEY = "info_inbox_calibrated"
+
+
+def _info_already_calibrated():
+    """Has the calibration digest EVER run — not just this boot?
+
+    It was an in-process flag for its first hour, and that was a real hole:
+    two deploys, two digests (09:51 and 10:03 on Aug 21). Worse than the
+    duplicate noise, a calibration pass marks everything seen and sends NO
+    alerts — so a client email landing between a deploy and that pass would
+    have been swallowed in silence. That is precisely the failure this watcher
+    exists to prevent, reintroduced by the watcher itself.
+
+    pg-backed now: calibration happens once, ever. After a deploy the watcher
+    goes straight to alerting, and the pg seen-set is what stops the backlog
+    stampeding — which was always the right mechanism for that job.
+    """
+    if _INFO_CALIBRATED[0]:
+        return True
+    try:
+        import pg_store as _ipg
+        if _ipg.load_state(_INFO_CALIBRATED_KEY):
+            _INFO_CALIBRATED[0] = True
+            return True
+    except Exception as _e:
+        print(f"[INFO-WATCH] pg calibration check failed ({_e}) — "
+              f"assuming NOT calibrated, which errs toward a duplicate digest "
+              f"rather than toward swallowing mail")
+    return False
+
+
+def _info_mark_calibrated(count):
+    _INFO_CALIBRATED[0] = True
+    try:
+        import pg_store as _ipg
+        _ipg.save_state(_INFO_CALIBRATED_KEY, {
+            "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+            "messages_seen": int(count),
+        })
+    except Exception as _e:
+        print(f"[INFO-WATCH] pg calibration write failed ({_e}) — "
+              f"the digest may repeat after the next deploy")
 
 
 def _info_seen_before(msg_id):
@@ -10360,8 +10402,7 @@ def _info_watch_once():
     # sees and how it scored it, so the rules can be corrected against reality
     # instead of against my assumptions. Everything already present is then
     # marked seen, so a five-week backlog does not stampede the channel.
-    if not _INFO_CALIBRATED[0]:
-        _INFO_CALIBRATED[0] = True
+    if not _info_already_calibrated():
         _counts = {}
         for r in rows:
             _counts[r["priority"]] = _counts.get(r["priority"], 0) + 1
@@ -10381,6 +10422,7 @@ def _info_watch_once():
                "\n".join(_lines) or "_(mailbox empty)_")))
         for r in rows:
             _info_mark_seen(r["id"], r)
+        _info_mark_calibrated(len(rows))
         return 0
 
     alerted = 0

@@ -172,7 +172,19 @@ print("\n=== 9. the watcher loop, read off app.py ===")
 APP = io.open("app.py", encoding="utf-8").read()
 W = APP.split("def _info_watch_once")[1].split("def _info_watch_thread")[0]
 ok("the FIRST run is calibration only — it does not stampede a backlog",
-   "_INFO_CALIBRATED" in W and "No alerts sent" in W)
+   "_info_already_calibrated" in W and "No alerts sent" in W)
+# It ran TWICE on Aug 21 — 09:51 and 10:03, once per deploy — because the flag
+# lived in-process. The duplicate digest was the visible symptom; the real one
+# was that a calibration pass marks everything seen and sends NO alerts, so a
+# client email landing between a deploy and that pass would be swallowed in
+# silence. The watcher reintroducing its own founding failure.
+CAL = APP.split("def _info_already_calibrated")[1].split("\ndef _info_mark_calibrated")[0]
+ok("calibration is pg-backed — it happens ONCE, ever, not once per boot",
+   "pg_store" in CAL and "load_state" in CAL)
+ok("...and a pg failure errs toward a duplicate digest, never toward silence",
+   "rather than toward swallowing mail" in CAL)
+ok("the calibration flag is persisted after the digest, not before",
+   APP.split("_info_mark_calibrated(len(rows))")[0].rstrip().endswith("_info_mark_seen(r[\"id\"], r)"))
 ok("...and marks the backlog seen so it never re-fires", "_info_mark_seen" in W)
 ok("a failed post is NOT marked seen — it retries next pass",
    "must be retried" in W)
