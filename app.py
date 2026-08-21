@@ -109,6 +109,7 @@ from event_rail import (due_rsvp_tier, instrumentation_gaps, gap_severity,
 # these; every rule about titles, venues and who may be sold to lives in
 # event_rail where the test suite can reach it.
 import apple_mail          # read-only iCloud reader for ANA
+import info_inbox          # the watcher on info@mwmcreations.com
 from event_rail import (BOOKING_TYPES, BOOKING_TYPE_ORDER,
                         RELATIONSHIPS, RELATIONSHIP_ORDER,
                         BILLING, BILLING_ORDER,
@@ -718,7 +719,15 @@ lead_data = _leads_db.LeadData()
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
 MICHAEL_EMAIL = os.getenv("MICHAEL_EMAIL", "michael@mwmcreations.com")
 BRIEFING_TOKEN = os.getenv("BRIEFING_TOKEN", "")
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+# gmail.readonly added 21 Aug 2026 for the info@ watcher. It was ALREADY
+# granted to the service account in Admin → Security → API controls —
+# verified in the console with Michael — and the code simply never asked for
+# it. ⭐ The code's requested scope is NOT the admin's granted scope; reading
+# one and inferring the other has now cost this project time twice (Patch #69
+# was the same shape). Adding a scope is additive: existing send paths are
+# unaffected.
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.readonly"]
 TIMEZONE = "America/New_York"  # Orlando, Florida
 
 # Patch #30 / S-1: the studio's postal address. Five consecutive client events
@@ -10268,6 +10277,146 @@ def _mark_conflict_reported(key, detail):
 # sendUpdates="none" throughout — a client must never receive an "event
 # updated" mail because we tidied our own vocabulary out of their invite.
 _LEAK_SWEEP_DONE = set()
+
+
+# ─── THE info@ WATCHER ──────────────────────────────────────────────────────
+# Michael, Aug 20: a lead emailed info@ asking to change his studio visit and
+# it was found by luck. "Those kind of emails can be there for days without me
+# looking at it." And, closing out: "I trust much more on the machine to do
+# that automatically."
+#
+# So this is the machine doing the looking. Every 5 minutes, not 15 — a client
+# waiting on a reschedule is the one thing here that is genuinely time-
+# sensitive, and the read is cheap.
+#
+# ⚠️ IT MUST FAIL LOUDLY. He has said he trusts this more than his own
+# follow-through, and that RAISES the bar: a watcher he relies on that dies
+# quietly is worse than no watcher, because he would stop checking AND stop
+# being told, and it would look exactly like a quiet week. Hence the
+# transition alerts below, same shape as the Apple reader and the leak sweep.
+_INFO_SEEN = set()
+_INFO_WATCH_OK = [None]          # None = never run, True/False = last verdict
+_INFO_CALIBRATED = [False]
+
+
+def _info_seen_before(msg_id):
+    key = "info_inbox_seen:%s" % msg_id
+    if msg_id in _INFO_SEEN:
+        return True
+    try:
+        import pg_store as _ipg
+        if _ipg.load_state(key):
+            _INFO_SEEN.add(msg_id)
+            return True
+    except Exception as _e:
+        print(f"[INFO-WATCH] pg check failed ({_e}) — in-process set only this boot")
+    return False
+
+
+def _info_mark_seen(msg_id, row):
+    _INFO_SEEN.add(msg_id)
+    try:
+        import pg_store as _ipg
+        _ipg.save_state("info_inbox_seen:%s" % msg_id, {
+            "from": (row.get("from") or "")[:200],
+            "subject": (row.get("subject") or "")[:200],
+            "priority": row.get("priority"),
+        })
+    except Exception as _e:
+        print(f"[INFO-WATCH] pg write failed ({_e}) — {msg_id} may re-alert after a deploy")
+
+
+def _info_watch_once():
+    """One pass. Returns the number of messages alerted on. Never raises."""
+    try:
+        svc = get_gmail_service(impersonate=info_inbox.INFO_ADDRESS)
+        msgs = info_inbox.fetch_recent(svc, limit=info_inbox.MAX_FETCH)
+    except Exception as _e:
+        kind, why = info_inbox.diagnose(_e)
+        if _INFO_WATCH_OK[0] is not False:      # report the TRANSITION, once
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                f"🔴 *The info@ watcher is DOWN* — nobody is reading "
+                f"`{info_inbox.INFO_ADDRESS}` right now.\n"
+                f"*Kind:* `{kind}`\n{why}\n"
+                f"_A client email sitting in there would go unseen, which "
+                f"looks exactly like a quiet inbox — which is why this alert "
+                f"exists._"))
+            _report_error("info_inbox.watch", _e, kind)
+        _INFO_WATCH_OK[0] = False
+        return 0
+
+    if _INFO_WATCH_OK[0] is False:
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+                             f"✅ *The info@ watcher is back* — reading "
+                             f"`{info_inbox.INFO_ADDRESS}` again.")
+    _INFO_WATCH_OK[0] = True
+
+    rows = info_inbox.triage(msgs)
+
+    # ── FIRST RUN: a calibration digest, not silence ──────────────
+    # I have never seen the inside of this mailbox — I cannot read it from a
+    # session, only from here. Rather than guess whether the filters are right
+    # and quietly mis-sort real client mail, the first pass publishes what it
+    # sees and how it scored it, so the rules can be corrected against reality
+    # instead of against my assumptions. Everything already present is then
+    # marked seen, so a five-week backlog does not stampede the channel.
+    if not _INFO_CALIBRATED[0]:
+        _INFO_CALIBRATED[0] = True
+        _counts = {}
+        for r in rows:
+            _counts[r["priority"]] = _counts.get(r["priority"], 0) + 1
+        _lines = ["• `%s` — %s — %s" % (r["priority"],
+                                        (r.get("from") or "?")[:44],
+                                        (r.get("subject") or "(none)")[:60])
+                  for r in rows[:20]]
+        _post_to_slack_async(SLACK_DEV_CHANNEL, (
+            "🔎 *info@ watcher — FIRST RUN, calibration only. No alerts sent "
+            "for this batch.*\n"
+            "Read %d recent message(s) from `%s`. Scored: %s\n%s\n"
+            "_Everything above is marked seen so the backlog does not "
+            "stampede. Alerts start with the NEXT new message. If anything is "
+            "scored wrong, that is what this digest is for._"
+            % (len(rows), info_inbox.INFO_ADDRESS,
+               ", ".join("%s=%d" % kv for kv in sorted(_counts.items())),
+               "\n".join(_lines) or "_(mailbox empty)_")))
+        for r in rows:
+            _info_mark_seen(r["id"], r)
+        return 0
+
+    alerted = 0
+    for r in rows:
+        if not info_inbox.needs_attention(r["priority"]):
+            continue
+        if _info_seen_before(r["id"]):
+            continue
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, (
+                "📥 *New mail in info@ — nobody has replied yet*\n"
+                + info_inbox.describe(r)))
+            _info_mark_seen(r["id"], r)
+            alerted += 1
+        except Exception as _pe:
+            # Do NOT mark seen — an alert that failed to post must be retried
+            # next pass, not swallowed.
+            print(f"[INFO-WATCH] failed to post {r.get('id')}: {_pe}")
+    if alerted:
+        print(f"[INFO-WATCH] alerted on {alerted} new message(s)")
+    return alerted
+
+
+def _info_watch_thread():
+    import time as _t
+    _t.sleep(240)
+    while True:
+        try:
+            _heartbeat("info_inbox_watch")
+            _info_watch_once()
+        except Exception as _e:
+            print(f"[INFO-WATCH] thread error (non-fatal): {_e}")
+        _t.sleep(300)          # 5 min — a waiting client is time-sensitive
+
+
+threading.Thread(target=_info_watch_thread, daemon=True).start()
 
 
 def _sweep_client_visible_leaks(days=None):
