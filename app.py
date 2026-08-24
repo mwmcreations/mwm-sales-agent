@@ -34,6 +34,7 @@ from cris_wix import handle_cris_action
 from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block, send_lara_template, LARA_TEMPLATES
 # Patch #30 — Event Confirmation Rail. One gate, four write-sites.
 import event_rail
+import sheets_queue as _sq   # Patch #107
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
@@ -6454,7 +6455,23 @@ def _lead_source_for(sender: str) -> str:
     return "Instagram DM" if str(sender).startswith("instagram:") else "WhatsApp"
 
 
-def log_new_contact_to_sheets(sender: str):
+def _sq_alert(component, message, detail=""):
+    """Patch #107 — queue events reach #dev through the same rail as errors."""
+    try:
+        _report_error(component, Exception(message), detail)
+    except Exception:
+        pass
+
+
+def _sq_persist():
+    """Patch #107 — a queue that dies on deploy is not a queue."""
+    try:
+        _sq.save(_pg.save_state)
+    except Exception:
+        pass
+
+
+def log_new_contact_to_sheets(sender: str, _raise: bool = False):
     """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
     This ensures every person who messages Maya is captured, even if they never share their info.
     The row is updated later when lead info is captured or a booking is made.
@@ -6538,9 +6555,17 @@ def log_new_contact_to_sheets(sender: str):
     except Exception as e:
         _TALLY.bump("sheets.lead_row_FAILED", clean_phone)   # PATCH #97
         _report_error("Sheets CRM create (log_new_contact_to_sheets)", e, f"lead={sender}")  # S3b.2 sweep
+        # PATCH #107 — this used to end here. On 23 Aug 19:51 that meant a real
+        # first contact was reported and then discarded, because a 403 is a
+        # STATE and nothing ever tried again. _raise=True is the drain calling
+        # us back: it must see the failure, not a silent return.
+        if _raise:
+            raise
+        _sq.enqueue(_sq.OP_CREATE, sender, alert_cb=_sq_alert)
+        _sq_persist()
 
 
-def update_lead_columns(sender: str, updates: dict):
+def update_lead_columns(sender: str, updates: dict, _raise: bool = False):
     """Update specific columns for a lead by phone number.
     updates maps column header names to values, e.g. {"WhatsApp Status": "Booked"}.
     Non-fatal: exceptions are logged but never break the caller."""
@@ -6594,6 +6619,12 @@ def update_lead_columns(sender: str, updates: dict):
                         f"lead={sender}")
                 except Exception:
                     pass
+            # PATCH #107 — a MISS is not a transport failure, so it is never
+            # queued from the live path (that would queue a Patch #61 bug
+            # forever). But during a drain it means the create for this lead
+            # has not landed yet, so it must raise and stay queued.
+            if _raise:
+                raise RuntimeError(f"no row for {sender!r} yet")
             return
         data = []
         for col_name, value in updates.items():
@@ -6609,6 +6640,10 @@ def update_lead_columns(sender: str, updates: dict):
             print(f"[Sheets] Updated {list(updates.keys())} for {clean_phone}")
     except Exception as e:
         _report_error("Sheets CRM write (update_lead_columns)", e, f"lead={sender}")  # S1.3
+        if _raise:                       # PATCH #107 — the drain must see it
+            raise
+        _sq.enqueue(_sq.OP_UPDATE, sender, updates, alert_cb=_sq_alert)
+        _sq_persist()
 
 
 def lookup_lead_in_sheets(sender: str) -> str:
@@ -17049,12 +17084,17 @@ def health_check():
     }
     all_keys_ok = all(api_keys.values())
 
+    # PATCH #107 — depth climbing and never settling means the lead
+    # spreadsheet is still unwritable and rows are waiting, not lost.
+    sheets_queue_stats = _sq.stats()
+
     overall = "healthy" if (all_threads_ok and all_keys_ok) else "degraded"
     status_code = 200 if overall == "healthy" else 503
 
     import uuid as _uuid_health
     response = jsonify({
         "status": overall,
+        "sheets_queue": sheets_queue_stats,   # Patch #107
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -18859,6 +18899,40 @@ _restore_state_from_pg()
 # every 5 min (catches deeply-nested mutations). New heartbeat: leads_flush
 # (monitors: expected-thread list grows by one when DATABASE_URL is set).
 _leads_db.start_flusher(lead_data, heartbeat=_heartbeat)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #107 — SHEETS CRM WRITE QUEUE
+# The Postgres path got a retry queue on 18 Aug (#103). This one did not,
+# and on 23 Aug a 403 on the lead spreadsheet discarded two first contacts
+# over 34 hours behind a fully green board. Same defect, different door.
+# ══════════════════════════════════════════════════════════════════════
+_sq_restored = _sq.restore(_pg.load_state)
+if _sq_restored:
+    print(f"[SHEETS_QUEUE] restored {_sq_restored} queued write(s) from Postgres")
+
+
+def _sq_drain_loop():
+    """Replay queued sheet writes. Slower than the leads flusher on purpose:
+    the failure this exists for is a permission state that waits on a human,
+    and hammering it produces noise, not rows."""
+    while True:
+        try:
+            time.sleep(60)
+            if _sq.depth():
+                r = _sq.drain(
+                    lambda snd: log_new_contact_to_sheets(snd, _raise=True),
+                    lambda snd, upd: update_lead_columns(snd, upd, _raise=True),
+                    alert_cb=_sq_alert,
+                )
+                if r["drained"] or r["dropped"]:
+                    print(f"[SHEETS_QUEUE] drain {r} depth={_sq.depth()}")
+                _sq_persist()
+        except Exception as _e:
+            print(f"[SHEETS_QUEUE] drain loop error (non-fatal): {_e}")
+
+
+threading.Thread(target=_sq_drain_loop, daemon=True, name="sheets_queue_drain").start()
 
 
 # ══════════════════════════════════════════════════════════════════════
