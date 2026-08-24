@@ -35,6 +35,7 @@ from lara_actions import handle_lara_action, lookup_sender_identity, format_send
 # Patch #30 — Event Confirmation Rail. One gate, four write-sites.
 import event_rail
 import sheets_queue as _sq   # Patch #107
+import booking_truth as _bt  # S30
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
@@ -826,6 +827,8 @@ _THREAD_STALE_OVERRIDES = {
     # see it: a queue drainer that dies silently is the exact shape of failure
     # the queue exists to prevent.
     "sheets_queue_drain": 5,
+    # S30: hourly sweep. 2x cycle + margin.
+    "booking_truth_sweep": 150,
 }
 
 
@@ -17091,6 +17094,7 @@ def health_check():
     # PATCH #107 — depth climbing and never settling means the lead
     # spreadsheet is still unwritable and rows are waiting, not lost.
     sheets_queue_stats = _sq.stats()
+    booking_truth_stats = dict(_bt_last)   # S30
 
     overall = "healthy" if (all_threads_ok and all_keys_ok) else "degraded"
     status_code = 200 if overall == "healthy" else 503
@@ -17099,6 +17103,7 @@ def health_check():
     response = jsonify({
         "status": overall,
         "sheets_queue": sheets_queue_stats,   # Patch #107
+        "booking_truth": booking_truth_stats, # S30
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -18938,6 +18943,69 @@ def _sq_drain_loop():
 
 
 threading.Thread(target=_sq_drain_loop, daemon=True, name="sheets_queue_drain").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S30 — "BOOKED" IS A QUESTION, NOT A FLAG (booking_truth.py)
+# 24 Aug: James Perry was told twice that a session existed. It never did.
+# Patch #38 already documented that this flag is set at creation and never
+# cleared; SUSAN's digest prints "(flag only — not calendar-verified)" in its
+# own output. The system labelled the value untrustworthy and trusted it.
+# ══════════════════════════════════════════════════════════════════════
+_bt_last = {"ran_at": None, "checked": 0, "confirmed": 0, "phantom": 0,
+            "no_event_id": 0, "cancelled": 0, "unflagged": 0, "unknown": 0}
+
+
+def _bt_get_event(event_id):
+    """Single-event lookup for booking_truth.
+
+    A 404 means the event is genuinely gone. ANYTHING ELSE means we could not
+    answer, and must return LOOKUP_FAILED — never None. Reading an outage as
+    "no booking" would condemn every real client on one bad minute.
+    """
+    try:
+        svc = get_calendar_service()
+        return svc.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute(num_retries=2)
+    except Exception as e:
+        status = getattr(getattr(e, "resp", None), "status", None)
+        if status in (404, 410):
+            return None
+        return _bt.LOOKUP_FAILED
+
+
+def _bt_sweep_once():
+    now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+    report = _bt.reconcile(lead_data, _bt_get_event, now_iso)
+    _bt_last.update({
+        "ran_at": now_iso,
+        "checked": report["checked"],
+        "confirmed": report["confirmed"],
+        "phantom": len(report["phantom"]),
+        "no_event_id": len(report["no_event_id"]),
+        "cancelled": len(report["cancelled"]),
+        "unflagged": len(report["unflagged"]),
+        "unknown": len(report["unknown"]),
+    })
+    msg = _bt.describe(report)
+    if msg:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
+    return report
+
+
+def _bt_sweep_loop():
+    """Hourly. Reports; never mutates. The flag is the only surviving record
+    that somebody was promised something, so it is not silently erased."""
+    time.sleep(240)   # let the lead store load first
+    while True:
+        try:
+            _heartbeat("booking_truth_sweep")
+            _bt_sweep_once()
+        except Exception as _e:
+            print(f"[BOOKING_TRUTH] sweep error (non-fatal): {_e}")
+        time.sleep(3600)
+
+
+threading.Thread(target=_bt_sweep_loop, daemon=True, name="booking_truth_sweep").start()
 
 
 # ══════════════════════════════════════════════════════════════════════
