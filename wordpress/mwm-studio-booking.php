@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.8.0
+ * Version: 2.8.1
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit; // No direct access.
 }
 
-define( 'MWM_STUDIO_VERSION', '2.8.0' ); // S28: Google Calendar -> portal sync (a drag moves the booking)
+define( 'MWM_STUDIO_VERSION', '2.8.1' ); // S28: Google Calendar -> portal sync (a drag moves the booking)
 define( 'MWM_STUDIO_FILE', __FILE__ );
 
 /**
@@ -570,6 +570,41 @@ class MWM_Studio_Booking {
 		return null;
 	}
 
+	/**
+	 * S29: a logged-in client was refused every slot for a STRUCTURAL reason —
+	 * contract window, expiry, or no hours left. The availability feed already
+	 * alerts when it dies; these three branches alerted nothing at all, so a
+	 * client could sit in front of an empty calendar for weeks and the only way
+	 * we found out was if she happened to email. Throttled once per client per
+	 * reason per day.
+	 */
+	private function notice_client_blocked( $client, $reason, $date, $detail = '' ) {
+		if ( empty( $client ) || empty( $client->id ) ) {
+			return;
+		}
+		$key = 'mwm_blocked_' . (int) $client->id . '_' . $reason;
+		if ( get_transient( $key ) ) {
+			return;
+		}
+		set_transient( $key, 1, DAY_IN_SECONDS );
+		$labels = array(
+			'out_of_range'     => 'tried to book past the end of their contract window',
+			'contract_expired' => 'has an expired contract and cannot book',
+			'no_hours'         => 'has no bookable hours left',
+		);
+		$what = isset( $labels[ $reason ] ) ? $labels[ $reason ] : $reason;
+		wp_mail(
+			'michael@mwmcreations.com',
+			'[MWM Portal] ' . $client->name . ' cannot book — ' . $reason,
+			$client->name . ' (' . $client->email . ') ' . $what . ".\n\n" .
+			"Date they asked for: {$date}\n" .
+			"Limit: {$detail}\n\n" .
+			"They are seeing an empty calendar right now. If this is wrong, fix the client\n" .
+			"record; if it is right, they need a human, not a booking page.\n\n" .
+			"Throttled to once per client per reason per day."
+		);
+	}
+
 	/** S15: throttled (1/hr) email alert when the availability feed is degraded or down. */
 	private function alert_gcal_outage( $mode, $date ) {
 		if ( get_transient( 'mwm_gcal_outage_alerted' ) ) {
@@ -1049,20 +1084,43 @@ class MWM_Studio_Booking {
 		}
 
 		if ( $date < $today || $date > $max_date ) {
-			wp_send_json_success( array( 'slots' => array(), 'reason' => 'out_of_range' ) );
+			// S29: a date the portal will NEVER allow used to render exactly like a
+			// date that merely happens to be busy — both produced "try another day".
+			// A client shopping dates past her contract end therefore concluded the
+			// studio was fully booked and stopped trying. Say which limit was hit.
+			$oor_kind = ( $date < $today ) ? 'past' : 'after_contract_end';
+			if ( 'after_contract_end' === $oor_kind ) {
+				$this->notice_client_blocked( $client, 'out_of_range', $date, $max_date );
+			}
+			wp_send_json_success( array(
+				'slots'    => array(),
+				'reason'   => 'out_of_range',
+				'kind'     => $oor_kind,
+				'max_date' => $max_date,
+			) );
 		}
 
 		// Check contract status
 		$contract_status = $this->get_contract_status( $client );
 		if ( $contract_status === 'expired' ) {
-			wp_send_json_success( array( 'slots' => array(), 'reason' => 'contract_expired' ) );
+			$this->notice_client_blocked( $client, 'contract_expired', $date, $client->contract_end_date );
+			wp_send_json_success( array(
+				'slots'        => array(),
+				'reason'       => 'contract_expired',
+				'contract_end' => $client->contract_end_date,
+			) );
 		}
 
 		$used      = $this->hours_used_in_contract( $client->id, $client->contract_start_date, $client->contract_end_date );
 		$remaining = max( 0, (float) $client->contract_hours - $used );
 
 		if ( $remaining < (float) $settings['min_booking_hours'] ) {
-			wp_send_json_success( array( 'slots' => array(), 'reason' => 'no_hours' ) );
+			$this->notice_client_blocked( $client, 'no_hours', $date, (string) $remaining );
+			wp_send_json_success( array(
+				'slots'     => array(),
+				'reason'    => 'no_hours',
+				'remaining' => $remaining,
+			) );
 		}
 
 		$max_possible = min( 4, floor( $remaining ) );
@@ -5940,6 +5998,14 @@ QBJS;
 					});
 				},
 
+				fmtDate: function(iso) {
+					if (!iso) { return 'the end of your contract'; }
+					var d = new Date(String(iso) + 'T00:00:00');
+					if (isNaN(d.getTime())) { return String(iso); }
+					var m = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+					return m[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+				},
+
 				loadSlots: function(date) {
 					var self = this;
 					this.selectedSlot = null;
@@ -5947,8 +6013,31 @@ QBJS;
 					$('#mwm-book-error').hide();
 					$('#mwm-slots').html('<div class="mwm-empty">Checking availability…</div>');
 					this.ajax('mwm_studio_get_available_slots', { date: date }, function(data){
-						if (data && data.reason === 'availability_unavailable') {
+						// S29: every one of these used to fall through to
+						// "No available times on this date — try another day",
+						// which is false for three of them and is why a client
+						// with a valid contract concluded we were fully booked.
+						var reason = (data && data.reason) || '';
+						if (reason === 'availability_unavailable') {
 							$('#mwm-slots').html('<div class="mwm-empty">Booking is temporarily unavailable — please try again in a few minutes, or message us on WhatsApp.</div>');
+							return;
+						}
+						if (reason === 'out_of_range') {
+							var msg;
+							if (data.kind === 'past') {
+								msg = 'That date has already passed — please pick a date from today onwards.';
+							} else {
+								msg = 'Your hours must be used by ' + self.fmtDate(data.max_date) + ', so later dates cannot be booked here. If you need more time, reply to your welcome email or call (813) 503-1224 — we can usually help.';
+							}
+							$('#mwm-slots').html('<div class="mwm-empty">' + self.escHtml(msg) + '</div>');
+							return;
+						}
+						if (reason === 'contract_expired') {
+							$('#mwm-slots').html('<div class="mwm-empty">' + self.escHtml('This package ended on ' + self.fmtDate(data.contract_end) + '. Call (813) 503-1224 or reply to your welcome email and we will get you booked.') + '</div>');
+							return;
+						}
+						if (reason === 'no_hours') {
+							$('#mwm-slots').html('<div class="mwm-empty">' + self.escHtml('You have no studio hours left on this package. Call (813) 503-1224 or reply to your welcome email to add more.') + '</div>');
 							return;
 						}
 						var slots = (data && data.slots) || [];
