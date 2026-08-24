@@ -822,6 +822,10 @@ _THREAD_STALE_OVERRIDES = {
     # after firing. 2x the longest gap, or the watchdog cries THREAD DEAD on a
     # thread that is merely waiting for 7am.
     "instrumentation_sweep": 150,
+    # Patch #107 — 60s cycle. It shipped UNREGISTERED and /health could not
+    # see it: a queue drainer that dies silently is the exact shape of failure
+    # the queue exists to prevent.
+    "sheets_queue_drain": 5,
 }
 
 
@@ -18918,6 +18922,7 @@ def _sq_drain_loop():
     and hammering it produces noise, not rows."""
     while True:
         try:
+            _heartbeat("sheets_queue_drain")
             time.sleep(60)
             if _sq.depth():
                 r = _sq.drain(

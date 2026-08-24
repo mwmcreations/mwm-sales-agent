@@ -99,6 +99,18 @@ ok(health.index("sheets_queue_stats = _sq.stats()") < health.index('"sheets_queu
    "computed before it is returned — Patch #72 shipped a verdict read from "
    "counters nothing ever bumped; do not repeat it")
 
+# ── §6 · the drainer is MONITORED ───────────────────────────────────────────
+# It shipped in 9500a0a without this and /health could not see the thread.
+# A drain loop that dies silently is the exact failure the queue exists to
+# prevent, one level up.
+ok('_heartbeat("sheets_queue_drain")' in drain,
+   "the drain loop registers a heartbeat every cycle")
+ok('"sheets_queue_drain":' in APP,
+   "and it has a staleness threshold, so the watchdog can call it dead")
+ok(drain.index('_heartbeat("sheets_queue_drain")') < drain.index("time.sleep(60)"),
+   "it beats BEFORE the sleep, so the thread registers at startup and not 60s late")
+
+
 print("\nPATCH107_WIRING_GATE: " + ("PASS" if FAIL == 0 else "FAIL"))
 
 print("\n" + "=" * 62)
