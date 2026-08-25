@@ -64,7 +64,12 @@ once_fn = body("def _bt_sweep_once(", "def _bt_sweep_loop(")
 ok("_bt.reconcile(lead_data" in once_fn, "it sweeps the real lead store")
 ok("_bt.describe(report)" in once_fn, "and renders the human summary")
 ok("SLACK_DEV_CHANNEL" in once_fn, "posting to #dev")
-ok("if msg:" in once_fn, "and staying silent when there is nothing to say")
+# S30b replaced `if msg:` with the fingerprint guard. Same property, new
+# mechanism: there must be NO unconditional post — every posting path sits
+# behind either "the broken set changed" or "it just cleared".
+ok("if msg:" not in once_fn, "the old post-every-sweep guard is gone")
+ok("if fp:" in once_fn and "elif prev:" in once_fn,
+   "and staying silent when there is nothing to say — both posts are guarded")
 ok('lead_data[' not in once_fn and '["booked"] =' not in once_fn,
    "the sweep does NOT clear the flag — it is the only record that a promise was made")
 
@@ -78,6 +83,30 @@ ok(health.index("booking_truth_stats = dict(_bt_last)") < health.index('"booking
 for k in ("phantom", "unknown", "checked"):
     ok('"%s":' % k in body("_bt_last = {", "def _bt_get_event("),
        "the stats block carries %s" % k)
+
+
+# ── §6 · S30b · the alert posts on CHANGE, not on a timer ──────────────────
+# It shipped firing every hour with an identical list. #dev carried the same
+# five names all night. Patch #103 solved this on the Postgres path already.
+once_fn2 = body("def _bt_sweep_once(", "def _bt_sweep_loop(")
+ok("_bt.fingerprint(report)" in once_fn2, "the sweep fingerprints the broken set")
+ok("if fp != prev:" in once_fn2, "and only posts when that set CHANGES")
+ok("_pg.save_state(\"booking_truth.fingerprint\"" in once_fn2,
+   "the fingerprint is persisted, so a redeploy does not re-announce the same list")
+ok("_pg.load_state(\"booking_truth.fingerprint\"" in once_fn2, "and is restored at first sweep")
+ok("Bookings reconciled" in once_fn2,
+   "when the list empties, that is announced ONCE — silence must not be the only signal of a fix")
+ok(once_fn2.count("_post_to_slack_async") == 2,
+   "exactly two posting paths: something changed, or everything cleared")
+
+# ── §7 · S30b · a real event under the lead's email is linkage, not a lie ──
+link = body("def _bt_upcoming_by_email(", "_bt_last_fingerprint")
+ok("timeMin=" in link and "singleEvents=True" in link, "the attendee index reads real upcoming events")
+ok('status", "")).lower() == "cancelled"' in link, "cancelled events are excluded from it")
+ok("return {}" in link,
+   "a failed lookup returns an EMPTY index — no evidence, never an invented link")
+ok("_bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_upcoming_by_email())" in APP,
+   "and the sweep actually passes it in")
 
 print("\nS30_WIRING_GATE: " + ("PASS" if FAIL == 0 else "FAIL"))
 print("\n" + "=" * 62)

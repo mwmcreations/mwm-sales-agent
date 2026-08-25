@@ -18953,7 +18953,8 @@ threading.Thread(target=_sq_drain_loop, daemon=True, name="sheets_queue_drain").
 # own output. The system labelled the value untrustworthy and trusted it.
 # ══════════════════════════════════════════════════════════════════════
 _bt_last = {"ran_at": None, "checked": 0, "confirmed": 0, "phantom": 0,
-            "no_event_id": 0, "cancelled": 0, "unflagged": 0, "unknown": 0}
+            "no_event_id": 0, "cancelled": 0, "unflagged": 0, "unknown": 0,
+            "link_missing": 0}
 
 
 def _bt_get_event(event_id):
@@ -18973,9 +18974,44 @@ def _bt_get_event(event_id):
         return _bt.LOOKUP_FAILED
 
 
+def _bt_upcoming_by_email():
+    """{attendee email -> event} for everything still ahead of us.
+
+    S30b — Gema Hiatt was reported as "never had an event" when her Sep 4
+    session was sitting on the calendar the whole time: it was booked in
+    wp-admin, so nothing ever wrote event_id back onto her lead. That is a
+    linkage gap, not a broken promise, and reporting it as one is how an
+    alert earns its way into being ignored.
+    """
+    out = {}
+    try:
+        svc = get_calendar_service()
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        res = svc.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=120)).isoformat(),
+            singleEvents=True, orderBy="startTime", maxResults=250,
+        ).execute(num_retries=2)
+        for ev in res.get("items", []):
+            if str(ev.get("status", "")).lower() == "cancelled":
+                continue
+            for att in ev.get("attendees") or []:
+                em = (att.get("email") or "").strip().lower()
+                if em:
+                    out.setdefault(em, ev)
+    except Exception as e:
+        print(f"[BOOKING_TRUTH] upcoming-by-email lookup failed (non-fatal): {e}")
+        return {}          # empty == no link evidence; never invents one
+    return out
+
+
+_bt_last_fingerprint = {"value": None, "loaded": False}
+
+
 def _bt_sweep_once():
     now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
-    report = _bt.reconcile(lead_data, _bt_get_event, now_iso)
+    report = _bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_upcoming_by_email())
     _bt_last.update({
         "ran_at": now_iso,
         "checked": report["checked"],
@@ -18986,9 +19022,30 @@ def _bt_sweep_once():
         "unflagged": len(report["unflagged"]),
         "unknown": len(report["unknown"]),
     })
-    msg = _bt.describe(report)
-    if msg:
-        _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
+    _bt_last["link_missing"] = len(report.get("link_missing") or [])
+
+    # S30b — post on CHANGE, not on a timer. The first version fired every
+    # hour with an identical list; #dev carried the same five names all night.
+    if not _bt_last_fingerprint["loaded"]:
+        _bt_last_fingerprint["value"] = _pg.load_state("booking_truth.fingerprint", None)
+        _bt_last_fingerprint["loaded"] = True
+
+    fp = _bt.fingerprint(report)
+    prev = _bt_last_fingerprint["value"]
+
+    if fp != prev:
+        if fp:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, _bt.describe(report))
+        elif prev:
+            _post_to_slack_async(
+                SLACK_DEV_CHANNEL,
+                ":white_check_mark: *Bookings reconciled* — every lead flagged booked "
+                "now resolves to a real event. Previous list is cleared.")
+        _bt_last_fingerprint["value"] = fp
+        try:
+            _pg.save_state("booking_truth.fingerprint", fp)
+        except Exception:
+            pass
     return report
 
 

@@ -126,6 +126,55 @@ big = {("k%d" % i): dict(james, name="P%d" % i) for i in range(25)}
 ok("…and 15 more" in bt.describe(bt.reconcile(big, BOOK, NOW)),
    "a large backlog is truncated rather than flooding the channel")
 
+
+# ── §5 · S30b · the alert must not repeat itself ────────────────────────────
+# The first version posted whenever anything was broken. The sweep runs hourly.
+# #dev carried the SAME FIVE NAMES every hour overnight. Patch #103 had already
+# solved this on the Postgres path — "loud on the first one, then counted" —
+# and it was not carried one function across.
+r1 = bt.reconcile({"a": james, "b": james2}, BOOK, NOW)
+r2 = bt.reconcile({"b": james2, "a": james}, BOOK, NOW)   # same people, other order
+ok(bt.fingerprint(r1) == bt.fingerprint(r2),
+   "the fingerprint is stable regardless of iteration order — otherwise it would "
+   "'change' every sweep and repost forever")
+ok(bt.fingerprint(r1) != "", "a broken set has a non-empty fingerprint")
+
+r3 = bt.reconcile({"a": james}, BOOK, NOW)
+ok(bt.fingerprint(r3) != bt.fingerprint(r1),
+   "dropping a name IS a change and must be announced")
+r4 = bt.reconcile({"a": james, "b": james2, "c": dict(james, name="New Guy")}, BOOK, NOW)
+ok(bt.fingerprint(r4) != bt.fingerprint(r1), "adding a name is a change too")
+
+ok(bt.fingerprint(bt.reconcile({"z": {"booked": False}}, BOOK, NOW)) == "",
+   "a clean sweep fingerprints empty, which is what flips the 'cleared' notice")
+ok(bt.fingerprint(bt.reconcile({"t": real}, BOOK, NOW)) == "",
+   "an UNKNOWN does not enter the fingerprint — an outage must not look like a change")
+
+# ── §6 · S30b · a real session that the record is not pointing at ───────────
+# Gema Hiatt: booked in wp-admin on Sep 4, so nothing wrote event_id back to
+# her lead. She was reported as "never had an event" while the event existed.
+gema = {"name": "Gema Hiatt", "email": "marketing@hisagents.com", "booked": True}
+by_email = {"marketing@hisagents.com": LIVE}
+ok(bt.derive(gema, BOOK, NOW)[0] == bt.NO_ID,
+   "with no attendee index she still looks like a phantom — that was the false alarm")
+ok(bt.derive(gema, BOOK, NOW, by_email)[0] == bt.LINK_MISSING,
+   "with the index, a real session is recognised as a LINKAGE gap, not a broken promise")
+ok(bt.is_booked(gema, BOOK, NOW, by_email) is False,
+   "but it is still not something to CONFIRM to a client — the record cannot prove it")
+
+_g = bt.reconcile({"g": gema}, BOOK, NOW, by_email)
+ok(len(_g["link_missing"]) == 1 and len(_g["no_event_id"]) == 0, "it lands in its own bucket")
+ok(bt.fingerprint(_g) == "", "and it does NOT raise the red alert")
+ok("linkage gap" in bt.describe(bt.reconcile({"j": james, "g": gema}, BOOK, NOW, by_email)),
+   "though it is mentioned when something else is already being reported")
+
+# a DEAD event_id plus a real event under the same email is also linkage, not phantom
+gema2 = dict(gema, event_id="deleted-999")
+ok(bt.derive(gema2, BOOK, NOW, by_email)[0] == bt.LINK_MISSING,
+   "a stale event_id with a live session under the same email is linkage too")
+ok(bt.derive(gema2, BOOK, NOW, {})[0] == bt.PHANTOM,
+   "and an EMPTY index never invents a link — no evidence means no excuse")
+
 print("\nS30_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
 print("\n" + "=" * 62)
 print("  BOOKING TRUTH (S30): {} passed, {} failed".format(PASS, FAIL))

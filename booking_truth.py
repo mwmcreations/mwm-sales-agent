@@ -68,6 +68,12 @@ NO_ID     = "no_event_id"  # flag set, no event_id ever recorded <- also James
 UNFLAGGED = "unflagged"    # flag not set, but a live event exists
 CLEAR     = "clear"        # flag not set, no event. The common, honest case
 UNKNOWN   = "unknown"      # the lookup could not answer. Act on nothing.
+LINK_MISSING = "link_missing"  # a real event exists for this person, the LEAD
+                               # record just is not pointing at it. Gema Hiatt:
+                               # booked in wp-admin, so nothing wrote event_id
+                               # back to her lead. Nobody was misled — the
+                               # session is real — so this must not be reported
+                               # as a broken promise.
 
 # States in which it is TRUE to tell a client their session is on.
 BOOKABLE_TRUTH = (CONFIRMED,)
@@ -85,7 +91,15 @@ def _event_start(event):
     return start
 
 
-def derive(lead, get_event, now_iso=None):
+def _live_link(lead, events_by_email):
+    """A future event whose attendee list contains this lead's email."""
+    if not events_by_email:
+        return None
+    email = (lead.get("email") or "").strip().lower()
+    return events_by_email.get(email) if email else None
+
+
+def derive(lead, get_event, now_iso=None, events_by_email=None):
     """Return (state, event). `get_event(event_id)` must return a dict, None
     for a genuinely absent event, or LOOKUP_FAILED when it could not answer."""
     lead = lead or {}
@@ -93,7 +107,10 @@ def derive(lead, get_event, now_iso=None):
     event_id = lead.get("event_id")
 
     if not event_id:
-        return ((NO_ID, None) if flagged else (CLEAR, None))
+        if flagged:
+            linked = _live_link(lead, events_by_email)
+            return ((LINK_MISSING, linked) if linked else (NO_ID, None))
+        return (CLEAR, None)
 
     try:
         event = get_event(event_id)
@@ -104,7 +121,10 @@ def derive(lead, get_event, now_iso=None):
         return (UNKNOWN, None)
 
     if not event:
-        return ((PHANTOM, None) if flagged else (CLEAR, None))
+        if flagged:
+            linked = _live_link(lead, events_by_email)
+            return ((LINK_MISSING, linked) if linked else (PHANTOM, None))
+        return (CLEAR, None)
 
     if str(event.get("status", "")).lower() == "cancelled":
         return ((CANCELLED, event) if flagged else (CLEAR, event))
@@ -116,17 +136,21 @@ def derive(lead, get_event, now_iso=None):
     return ((CONFIRMED, event) if flagged else (UNFLAGGED, event))
 
 
-def is_booked(lead, get_event, now_iso=None):
+def is_booked(lead, get_event, now_iso=None, events_by_email=None):
     """The gate. True only when a live future event actually exists.
 
     Deliberately False for UNKNOWN: if we cannot prove a session exists we do
     not assert it to a client. Silence is recoverable; a wrong promise is not.
+
+    Also False for LINK_MISSING. A session may well be real, but this lead
+    record cannot prove which one it is, and "probably yours" is exactly the
+    sentence that put James Perry in a car.
     """
-    state, _ = derive(lead, get_event, now_iso)
+    state, _ = derive(lead, get_event, now_iso, events_by_email)
     return state in BOOKABLE_TRUTH
 
 
-def reconcile(leads, get_event, now_iso=None):
+def reconcile(leads, get_event, now_iso=None, events_by_email=None):
     """Sweep every lead. Returns buckets plus counts.
 
     `leads` is {key: lead_dict}. Nothing here mutates anything — this reports.
@@ -143,10 +167,11 @@ def reconcile(leads, get_event, now_iso=None):
         "no_event_id": [],
         "cancelled": [],
         "unknown": [],
+        "link_missing": [],
     }
     for key, lead in (leads or {}).items():
         out["checked"] += 1
-        state, event = derive(lead, get_event, now_iso)
+        state, event = derive(lead, get_event, now_iso, events_by_email)
         row = {
             "key": key,
             "name": (lead or {}).get("name") or "",
@@ -170,7 +195,29 @@ def reconcile(leads, get_event, now_iso=None):
             out["unflagged"].append(row)
         elif state == UNKNOWN:
             out["unknown"].append(row)
+        elif state == LINK_MISSING:
+            out["link_missing"].append(row)
     return out
+
+
+def fingerprint(report):
+    """A stable signature of WHO is currently broken.
+
+    S30b — the first version of this posted whenever anything was wrong, and
+    the sweep runs hourly, so #dev got the same five names every hour through
+    the night. That is the alert-storm failure Patch #103 already solved on
+    the Postgres path ("loud on the first one, then counted") and I did not
+    carry it one function across. An alert nobody can distinguish from the
+    last one is not an alert.
+
+    Caller posts only when this value CHANGES. Same people, same problem,
+    silence.
+    """
+    keys = []
+    for bucket in ("phantom", "no_event_id", "cancelled"):
+        for r in report.get(bucket) or []:
+            keys.append("%s:%s" % (bucket, r.get("key")))
+    return "|".join(sorted(keys))
 
 
 def describe(report, limit=10):
@@ -200,6 +247,9 @@ def describe(report, limit=10):
     lines.append("_These leads may have been told a session is confirmed. "
                  "The flag is left alone on purpose — it is the only record that "
                  "a promise was made._")
+    if report.get("link_missing"):
+        lines.append("ℹ️ %d lead(s) have a real session that their record is not "
+                     "pointing at — a linkage gap, not a broken promise." % len(report["link_missing"]))
     if report["unknown"]:
         lines.append("⚠️ %d lead(s) could not be checked (calendar lookup failed) — "
                      "not counted above, nothing assumed." % len(report["unknown"]))
