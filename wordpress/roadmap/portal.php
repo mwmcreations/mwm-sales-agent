@@ -1,6 +1,13 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ Portal · LOGIN + READ-ONLY RENDER
-// WP Code Snippets ID 51 · ACTIVE · DEV · Aug 11 2026 · v1.4.0
+// WP Code Snippets ID 51 · ACTIVE · DEV · Aug 26 2026 · v1.5.0
+// v1.5.0 — Attention-card text now COMPUTES its figures instead of storing them.
+//          A stored number is true on the day it is seeded and wrong afterwards;
+//          the cards were still saying "95 days" and "11 studio hours" while the
+//          meters on the same page said 80 and 10.5. Two figures disagreeing in
+//          front of a client costs trust in ALL of them. Seed a token, not a number.
+//          (Same lesson as v1.0.2 and the studio meter — applied to the surface
+//          that was missed.)
 // v1.4.0 — Confirm now writes the day to the MWM CREATIONS calendar and REPORTS
 //          what happened. Before this, Confirm wrote a row and told the client
 //          the day was booked; no crew ever saw it and no screen said so.
@@ -246,6 +253,27 @@ function mwm_rm_status_label( $status ) {
 function mwm_rm_status_step( $status ) {
 	$map = array( 'planned' => 1, 'scheduled' => 2, 'filmed' => 3, 'editing' => 4, 'delivered' => 5 );
 	return isset( $map[ $status ] ) ? $map[ $status ] : 1;
+}
+
+/**
+ * Render a figure the way the meters do: 4, not 4.0 — but 10.5 stays 10.5.
+ */
+function mwm_rm_num( $n ) {
+	return rtrim( rtrim( number_format( (float) $n, 1 ), '0' ), '.' );
+}
+
+/**
+ * Substitute {tokens} in client-facing card text.
+ *
+ * A card may state a figure that a meter on the same page also states. Storing
+ * that figure freezes it at seed time; the meter keeps counting. Store the
+ * token and let both come from one calculation.
+ */
+function mwm_rm_fill( $text, $tokens ) {
+	if ( ! is_string( $text ) || $text === '' || strpos( $text, '{' ) === false ) {
+		return $text;
+	}
+	return strtr( $text, $tokens );
 }
 
 function mwm_rm_fmt_date( $dt, $fmt = 'D j M Y' ) {
@@ -931,6 +959,21 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
 	$sh_allowed = (float) $client->studio_hours_allowed;
 	$sh_used    = (float) apply_filters( 'mwm_rm_studio_hours_used', 0, $client );
 
+	// Every figure an attention card is allowed to quote. Anything not in here
+	// cannot be seeded into card copy, which is the point.
+	$tok = array(
+		'{campaign_days_left}'  => $remaining === null ? '' : mwm_rm_num( $remaining ),
+		'{campaign_days_used}'  => mwm_rm_num( $spent ),
+		'{campaign_days_total}' => mwm_rm_num( $allowed ),
+		'{days_left}'           => mwm_rm_num( $days_left ),
+		'{studio_hours_left}'   => mwm_rm_num( max( 0, $sh_allowed - $sh_used ) ),
+		'{studio_hours_used}'   => mwm_rm_num( $sh_used ),
+		'{studio_hours_total}'  => mwm_rm_num( $sh_allowed ),
+		'{captures_left}'       => mwm_rm_num( max( 0, $cap_allowed - $cap_used ) ),
+		'{captures_total}'      => mwm_rm_num( $cap_allowed ),
+		'{films}'               => mwm_rm_num( $film_count ),
+	);
+
 	// 🔴 FIRST RUN — a client who has had nothing delivered yet.
 	// Their portal must NOT open with an accounting of zeros. "0 campaigns filmed,
 	// 0 films delivered" is not a status, it is twelve reminders that nothing has
@@ -1246,8 +1289,8 @@ function mwm_rm_portal_screen( $client, $req_error = '', $req_ok = null ) {
         $age = $a->created_at ? max( 0, (int) round( ( current_time( 'timestamp' ) - strtotime( $a->created_at ) ) / DAY_IN_SECONDS ) ) : null; ?>
         <div class="rm-act">
           <div>
-            <div class="rm-actt"><?php echo esc_html( $a->title ); ?></div>
-            <?php if ( $a->detail ) : ?><div class="rm-actd"><?php echo esc_html( $a->detail ); ?></div><?php endif; ?>
+            <div class="rm-actt"><?php echo esc_html( mwm_rm_fill( $a->title, $tok ) ); ?></div>
+            <?php if ( $a->detail ) : ?><div class="rm-actd"><?php echo esc_html( mwm_rm_fill( $a->detail, $tok ) ); ?></div><?php endif; ?>
           </div>
           <div class="rm-actage"><?php
             // An age of "0 days" is noise on something raised today. Say nothing.

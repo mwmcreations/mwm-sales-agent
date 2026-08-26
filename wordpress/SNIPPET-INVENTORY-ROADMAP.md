@@ -74,3 +74,44 @@ calls `wp_die()`, so *every page of wp-admin* returned "The link you followed ha
 — the whole admin was unusable and the cause looked like a WordPress nonce bug, not like
 a snippet. Recovery is `?snippets-safe-mode=true` on any admin URL, which loads the
 Snippets screen with no snippets running so the offender can be switched off.
+
+## Aug 26 · 14:50 ET — live IDs after S98 (computed attention cards)
+
+| ID | snippet | state |
+|---|---|---|
+| 28 | schema v1.2.0 | active |
+| 40 | hold sweep (24h nudge, 48h release) | active |
+| 53 | seed Dr Luiz Bolfer v2 | active |
+| **61** | **Portal v1.5.0 — computed attention cards** | **active** |
+| **62** | **Seed Zerlotini Brothers v4** | **active** |
+| 24 | one-shot bootstrap | inactive |
+| 34 | seed Zerlotini Brothers v3 | inactive — superseded by 62 |
+| 43, 48, 51 | Portal v1.3.0, v1.3.1, v1.4.0 | inactive — superseded by 61 |
+
+Deploy order held: **51 off → 61 on → 34 off → 62 on**, and the live page was
+re-fetched between each pair. Import minted new IDs again (61, 62), as it always does.
+
+🔴 **Do not trust `find`'s description of a row's active state.** During this deploy it
+reported v1.5.0 as ACTIVE while the toggle had not been clicked at all — the live page
+was still serving v1.4.0's output, which is what proved it wrong. Read the row's
+**link href** (`action=activate` vs `action=deactivate`) via `read_page`, and confirm
+against the rendered page. *Verify the object, not the label — and an accessibility-tree
+summary is a label.*
+
+🔑 **The viewport and the screenshot are not the same size** (1499 wide vs 1171 here).
+Raw coordinates land in the wrong place; three typed values went into the wrong field
+before this was spotted. **Use `ref`-based clicks and `form_input`, never coordinates,
+on any form that matters.**
+
+🔑 **The re-seed does NOT touch the access code.** The generator only mints a code on the
+`! $client_id` branch; an existing row takes the `$wpdb->update` path, which lists its
+columns and omits `access_code`. Verified after deploy by signing out and signing back
+in with the client's real code.
+
+## Rendering before deploy
+
+`tools/harness.php` needs `tools/portal_work.php` to be a **verbatim copy of the mirror**,
+`<?php` line included — the file is a template with `?> … <?php` blocks, so stripping the
+opening tag turns its function bodies into raw HTML and PHP reports an unmatched `}`
+hundreds of lines away. There is no PHP on the device; stage the repo into the cloud
+container (`device_stage_files`) and lint and render there.

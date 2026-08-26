@@ -1,6 +1,6 @@
 <?php
 // Code Snippets plugin — MWM ROADMAP™ · SEED: Zerlotini Brothers Construction
-// WP Code Snippets ID 34 · ACTIVE · DEV · Aug 11 2026 · seed v3
+// WP Code Snippets · DEV · seed v4 (Aug 26 2026)
 //
 // GENERATED from docs/roadmap-seed/zbrothers_data.json by gen_wp_seeder.py.
 // DO NOT HAND-EDIT. Change the JSON and regenerate, or the portal Michael
@@ -21,7 +21,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_ZB_VERSION', '3' );
+define( 'MWM_RM_SEED_ZB_VERSION', '4' );
 
 function mwm_rm_seed_zbrothers() {
 
@@ -478,18 +478,18 @@ function mwm_rm_seed_zbrothers() {
 		'review_state' => 'approved',
 	) );
 
-	// ── month 8 · Z CAST — Episode 01 with Sandina ──
+	// ── month 8 · Z CAST — the series ──
 	$wpdb->insert( $campaigns, array(
 		'client_id'      => $client_id,
 		'month_no'       => 8,
-		'title'          => 'Z CAST — Episode 01 with Sandina',
-		'theme_desc'     => 'The series proper: title sequence, full episode, and eighteen short cuts ready to post.',
+		'title'          => 'Z CAST — the series',
+		'theme_desc'     => 'Your own show, running. Full episodes plus every strong moment cut out of them and captioned for social. Episode 03 was recorded on your studio hours, so it cost you no campaign day.',
 		'status'         => 'delivered',
 		'shoot_state'    => 'confirmed',
 		'shoot_kind'     => 'studio',
 		'shoot_at'       => '2026-07-15 09:00:00',
 		'shoot_location' => 'MWM Creations & Studios',
-		'delivered_at'   => '2026-07-24',
+		'delivered_at'   => '2026-08-21',
 		'sort_order'     => 8,
 	) );
 	$cid = (int) $wpdb->insert_id;
@@ -499,7 +499,7 @@ function mwm_rm_seed_zbrothers() {
 		'kind'         => 'episode',
 		'url'          => 'https://drive.google.com/file/d/1qCe7LOx8pd9usnPoy4TqIrTtBpkW6n81/view',
 		'qty'          => 1,
-		'delivered_at' => '2026-07-24',
+		'delivered_at' => '2026-08-21',
 		'review_state' => 'approved',
 	) );
 	$wpdb->insert( $assets, array(
@@ -508,7 +508,7 @@ function mwm_rm_seed_zbrothers() {
 		'kind'         => 'short',
 		'url'          => 'https://drive.google.com/file/d/1HzYMv3ZKtoNWGxMVTrR9HCedX9l5FEvg/view',
 		'qty'          => 1,
-		'delivered_at' => '2026-07-24',
+		'delivered_at' => '2026-08-21',
 		'review_state' => 'approved',
 	) );
 	$wpdb->insert( $assets, array(
@@ -517,8 +517,26 @@ function mwm_rm_seed_zbrothers() {
 		'kind'         => 'short',
 		'url'          => 'https://drive.google.com/drive/folders/1grdRE4gAWVX6cjCF4QdemRpjKjd2UoeQ',
 		'qty'          => 18,
-		'delivered_at' => '2026-07-24',
+		'delivered_at' => '2026-08-21',
 		'review_state' => 'approved',
+	) );
+	$wpdb->insert( $assets, array(
+		'campaign_id'  => $cid,
+		'title'        => 'Z CAST Episode 03 — full episode',
+		'kind'         => 'episode',
+		'url'          => 'https://drive.google.com/file/d/1JBxVZwcJfphtkeBoiI0DCUdVohNYcqnT/view',
+		'qty'          => 1,
+		'delivered_at' => '2026-08-21',
+		'review_state' => 'review',
+	) );
+	$wpdb->insert( $assets, array(
+		'campaign_id'  => $cid,
+		'title'        => 'Episode 03 — short cuts, captioned',
+		'kind'         => 'short',
+		'url'          => 'https://drive.google.com/drive/folders/1B4TIaLyFCgOkkOx9EdX9x1bWFPo1HwxE',
+		'qty'          => 15,
+		'delivered_at' => '2026-08-21',
+		'review_state' => 'review',
 	) );
 	$wpdb->insert( $assets, array(
 		'campaign_id'  => $cid,
@@ -526,7 +544,7 @@ function mwm_rm_seed_zbrothers() {
 		'kind'         => 'other',
 		'url'          => 'https://drive.google.com/drive/folders/1P7i9ahL36QsPCoSLcj5yMYOvAEixOQtW',
 		'qty'          => 1,
-		'delivered_at' => '2026-07-24',
+		'delivered_at' => '2026-08-21',
 		'review_state' => 'approved',
 	) );
 
@@ -597,14 +615,14 @@ function mwm_rm_seed_zbrothers() {
 	// ── needs your attention ──
 	$wpdb->insert( $actions, array(
 		'client_id' => $client_id,
-		'title'     => 'Four campaign days left, and 95 days to use them',
+		'title'     => '{campaign_days_left} campaign days left, and {days_left} days to use them',
 		'detail'    => 'Campaigns 9 to 12 of your roadmap are still to film. On location we need 7 days\' notice, so the last comfortable booking date is early November.',
 		'due_date'  => '2026-11-14',
 		'resolved'  => 0,
 	) );
 	$wpdb->insert( $actions, array(
 		'client_id' => $client_id,
-		'title'     => '11 of your 12 studio hours are still unused',
+		'title'     => '{studio_hours_left} of your {studio_hours_total} studio hours are still unused',
 		'detail'    => 'They are included in your plan and they expire with your contract year on 14 November. A studio day is the cheapest way to add a Z CAST episode or a batch of social films.',
 		'due_date'  => '2026-11-14',
 		'resolved'  => 0,

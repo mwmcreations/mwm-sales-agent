@@ -6,9 +6,15 @@ ONE source of truth (the JSON), two consumers (the local harness and this
 seeder), so the portal Michael reviewed and the portal WordPress serves cannot
 drift. Do not hand-edit the generated PHP.
 """
-import json, textwrap
+import json, textwrap, os, sys
 
-D = json.load(open('/home/claude/zbrothers_data.json'))
+# Paths default to the repo, and can be overridden on the command line so the
+# generator runs the same way on the device and in a container.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_ROOT, 'docs/roadmap-seed/zbrothers_data.json')
+DST = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_ROOT, 'wordpress/roadmap/seed-zbrothers.php')
+
+D = json.load(open(SRC))
 c = D['client']
 
 def php(s):
@@ -22,7 +28,7 @@ w = out.append
 
 w("""<?php
 // Code Snippets plugin — MWM ROADMAP™ · SEED: Zerlotini Brothers Construction
-// WP Code Snippets ID 23 · DEV · Aug 11 2026 · seed v1
+// WP Code Snippets · DEV · seed v4 (Aug 26 2026)
 //
 // GENERATED from docs/roadmap-seed/zbrothers_data.json by gen_wp_seeder.py.
 // DO NOT HAND-EDIT. Change the JSON and regenerate, or the portal Michael
@@ -43,7 +49,7 @@ w("""<?php
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'MWM_RM_SEED_ZB_VERSION', '3' );
+define( 'MWM_RM_SEED_ZB_VERSION', '4' );
 
 function mwm_rm_seed_zbrothers() {
 
@@ -190,5 +196,5 @@ add_action( 'init', function () {
 }, 5 );
 """)
 
-open('/home/claude/wp-snippet-23-zbrothers-seed.php', 'w').write('\n'.join(out))
-print('written')
+open(DST, 'w').write('\n'.join(out))
+print('written ->', DST)

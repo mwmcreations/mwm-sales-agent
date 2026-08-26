@@ -1,9 +1,9 @@
 {
-  "_note": "Canonical Z Brothers portal data. ONE source, two consumers: seed_zbrothers.php (local harness + offline copy) and gen_wp_seeder.py (the WordPress seeder). Never edit the generated files.",
+  "_note": "Canonical Z Brothers portal data. ONE source, two consumers: seed_zbrothers.php (local harness + offline copy) and gen_wp_seeder.py (the WordPress seeder). Never edit the generated files. Card titles carry {tokens}, never numbers — a stored figure is true on the day it is seeded and contradicts the live meters afterwards (portal v1.5.0).",
   "_sources": {
     "arc": "ZBrothers_Annual_Roadmap.pdf — the signed Plano GOLD",
     "shoot_days": "MWM CREATIONS calendar, 8 GRAVAÇÃO entries Nov 2025 - Jul 2026, confirmed by Michael Aug 11",
-    "deliverables": "Google Drive — Z BROTHERS/EXPORT, walked Aug 11 2026",
+    "deliverables": "Google Drive — Z BROTHERS/EXPORT, walked Aug 11 2026; 08. AGOSTO 2026 re-walked Aug 26 2026 (Z CAST EPISODIO 03 + 15 shorts).",
     "plan": "Stripe GOLD PLAN prod_OIxgvyHybU4UJG, $2,397 + $30 legacy price",
     "studio": "wp_mwm_studio_clients #13 (Z Brothers Construction, sandina@zbrothersconstruction.com, Studio 4hr/month, Jul 17 - Nov 14 2026). SEPARATE PRODUCT, separate login. The roadmap portal only READS its bookings ledger."
   },
@@ -15,7 +15,7 @@
     "campaigns_allowed": 12,
     "captures_allowed": 4,
     "studio_hours_allowed": 12,
-    "studio_hours_used": 1.0,
+    "studio_hours_used": 1.5,
     "conversions_used": 0,
     "contract_start": "2025-11-14",
     "contract_end": "2026-11-14",
@@ -279,14 +279,14 @@
     },
     {
       "month_no": 8,
-      "title": "Z CAST — Episode 01 with Sandina",
-      "theme_desc": "The series proper: title sequence, full episode, and eighteen short cuts ready to post.",
+      "title": "Z CAST — the series",
+      "theme_desc": "Your own show, running. Full episodes plus every strong moment cut out of them and captioned for social. Episode 03 was recorded on your studio hours, so it cost you no campaign day.",
       "status": "delivered",
       "shoot_at": "2026-07-15 09:00:00",
       "shoot_kind": "studio",
       "shoot_location": "MWM Creations & Studios",
       "shoot_state": "confirmed",
-      "delivered_at": "2026-07-24",
+      "delivered_at": "2026-08-21",
       "folder_url": "https://drive.google.com/drive/folders/1P7i9ahL36QsPCoSLcj5yMYOvAEixOQtW",
       "assets": [
         {
@@ -309,6 +309,20 @@
           "url": "https://drive.google.com/drive/folders/1grdRE4gAWVX6cjCF4QdemRpjKjd2UoeQ",
           "qty": 18,
           "review_state": "approved"
+        },
+        {
+          "title": "Z CAST Episode 03 — full episode",
+          "kind": "episode",
+          "url": "https://drive.google.com/file/d/1JBxVZwcJfphtkeBoiI0DCUdVohNYcqnT/view",
+          "qty": 1,
+          "review_state": "review"
+        },
+        {
+          "title": "Episode 03 — short cuts, captioned",
+          "kind": "short",
+          "url": "https://drive.google.com/drive/folders/1B4TIaLyFCgOkkOx9EdX9x1bWFPo1HwxE",
+          "qty": 15,
+          "review_state": "review"
         }
       ]
     },
@@ -367,12 +381,12 @@
   ],
   "actions": [
     {
-      "title": "Four campaign days left, and 95 days to use them",
+      "title": "{campaign_days_left} campaign days left, and {days_left} days to use them",
       "detail": "Campaigns 9 to 12 of your roadmap are still to film. On location we need 7 days' notice, so the last comfortable booking date is early November.",
       "due_date": "2026-11-14"
     },
     {
-      "title": "11 of your 12 studio hours are still unused",
+      "title": "{studio_hours_left} of your {studio_hours_total} studio hours are still unused",
       "detail": "They are included in your plan and they expire with your contract year on 14 November. A studio day is the cheapest way to add a Z CAST episode or a batch of social films.",
       "due_date": "2026-11-14"
     },
