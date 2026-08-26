@@ -37,6 +37,8 @@ import event_rail
 import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
+import shadow as _shadow      # Patch #95 — a shadow log a human can find
+import burst as _burst        # Patch #96 — one reply per burst, not per fragment
 import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -1178,6 +1180,11 @@ MICHAEL_SLACK_USER_ID = os.getenv("MICHAEL_SLACK_USER_ID", "")  # Michael's Slac
 # One thread per sender phone, persistent within a deploy. Resets on restart.
 lara_shadow_threads = {}
 maya_shadow_threads = {}
+# Patch #95 — what each shadow card is currently carrying, so a returning lead
+# gets a NEW card instead of replies buried under a months-old parent, and a
+# card named "Unknown" gets renamed the moment we learn who it is.
+# Keyed "<channel_id>|<thread_key>" -> {"last": epoch, "name": str, "email": str}
+shadow_thread_meta = {}
 
 # Trigger words for detecting "hot" leads (high intent signals)
 HOT_SIGNAL_TRIGGERS = {
@@ -1339,7 +1346,9 @@ def _mirror_to_shadow(channel_id: str, thread_state: dict, agent_name: str,
     Threading: One Slack thread per sender phone number. First message creates
     a header post with the contact info; subsequent messages reply in the thread
     tagged with the inbound_role_label or the agent_name. Thread state is
-    in-memory and resets on process restart.
+    persisted in Postgres, so it survives a restart. Patch #95: a thread that
+    has been quiet longer than SHADOW_THREAD_MAX_IDLE_DAYS gets a NEW card
+    rather than replies under a months-old parent.
     """
     if not channel_id:
         return
@@ -1361,14 +1370,39 @@ def _mirror_to_shadow(channel_id: str, thread_state: dict, agent_name: str,
 
     thread_ts = thread_state.get(thread_key)
 
+    # ── Patch #95 · is this thread still the right place to put this? ──
+    # A conversation resumed after a quiet gap is a new episode to whoever reads
+    # the channel. Threading it under a months-old parent means the channel
+    # shows NOTHING for today, which is exactly how Michael lost Jaysee Soto's
+    # conversation on 26 Aug. None of this may ever stop the mirror: wrapped.
+    _meta_key = "%s|%s" % (channel_id, thread_key)
+    _meta = shadow_thread_meta.get(_meta_key) or {}
+    _now_epoch = time.time()
+    try:
+        if _shadow.should_start_new_thread(thread_ts, _meta.get("last"), _now_epoch):
+            if thread_ts:
+                print(f"[{agent_name} SHADOW] thread {thread_ts} idle "
+                      f"{_shadow.idle_days(_meta.get('last'), _now_epoch)} days — starting a new card")
+            _resumed_days = _shadow.idle_days(_meta.get("last"), _now_epoch)
+            thread_ts = None
+        else:
+            _resumed_days = None
+    except Exception as _e95:
+        print(f"[{agent_name} SHADOW] staleness check failed, keeping thread: {_e95}")
+        _resumed_days = None
+
     # First message from this phone → create the thread header.
     if not thread_ts:
         pretty_phone = _format_phone_for_shadow(phone)
-        header_lines = [f"📱 *Conversation with {name}* — `{pretty_phone}`"]
-        if email:
-            header_lines.append(f"✉️ {email}")
-        header_lines.append(f"👤 Role: {role}")
-        header_text = "\n".join(header_lines)
+        try:
+            header_text = _shadow.header_text(
+                name, pretty_phone, email=email, role=role,
+                resumed_after_days=_resumed_days,
+                business=(client_info.get("business", "") if isinstance(client_info, dict) else ""),
+            )
+        except Exception as _e95b:
+            print(f"[{agent_name} SHADOW] header build failed, using plain: {_e95b}")
+            header_text = f"📱 *Conversation with {name}* — `{pretty_phone}`"
 
         try:
             url = "https://slack.com/api/chat.postMessage"
@@ -1391,10 +1425,46 @@ def _mirror_to_shadow(channel_id: str, thread_state: dict, agent_name: str,
                 print(f"[{agent_name} SHADOW] No ts returned from thread header post")
                 return
             thread_state[thread_key] = thread_ts
+            shadow_thread_meta[_meta_key] = {
+                "last": _now_epoch, "name": name, "email": email, "ts": thread_ts,
+            }
             print(f"[{agent_name} SHADOW] Created thread for {name} ({pretty_phone}) ts={thread_ts}")
         except Exception as e:
             print(f"[{agent_name} SHADOW] Error creating thread header: {e}")
             return
+
+    # ── Patch #95 · the card is named once, when we know nothing. Rename it the
+    # moment we know better, so scrolling the channel can identify a thread.
+    try:
+        if _shadow.should_rename(_meta.get("name", ""), name,
+                                 _meta.get("email", ""), email):
+            _new_name = _shadow.better_name(_meta.get("name", ""), name) or name
+            _biz = client_info.get("business", "") if isinstance(client_info, dict) else ""
+            http_requests.post(
+                "https://slack.com/api/chat.update",
+                json={
+                    "channel": channel_id,
+                    "ts": thread_ts,
+                    "text": _shadow.header_text(
+                        _new_name, _format_phone_for_shadow(phone),
+                        email=email, role=role, business=_biz,
+                    ),
+                },
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                         "Content-Type": "application/json"},
+                timeout=5,
+            )
+            _meta["name"] = _new_name
+            _meta["email"] = email
+            print(f"[{agent_name} SHADOW] renamed card {thread_ts} -> {_new_name}")
+    except Exception as _e95c:
+        print(f"[{agent_name} SHADOW] rename failed (non-fatal): {_e95c}")
+
+    _meta["last"] = _now_epoch
+    _meta.setdefault("name", name)
+    _meta.setdefault("email", email)
+    _meta["ts"] = thread_ts
+    shadow_thread_meta[_meta_key] = _meta
 
     # Post the message as a reply in the thread.
     prefix = f"📥 *{inbound_role_label}:*" if direction == "inbound" else f"🤖 *{agent_name}:*"
@@ -8201,6 +8271,18 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         wa_messages = []
     was_audio = False
 
+    # Patch #96 — claim a sequence number for this inbound. Just before the
+    # reply goes out we ask whether a NEWER message from the same sender has
+    # arrived while we were generating; if it has, this reply is stale and the
+    # newer generation answers for both. People type in bursts, and Jaysee Soto
+    # got "Today is fully booked" and "available today at 2:30" seconds apart
+    # because each fragment started its own reply.
+    try:
+        _burst_seq = _burst.note_inbound(sender)
+    except Exception as _e96:
+        print(f"[Burst] sequencing failed, replying normally: {_e96}")
+        _burst_seq = None
+
     if num_media > 0:
         if "audio" in content_type and media_id:
             print(f"ð¤ï¸ Voice note received — ContentType: {content_type}")
@@ -8743,6 +8825,18 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                                    lambda: _wa_typing_on((wa_messages or [{}])[-1].get("id", "")))
             except Exception as _pace_err:
                 print(f"[Pacing] non-fatal: {_pace_err}")
+            # Patch #96 — a newer message from this sender landed while we were
+            # generating. Its own reply is coming and it has this message in its
+            # history, so sending ours would put two answers to two halves of one
+            # thought in front of the lead. Drop it.
+            try:
+                if _burst.is_superseded(sender, _burst_seq):
+                    print(f"[Burst] reply to seq {_burst_seq} superseded for {sender} — dropped")
+                    _TALLY.bump("burst.reply_superseded", "whatsapp — a newer message answered for both")
+                    return
+            except Exception as _e96b:
+                print(f"[Burst] supersede check failed, sending anyway: {_e96b}")
+
             # —— Voice note reply: send TTS audio if incoming was a voice note ——
             if was_audio:
                 try:
@@ -18841,6 +18935,12 @@ def _restore_state_from_pg():
             lara_history.setdefault(_k, _normalize_history(_v))  # S20: repair poisoned records
         for _k, _v in (_pg.load_state("maya_shadow_threads", {}) or {}).items():
             maya_shadow_threads.setdefault(_k, _v)
+        # Patch #95 — without this the staleness check has no last-activity to
+        # read after a restart, every thread looks stale, and every lead gets a
+        # new card on their next message. Restoring it is what makes the rule
+        # mean "quiet for days" rather than "we rebooted".
+        for _k, _v in (_pg.load_state("shadow_thread_meta", {}) or {}).items():
+            shadow_thread_meta.setdefault(_k, _v)
         for _k, _v in (_pg.load_state("lara_shadow_threads", {}) or {}).items():
             lara_shadow_threads.setdefault(_k, _v)
         _golden_hour_processed.update(_pg.load_state("golden_hour_processed", []) or [])
@@ -19357,6 +19457,7 @@ def _state_saver_thread():
             _pg.save_state("ig_conversation_history", ig_conversation_history)
             _pg.save_state("lara_history", lara_history)
             _pg.save_state("maya_shadow_threads", maya_shadow_threads)
+            _pg.save_state("shadow_thread_meta", shadow_thread_meta)   # Patch #95
             _pg.save_state("lara_shadow_threads", lara_shadow_threads)
             _pg.save_state("golden_hour_processed", list(_golden_hour_processed))
             _pg.save_state("golden_hour_morning", list(_golden_hour_morning))
