@@ -14880,7 +14880,19 @@ def _missed_run_watchdog():
                 ))
         except Exception as e:
             _report_error("missed_run_watchdog", e)
-        _t.sleep(1800)
+        # 1500s, not 1800s. The stale threshold for this thread is 30 minutes,
+        # so a 30-minute sleep put the heartbeat age at exactly the threshold
+        # immediately before every beat — /health reported the thread unhealthy
+        # and the whole service "degraded" once per cycle, forever, on a thread
+        # that was working perfectly. Every other 30-minute-threshold thread in
+        # this file already sleeps 1500 for exactly this reason; this one was
+        # the exception. 25 minutes leaves five minutes of margin.
+        #
+        # The comment above _PROCESS_START says it: a report that cries wolf
+        # gets ignored, and an ignored report is worse than no report. A health
+        # endpoint that says "degraded" on a healthy system trains everyone to
+        # stop reading it.
+        _t.sleep(1500)
 
 
 threading.Thread(target=_missed_run_watchdog, daemon=True).start()
