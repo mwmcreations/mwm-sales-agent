@@ -115,3 +115,33 @@ in with the client's real code.
 opening tag turns its function bodies into raw HTML and PHP reports an unmatched `}`
 hundreds of lines away. There is no PHP on the device; stage the repo into the cloud
 container (`device_stage_files`) and lint and render there.
+
+## Aug 26 · 13:10 ET — the portal was being CACHED, and that is why logins "failed"
+
+| ID | snippet | state |
+|---|---|---|
+| **64** | **ROADMAP Portal — bypass page caches** | **active** |
+
+`/roadmap-portal/` was served to anonymous visitors as a static WPFC file — cold
+fetches carried a `WP Fastest Cache file was created ... 12:31 pm` footer. A
+successful login sets a cookie and redirects, and the redirect landed on the
+cached logged-out copy, so the client saw the login form again with **blank
+fields and no error**. Indistinguishable from a wrong password.
+
+Never reproduced for us: WPFC does not serve cached pages to logged-in users and
+we were both in wp-admin.
+
+**Two halves, and the second is the one that counts:**
+1. snippet 64 (mirrored at `wordpress/wp-snippet-64-roadmap-portal-nocache.php`)
+2. 🔴 **WPFC → Exclude → Exclude Pages → "Starts With: roadmap-portal"** — set in
+   the plugin UI, next to the `studio-portal` rule from July. WPFC largely
+   ignores `DONOTCACHEPAGE`; without this rule the snippet alone does nothing.
+
+Then Clear All Cache. **Proven after**: a fresh cookie jar + iPhone UA GET → POST
+of the real credentials returned the signed-in portal ("Campaigns filmed",
+"Films delivered to you"), and the WPFC footer is gone.
+
+⚠️ **A repeated nonce is NOT proof of caching.** `wp_create_nonce()` is
+deterministic for logged-out users (uid 0, no session token) inside a 12-hour
+tick, so identical nonces across anonymous requests are normal. The **footer**
+was the real evidence. I nearly built a conclusion on the wrong test.
