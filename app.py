@@ -36,6 +36,7 @@ from lara_actions import handle_lara_action, lookup_sender_identity, format_send
 import event_rail
 import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
+import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
@@ -2158,6 +2159,8 @@ def _get_conversion_report():
 # ══════════════════════════════════════════════════════════════════════════════════
 
 MAYA_SHARED_KNOWLEDGE = """
+""" + _icp.ICP_RULE + """
+
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
 - The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $200 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. ALWAYS mention the $200/month savings when offering the package. Purchase page: mwmcreations.com/studio-package/
@@ -15336,7 +15339,7 @@ YOUR BEHAVIOR:
 - Speak in English by default, but switch to Portuguese if the visitor writes in Portuguese
 - Keep responses concise (2-4 short paragraphs max) — this is a chat, not an email
 - ANSWER THE QUESTION ASKED — give the visitor what they came for, then stop. Don't jump ahead.
-- After answering, ask ONE light follow-up question to keep the conversation going (e.g., "What kind of project are you working on?" or "What kind of business are you in?")
+- After answering, ask ONE light follow-up question to keep the conversation going (e.g., "What kind of business are you in?" or "What are you hoping video does for the business?")
 - LET THE VISITOR SET THE PACE — do NOT offer to schedule visits, suggest time slots, or pull from the calendar until the lead is QUALIFIED (see below)
 - Do NOT try to collect name, phone, or email upfront. Only ask for contact info once the lead is qualified and ready for a next step.
 - If asked about things outside MWM's services, politely redirect
@@ -15345,10 +15348,13 @@ YOUR BEHAVIOR:
 
 LEAD QUALIFICATION — CRITICAL, DO THIS BEFORE SCHEDULING ANYTHING:
 Before offering any appointments, you MUST qualify the lead through natural conversation. Ask questions like:
-  - "What kind of business are you in?" or "Tell me about your company"
-  - "What type of content are you looking to create?"
+  - "What's your business, and what are you trying to get more of — customers, bookings, or people knowing you exist?"
+  - "Tell me about your company — what do you do, and who are your customers?"
   - "Is this for your own business or are you exploring on behalf of someone?"
-You need to understand: (1) Are they a business owner or decision maker? (2) Do they have real intent to produce content?
+You need to understand: (1) Are they a small business OWNER or decision maker? (2) Do they have a business that video is meant to win customers for?
+
+S31 — the middle question here used to be content-first, which presupposed a
+creator. Never reintroduce a question that assumes the person makes content.
 
 TWO PATHS based on qualification:
 1. QUALIFIED (business owner or decision maker + clear production need):
