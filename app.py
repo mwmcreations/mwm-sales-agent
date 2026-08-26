@@ -36,6 +36,7 @@ from lara_actions import handle_lara_action, lookup_sender_identity, format_send
 import event_rail
 import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
+import slots as _slots        # Patch #94 — which times we offer, and why
 import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -3673,8 +3674,9 @@ def get_gmail_service(impersonate=None):
 
 def get_available_slots():
     """
-    Return exactly 3 available slots — one per each of the next 3 available business days,
-    alternating morning -> afternoon -> morning.
+    Return up to 3 available slots — one per business day, starting TODAY,
+    preferring morning -> afternoon -> morning but never skipping a day just
+    because its preferred period has passed (Patch #94).
       Morning options (tried in order): 10:00 AM, then 11:00 AM
       Afternoon options (tried in order): 3:00 PM, then 2:00 PM
     Checks the MWM CREATIONS calendar (CALENDAR_ID).
@@ -3711,63 +3713,15 @@ def get_available_slots():
                     "end": end_info["dateTime"]
                 })
 
-        # Alternating pattern: morning -> afternoon -> morning
-        # morning = [10am, 11am] in priority order
-        # afternoon = [3pm, 2pm] in priority order
-        day_patterns = [
-            [(10, 0), (11, 0)],   # Slot 1: morning
-            [(15, 0), (14, 0)],   # Slot 2: afternoon
-            [(10, 0), (11, 0)],   # Slot 3: morning
-        ]
-
-        slots = []
-        current_day = now.date() - timedelta(days=1)  # loop increments before checking
-        days_checked = 0
-
-        while len(slots) < 3 and days_checked < 21:
-            current_day += timedelta(days=1)
-            days_checked += 1
-
-            # Monday-Friday only
-            if current_day.weekday() >= 5:
-                continue
-
-            # ── Capacity check: skip days that are fully booked ──
-            if _count_bookings_on_date(current_day) >= MAX_BOOKINGS_PER_DAY:
-                print(f"[Capacity] {current_day} has {MAX_BOOKINGS_PER_DAY}+ bookings — skipping")
-                continue
-
-            times_to_try = day_patterns[len(slots)]
-
-            for (hour, minute) in times_to_try:
-                candidate = tz.localize(datetime(
-                    current_day.year, current_day.month, current_day.day,
-                    hour, minute, 0
-                ))
-
-                # Skip if already in the past
-                if candidate <= now:
-                    continue
-
-                slot_end = candidate + timedelta(minutes=60)
-                # 15-min buffer before and after to avoid back-to-back meetings
-                buffer_start = candidate - timedelta(minutes=15)
-                buffer_end = slot_end + timedelta(minutes=15)
-                is_busy = any(
-                    datetime.fromisoformat(b["start"]).astimezone(tz) < buffer_end
-                    and datetime.fromisoformat(b["end"]).astimezone(tz) > buffer_start
-                    for b in busy_times
-                )
-
-                if not is_busy:
-                    slots.append({
-                        "id": candidate.isoformat(),
-                        "display": candidate.strftime("%A, %B %d at %I:%M %p EST")
-                    })
-                    break  # one slot per day, move to next day
-
-            # If this day had no available slot in the desired period, the while loop
-            # retries the same pattern index on the next business day automatically.
+        # PATCH #94 — the period is a PREFERENCE, not a gate. The old loop
+        # locked each day to one period and skipped the whole day when that
+        # period had passed, so an open afternoon read as "fully booked".
+        slots = _slots.compute_slots(
+            now, busy_times, tz,
+            count_fn=_count_bookings_on_date,
+            max_per_day=MAX_BOOKINGS_PER_DAY,
+            log=print,
+        )
 
         print(f"[get_available_slots] returning {len(slots)} slots: {[s['display'] for s in slots]}")
         return slots
