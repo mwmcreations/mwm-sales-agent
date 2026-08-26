@@ -265,10 +265,27 @@ print("\n=== 9b. the dormant self-test answers the DEPLOYMENT question too ===")
 _d = am.self_test()
 ok("dormant self-test still reports reachability", "reachable" in _d)
 ok("...as its own ok/kind result", "ok" in _d["reachable"])
-ok("this environment cannot reach Apple — device_bash/cloud never can",
-   _d["reachable"]["ok"] is False)
-check("...and says so as a NETWORK problem, not a credential one",
-      _d["reachable"]["kind"], am.ERR_NETWORK)
+# S31 — this assertion USED to read `is False`, on the reasoning that
+# device_bash and the cloud container can never reach port 993. On 25 Aug 2026
+# the probe came back {"ok": true, "host": "imap.mail.me.com:993"} and this
+# suite went red. The code had not changed; the NETWORK had.
+#
+# That is the defect: the test was asserting a property of the environment, not
+# of apple_mail.py, so it could only ever be right until the sandbox moved. A
+# test that fails when nothing broke teaches people to ignore failures.
+#
+# What actually matters is that the probe returns a DEFINITE verdict and, when
+# it cannot connect, blames the network rather than the credentials — because
+# the whole point of the dormant self-test is to separate "port blocked" from
+# "wrong password" before Michael goes and generates an app-specific one.
+ok("the probe returns a definite reachability verdict, either way",
+   isinstance(_d["reachable"]["ok"], bool))
+if _d["reachable"]["ok"] is False:
+    check("...and a failure is reported as a NETWORK problem, not a credential one",
+          _d["reachable"]["kind"], am.ERR_NETWORK)
+else:
+    ok("...and a success carries no error kind to misread",
+       "kind" not in _d["reachable"] or not _d["reachable"]["kind"])
 ok("the probe names the host and port it tried",
    "imap.mail.me.com:993" in _d["reachable"]["host"])
 ok("reachable() attempts NO login — credentials are a separate question",
