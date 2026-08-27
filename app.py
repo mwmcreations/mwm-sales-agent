@@ -7757,11 +7757,24 @@ def _sms_consent_get(lead_phone):
         return {}
 
 
-def _sms_consent_set(lead_phone, status, source, context=""):
-    """Write SMS consent. status: yes|no. source: form|maya|in_person. Context = short quote."""
+def _sms_consent_set(lead_phone, status, source, context="",
+                     marketing=None, transactional=None, ts=None):
+    """Write SMS consent. status: yes|no. source: form|maya|in_person.
+
+    Patch #109: marketing/transactional are stored separately because they are
+    separate promises. The re-engagement sequence is promotional, so it needs
+    the marketing box specifically — a lead who only ticked "appointment
+    reminders" has not agreed to be chased. `ts` carries the ORIGINAL ledger
+    time when backfilling from WordPress, so an out-of-order poll cannot make
+    an old row look newer than a revoke."""
     import pg_store as _pg
     rec = {"status": status, "source": source, "context": str(context)[:300],
-           "ts": datetime.now(pytz.timezone(TIMEZONE)).isoformat()}
+           "ts": ts if ts is not None
+                 else datetime.now(pytz.timezone(TIMEZONE)).timestamp()}
+    if marketing is not None:
+        rec["marketing"] = bool(marketing)
+    if transactional is not None:
+        rec["transactional"] = bool(transactional)
     if _pg.enabled():
         try:
             _pg.save_state(f"sms_consent:{lead_phone}", rec)
@@ -7839,6 +7852,113 @@ def _send_sms(lead_phone, body):
         return {"ok": False, "reason": "exception"}
 
 
+# ── PATCH #109 — the bridge from the WordPress ledger to pg_store ──────────
+# The opt-in form at /sms-signup/ writes into wp_mwm_sms_consent on WordPress.
+# _sms_gates reads consent out of pg_store on Railway. Nothing carried a row
+# between them, so every lead failed the consent gate — the gate we spent five
+# weeks proving to Twilio that we honour.
+#
+# PULL, not push, on purpose. The app already calls WordPress with a shared
+# secret (studio provisioning, availability, booking confirm), so this reuses a
+# path that is known to work, including the User-Agent workaround — WP's
+# security layer 406s anything sending python-requests/*. A pull also self-
+# heals: a poll that fails changes nothing and the next one catches up, whereas
+# a dropped webhook loses a consent silently.
+SMS_CONSENT_POLL_S     = int(os.getenv("SMS_CONSENT_POLL_S", "900"))   # 15 min
+SMS_CONSENT_WATERMARK  = "sms_consent_watermark"
+_SMS_CONSENT_LAG_S     = 3600   # re-read the last hour each poll; merge() makes
+                                # replaying a row we already hold a no-op
+
+
+def _sms_consent_pull():
+    """One poll of the WordPress consent ledger. Returns (seen, written)."""
+    import pg_store as _pg
+    import sms_consent as _sc
+
+    secret = os.getenv("WP_PORTAL_SECRET", "")
+    if not secret:
+        _report_error("sms_consent_pull", "WP_PORTAL_SECRET not set")
+        return (0, 0)
+
+    since = 0.0
+    if _pg.enabled():
+        try:
+            since = float(_pg.load_state(SMS_CONSENT_WATERMARK, 0) or 0)
+        except Exception:
+            since = 0.0
+    since = max(0.0, since - _SMS_CONSENT_LAG_S)
+
+    try:
+        r = http_requests.post(
+            os.getenv("WP_PORTAL_PROVISION_URL",
+                      "https://mwmcreations.com/wp-admin/admin-ajax.php"),
+            data={"action": "mwm_sms_consent_since", "since": int(since)},
+            headers={"X-MWM-Portal-Secret": secret,
+                     "User-Agent": "MWM-SalesMachine/1.0 (+https://mwmcreations.com)"},
+            timeout=20)
+    except Exception as _px:
+        _report_error("sms_consent_pull", _px, "transport")
+        return (0, 0)
+
+    if r.status_code != 200:
+        _report_error("sms_consent_pull", f"HTTP {r.status_code}",
+                      (r.text or "")[:150])
+        return (0, 0)
+    try:
+        rows = (r.json() or {}).get("data", {}).get("rows", [])
+    except Exception as _jx:
+        _report_error("sms_consent_pull", _jx, "unparseable body")
+        return (0, 0)
+
+    seen = written = 0
+    newest = since
+    for row in rows or []:
+        seen += 1
+        rec = _sc.row_to_record(row)
+        if not rec:
+            continue                      # unusable phone or unreadable time
+        newest = max(newest, rec["ts"])
+        existing = _sms_consent_get(rec["phone"]) or None
+        winner = _sc.merge(existing, rec)
+        if winner is not rec:
+            continue                      # what we already hold still stands
+        _sms_consent_set(rec["phone"], rec["status"], rec["source"],
+                         context=rec["context"], marketing=rec["marketing"],
+                         transactional=rec["transactional"], ts=rec["ts"])
+        written += 1
+
+    # Advance the watermark only on a poll that actually completed. A failure
+    # returns early above, so a bad cycle never skips a window of consents.
+    if _pg.enabled() and newest > since:
+        try:
+            _pg.save_state(SMS_CONSENT_WATERMARK, newest)
+        except Exception as _wx:
+            _report_error("sms_consent_watermark", _wx)
+
+    if seen or written:
+        print(f"[SMS-CONSENT] pull: {seen} row(s) seen, {written} written")
+    return (seen, written)
+
+
+def _sms_consent_poller():
+    import time as _t
+    print(f"[SMS-CONSENT] Poller started (every {SMS_CONSENT_POLL_S}s)")
+    _heartbeat("sms_consent_poller")
+    _t.sleep(120)                          # let boot settle before the first call
+    while True:
+        try:
+            _heartbeat("sms_consent_poller")
+            _sms_consent_pull()
+        except Exception as _e:
+            _report_error("sms_consent_poller", _e)
+        for _ in range(max(1, SMS_CONSENT_POLL_S // 300)):
+            _t.sleep(300)
+            _heartbeat("sms_consent_poller")
+
+
+threading.Thread(target=_sms_consent_poller, daemon=True).start()
+
+
 # ── PATCH #108 — approval is not the same thing as live ─────────────────────
 # Campaign CM87b39e12beba8e7816460e18178dae38 was APPROVED by the carriers on
 # 27 Aug 2026 after five weeks and eight submissions. The temptation on that
@@ -7848,10 +7968,9 @@ def _send_sms(lead_phone, body):
 # loud instead of letting a green campaign badge imply a working feature.
 #
 # Flip each one to True in the SAME commit that removes its reason.
-SMS_SEND_WIRED    = False   # nothing calls _send_sms yet
-SMS_CONSENT_WIRED = False   # nothing calls _sms_consent_set yet, so the
-                            # /sms-signup/ ledger on WordPress never reaches
-                            # pg_store, and _sms_gates refuses every lead
+SMS_SEND_WIRED    = True    # Patch #109: re-engagement SMS fallback
+SMS_CONSENT_WIRED = True    # Patch #109: _sms_consent_pull() polls the
+                            # WordPress ledger into pg_store every 15 min
 
 
 def _sms_readiness():
@@ -11148,6 +11267,93 @@ IG_REENGAGEMENT_MESSAGES = {
 IG_DM_WINDOW_HOURS = 24
 
 
+# ── PATCH #109 — SMS copy is not IG copy ───────────────────────────────────
+# IG_REENGAGEMENT_MESSAGES above run 150-250 characters and carry emoji. An
+# emoji forces the whole SMS into UCS-2, which cuts a segment from 160
+# characters to 70 — those messages would bill as four or five segments each
+# and arrive looking like a bulk blast. So SMS gets its own copy: plain ASCII,
+# one segment, sender identified, and an opt-out in every message rather than
+# only the first. We are four weeks out of a rejection for consent handling;
+# this is not the place to be clever.
+SMS_REENGAGEMENT_MESSAGES = {
+    "T1": "MWM Creations: Hi {name}, still thinking about your video project? Happy to help whenever you are ready. Reply STOP to opt out.",
+    "T2": "MWM Creations: Hi {name}, we have been shooting brand videos and podcasts this month. Want to talk through your idea? Reply STOP to opt out.",
+    "T3": "MWM Creations: Hi {name}, we have studio time opening up. If you are still exploring video, tell us what you are working on. Reply STOP to opt out.",
+    "T4": "MWM Creations: Hi {name}, clients are seeing real results from professional video. Happy to help you build something. Reply STOP to opt out.",
+    "T5": "MWM Creations: Hi {name}, consultations are free right now. No pressure, just a look at what video could do for your brand. Reply STOP to opt out.",
+    "T6": "MWM Creations: Hi {name}, short-form video is the fastest way to build awareness right now. Glad to brainstorm with you. Reply STOP to opt out.",
+    "T7": "MWM Creations: Hi {name}, last note from us. We would love to work together whenever the timing is right. Reply STOP to opt out.",
+}
+
+
+def _sms_reengagement_fallback(lead_key, name, stage, dead_reason):
+    """WhatsApp or Instagram could not deliver this touch. Carry it over SMS
+    if — and only if — this lead ticked the marketing box.
+
+    Returns True only when Twilio accepted a message. Every other path is a
+    normal, named skip: a lead we are not allowed to text is not a fault, and
+    must not reach the error bus."""
+    import sms_consent as _sc
+    import pg_store as _pg
+
+    try:
+        e164 = _sc.to_e164(lead_key)
+        if not e164:
+            # Instagram leads are keyed by a scoped id, not a number. Some of
+            # them gave us a phone in conversation; most did not.
+            e164 = _sc.to_e164((lead_data.get(lead_key) or {}).get("phone"))
+        if not e164:
+            print(f"[SMS] fallback skipped for {lead_key} ({stage}): no_phone_on_file")
+            _TALLY.bump("sms.fallback_skipped", "no_phone_on_file")
+            return False
+
+        sent_this_month = 0
+        if _pg.enabled():
+            try:
+                _st = _pg.load_state(f"sms_touch_state:{e164}", {}) or {}
+                _month = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m")
+                if _st.get("month") == _month:
+                    sent_this_month = int(_st.get("monthly_count", 0))
+            except Exception:
+                sent_this_month = 10 ** 6      # unreadable -> refuse, fail closed
+
+        allowed, why = _sc.should_fallback_to_sms(
+            dead_reason, _sms_consent_get(e164), sent_this_month, SMS_MONTHLY_CAP)
+        if not allowed:
+            print(f"[SMS] fallback skipped for ...{e164[-4:]} ({stage}): {why}")
+            _TALLY.bump("sms.fallback_skipped", why)
+            return False
+
+        body = SMS_REENGAGEMENT_MESSAGES.get(stage)
+        if not body:
+            print(f"[SMS] fallback skipped for ...{e164[-4:]}: no copy for {stage}")
+            _TALLY.bump("sms.fallback_skipped", f"no_copy_{stage}")
+            return False
+        body = body.format(name=event_rail.greeting_name(name, "there"))
+
+        # _send_sms re-checks every gate itself, including the monthly cap and
+        # do_not_sms. The checks above are not a substitute for it — they exist
+        # so an ordinary refusal is logged as a skip with a reason instead of
+        # arriving as a bare False from deep inside the sender.
+        res = _send_sms(e164, body)
+        if res.get("ok"):
+            print(f"[SMS] {stage} fallback SENT to ...{e164[-4:]} after {dead_reason}")
+            _TALLY.bump("sms.fallback_sent", f"{stage} after {dead_reason}")
+            try:
+                _mirror_reengagement_to_shadow(lead_key, name, f"{stage} (SMS)",
+                                               body, is_ig=False)
+            except Exception:
+                pass
+            return True
+
+        _TALLY.bump("sms.fallback_refused", str(res.get("reason", "?")))
+        print(f"[SMS] {stage} fallback not sent to ...{e164[-4:]}: {res.get('reason')}")
+        return False
+    except Exception as _fx:
+        _report_error("sms_reengagement_fallback", _fx, f"stage={stage}")
+        return False
+
+
 def _mirror_reengagement_to_shadow(phone, name, stage, template_name, is_cold=False, is_ig=False):
     """Mirror re-engagement template sends to #maya-shadow for visibility."""
     if not SLACK_MAYA_SHADOW_CHANNEL:
@@ -11414,6 +11620,14 @@ def _reengagement_checker():
                             _report_error("reengagement_send",
                                           f"{next_stage} send returned False ({_outcome})",
                                           f"channel={'ig' if _is_ig else 'wa'} lead=...{re.sub(r'[^0-9]', '', phone)[-4:]}")
+                        # Patch #109: the primary channel could not deliver
+                        # this touch. Before writing the lead off, try SMS —
+                        # the channel we spent five weeks getting approved.
+                        # Refuses itself unless the lead ticked marketing.
+                        if _outcome in ("failed", "failed-noretry"):
+                            _sms_reengagement_fallback(
+                                phone, name, next_stage,
+                                "ig_403" if _is_ig else "wa_send_failed")
 
                 elif all(sent_flags[s] for s in stages):
                     # All 7 templates sent - check if cold threshold reached
