@@ -7839,6 +7839,53 @@ def _send_sms(lead_phone, body):
         return {"ok": False, "reason": "exception"}
 
 
+# ── PATCH #108 — approval is not the same thing as live ─────────────────────
+# Campaign CM87b39e12beba8e7816460e18178dae38 was APPROVED by the carriers on
+# 27 Aug 2026 after five weeks and eight submissions. The temptation on that
+# day is to call SMS "done". It is not. Approval opened the carrier. Three
+# gates still stand between an approved campaign and a lead receiving a text,
+# and two of them are our own code. These flags exist so /health says so out
+# loud instead of letting a green campaign badge imply a working feature.
+#
+# Flip each one to True in the SAME commit that removes its reason.
+SMS_SEND_WIRED    = False   # nothing calls _send_sms yet
+SMS_CONSENT_WIRED = False   # nothing calls _sms_consent_set yet, so the
+                            # /sms-signup/ ledger on WordPress never reaches
+                            # pg_store, and _sms_gates refuses every lead
+
+
+def _sms_readiness():
+    """What still stands between A2P approval and an actual outbound text.
+
+    Deliberately pessimistic: `would_send` is True only when every gate is
+    open. A caller reading this should never have to infer a blocker from
+    an absence."""
+    blocked = []
+    if not TWILIO_ACCOUNT_SID:
+        blocked.append("TWILIO_ACCOUNT_SID unset in Railway")
+    if not TWILIO_AUTH_TOKEN:
+        blocked.append("TWILIO_AUTH_TOKEN unset in Railway")
+    if not TWILIO_MESSAGING_SERVICE_SID:
+        blocked.append("TWILIO_MESSAGING_SERVICE_SID unset in Railway "
+                       "(MG8751abff6b68b23a27631a14f525f3b7)")
+    if not SMS_SEND_WIRED:
+        blocked.append("no code path calls _send_sms — nothing sends even "
+                       "with the env set")
+    if not SMS_CONSENT_WIRED:
+        blocked.append("no code path calls _sms_consent_set — every lead "
+                       "fails the consent gate")
+    return {
+        "campaign": "CM87b39e12beba8e7816460e18178dae38",
+        "a2p_status": "APPROVED 2026-08-27 — carrier-registered, use case LOW_VOLUME",
+        "env_complete": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN
+                             and TWILIO_MESSAGING_SERVICE_SID),
+        "would_send": not blocked,
+        "blocked_by": blocked,
+        "note": ("APPROVED means the carriers accept us. It does NOT mean a "
+                 "lead can receive a text. Read blocked_by."),
+    }
+
+
 @app.route("/webhook/sms-status", methods=["POST"])
 def sms_status_webhook():
     """Twilio Messaging Service statusCallback — mirror of S6.7b for SMS.
@@ -17244,6 +17291,8 @@ def health_check():
                           f"since boot, threads register only after their first "
                           f"heartbeat. DO NOT compare against a baseline yet."),
         },
+        # Patch #108: A2P approval unlocked the carrier, not the feature.
+        "sms": _sms_readiness(),
         "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
         "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
