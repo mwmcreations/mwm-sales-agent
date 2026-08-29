@@ -107,6 +107,46 @@ def normalize_email(value):
     return s if "@" in s and "." in s.split("@")[-1] else ""
 
 
+# Free/consumer mail providers. An address at one of these says nothing about
+# which business a person belongs to, so its domain must never identify anyone.
+_FREE_MAIL = {
+    "gmail", "googlemail", "hotmail", "outlook", "live", "msn", "yahoo",
+    "ymail", "icloud", "me", "mac", "aol", "proton", "protonmail", "gmx",
+    "mail", "comcast", "verizon", "att", "sbcglobal", "bellsouth", "zoho",
+}
+
+
+def domain_key(email):
+    """'jsoto@altamontefamilyhearing.com' -> 'altamontefamilyhearing'.
+
+    The studio portal's client roster carries name, email and package — but
+    not the company. For a business client the email domain usually IS the
+    company, which is what lets a roster entry be matched against a business
+    name seen somewhere else entirely. Returns "" for consumer providers and
+    for anything too short to be distinctive."""
+    e = normalize_email(email)
+    if not e:
+        return ""
+    host = e.split("@")[-1]
+    parts = [p for p in host.split(".") if p]
+    if len(parts) < 2:
+        return ""
+    # Drop the TLD (and a second-level country TLD such as .co.uk).
+    if len(parts) >= 3 and len(parts[-2]) <= 3 and len(parts[-1]) <= 3:
+        stem = parts[-3]
+    else:
+        stem = parts[-2]
+    if stem in _FREE_MAIL or len(stem) < 6:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", stem)
+
+
+def squash(normalized_business):
+    """'altamonte family hearing' -> 'altamontefamilyhearing', so a business
+    name can be compared against an email domain, which has no spaces."""
+    return re.sub(r"[^a-z0-9]", "", normalized_business or "")
+
+
 def phone_key(value):
     """Last ten digits — enough to match across +1 / no-country-code forms.
     Instagram-scoped ids are refused: they are not phone numbers."""
@@ -153,6 +193,14 @@ def build_client_index(records):
         p = phone_key(rec.get("phone"))
         if p:
             index["phones"].add(p)
+        # Squashed forms, so a spaced business name can meet an email domain.
+        for form in (b, pinned):
+            if form:
+                index.setdefault("squashed", set()).add(squash(form))
+        d = domain_key(rec.get("email"))
+        if d:
+            index.setdefault("squashed", set()).add(d)
+    index.setdefault("squashed", set())
     return index
 
 
@@ -176,9 +224,23 @@ def match_known_client(candidate, index):
     if b and b in index.get("businesses", ()):
         return True, "business:%s" % b
 
-    # Last resort: the business as written into an Instagram display name.
+    # The business as written into an Instagram display name.
     pinned = business_from_name(candidate.get("name"))
     if pinned and pinned in index.get("businesses", ()):
         return True, "business_in_name:%s" % pinned
+
+    # Last resort — and the one that makes the portal roster usable. The roster
+    # carries an email but no company, so "Altamonte Family Hearing" seen on
+    # Instagram is compared against the stem of jsoto@altamontefamilyhearing.com.
+    # Both sides must still have cleared the two-meaningful-word bar to exist.
+    squashed = index.get("squashed") or set()
+    for form, label in ((b, "business_domain"), (pinned, "name_domain")):
+        sq = squash(form)
+        if sq and len(sq) >= 8 and sq in squashed:
+            return True, "%s:%s" % (label, sq)
+
+    d = domain_key(candidate.get("email"))
+    if d and d in squashed:
+        return True, "email_domain:%s" % d
 
     return False, "no_match"

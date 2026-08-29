@@ -140,8 +140,12 @@ ok(K.match_known_client({"phone": "12345"}, IDX)[0] is False,
 # An index built from records with blank fields must not create a "" bucket
 # that everything then matches against.
 blank_idx = K.build_client_index([{"outcome": "Won", "business": "", "email": "", "phone": ""}])
-ok(blank_idx == {"businesses": set(), "emails": set(), "phones": set()},
-   "blank client fields add nothing to the index")
+# Checked bucket-by-bucket rather than against a fixed key set, so adding a
+# new matching signal (Patch #111 added "squashed") cannot make this pass by
+# accident or fail for the wrong reason. The property under test is that a
+# client with blank fields contributes NOTHING anyone can match against.
+ok(all(len(v) == 0 for v in blank_idx.values()),
+   "blank client fields add nothing to any bucket: %s" % blank_idx)
 ok(K.match_known_client({"business": "Anything At All"}, blank_idx)[0] is False,
    "and so nothing matches against them")
 

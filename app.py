@@ -39,7 +39,8 @@ import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
 import shadow as _shadow      # Patch #95 — a shadow log a human can find
 import burst as _burst
-import known_client as _kc  # Patch #110 — a client is not a lead        # Patch #96 — one reply per burst, not per fragment
+import known_client as _kc  # Patch #110 — a client is not a lead
+import client_roster as _roster_mod  # Patch #111 — the portal roster, cached        # Patch #96 — one reply per burst, not per fragment
 import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -988,6 +989,16 @@ def _known_client_lookup(sender):
         cand.setdefault("phone", sender)
         if _kc.is_client_record(cand):
             return False, "already_marked", None   # nothing to correct
+
+        # Patch #111: the portal roster is authoritative — it is the paying-
+        # clients table itself, not an inference from what we happened to see.
+        try:
+            _hit, _why, _row = _CLIENT_ROSTER.find(cand)
+            if _hit:
+                return True, "roster/" + _why, _row
+        except Exception as _rx:
+            print(f"[KnownClient] roster lookup failed, falling back: {_rx}")
+
         others = [v for k, v in lead_data.items() if k != sender]
         index = _kc.build_client_index(others)
         matched, reason = _kc.match_known_client(cand, index)
@@ -1003,6 +1014,38 @@ def _known_client_lookup(sender):
     except Exception as _kx:
         print(f"[KnownClient] lookup failed, treating as new lead: {_kx}")
         return False, "lookup_failed", None
+
+
+def _existing_client_context(rec, fallback_name=""):
+    """Render the client-mode instruction block, or "" when this is a lead.
+
+    Patch #111. Michael, 29 Aug: clients mark us on Instagram and the bot tries
+    to book them a studio visit they do not need. This is the branch that stops
+    it — the same shape as the HOA and AD_09 branches, which already prove Maya
+    can be a different assistant for a different kind of person."""
+    if not rec:
+        return ""
+    try:
+        who = (rec.get("name") or fallback_name or "This person").strip()
+        pkg = (rec.get("package") or "").strip()
+        package_line = f" is on {pkg}." if pkg else " is a current client."
+        hours_line = ""
+        if rec.get("contract_hours"):
+            left = rec.get("hours_left", 0)
+            end = rec.get("contract_end") or ""
+            hours_line = (f"\nThey have {left:g} of {rec['contract_hours']:g} studio "
+                          f"hours left" + (f", through {end}." if end else "."))
+        expired_line = ""
+        if rec.get("active") is False or (rec.get("hours_left") == 0 and rec.get("contract_hours")):
+            expired_line = ("\nNOTE: their contract has run out. This is a RENEWAL "
+                            "conversation — acknowledge that they have worked with us "
+                            "before. It is still not a first-time studio-visit pitch.\n")
+        return EXISTING_CLIENT_BLOCK.format(
+            who=who, package_line=package_line,
+            hours_line=hours_line, expired_line=expired_line)
+    except Exception as _bx:
+        print(f"[KnownClient] context render failed (non-fatal): {_bx}")
+        return ""
 
 
 def _post_new_lead_or_existing_client(sender, source, context, assigned_agents,
@@ -2972,6 +3015,34 @@ IMPORTANT GUIDELINES
 AD_09_STUDIO_HOUR_URL = os.getenv("AD09_OFFER_URL",
                                   "https://mwmcreations.com/studio-hour/")
 AD_09_AD_IDS = [x.strip() for x in os.getenv("AD09_AD_IDS", "").split(",") if x.strip()]
+
+EXISTING_CLIENT_BLOCK = """
+
+═══════════════════════════════════════════════════════════════
+THIS PERSON IS ALREADY OUR CLIENT. DO NOT SELL TO THEM.
+═══════════════════════════════════════════════════════════════
+{who}{package_line}{hours_line}
+
+They are not a lead. Every instruction you have about booking a STUDIO VISIT,
+pitching packages, or mentioning Roadmap plans is WRONG for this conversation
+and will embarrass us. They have already seen the studio. They already pay us.
+{expired_line}
+WHAT TO DO INSTEAD
+- Greet them as a client — warm, short, by name.
+- If they want time in the studio, that is BOOKING HOURS they already have,
+  not a "visit". Offer to get a date on the calendar.
+- If it is about work in progress, a file, a delivery date or a question,
+  answer it, or say Michael will come back to them today. Do not steer it
+  toward a sale.
+- If they raise something genuinely new to buy, you may discuss it — but never
+  open with it.
+
+NEVER SAY, to this person: "would you like to come see the studio", "let me
+book you a studio visit", "Michael can walk you through the packages". They
+are years past all of that, and hearing it tells them we do not know who they
+are.
+"""
+
 
 AD_09_OFFER_BLOCK = """
 
@@ -7922,6 +7993,58 @@ def _send_sms(lead_phone, body):
         return {"ok": False, "reason": "exception"}
 
 
+# ── PATCH #111 — know who already pays us ─────────────────────────────────
+# Patch #110 built its idea of "who is a client" out of lead_data — only the
+# clients this machine personally watched convert. Everyone who bought through
+# Stripe, or was created straight in the portal, was invisible. That Jaysee
+# Soto was caught on 29 Aug was luck, not design.
+#
+# The authoritative list has existed the whole time: the studio portal's client
+# table, already reachable through studio_package.wp_list_clients(). Held in
+# memory, refreshed on a timer, handed to known_client.
+CLIENT_ROSTER_TTL_S  = float(os.getenv("CLIENT_ROSTER_TTL_S", "900"))
+_CLIENT_ROSTER = _roster_mod.Roster(ttl_s=CLIENT_ROSTER_TTL_S)
+
+
+def _client_roster_refresh():
+    ok, n, why = _CLIENT_ROSTER.refresh(_studio.wp_list_clients)
+    if ok:
+        print(f"[Roster] refreshed — {n} portal client(s)")
+    else:
+        # Never loud: a stale roster still knows who the clients are, and the
+        # previous one is deliberately kept. Only report a persistent failure.
+        print(f"[Roster] refresh skipped ({why}); holding {n} client(s)")
+    return ok
+
+
+def _client_roster_poller():
+    import time as _t
+    print(f"[Roster] Poller started (every {CLIENT_ROSTER_TTL_S}s)")
+    _heartbeat("client_roster_poller")
+    _t.sleep(45)                      # let boot settle; WP is a cold call
+    _fails = 0
+    while True:
+        try:
+            _heartbeat("client_roster_poller")
+            if _client_roster_refresh():
+                _fails = 0
+            else:
+                _fails += 1
+                # Three misses in a row is an outage, not a blip. Say so once.
+                if _fails == 3:
+                    _report_error("client_roster",
+                                  "three consecutive refresh failures",
+                                  str(_CLIENT_ROSTER.summary()))
+        except Exception as _e:
+            _report_error("client_roster_poller", _e)
+        for _ in range(max(1, int(CLIENT_ROSTER_TTL_S // 300))):
+            _t.sleep(300)
+            _heartbeat("client_roster_poller")
+
+
+threading.Thread(target=_client_roster_poller, daemon=True).start()
+
+
 # ── PATCH #109 — the bridge from the WordPress ledger to pg_store ──────────
 # The opt-in form at /sms-signup/ writes into wp_mwm_sms_consent on WordPress.
 # _sms_gates reads consent out of pg_store on Railway. Nothing carried a row
@@ -8886,6 +9009,23 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         except Exception as _a9e:
             print(f"\u26a0\ufe0f AD_09 branch error (non-fatal, Maya still replies): {_a9e}")
 
+        # ── PATCH #111: client mode. If this person already pays us, tell Maya
+        # so before she runs the sales script. Same shape as the HOA and AD_09
+        # branches — a different assistant for a different kind of person.
+        try:
+            _cm_hit, _cm_why, _cm_rec = _known_client_lookup(sender)
+            if _cm_hit:
+                _cm_block = _existing_client_context(
+                    _cm_rec, (lead_data.get(sender) or {}).get("name", ""))
+                if _cm_block:
+                    _lead_ctx = (_lead_ctx or "") + _cm_block
+                    _TALLY.bump("maya.client_mode", f"{_cm_why}")
+                    print(f"[KnownClient] CLIENT MODE for {sender} ({_cm_why}) — "
+                          f"no visit pitch, no package pitch")
+        except Exception as _cme:
+            print(f"\u26a0\ufe0f client-mode branch error (non-fatal): {_cme}")
+
+
 
         # ── AI Re-engagement context injection ──
         try:
@@ -9342,6 +9482,23 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             _TALLY.bump("ad09.branch_off", "instagram — normal studio-visit flow")
     except Exception as _a9e:
         print(f"\u26a0\ufe0f AD_09 branch error IG (non-fatal): {_a9e}")
+
+    # ── PATCH #111: client mode. If this person already pays us, tell Maya
+    # so before she runs the sales script. Same shape as the HOA and AD_09
+    # branches — a different assistant for a different kind of person.
+    try:
+        _cm_hit, _cm_why, _cm_rec = _known_client_lookup(sender)
+        if _cm_hit:
+            _cm_block = _existing_client_context(
+                _cm_rec, (lead_data.get(sender) or {}).get("name", ""))
+            if _cm_block:
+                _lead_ctx = (_lead_ctx or "") + _cm_block
+                _TALLY.bump("maya.client_mode", f"{_cm_why}")
+                print(f"[KnownClient] CLIENT MODE for {sender} ({_cm_why}) — "
+                      f"no visit pitch, no package pitch")
+    except Exception as _cme:
+        print(f"\u26a0\ufe0f client-mode branch error (non-fatal): {_cme}")
+
 
     # ── Pipeline event: NEW_LEAD ──
     try:
@@ -17588,6 +17745,8 @@ def health_check():
         },
         # Patch #108: A2P approval unlocked the carrier, not the feature.
         "sms": _sms_readiness(),
+        # Patch #111: who the machine believes already pays us.
+        "client_roster": _CLIENT_ROSTER.summary(),
         "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
         "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
