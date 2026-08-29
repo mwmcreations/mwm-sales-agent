@@ -38,7 +38,8 @@ import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
 import shadow as _shadow      # Patch #95 — a shadow log a human can find
-import burst as _burst        # Patch #96 — one reply per burst, not per fragment
+import burst as _burst
+import known_client as _kc  # Patch #110 — a client is not a lead        # Patch #96 — one reply per burst, not per fragment
 import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -967,7 +968,76 @@ _PIPELINE_EVENT_TYPES = {
     "CLIENT_LOST":     "💔",
     "PACKAGE_PITCHED": "📦",   # S7: Studio Package pitched at studio visit
     "PACKAGE_PURCHASED": "💳", # S7: Stripe purchase confirmed
+    "EXISTING_CLIENT": "🔁",   # Patch #110: a paying client came back on a new channel
 }
+
+
+def _known_client_lookup(sender):
+    """Patch #110 — has this person already bought from us on another channel?
+
+    Jaysee Soto bought a Studio Package on 26 Aug and was announced as a NEW
+    LEAD on 29 Aug because he messaged from Instagram, which is a different
+    sender key from the WhatsApp number his client record was built on. The
+    machine had no way to know it had already sold to him.
+
+    Returns (matched, reason, client_record_or_None). Fails OPEN — on any
+    error this returns "not a client", because wrongly suppressing a real
+    lead is the one failure nobody would ever notice."""
+    try:
+        cand = dict(lead_data.get(sender) or {})
+        cand.setdefault("phone", sender)
+        if _kc.is_client_record(cand):
+            return False, "already_marked", None   # nothing to correct
+        others = [v for k, v in lead_data.items() if k != sender]
+        index = _kc.build_client_index(others)
+        matched, reason = _kc.match_known_client(cand, index)
+        if not matched:
+            return False, reason, None
+        for rec in others:
+            if not _kc.is_client_record(rec):
+                continue
+            hit, why = _kc.match_known_client(cand, _kc.build_client_index([rec]))
+            if hit:
+                return True, why, rec
+        return True, reason, None
+    except Exception as _kx:
+        print(f"[KnownClient] lookup failed, treating as new lead: {_kx}")
+        return False, "lookup_failed", None
+
+
+def _post_new_lead_or_existing_client(sender, source, context, assigned_agents,
+                                      lead_name=""):
+    """Post NEW_LEAD, unless we already sold to this person — in which case say
+    so instead. Deliberately NOT silent: the card still appears, it just tells
+    the truth, so nobody loses an inbound message to a filter."""
+    matched, reason, rec = _known_client_lookup(sender)
+    if not matched:
+        _post_pipeline_event("NEW_LEAD", lead_name=lead_name, lead_phone=sender,
+                             source=source, new_stage="New",
+                             assigned_agents=assigned_agents, context=context)
+        return False
+    _biz = (rec or {}).get("business", "") or (lead_data.get(sender) or {}).get("business", "")
+    _who = (rec or {}).get("name", "") or lead_name
+    _prod = (rec or {}).get("product", "") or "a package"
+    try:
+        (lead_data.setdefault(sender, {}))["known_client_match"] = reason
+    except Exception:
+        pass
+    _TALLY.bump("pipeline.existing_client_not_new_lead", f"{source} — {reason}")
+    print(f"[KnownClient] {sender} matched an existing client via {reason} — "
+          f"posting EXISTING_CLIENT, not NEW_LEAD")
+    _post_pipeline_event(
+        "EXISTING_CLIENT",
+        lead_name=_who or lead_name,
+        lead_phone=sender,
+        source=source,
+        new_stage="Client",
+        assigned_agents=["Maya"],
+        context=(f"Already a client ({_prod}) — matched on {reason}. "
+                 f"Do NOT treat as a new lead: no prospecting, no re-engagement. "
+                 f"Business: {_biz or 'n/a'}. Inbound: {context}"),
+    )
+    return True
 
 
 def _post_pipeline_event(event_type, lead_name="", lead_phone="", source="",
@@ -8706,15 +8776,12 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 _assigned = ["Maya", "Eric"]
                 if _has_email:
                     _assigned = ["Maya", "Susan", "Eric", "LARA"]
-                _post_pipeline_event(
-                    "NEW_LEAD",
-                    lead_name=_ld.get("name", ""),
-                    lead_phone=sender,
-                    source="WhatsApp",
-                    new_stage="New",
-                    assigned_agents=_assigned,
-                    context=f"First message: {incoming_msg[:200]}"
-                )
+                # Patch #110: same guard on the WhatsApp leg — a client who
+                # changes number, or writes from a second line, is not new.
+                _post_new_lead_or_existing_client(
+                    sender, "WhatsApp",
+                    f"First message: {incoming_msg[:200]}",
+                    _assigned, lead_name=_ld.get("name", ""))
                 # ── Auto-route to Susan + send welcome email when lead has email (form fill) ──
                 if _has_email:
                     _lead_name = _ld.get("name", "Unknown")
@@ -9280,15 +9347,12 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
     try:
         if is_new_sender:
             _ld = lead_data.get(sender, {})
-            _post_pipeline_event(
-                "NEW_LEAD",
-                lead_name=_ld.get("name", ""),
-                lead_phone=sender,
-                source="Instagram DM",
-                new_stage="New",
-                assigned_agents=["Maya", "Eric"],
-                context=f"[IG DM] First message: {incoming_msg[:200]}"
-            )
+            # Patch #110: Instagram is a different sender key from WhatsApp, so
+            # a client who DMs us reads as brand new. Check before announcing.
+            _post_new_lead_or_existing_client(
+                sender, "Instagram DM",
+                f"[IG DM] First message: {incoming_msg[:200]}",
+                ["Maya", "Eric"], lead_name=_ld.get("name", ""))
             # Log first contact to Sheets (IG DM source)
             _TALLY.bump("sheets.lead_row_attempted", "instagram")
             try:
@@ -9776,6 +9840,23 @@ def _cold_lead_checker():
                     _re_name = data.get("name") or ""
                     _re_biz = data.get("business") or ""
                     _re_last = last_msg.strftime("%Y-%m-%d %H:%M")
+                    # Patch #110: the expensive half of the Jaysee Soto bug.
+                    # A client who goes quiet is not a cold lead — enqueuing
+                    # him means "still thinking about our studio?" lands three
+                    # days after he paid $1,200.
+                    try:
+                        _kc_hit, _kc_why, _ = _known_client_lookup(phone)
+                        if _kc_hit or _kc.is_client_record(data):
+                            # Truthy so the hourly sweep stops re-checking, and
+                            # self-explaining to anyone who reads the record later.
+                            lead_data[phone]["reengagement_enqueued"] = "skipped:client"
+                            _TALLY.bump("reengagement.client_not_enqueued",
+                                        f"{phone[-4:]} — {_kc_why}")
+                            print(f"[Re-engagement] SKIP {phone} — already a client ({_kc_why})")
+                            continue
+                    except Exception as _kce:
+                        print(f"[Re-engagement] client check failed, continuing: {_kce}")
+
                     try:
                         _re_added = add_to_reengagement_queue(
                             phone, name=_re_name, business=_re_biz,
