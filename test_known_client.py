@@ -80,6 +80,37 @@ ok(K.match_known_client({"phone": "whatsapp:+1 (407) 555-2194"}, IDX)[0],
    "formatting does not defeat the phone match")
 
 
+# ── §2b · THE STRING THE 29 AUG CARD ACTUALLY PRINTED ──────────────────────
+# The pipeline card read: "*Lead:* Bald Hearing Guy \U0001f4cdAltamonte Family Hearing".
+# _post_pipeline_event prints lead_name and nothing else, so the business was
+# never a separate field — it lived inside the Instagram display name. A guard
+# that only read rec["business"] would have shipped green and caught nothing.
+REAL_CARD = {"name": "Bald Hearing Guy \U0001f4cdAltamonte Family Hearing",
+             "phone": "instagram:1529221948995332"}
+hit, why = K.match_known_client(REAL_CARD, IDX)
+ok(hit, "the exact 29 Aug Instagram card is recognised as an existing client")
+ok(why == "business_in_name:altamonte family hearing",
+   "and the reason names where it was found: %s" % why)
+
+ok(K.business_from_name("Bald Hearing Guy \U0001f4cdAltamonte Family Hearing")
+   == "altamonte family hearing", "the business is read from after the pin")
+ok(K.business_from_name("Jaysee Soto") == "",
+   "a name with no pin yields no business")
+ok(K.business_from_name("") == "" and K.business_from_name(None) == "",
+   "empty input is safe")
+ok(K.business_from_name("Guy \U0001f4cdHearing") == "",
+   "one generic word after a pin is still not an identity")
+ok(K.match_known_client({"name": "Someone \U0001f4cdA Totally Different Firm"}, IDX)[0]
+   is False, "a pinned business we have never sold to does not match")
+
+# The reverse direction: a CLIENT whose business only exists inside their name
+# must still be findable when they come back on another channel.
+pin_idx = K.build_client_index([
+    {"name": "Somebody \U0001f4cdAltamonte Family Hearing", "outcome": "Won"}])
+ok(K.match_known_client({"business": "Altamonte Family Hearing"}, pin_idx)[0],
+   "a pinned client business is indexed, not just read")
+
+
 # ── §3 · THE DIRECTION THAT MUST NEVER GO WRONG ────────────────────────────
 ok(K.match_known_client({"business": "Hearing"}, IDX)[0] is False,
    "one generic word never identifies a client")

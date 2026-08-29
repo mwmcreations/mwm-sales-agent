@@ -76,6 +76,30 @@ def normalize_business(value):
     return " ".join(tokens)
 
 
+# Instagram profile names routinely carry the business after a location pin:
+# "Bald Hearing Guy \U0001f4cdAltamonte Family Hearing". That is exactly the string
+# the 29 Aug card printed, and the ONLY place the business appeared — there was
+# no separate business field on the record. Without reading it, this whole
+# module would have looked correct and matched nothing.
+#
+# The text after a pin is a place or a business, never a person's name, so
+# reading it does not weaken the "never match on a name" rule. It still has to
+# clear normalize_business()'s two-meaningful-word bar to identify anybody.
+_PIN_MARKERS = ("\U0001f4cd", ":round_pushpin:", "\U0001f4cc")
+
+
+def business_from_name(value):
+    """Pull a business out of a display name that carries a location pin.
+    Returns "" when there is no pin, or what follows it is too thin."""
+    if not value:
+        return ""
+    s = str(value)
+    for marker in _PIN_MARKERS:
+        if marker in s:
+            return normalize_business(s.split(marker, 1)[1])
+    return ""
+
+
 def normalize_email(value):
     if not value:
         return ""
@@ -120,6 +144,9 @@ def build_client_index(records):
         b = normalize_business(rec.get("business"))
         if b:
             index["businesses"].add(b)
+        pinned = business_from_name(rec.get("name"))
+        if pinned:
+            index["businesses"].add(pinned)
         e = normalize_email(rec.get("email"))
         if e:
             index["emails"].add(e)
@@ -148,5 +175,10 @@ def match_known_client(candidate, index):
     b = normalize_business(candidate.get("business"))
     if b and b in index.get("businesses", ()):
         return True, "business:%s" % b
+
+    # Last resort: the business as written into an Instagram display name.
+    pinned = business_from_name(candidate.get("name"))
+    if pinned and pinned in index.get("businesses", ()):
+        return True, "business_in_name:%s" % pinned
 
     return False, "no_match"
