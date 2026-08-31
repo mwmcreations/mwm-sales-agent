@@ -211,3 +211,66 @@ def should_fallback_to_sms(primary_dead_reason, consent, sent_this_month,
     except (TypeError, ValueError):
         return False, "monthly_cap_unreadable"   # fail closed
     return True, "ok"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #112 — a confirmation is not a promotion
+# ═══════════════════════════════════════════════════════════════════════════
+# Two public pages describe the same programme and they do not agree.
+#
+#   /sms-opt-in/  (12 Aug 2026, written for carrier review) collects TWO
+#                 separate consents and caps only marketing at 4/month.
+#   /terms/ §19   (last touched January 2026, before the A2P submission)
+#                 bundles both into one sentence and caps EVERYTHING at 4.
+#
+# One studio booking is a confirmation plus a three-rung reminder ladder. Under
+# §19 as written that is the entire month, so a client who books twice goes
+# silent mid-ladder. Until §19 is corrected the machine obeys the STRICTER of
+# the two: a public promise we break costs more than a text we withhold.
+#
+# This function is where that choice lives, and it is pure so the choice can
+# be proven both ways without a Twilio account.
+
+KIND_TRANSACTIONAL = "transactional"
+KIND_MARKETING     = "marketing"
+
+
+def policy(kind, split_live, cap_bundled, cap_marketing,
+           quiet_marketing, quiet_transactional):
+    """Rules for one kind of message.
+
+    kind                 "transactional" | "marketing". ANYTHING ELSE IS
+                         TREATED AS MARKETING — the stricter path. A caller
+                         who mistypes a kind is refused, never over-permitted.
+    split_live           True once /terms/ §19 matches /sms-opt-in/.
+    cap_bundled          the single cap §19 promises today (4).
+    cap_marketing        the marketing-only cap /sms-opt-in/ promises (4).
+    quiet_*              (start_hour, end_hour) tuples.
+
+    Returns {kind, consent_field, quiet_start, quiet_end, cap, counter_field,
+             split_live}. cap None means uncapped, which is only ever reachable
+    for transactional AND only once split_live is True.
+    """
+    if kind == KIND_TRANSACTIONAL:
+        return {
+            "kind": KIND_TRANSACTIONAL,
+            "consent_field": "transactional",
+            "quiet_start": int(quiet_transactional[0]),
+            "quiet_end": int(quiet_transactional[1]),
+            "cap": None if split_live else int(cap_bundled),
+            # Split or not, the combined counter is always kept as well, so
+            # flipping the flag can never hand anyone a fresh allowance.
+            "counter_field": ("monthly_count_transactional" if split_live
+                              else "monthly_count"),
+            "split_live": bool(split_live),
+        }
+    return {
+        "kind": KIND_MARKETING,
+        "consent_field": "marketing",
+        "quiet_start": int(quiet_marketing[0]),
+        "quiet_end": int(quiet_marketing[1]),
+        "cap": int(cap_marketing) if split_live else int(cap_bundled),
+        "counter_field": ("monthly_count_marketing" if split_live
+                          else "monthly_count"),
+        "split_live": bool(split_live),
+    }

@@ -7884,7 +7884,41 @@ SMS_QUIET_START_H            = int(os.getenv("SMS_QUIET_START_H", "10"))   # sen
 SMS_QUIET_END_H              = int(os.getenv("SMS_QUIET_END_H", "20"))    # ...until 20:00 ET
 SMS_MONTHLY_CAP              = int(os.getenv("SMS_MONTHLY_CAP", "4"))     # /terms §19 public promise
 
-_sms_status_streak = {"failed": 0}
+# ── PATCH #112 — a confirmation is not a promotion ───────────────────────────
+# Two public pages describe the same programme and they do not agree.
+#
+#   /sms-opt-in/  (12 Aug 2026, written for carrier review) collects TWO
+#                 separate consents and caps only marketing at 4/month.
+#   /terms/ §19   (last touched January 2026, before the A2P submission)
+#                 bundles both into one sentence and caps EVERYTHING at 4.
+#
+# One studio booking is a confirmation plus three reminders. Under §19 as
+# written that is the whole month, so a client who books twice goes silent
+# mid-ladder. Until §19 is corrected this machine obeys the STRICTER of the
+# two, because a public promise we break costs more than a text we withhold.
+#
+# Flip SMS_TERMS_SPLIT_LIVE=1 only AFTER §19 says what /sms-opt-in/ says.
+SMS_TERMS_SPLIT_LIVE      = os.getenv("SMS_TERMS_SPLIT_LIVE", "0") == "1"
+SMS_MONTHLY_CAP_MARKETING = int(os.getenv("SMS_MONTHLY_CAP_MARKETING", "4"))
+
+SMS_KIND_TRANSACTIONAL = "transactional"
+SMS_KIND_MARKETING     = "marketing"
+
+# Transactional messages answer something the customer just did, so the window
+# is wider than the promotional one — but never overnight.
+SMS_TXN_QUIET_START_H = int(os.getenv("SMS_TXN_QUIET_START_H", "8"))
+SMS_TXN_QUIET_END_H   = int(os.getenv("SMS_TXN_QUIET_END_H", "21"))
+
+
+def _sms_policy(kind):
+    """The rules for one kind of message. Thin wrapper: the decision itself
+    lives in sms_consent.policy(), which is pure and therefore testable both
+    ways — bundled and split — without a Twilio account or a live clock."""
+    import sms_consent as _sc
+    return _sc.policy(kind, SMS_TERMS_SPLIT_LIVE, SMS_MONTHLY_CAP,
+                      SMS_MONTHLY_CAP_MARKETING,
+                      (SMS_QUIET_START_H, SMS_QUIET_END_H),
+                      (SMS_TXN_QUIET_START_H, SMS_TXN_QUIET_END_H))
 
 
 def _sms_consent_get(lead_phone):
@@ -7925,9 +7959,15 @@ def _sms_consent_set(lead_phone, status, source, context="",
     return rec
 
 
-def _sms_gates(lead_phone):
-    """All conditions that must hold before ANY outbound SMS. Returns (ok, reason)."""
+def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
+    """All conditions that must hold before ANY outbound SMS. Returns (ok, reason).
+
+    Patch #112: `kind` decides which consent box must be ticked, which quiet
+    window applies, and which cap is counted. It defaults to marketing — the
+    stricter path — so a caller who forgets the argument is refused, never
+    over-permitted."""
     import pg_store as _pg
+    pol = _sms_policy(kind)
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_MESSAGING_SERVICE_SID):
         return False, "twilio_env_missing"
     if _pg.enabled():
@@ -7939,27 +7979,36 @@ def _sms_gates(lead_phone):
     consent = _sms_consent_get(lead_phone)
     if consent.get("status") != "yes":
         return False, "no_consent"
+    # The two boxes are two promises. A lead who agreed to booking messages has
+    # not agreed to be sold to, and a lead who ticked only marketing has not
+    # asked for our reminders either. Absent field = never asked = refuse.
+    if not consent.get(pol["consent_field"]):
+        return False, f"no_consent_{pol['consent_field']}"
     now = datetime.now(pytz.timezone(TIMEZONE))
-    if not (SMS_QUIET_START_H <= now.hour < SMS_QUIET_END_H):
+    if not (pol["quiet_start"] <= now.hour < pol["quiet_end"]):
         return False, "quiet_hours"
-    if _pg.enabled():
+    if pol["cap"] is not None and _pg.enabled():
         try:
             st = _pg.load_state(f"sms_touch_state:{lead_phone}", {}) or {}
             month = now.strftime("%Y-%m")
-            if st.get("month") == month and int(st.get("monthly_count", 0)) >= SMS_MONTHLY_CAP:
+            if st.get("month") == month and int(st.get(pol["counter_field"], 0)) >= pol["cap"]:
                 return False, "monthly_cap"
         except Exception:
             return False, "touch_state_check_failed"  # fail-closed
     return True, "ok"
 
 
-def _send_sms(lead_phone, body):
+def _send_sms(lead_phone, body, kind=SMS_KIND_MARKETING):
     """Send one SMS via the Messaging Service. Enforces every gate; increments the
-    monthly counter on acceptance. Returns dict {ok, reason|sid}."""
+    monthly counters on acceptance. Returns dict {ok, reason|sid}.
+
+    Patch #112: `kind` is passed straight through to the gates and decides
+    which counter this send lands on. Default is marketing, the stricter
+    path."""
     import pg_store as _pg
-    ok, reason = _sms_gates(lead_phone)
+    ok, reason = _sms_gates(lead_phone, kind)
     if not ok:
-        print(f"[SMS] REFUSED to ...{lead_phone[-4:]}: {reason}")
+        print(f"[SMS] REFUSED to ...{lead_phone[-4:]} kind={kind}: {reason}")
         return {"ok": False, "reason": reason}
     try:
         resp = http_requests.post(
@@ -7974,15 +8023,24 @@ def _send_sms(lead_phone, body):
                           data.get("message", "send error"), f"to=...{lead_phone[-4:]}")
             return {"ok": False, "reason": f"api_{resp.status_code}"}
         sid = data.get("sid", "")
-        print(f"[SMS] accepted for ...{lead_phone[-4:]} sid={sid[-8:]}")
+        print(f"[SMS] accepted for ...{lead_phone[-4:]} kind={kind} sid={sid[-8:]}")
         if _pg.enabled():
             try:
                 now = datetime.now(pytz.timezone(TIMEZONE))
                 month = now.strftime("%Y-%m")
                 st = _pg.load_state(f"sms_touch_state:{lead_phone}", {}) or {}
                 if st.get("month") != month:
-                    st["month"], st["monthly_count"] = month, 0
+                    st = {"month": month, "monthly_count": 0,
+                          "monthly_count_marketing": 0,
+                          "monthly_count_transactional": 0,
+                          "last_sent_ts": st.get("last_sent_ts", "")}
+                # The combined counter is what /terms \u00a719 promises today and is
+                # always kept, split or not, so flipping the flag can never
+                # hand anyone a fresh allowance.
                 st["monthly_count"] = int(st.get("monthly_count", 0)) + 1
+                _kf = ("monthly_count_transactional"
+                       if kind == SMS_KIND_TRANSACTIONAL else "monthly_count_marketing")
+                st[_kf] = int(st.get(_kf, 0)) + 1
                 st["last_sent_ts"] = now.isoformat()
                 _pg.save_state(f"sms_touch_state:{lead_phone}", st)
             except Exception as _cx:
@@ -8195,6 +8253,26 @@ def _sms_readiness():
         "blocked_by": blocked,
         "note": ("APPROVED means the carriers accept us. It does NOT mean a "
                  "lead can receive a text. Read blocked_by."),
+        # Patch #112 — which promise the machine is currently keeping.
+        "policy": {
+            "terms_split_live": SMS_TERMS_SPLIT_LIVE,
+            "source_of_truth": ("/sms-opt-in/ — two consents, cap on marketing only"
+                                if SMS_TERMS_SPLIT_LIVE else
+                                "/terms/ \u00a719 — one bundled consent, cap on everything "
+                                "(stricter of the two; §19 not yet corrected)"),
+            "transactional": {
+                "consent_field": _sms_policy(SMS_KIND_TRANSACTIONAL)["consent_field"],
+                "quiet_hours": f"{SMS_TXN_QUIET_START_H:02d}:00-{SMS_TXN_QUIET_END_H:02d}:00 {TIMEZONE}",
+                "monthly_cap": _sms_policy(SMS_KIND_TRANSACTIONAL)["cap"],
+                "counter": _sms_policy(SMS_KIND_TRANSACTIONAL)["counter_field"],
+            },
+            "marketing": {
+                "consent_field": _sms_policy(SMS_KIND_MARKETING)["consent_field"],
+                "quiet_hours": f"{SMS_QUIET_START_H:02d}:00-{SMS_QUIET_END_H:02d}:00 {TIMEZONE}",
+                "monthly_cap": _sms_policy(SMS_KIND_MARKETING)["cap"],
+                "counter": _sms_policy(SMS_KIND_MARKETING)["counter_field"],
+            },
+        },
     }
 
 
@@ -11545,18 +11623,22 @@ def _sms_reengagement_fallback(lead_key, name, stage, dead_reason):
             _TALLY.bump("sms.fallback_skipped", "no_phone_on_file")
             return False
 
+        # Patch #112: re-engagement is promotional, so it is counted and
+        # capped as marketing. While the two public pages disagree, that is
+        # the shared counter and the shared cap — identical to before.
+        _pol = _sms_policy(SMS_KIND_MARKETING)
         sent_this_month = 0
         if _pg.enabled():
             try:
                 _st = _pg.load_state(f"sms_touch_state:{e164}", {}) or {}
                 _month = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m")
                 if _st.get("month") == _month:
-                    sent_this_month = int(_st.get("monthly_count", 0))
+                    sent_this_month = int(_st.get(_pol["counter_field"], 0))
             except Exception:
                 sent_this_month = 10 ** 6      # unreadable -> refuse, fail closed
 
         allowed, why = _sc.should_fallback_to_sms(
-            dead_reason, _sms_consent_get(e164), sent_this_month, SMS_MONTHLY_CAP)
+            dead_reason, _sms_consent_get(e164), sent_this_month, _pol["cap"])
         if not allowed:
             print(f"[SMS] fallback skipped for ...{e164[-4:]} ({stage}): {why}")
             _TALLY.bump("sms.fallback_skipped", why)
@@ -11573,7 +11655,7 @@ def _sms_reengagement_fallback(lead_key, name, stage, dead_reason):
         # do_not_sms. The checks above are not a substitute for it — they exist
         # so an ordinary refusal is logged as a skip with a reason instead of
         # arriving as a bare False from deep inside the sender.
-        res = _send_sms(e164, body)
+        res = _send_sms(e164, body, kind=SMS_KIND_MARKETING)
         if res.get("ok"):
             print(f"[SMS] {stage} fallback SENT to ...{e164[-4:]} after {dead_reason}")
             _TALLY.bump("sms.fallback_sent", f"{stage} after {dead_reason}")
