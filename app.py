@@ -38,9 +38,10 @@ import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
 import shadow as _shadow      # Patch #95 — a shadow log a human can find
-import burst as _burst
+import burst as _burst        # Patch #96 — one reply per burst, not per fragment
 import known_client as _kc  # Patch #110 — a client is not a lead
-import client_roster as _roster_mod  # Patch #111 — the portal roster, cached        # Patch #96 — one reply per burst, not per fragment
+import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
+import sms_copy as _sms_copy         # Patch #113 — every word we send by text
 import icp as _icp            # S31 — who we are for
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -7950,13 +7951,154 @@ def _sms_consent_set(lead_phone, status, source, context="",
         rec["marketing"] = bool(marketing)
     if transactional is not None:
         rec["transactional"] = bool(transactional)
+    _prev = _sms_consent_get(lead_phone) if _pg.enabled() else {}
     if _pg.enabled():
         try:
             _pg.save_state(f"sms_consent:{lead_phone}", rec)
         except Exception as _cx:
             _report_error("sms_consent_persist", _cx, lead_phone[-4:])
     print(f"[SMS-CONSENT] {status} for ...{lead_phone[-4:]} via {source}")
+    # PATCH #113 — confirm the opt-in to the person who just opted in.
+    # Fired here rather than at the call sites so the form, Maya and an
+    # in-person yes all behave the same way and none can be forgotten.
+    try:
+        _sms_optin_confirm(lead_phone, rec, _prev)
+    except Exception as _ox:
+        # A confirmation that fails must never lose the consent it confirms.
+        print(f"[SMS-OPTIN] confirmation failed (non-fatal): {_ox}")
     return rec
+
+
+# How stale a consent row may be and still earn a confirmation text. The
+# WordPress poller replays the ledger, and a backfill must never text 200
+# people about something they agreed to in July.
+SMS_OPTIN_CONFIRM_MAX_AGE_S = float(os.getenv("SMS_OPTIN_CONFIRM_MAX_AGE_S", "172800"))
+
+
+def _sms_transactional(raw_phone, body_fn, tag, idem_key=None):
+    """Send one TRANSACTIONAL text, or explain in one line why not.
+
+    Every booking sender goes through here rather than calling _send_sms
+    directly, so all of them share the same four properties:
+
+      * a phone that is not dialable is a named skip, not an exception;
+      * the copy is BUILT INSIDE the try, because a copy function that
+        refuses (no date, no time) must never take down the booking flow
+        that called it;
+      * an idempotency key, when given, is CLAIMED before the send and
+        RELEASED if no message actually went out. Claiming first is what
+        stops a webhook retry arriving mid-flight from sending twice;
+        releasing on failure is what stops a refusal that will not last —
+        quiet hours, a full month, a Twilio blip — from permanently
+        cancelling a message the client should eventually get;
+      * nothing here can raise. A booking is not allowed to fail because a
+        text failed. The calendar is the product; the text is the courtesy.
+    """
+    import pg_store as _pg
+    import sms_consent as _sc
+    try:
+        e164 = _sc.to_e164(raw_phone)
+        if not e164:
+            print(f"[SMS-{tag}] skipped: no dialable phone")
+            _TALLY.bump("sms." + tag, "no_phone")
+            return False, "no_phone"
+        if idem_key and _pg.enabled():
+            try:
+                if _pg.load_state(idem_key, False):
+                    print(f"[SMS-{tag}] skipped: already sent ({idem_key})")
+                    _TALLY.bump("sms." + tag, "duplicate")
+                    return False, "duplicate"
+                _pg.save_state(idem_key, True)
+            except Exception as _kx:
+                _report_error("sms_idem_" + tag, _kx, str(idem_key)[:60])
+                return False, "idem_unreadable"      # fail closed
+        try:
+            body = body_fn()
+            res = _send_sms(e164, body, kind=SMS_KIND_TRANSACTIONAL)
+        except Exception:
+            _sms_idem_release(idem_key)
+            raise
+        _TALLY.bump("sms." + tag, "sent" if res.get("ok") else res.get("reason", "refused"))
+        if not res.get("ok"):
+            print(f"[SMS-{tag}] not sent to ...{e164[-4:]}: {res.get('reason')}")
+            _sms_idem_release(idem_key)
+        return bool(res.get("ok")), res.get("reason", "ok")
+    except Exception as _tx:
+        _report_error("sms_transactional_" + tag, _tx, "")
+        _TALLY.bump("sms." + tag, "exception")
+        return False, "exception"
+
+
+def _sms_idem_release(idem_key):
+    """Hand back a claim when nothing was sent, so a later pass can retry.
+
+    Best-effort by design: if the release fails the worst outcome is one
+    message never sent, which is strictly better than the alternative this
+    whole mechanism exists to prevent."""
+    if not idem_key:
+        return
+    import pg_store as _pg
+    if not _pg.enabled():
+        return
+    try:
+        _pg.save_state(idem_key, False)
+    except Exception as _rx:
+        print(f"[SMS-IDEM] could not release {idem_key}: {_rx}")
+
+
+def _sms_optin_confirm(lead_phone, rec, previous):
+    """Send the one-off "you are signed up" text — at most once, ever.
+
+    Three guards, because this is the only sender that fires off a database
+    poll rather than off a human action:
+
+      1. TRANSITION. Only when this record newly becomes yes. The poller
+         re-reads the same ledger rows every 15 minutes; a re-read is not
+         a new opt-in.
+      2. FRESHNESS. A row older than SMS_OPTIN_CONFIRM_MAX_AGE_S is history,
+         not news. This is what stops a first backfill from texting everyone
+         who ever ticked the box.
+      3. A PERMANENT MARKER. Written before the send, so a crash between
+         send and write cannot produce a second text. One duplicate
+         confirmation is a complaint; a loop is a campaign suspension.
+    """
+    import pg_store as _pg
+    if rec.get("status") != "yes":
+        return False, "not_a_yes"
+    if isinstance(previous, dict) and previous.get("status") == "yes":
+        return False, "already_yes"          # guard 1
+    try:
+        _age = (datetime.now(pytz.timezone(TIMEZONE)).timestamp()
+                - float(rec.get("ts") or 0))
+    except (TypeError, ValueError):
+        return False, "unreadable_ts"        # fail closed
+    if _age > SMS_OPTIN_CONFIRM_MAX_AGE_S:
+        return False, "consent_too_old"      # guard 2
+    _key = f"sms_optin_confirm_sent:{lead_phone}"
+    if _pg.enabled():
+        try:
+            if _pg.load_state(_key, False):
+                return False, "already_confirmed"
+        except Exception:
+            return False, "marker_unreadable"   # fail closed
+        try:
+            _pg.save_state(_key, True)          # guard 3 — BEFORE the send
+        except Exception as _mx:
+            _report_error("sms_optin_marker", _mx, lead_phone[-4:])
+            return False, "marker_unwritable"
+    # The confirmation itself is transactional: it is the receipt for an
+    # action the person just took. Its WORDING depends on what they agreed
+    # to, so a marketing opt-in is told about the 4-a-month promise.
+    try:
+        body = _sms_copy.opt_in_confirmation(
+            (rec.get("name") or "").strip() or None,
+            marketing=bool(rec.get("marketing")))
+    except Exception as _cx:
+        _report_error("sms_optin_copy", _cx, lead_phone[-4:])
+        return False, "copy_failed"
+    res = _send_sms(lead_phone, body, kind=SMS_KIND_TRANSACTIONAL)
+    _TALLY.bump("sms.optin_confirm", "sent" if res.get("ok") else res.get("reason", "refused"))
+    return bool(res.get("ok")), res.get("reason", "ok")
 
 
 def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
@@ -8253,6 +8395,16 @@ def _sms_readiness():
         "blocked_by": blocked,
         "note": ("APPROVED means the carriers accept us. It does NOT mean a "
                  "lead can receive a text. Read blocked_by."),
+        # Patch #113 — every code path that can put a message on the wire.
+        # Listed so "is SMS live?" is answered by an inventory rather than by
+        # somebody grepping for _send_sms.
+        "senders": {
+            "optin_confirmation": "transactional — once per number, on consent",
+            "studio_booking_confirmed": "transactional — /webhook/studio-booking",
+            "film_shoot_confirmed": "transactional — /webhook/roadmap-shoot",
+            "session_reminder": "transactional — T-168h/T-48h/T-24h/T-2h ladder",
+            "reengagement": "marketing — 7-touch fallback when WhatsApp/IG is dead",
+        },
         # Patch #112 — which promise the machine is currently keeping.
         "policy": {
             "terms_split_live": SMS_TERMS_SPLIT_LIVE,
@@ -8353,7 +8505,34 @@ def sms_inbound_webhook():
                     pass
             print(f"[SMS-OPTIN] START from {tail}")
         else:
+            # PATCH #113 — this used to drop a passive line into #dev and stop.
+            # Our own reminder copy now says "Need to change it? Just reply",
+            # so an inbound message is a promise coming due, not a curiosity.
+            # It names a human, carries a deadline and quotes the client
+            # verbatim — the same contract every other unreachable-client path
+            # in this machine already honours.
             print(f"[SMS-INBOUND] {tail}: {body[:120]!r}")
+            _who = tail
+            try:
+                _row = None
+                if frm:
+                    _m, _why, _row = _CLIENT_ROSTER.find({"phone": frm})
+                if _row:
+                    _who = f"{_row.get('name') or tail} ({tail})"
+            except Exception:
+                pass
+            try:
+                _post_assignment(
+                    SLACK_LARA_CHANNEL,
+                    f"Inbound SMS from {_who}",
+                    owner="MICHAEL",
+                    deadline=(datetime.now(pytz.timezone(TIMEZONE))
+                              + timedelta(hours=2)).strftime("%A %I:%M %p ET"),
+                    exact_text=body[:400],
+                    why="the client replied to a text; nothing answers SMS automatically",
+                )
+            except Exception as _ax:
+                print(f"[SMS-INBOUND] assignment failed (non-fatal): {_ax}")
             _post_to_slack_async("#dev", f":speech_balloon: Inbound SMS from {tail}: {body[:200]}")
     except Exception as _wx:
         _report_error("sms_inbound_webhook", _wx)
@@ -11393,6 +11572,26 @@ def _lead_reminder_thread():
                                  event_start.strftime("%A, %B %d"),
                                  event_start.strftime("%I:%M %p")]):
                             _sent_via = "WhatsApp (approved template)"
+
+                    # ── PATCH #113 · the SMS rung ──────────────────────
+                    # Sits between WhatsApp and email on purpose. A number
+                    # that is dialable but has no WhatsApp is exactly the
+                    # case SMS exists for, and for a time-critical reminder a
+                    # text is read where an email is not.
+                    #
+                    # It is a RUNG, not a branch: if SMS is refused for any
+                    # reason — no consent, quiet hours, monthly cap — the
+                    # ladder carries on to email exactly as before. Nothing
+                    # a client gets today is taken away by this.
+                    if not _sent_via and _lp and is_dialable("+" + _lp):
+                        _sms_ok, _sms_why = _sms_transactional(
+                            "+" + _lp,
+                            lambda: _sms_copy.session_reminder(
+                                stage_h, _fn, _when_long, _time_str),
+                            "session_reminder",
+                            idem_key=f"sms_reminder:{event_id}:{stage_h}")
+                        if _sms_ok:
+                            _sent_via = "SMS"
 
                     # S-6 email fallback — the half that was missing. An
                     # IG-sourced booking whose only identifier is an IGSID can
@@ -17504,6 +17703,22 @@ def studio_booking_webhook():
                     except Exception as _sb_cf:
                         print(f"[CONFLICT-SCAN] post-portal-booking scan "
                               f"failed (non-fatal): {_sb_cf}")
+                # PATCH #113 — tell the client, by text, that the studio time
+                # they just paid for is theirs. WordPress already sends an
+                # email; this is the message people actually read on the way
+                # out of the door. Sent only when the slot is genuinely held
+                # — confirming a booking that is NOT on the calendar would be
+                # a lie the client can act on.
+                if _sb_state in ("ok", "degraded"):
+                    _sms_transactional(
+                        evt.get("client_phone"),
+                        lambda: _sms_copy.studio_booking_confirmed(
+                            name,
+                            _sms_copy.pretty_date(date),
+                            _sms_copy.pretty_time(start),
+                            STUDIO_ADDRESS),
+                        "booking_confirmed",
+                        idem_key=f"sms_booking_confirmed:{bid}")
             else:
                 late = event == "booking_cancelled_late"
                 gcal_note = ""
@@ -17703,6 +17918,37 @@ def roadmap_shoot_webhook():
                 "Filming day is ON the calendar but the client is NOT an attendee - "
                 "service account lacks Domain-Wide Delegation.", "campaign=" + cid)
         _rspg.save_state(_rs_key, {"event_id": created.get("id", "")})
+        # PATCH #113 — the filming-day text. This webhook carries no phone
+        # number, so it is resolved from the portal roster (Patch #111).
+        #
+        # BY EMAIL ONLY, deliberately. known_client will happily match on a
+        # normalised business name, and a filming day for "Bent Tree Gardens"
+        # matching a roster row for "Bent Tree Gardens West" would text the
+        # wrong person about the wrong shoot. An exact email is the only
+        # signal precise enough to put a message on someone's phone. No
+        # email, or no match, means no text — and a line in the log saying so.
+        try:
+            _rs_phone = ""
+            _rs_why = "no_email_on_payload"
+            _rs_row = None
+            if email:
+                _rs_hit, _rs_why, _rs_row = _CLIENT_ROSTER.find({"email": email})
+            if _rs_row:
+                _rs_phone = _rs_row.get("phone") or ""
+            if _rs_phone:
+                _sms_transactional(
+                    _rs_phone,
+                    lambda: _sms_copy.film_shoot_confirmed(
+                        name, _sms_copy.pretty_date(date),
+                        _sms_copy.pretty_time(start), where, camp_title),
+                    "shoot_confirmed",
+                    idem_key="sms_shoot_confirmed:%s:%s:%s" % (cid, date, start))
+            else:
+                print("[SMS-shoot_confirmed] skipped: no phone on the roster "
+                      "for " + (email or name) + " (" + str(_rs_why) + ")")
+                _TALLY.bump("sms.shoot_confirmed", "no_roster_phone")
+        except Exception as _rs_sms:
+            print("[SMS-shoot_confirmed] failed (non-fatal): " + str(_rs_sms)[:120])
         _post_to_slack_async(SLACK_MATT_CHANNEL, (
             "*ROADMAP filming day CONFIRMED* - " + name + "\n"
             "Campaign " + str(camp_no) + ": " + camp_title + "\n"
