@@ -2124,5 +2124,61 @@ check_false("no deliverable count is promised", "videos" in _full)
 
 print("\nPATCH90_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 
+print("\n== #115 standing co-attendees: Nicole rides Luzia's invites ==")
+# Michael asked for Nicole on every email to Luzia AND on the invites. Mail is
+# #114's job. This is the half that Google sends, which #114 could never reach.
+import os as _os115
+import standing_contacts as _sc115
+
+_os115.environ.pop("MWM_STANDING_CONTACTS", None)
+_os115.environ.pop("SUSAN_ALWAYS_CC", None)
+_LUZIA115 = "luziahcosta@hotmail.com"
+_NICOLE115 = "Nicole.formore@gmail.com"
+
+
+def _ev115(attendee=None, pre=None):
+    _b = {"summary": "🎬 Studio: Luzia Costa",
+          "location": "1500 Park Center Dr, Suite 230, Orlando, FL 32835",
+          "start": {"dateTime": "2026-09-10T12:00:00-04:00"},
+          "end": {"dateTime": "2026-09-10T13:00:00-04:00"}}
+    if pre:
+        _b["attendees"] = pre
+    _out, _iss = harden_event_body(_b, source_identifier="+18135031224",
+                                   attendee_email=attendee, require_attendee=False)
+    return [a["email"] for a in (_out.get("attendees") or [])], _iss
+
+
+check("Nicole is added to a Luzia event", _ev115(_LUZIA115)[0],
+      [_LUZIA115, _NICOLE115])
+check("...and the event still passes clean", _ev115(_LUZIA115)[1], [])
+check("...matched case-insensitively", _ev115("LuziaHCosta@Hotmail.COM")[0],
+      ["LuziaHCosta@Hotmail.COM", _NICOLE115])
+check("...also when the client was already on the attendee list",
+      _ev115(None, [{"email": _LUZIA115}])[0], [_LUZIA115, _NICOLE115])
+check("never added twice, in any casing",
+      _ev115(_LUZIA115, [{"email": "NICOLE.FORMORE@gmail.com"}])[0],
+      ["NICOLE.FORMORE@gmail.com", _LUZIA115])
+check("every other client's invite is untouched", _ev115("todd@example.com")[0],
+      ["todd@example.com"])
+check("an event with no attendee at all gains nobody", _ev115(None)[0], [])
+
+# One map, two rails — the whole point of moving it out of susan_gmail.
+import susan_gmail as _sg115
+check("the mail rail and the event rail read the SAME map",
+      _sg115._always_cc_map(), _sc115.standing_map())
+check("the mail rail's CC agrees with the invite",
+      _sg115._apply_always_cc(_LUZIA115, None), _NICOLE115)
+
+# The env override reaches both rails.
+_os115.environ["MWM_STANDING_CONTACTS"] = '{"someone@new.com": ["watcher@x.com"]}'
+check("env adds a pair on the event rail",
+      _ev115("someone@new.com")[0], ["someone@new.com", "watcher@x.com"])
+check("...and on the mail rail",
+      _sg115._apply_always_cc("someone@new.com", None), "watcher@x.com")
+_os115.environ["MWM_STANDING_CONTACTS"] = "{not json"
+check("malformed env is ignored, the built-in survives",
+      _ev115(_LUZIA115)[0], [_LUZIA115, _NICOLE115])
+_os115.environ.pop("MWM_STANDING_CONTACTS", None)
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

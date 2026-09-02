@@ -323,37 +323,23 @@ def _recipients(to, cc):
 # operator mail is not client communication.
 # ══════════════════════════════════════════════════════════════════════
 
-# Built-in map. Keys and values are plain addresses; keys match case-insensitively.
-_ALWAYS_CC = {
-    # Luzia Costa (Studio Package) — Nicole is copied on everything. Michael, 2 Sep 2026.
-    "luziahcosta@hotmail.com": ["Nicole.formore@gmail.com"],
-}
-
+# PATCH #115 — the map moved to standing_contacts.py so the CALENDAR rail can
+# read the same answer. A mail rule and an invite rule that can disagree
+# eventually do. This function stays as the mail rail's door to it.
 
 def _always_cc_map():
     """{recipient -> [addresses always copied]}, keys lowercased.
 
-    SUSAN_ALWAYS_CC — JSON, {"client@x.com": ["copy@y.com"]} — is merged OVER
-    the built-in map, so adding or removing a standing copy is an env edit
-    rather than a deploy. A malformed value is ignored and logged: a typo in
-    an env var must not silently drop the copies that are already correct.
+    Delegates to standing_contacts.standing_map(). Imported lazily and LOUDLY:
+    if that module ever goes missing we print it rather than quietly sending a
+    client's mail with nobody copied.
     """
-    out = {}
-    for k, v in _ALWAYS_CC.items():
-        out[str(k).strip().lower()] = [str(a).strip() for a in v if str(a).strip()]
-    raw = (os.getenv("SUSAN_ALWAYS_CC", "") or "").strip()
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError("SUSAN_ALWAYS_CC must be a JSON object")
-            for k, v in parsed.items():
-                key = str(k).strip().lower()
-                vals = v if isinstance(v, (list, tuple)) else re.split(r"[,;]+", str(v or ""))
-                out[key] = [str(a).strip() for a in vals if str(a).strip()]
-        except Exception as exc:
-            print("[GMAIL] SUSAN_ALWAYS_CC ignored — {}".format(str(exc)[:120]))
-    return {k: v for k, v in out.items() if k and v}
+    try:
+        import standing_contacts as _sc
+        return _sc.standing_map()
+    except Exception as exc:
+        print("[GMAIL] standing contacts UNAVAILABLE — {}".format(str(exc)[:160]))
+        return {}
 
 
 def _apply_always_cc(to, cc):

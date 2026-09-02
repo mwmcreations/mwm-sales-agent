@@ -1074,6 +1074,29 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
         issues.append("no attendee address supplied — "
                       "a client not on the attendee list cannot be reached by calendar mail")
 
+    # ── PATCH #115 · standing co-attendees ──
+    # Michael asked for Nicole on every email to Luzia Costa AND on the
+    # invites. Mail is handled in susan_gmail; an invite is sent by Google, so
+    # it would have missed the rule entirely. Both rails read the SAME map.
+    #
+    # Keyed off the attendee list as it finally stands, not off
+    # `attendee_email`, so an event whose client arrived pre-attached to
+    # `body["attendees"]` is covered too.
+    try:
+        import standing_contacts as _sc
+        _extras = _sc.extras_for([a.get("email", "") for a in (body.get("attendees") or [])
+                                  if isinstance(a, dict)])
+    except Exception as exc:
+        _extras = []
+        issues.append("standing contacts unavailable: {}".format(str(exc)[:80]))
+    for _extra in _extras:
+        _ascii_extra, _extra_ok, _extra_note = ascii_email(_extra)
+        if not _extra_ok:
+            issues.append("standing co-attendee unusable: {}".format(_extra_note))
+            continue
+        body.setdefault("attendees", []).append({"email": _ascii_extra})
+        notes.append("standing co-attendee added: {}".format(_ascii_extra))
+
     # ── reminder channel ──
     rchan, rwhy = reminder_channel_for(source_identifier, attendee_email,
                                        stated=stated_reminder_channel)
