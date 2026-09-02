@@ -43,6 +43,7 @@ import known_client as _kc  # Patch #110 — a client is not a lead
 import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
 import icp as _icp            # S31 — who we are for
+import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
                         is_ig_scoped, is_dialable, ascii_email,
@@ -804,6 +805,166 @@ SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID — email marketing
 SLACK_LARA_CHANNEL = "C0ARC24S9PF"   # #lara channel ID — CRM/follow-up
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
 SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"   # #eric channel ID — traffic manager
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #116 · THE LOOP GUARD — WE STOP TALKING TO OTHER PEOPLE'S ROBOTS
+#
+# 2 Sep 2026, 08:53–09:05 ET, Instagram: Maya and "Olívia, Customer Service
+# Assistant at Top Florida Homes" exchanged SEVENTY messages in twelve minutes,
+# about one every eleven seconds. Maya spotted it herself — she wrote "Loop de
+# automação detectado — encerrando o atendimento" — and then sent thirty more
+# messages, most of them a single full stop. The other robot sent "Stop
+# please". We answered that with "." too.
+#
+# The model announcing that it is finished is not the same thing as the code
+# stopping. So the stop lives OUTSIDE the model, in loop_guard.py, and it runs
+# BEFORE the reply is generated — a guard that runs after generation has
+# already paid for the thing it was meant to prevent.
+#
+# FAILS OPEN, deliberately, and this is the one place in this file where that
+# is the right direction. Everything around suppression fails closed because
+# the cost of a mistake is a message someone asked us not to send. Here the
+# cost of a mistake is silence on the sales line — a real lead ignored. A
+# broken loop guard must let the conversation through and shout about itself.
+# ══════════════════════════════════════════════════════════════════════
+
+LOOP_GUARD_ON = os.getenv("LOOP_GUARD", "1") != "0"
+LOOP_GUARD_CFG = {
+    "bot_max_out": int(os.getenv("LOOP_GUARD_BOT_MAX_OUT", "3")),
+    "max_out": int(os.getenv("LOOP_GUARD_MAX_OUT", "16")),
+    "fast_s": float(os.getenv("LOOP_GUARD_FAST_S", "20")),
+    "fast_streak": int(os.getenv("LOOP_GUARD_FAST_STREAK", "6")),
+    "pause_ttl_s": float(os.getenv("LOOP_GUARD_PAUSE_TTL_S", "86400")),
+}
+
+_loop_states = {}          # sender key -> guard state (RAM, per process)
+
+
+def _loop_key(sender):
+    return "loopguard:" + str(sender or "")
+
+
+def _loop_state_get(sender):
+    """The guard's memory for one conversation.
+
+    The turn-by-turn record is RAM: it is evidence about the last few minutes
+    and means nothing after a restart. The VERDICT is durable — a pause that
+    evaporates on the next deploy is not a pause, it is a pause-shaped gap in
+    which the loop starts again.
+    """
+    state = _loop_states.get(sender)
+    if state is not None:
+        return state
+    state = _loopguard.new_state()
+    try:
+        import pg_store as _p
+        if _p.enabled():
+            raw = _p.load_state(_loop_key(sender), "")
+            if raw:
+                stored = json.loads(raw)
+                state["paused_at"] = stored.get("paused_at")
+                state["paused_reason"] = stored.get("paused_reason", "")
+                state["bot_seen"] = bool(stored.get("bot_seen"))
+    except Exception as _lge:
+        print(f"[LOOPGUARD] could not load state for {sender}: {str(_lge)[:120]}")
+    _loop_states[sender] = state
+    return state
+
+
+def _loop_state_save(sender, state):
+    _loop_states[sender] = state
+    try:
+        import pg_store as _p
+        if _p.enabled():
+            _p.save_state(_loop_key(sender), json.dumps({
+                "paused_at": state.get("paused_at"),
+                "paused_reason": state.get("paused_reason", ""),
+                "bot_seen": bool(state.get("bot_seen")),
+            }))
+    except Exception as _lge:
+        print(f"[LOOPGUARD] could not persist state for {sender}: {str(_lge)[:120]}")
+
+
+_LOOP_REASON_TEXT = {
+    "bot_declared": "the other side identifies itself as an automated assistant",
+    "repetition": "they are sending the same message over and over",
+    "cadence": "replies are coming back faster than a person could read them",
+    "our_filler": "Maya has run out of things to say and is sending filler",
+    "volume": "too many replies in one conversation, too fast",
+    "already_paused": "this conversation was already stopped",
+}
+
+
+def _loop_allows_reply(sender, incoming_msg, channel_label=""):
+    """(allow, reason) — may Maya answer this message?
+
+    Call it before generating the reply. On a stop it tells #maya ONCE, with
+    the reason and the sender, because a conversation that goes quiet without
+    a word to anybody is indistinguishable from one that never arrived.
+    """
+    if not LOOP_GUARD_ON:
+        return True, ""
+    try:
+        state = _loop_state_get(sender)
+        already = bool(state.get("paused_at"))
+        verdict, reason, detail = _loopguard.check(
+            state, incoming_msg, cfg=LOOP_GUARD_CFG)
+        _loop_state_save(sender, state)
+        if verdict == _loopguard.ALLOW:
+            return True, ""
+        if not already:
+            _TALLY.bump("loopguard.tripped", f"{reason} — {sender}")
+            print(f"[LOOPGUARD] STOP {sender}: {reason} ({detail})")
+            try:
+                _post_to_slack_async(
+                    SLACK_MAYA_CHANNEL,
+                    ":octagonal_sign: *Loop guard stopped a conversation*\n"
+                    f"• *Who:* `{sender}` {channel_label}\n"
+                    f"• *Why:* {_LOOP_REASON_TEXT.get(reason, reason)}\n"
+                    f"• *Detail:* {detail}\n"
+                    f"• *Their last message:* {str(incoming_msg or '')[:200]}\n"
+                    "Maya will not reply again on this thread. Answer in the "
+                    "#maya-shadow thread to take it over — that releases the "
+                    f"guard. Otherwise it lifts on its own in "
+                    f"{int(LOOP_GUARD_CFG['pause_ttl_s'] // 3600)}h.")
+            except Exception as _sx:
+                _report_error("_loop_allows_reply:slack", _sx)
+        else:
+            _TALLY.bump("loopguard.held", f"{reason} — {sender}")
+        return False, reason
+    except Exception as _lge:
+        # See the header: this guard fails OPEN. A bug here must not silence
+        # the sales line — it must be loud and get out of the way.
+        _report_error("_loop_allows_reply", _lge)
+        print(f"[LOOPGUARD] FAILED OPEN for {sender}: {str(_lge)[:160]}")
+        return True, ""
+
+
+def _loop_note_reply(sender, text):
+    """Record what we actually sent. Two of these in a row saying nothing is
+    itself a stop condition, so the guard has to see our side too."""
+    if not LOOP_GUARD_ON:
+        return
+    try:
+        state = _loop_state_get(sender)
+        _loopguard.note(state, _loopguard.OUT, text, cfg=LOOP_GUARD_CFG)
+        _loop_state_save(sender, state)
+    except Exception as _lge:
+        print(f"[LOOPGUARD] could not record our reply to {sender}: {str(_lge)[:120]}")
+
+
+def _loop_release(sender, why="human took over"):
+    """A person stepped in. Clear the pause AND the evidence."""
+    try:
+        state = _loop_state_get(sender)
+        if state.get("paused_at"):
+            print(f"[LOOPGUARD] released {sender} — {why}")
+            _TALLY.bump("loopguard.released", f"{why} — {sender}")
+        _loopguard.release(state)
+        _loop_state_save(sender, state)
+    except Exception as _lge:
+        print(f"[LOOPGUARD] could not release {sender}: {str(_lge)[:120]}")
+
 PIPELINE_CANVAS_ID = "F0BBZ7T2QGL"   # Lead Pipeline Canvas on Slack
 # S5.4: cap the canvas Active Leads table — canvas was ~115K chars and growing
 # with every lead. Newest N rows shown; the full list lives in Google Sheets.
@@ -1796,6 +1957,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
             _result = send_instagram_dm(_igsid, body=text)
             if _result:
                 print(f"[SHADOW RELAY] ✅ Relayed Michael's message to IG DM {_igsid}")
+                # Patch #116 — a human just answered, so the guard stands down.
+                _loop_release(f"instagram:{_igsid}", "Michael replied in #maya-shadow")
             else:
                 raise Exception("send_instagram_dm returned None")
         except Exception as e:
@@ -1844,6 +2007,9 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
             except Exception as _sx:
                 _report_error("_handle_shadow_relay:L1035", _sx)  # S6.5 silent-except sweep
             return
+
+        # Patch #116 — a human just answered, so the guard stands down.
+        _loop_release(wa_sender, "Michael replied in #maya-shadow")
 
         # Add to conversation_history so Maya stays in sync
         if wa_sender not in conversation_history:
@@ -9482,6 +9648,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             else:
                 send_whatsapp_meta(to_wa, body=clean_reply)
             print(f"\u2705 Maya reply sent to {to_wa}")
+            _loop_note_reply(sndr, clean_reply)   # Patch #116
 
             # Shadow mode: mirror outbound reply to #maya-shadow.
             if identity is not None:
@@ -9494,6 +9661,15 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     print(f"\u2705 Studio photos sent to {to_wa}")
                 except Exception as photo_err:
                     print(f"\u26a0\ufe0f Could not send studio photos (non-fatal): {photo_err}")
+
+        # ── PATCH #116 · loop guard, BEFORE the model call ──
+        # Michael is exempt: he is the one person here who is definitely not a
+        # robot, and locking him out of his own line would be its own outage.
+        if not is_michael:
+            _lg_ok, _lg_why = _loop_allows_reply(sender, incoming_msg, "· WhatsApp")
+            if not _lg_ok:
+                print(f"[LOOPGUARD] holding WhatsApp reply to {sender} ({_lg_why})")
+                return
 
         threading.Thread(target=process_maya, args=(history_snapshot, sender, _lead_ctx, maya_identity, is_michael), daemon=True).start()
 
@@ -9914,6 +10090,7 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             print(f"[Pacing] non-fatal: {_pace_err}")
         send_instagram_dm(ig_sender_id, body=clean_reply)
         print(f"✅ Maya IG DM reply sent to {ig_sender_id}")
+        _loop_note_reply(sndr, clean_reply)   # Patch #116
 
         # Shadow mode: mirror outbound reply
         if identity is not None:
@@ -9927,6 +10104,13 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
                 print(f"✅ Studio photos sent via IG DM to {ig_sender_id}")
             except Exception as photo_err:
                 print(f"⚠️ IG DM studio photos error (non-fatal): {photo_err}")
+
+    # ── PATCH #116 · loop guard, BEFORE the model call ──
+    # This is the rail the Top Florida Homes loop ran on.
+    _lg_ok, _lg_why = _loop_allows_reply(sender, incoming_msg, "· Instagram DM")
+    if not _lg_ok:
+        print(f"[LOOPGUARD] holding IG reply to {sender} ({_lg_why})")
+        return
 
     threading.Thread(
         target=process_maya_ig,
