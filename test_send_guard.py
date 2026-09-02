@@ -9,6 +9,8 @@ so that bypass cannot come back.
 
 Run: python3 test_send_guard.py
 """
+import json
+import os
 import sys
 
 import susan_gmail as sg
@@ -308,6 +310,113 @@ check("never-contact outranks being on BOTH lists",
 check("case and whitespace do not smuggle past the hard tier",
       _er68.transactional_allowed("  YasminFMoraes@iCloud.com ",
                                   _TXOK69, _NEVER69)[0], "block")
+
+
+# ══════════════════════════════════════════════════════════════════════
+section("#114 — the standing CC: a second person on a client's mail")
+#
+# Michael asked for Nicole to be copied on everything sent to Luzia Costa.
+# The failure this pins is not "the CC is missing" — it is the OTHER two:
+# a copied address that skips the do-not-contact guard, and a standing CC
+# leaking onto the operator path, which refuses CC outright and would start
+# rejecting mail to Michael himself.
+_LUZIA114 = "luziahcosta@hotmail.com"
+_NICOLE114 = "Nicole.formore@gmail.com"
+
+os.environ.pop("SUSAN_ALWAYS_CC", None)
+
+check("the client is in the built-in map",
+      _NICOLE114 in sg._always_cc_map().get(_LUZIA114, []), True)
+check("a send to the client gains the standing CC",
+      sg._apply_always_cc(_LUZIA114, None), _NICOLE114)
+check("...matched case-insensitively on the client address",
+      sg._apply_always_cc("LuziaHCosta@Hotmail.COM", None), _NICOLE114)
+check("...and with surrounding whitespace",
+      sg._apply_always_cc("  luziahcosta@hotmail.com ", None), _NICOLE114)
+check("an existing CC is kept, not replaced",
+      sg._apply_always_cc(_LUZIA114, "someone@else.com"),
+      "someone@else.com, " + _NICOLE114)
+check("never added twice when already on the mail",
+      sg._apply_always_cc(_LUZIA114, _NICOLE114), _NICOLE114)
+check("...in any casing",
+      sg._apply_always_cc(_LUZIA114, "nicole.formore@GMAIL.com"),
+      "nicole.formore@GMAIL.com")
+check("a standing CC keyed on a CC'd address still fires",
+      sg._apply_always_cc("other@x.com", _LUZIA114),
+      _LUZIA114 + ", " + _NICOLE114)
+check("everyone else is untouched", sg._apply_always_cc("ok@gmail.com", None), None)
+check("...including their existing CC",
+      sg._apply_always_cc("ok@gmail.com", "a@b.com"), "a@b.com")
+
+# The env override — a change should not need a deploy.
+os.environ["SUSAN_ALWAYS_CC"] = json.dumps({"someone@new.com": ["watcher@x.com"]})
+check("env adds a pair", sg._apply_always_cc("someone@new.com", None), "watcher@x.com")
+check("...without dropping the built-in", sg._apply_always_cc(_LUZIA114, None), _NICOLE114)
+os.environ["SUSAN_ALWAYS_CC"] = json.dumps({_LUZIA114: []})
+check("env can clear one pair", sg._apply_always_cc(_LUZIA114, None), None)
+os.environ["SUSAN_ALWAYS_CC"] = "{not json"
+check("malformed env is ignored, built-ins survive",
+      sg._apply_always_cc(_LUZIA114, None), _NICOLE114)
+os.environ.pop("SUSAN_ALWAYS_CC", None)
+
+# ── the part that matters: a copied address is still a recipient ──
+_real114 = sg._get_gmail_service
+_sent114 = {"cc": None, "reached": False}
+
+
+class _Exec114:
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self):
+        return self._result
+
+
+class _Msg114:
+    def send(self, userId=None, body=None):
+        _sent114["reached"] = True
+        import base64 as _b64, email as _em
+        raw = _b64.urlsafe_b64decode(body["raw"].encode())
+        _sent114["cc"] = _em.message_from_bytes(raw).get("cc")
+        return _Exec114({"id": "fake114"})
+
+
+class _Users114:
+    def messages(self):
+        return _Msg114()
+
+
+class _Svc114:
+    def users(self):
+        return _Users114()
+
+
+try:
+    sg._get_gmail_service = lambda: _Svc114()
+    sg.configure_suppression(lambda a: (str(a).strip().lower() == _NICOLE114.lower(),
+                                        "do-not-contact list"))
+    _r = sg.send_gmail(_LUZIA114, "s", "<p>x</p>")
+    check("a SUPPRESSED standing CC blocks the whole send", _r.get("ok"), False)
+    check("...and names the copied address, not the client",
+          (_r.get("blocked_address") or "").lower(), _NICOLE114.lower())
+    check("...and nothing was transmitted", _sent114["reached"], False)
+
+    sg.configure_suppression(lambda a: (False, ""))
+    _r = sg.send_gmail(_LUZIA114, "s", "<p>x</p>")
+    check("with everyone clear, the send goes", _r.get("ok"), True)
+    check("...and the CC header actually carries Nicole", _sent114["cc"], _NICOLE114)
+
+    # The operator path refuses CC. If the standing map leaked into it, mail to
+    # Michael would start bouncing off his own guard.
+    sg.configure_operators(lambda a: (True, "operator"))
+    _r = sg.send_gmail(_LUZIA114, "s", "x", operator=True)
+    check("an operator send to a MAPPED address is not given a CC",
+          _r.get("ok"), True)
+    check("...so #68's no-CC rule never trips on it",
+          "CC not permitted" in (_r.get("error") or ""), False)
+finally:
+    sg._get_gmail_service = _real114
+    sg.configure_operators(None)
 
 
 print("\n" + "=" * 60)

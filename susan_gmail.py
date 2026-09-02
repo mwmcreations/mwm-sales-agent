@@ -300,6 +300,87 @@ def _recipients(to, cc):
     return [a for a in out if a]
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #114 · STANDING CC — WHEN A SECOND PERSON MUST SEE A CLIENT'S MAIL
+#
+# Michael, 2 Sep 2026: "add Nicole.formore@gmail.com in all e-mails that
+# should be sent to our studio client Luzia. keep the main e-mail and add
+# this one. for all e-mail communication."
+#
+# "All" is the whole instruction. A rule applied at one call site holds only
+# until somebody writes the next call site — and that has already happened in
+# this exact file: Patch #38 enforced do-not-contact at the endpoint a human
+# calls, and five automated senders walked straight past it. So the standing
+# CC lives at the chokepoint every send converges on, where a sending path
+# written next month inherits it without knowing it exists.
+#
+# It is applied BEFORE the recipient guard, deliberately. A standing CC is a
+# real person receiving real mail, and it gets the same do-not-contact and
+# never-contact scrutiny as the TO. A CC that could skip the guard would be a
+# hole shaped exactly like the one #44A closed.
+#
+# Operator mail is excluded: #68 refuses CC on operator sends outright, and
+# operator mail is not client communication.
+# ══════════════════════════════════════════════════════════════════════
+
+# Built-in map. Keys and values are plain addresses; keys match case-insensitively.
+_ALWAYS_CC = {
+    # Luzia Costa (Studio Package) — Nicole is copied on everything. Michael, 2 Sep 2026.
+    "luziahcosta@hotmail.com": ["Nicole.formore@gmail.com"],
+}
+
+
+def _always_cc_map():
+    """{recipient -> [addresses always copied]}, keys lowercased.
+
+    SUSAN_ALWAYS_CC — JSON, {"client@x.com": ["copy@y.com"]} — is merged OVER
+    the built-in map, so adding or removing a standing copy is an env edit
+    rather than a deploy. A malformed value is ignored and logged: a typo in
+    an env var must not silently drop the copies that are already correct.
+    """
+    out = {}
+    for k, v in _ALWAYS_CC.items():
+        out[str(k).strip().lower()] = [str(a).strip() for a in v if str(a).strip()]
+    raw = (os.getenv("SUSAN_ALWAYS_CC", "") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("SUSAN_ALWAYS_CC must be a JSON object")
+            for k, v in parsed.items():
+                key = str(k).strip().lower()
+                vals = v if isinstance(v, (list, tuple)) else re.split(r"[,;]+", str(v or ""))
+                out[key] = [str(a).strip() for a in vals if str(a).strip()]
+        except Exception as exc:
+            print("[GMAIL] SUSAN_ALWAYS_CC ignored — {}".format(str(exc)[:120]))
+    return {k: v for k, v in out.items() if k and v}
+
+
+def _apply_always_cc(to, cc):
+    """Return `cc` with every standing copy for these recipients added once.
+
+    Never duplicates an address already in TO or CC, in any casing, and never
+    removes anything the caller asked for.
+    """
+    mapping = _always_cc_map()
+    if not mapping:
+        return cc
+    current = _recipients(to, cc)
+    seen = {a.strip().lower() for a in current}
+    additions = []
+    for addr in current:
+        for extra in mapping.get(addr.strip().lower(), []):
+            if extra.lower() not in seen:
+                seen.add(extra.lower())
+                additions.append(extra)
+    if not additions:
+        return cc
+    existing = [p.strip() for p in re.split(r"[,;]+", str(cc or "")) if p.strip()]
+    out = ", ".join(existing + additions)
+    print("[GMAIL] standing CC applied for {}: +{}".format(to, ", ".join(additions)))
+    return out
+
+
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
 def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None,
@@ -338,6 +419,11 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
                     "error": "operator refused: {}".format(_why_op)}
         print("[GMAIL] operator send permitted to {}".format(to))
     else:
+        # PATCH #114 — standing CC first, so a copied address faces the same
+        # guard as the recipient it is copied on. Never before an operator
+        # send: #68 refuses CC there, and operator mail is not client mail.
+        cc = _apply_always_cc(to, cc)
+
         # PATCH #44A — before the service, before the MIME, before anything.
         # PATCH #69 — with one narrow exception: CLIENT TRANSACTIONAL mail.
         # A client who is on the lead-DNC list (because they must not receive
