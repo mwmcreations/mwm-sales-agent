@@ -42,6 +42,7 @@ import burst as _burst        # Patch #96 — one reply per burst, not per fragm
 import known_client as _kc  # Patch #110 — a client is not a lead
 import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
+import sms_promises as _sms_promises  # Patch #117 — what the website promises
 import icp as _icp            # S31 — who we are for
 import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
@@ -8574,10 +8575,13 @@ def _sms_readiness():
         # Patch #112 — which promise the machine is currently keeping.
         "policy": {
             "terms_split_live": SMS_TERMS_SPLIT_LIVE,
-            "source_of_truth": ("/sms-opt-in/ — two consents, cap on marketing only"
-                                if SMS_TERMS_SPLIT_LIVE else
-                                "/terms/ \u00a719 — one bundled consent, cap on everything "
-                                "(stricter of the two; §19 not yet corrected)"),
+            "source_of_truth": (
+                "/terms/ \u00a719 + /sms-signup/ — two consents, cap on marketing only"
+                if SMS_TERMS_SPLIT_LIVE else
+                "/terms/ \u00a719 — the published pages now describe TWO consents "
+                "(read {}), but SMS_TERMS_SPLIT_LIVE=0, so the machine keeps the "
+                "stricter bundled promise and caps booking reminders too".format(
+                    _sms_promises.VERIFIED_ON)),
             "transactional": {
                 "consent_field": _sms_policy(SMS_KIND_TRANSACTIONAL)["consent_field"],
                 "quiet_hours": f"{SMS_TXN_QUIET_START_H:02d}:00-{SMS_TXN_QUIET_END_H:02d}:00 {TIMEZONE}",
@@ -8591,7 +8595,36 @@ def _sms_readiness():
                 "counter": _sms_policy(SMS_KIND_MARKETING)["counter_field"],
             },
         },
+        # Patch #117 — the promises live on WordPress and the behaviour lives
+        # here, and three campaign rejections came from the two drifting apart.
+        # This puts the comparison where a human already looks.
+        "published": _sms_published_block(),
     }
+
+
+def _sms_published_block():
+    """What the website promises, when it was last read, and where we differ.
+
+    Never raises: a readiness endpoint that 500s because a copy helper moved
+    is worse than one that says it could not check.
+    """
+    try:
+        _mk = _sms_copy.opt_in_confirmation("Ana", marketing=True)
+        _tx = _sms_copy.opt_in_confirmation("Ana", marketing=False)
+        return {
+            "verified_on": _sms_promises.VERIFIED_ON,
+            "verified_by": _sms_promises.VERIFIED_BY,
+            "sources": _sms_promises.SOURCES,
+            "marketing_monthly_cap": _sms_promises.PUBLISHED["marketing_monthly_cap"],
+            "transactional_capped": _sms_promises.PUBLISHED["transactional_capped"],
+            "separate_consents": _sms_promises.PUBLISHED["separate_consents"],
+            "drift": _sms_promises.drift(
+                _sms_copy.BRAND, _sms_copy.SUFFIX, _mk, _tx,
+                SMS_MONTHLY_CAP_MARKETING, SMS_MONTHLY_CAP, SMS_TERMS_SPLIT_LIVE),
+        }
+    except Exception as _dx:
+        return {"drift": ["could not compare: {}".format(str(_dx)[:160])],
+                "verified_on": getattr(_sms_promises, "VERIFIED_ON", "?")}
 
 
 @app.route("/webhook/sms-status", methods=["POST"])

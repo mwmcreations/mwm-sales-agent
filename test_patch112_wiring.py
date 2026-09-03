@@ -108,8 +108,23 @@ ok("SMS_MONTHLY_CAP)" not in fb,
 rd = SRC.split("def _sms_readiness(")[1].split("\ndef ")[0]
 ok('"terms_split_live": SMS_TERMS_SPLIT_LIVE' in rd,
    "/health publishes which mode is live")
-ok("§19 not yet corrected" in rd,
-   "and names the unresolved contradiction rather than hiding it")
+# PATCH #117 — this line used to assert the string "§19 not yet corrected".
+# On 2 Sep 2026 §19 WAS corrected: both /terms/ and /sms-signup/ now describe
+# two separate consents. The old assertion pinned a claim that had become
+# false, which is the worst kind of test — it defends a lie.
+#
+# The INTENT survives unchanged: /health must name the standing contradiction
+# rather than hide it. Only the contradiction moved. It is no longer "the
+# pages disagree with each other"; it is "the pages describe two consents
+# while the flag is still 0, so booking reminders are capped like marketing".
+ok("SMS_TERMS_SPLIT_LIVE=0" in rd,
+   "and names the standing contradiction: the pages split, the flag does not")
+ok("stricter bundled promise" in rd,
+   "...saying plainly which way the machine errs while they disagree")
+ok("_sms_promises.VERIFIED_ON" in rd,
+   "...and dates the claim, so a stale reading of the website is visible")
+ok('"published": _sms_published_block()' in rd,
+   "/health carries the published-vs-code drift report (Patch #117)")
 ok('"monthly_cap": _sms_policy(SMS_KIND_TRANSACTIONAL)["cap"]' in rd
    and '"monthly_cap": _sms_policy(SMS_KIND_MARKETING)["cap"]' in rd,
    "the caps shown are computed, not typed — /health cannot drift from code")
