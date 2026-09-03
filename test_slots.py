@@ -121,6 +121,68 @@ ok(len(set(days(mon))) == 3, "one slot per day, three distinct days")
 ok(len(S.compute_slots(at(2026, 8, 24, 8, 0), [], TZ, count_fn=never_full)) <= 3,
    "never more than three")
 
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #118 — all-day events. The booking form honoured them, Maya did not,
+# and on 16 Sep 2026 a studio visit was booked onto a day carrying an all-day
+# "YASMIN surgery" block that had stood for eleven days.
+print("\n== #118 all-day events ==")
+
+_ALLDAY_BUSY = {"summary": "YASMIN surgery",
+                "start": {"date": "2026-09-16"}, "end": {"date": "2026-09-17"}}
+_ALLDAY_FREE = {"summary": "Funnel Hacking Live", "transparency": "transparent",
+                "start": {"date": "2026-09-21"}, "end": {"date": "2026-09-25"}}
+_TIMED_BUSY = {"summary": "Studio Visit",
+               "start": {"dateTime": "2026-09-16T13:00:00-04:00"},
+               "end": {"dateTime": "2026-09-16T14:00:00-04:00"}}
+_TIMED_FREE = {"summary": "Birthday", "transparency": "transparent",
+               "start": {"dateTime": "2026-09-16T13:00:00-04:00"},
+               "end": {"dateTime": "2026-09-16T14:00:00-04:00"}}
+
+_row_ad = S.busy_row(_ALLDAY_BUSY, TZ)
+ok(_row_ad is not None, "an all-day BUSY event produces a busy row")
+ok(S.busy_row(_ALLDAY_FREE, TZ) is None, "an all-day FREE event produces nothing")
+ok(S.busy_row(_TIMED_BUSY, TZ) == {"start": "2026-09-16T13:00:00-04:00",
+                                   "end": "2026-09-16T14:00:00-04:00"},
+   "a timed busy event passes its own hours straight through")
+ok(S.busy_row(_TIMED_FREE, TZ) is None, "a timed FREE event produces nothing")
+
+# The whole working day must be busy, and only that day.
+for _h in (9, 10, 12, 15, 17):
+    ok(S.is_busy(TZ.localize(datetime(2026, 9, 16, _h, 0)), [_row_ad], TZ),
+       "%02d:00 on the all-day-blocked day reads busy" % _h)
+ok(not S.is_busy(TZ.localize(datetime(2026, 9, 17, 13, 0)), [_row_ad], TZ),
+   "the NEXT day is free — Google's end date is exclusive and is not over-read")
+ok(not S.is_busy(TZ.localize(datetime(2026, 9, 15, 13, 0)), [_row_ad], TZ),
+   "the day before is free")
+
+# A multi-day all-day event covers every day it spans.
+_multi = S.busy_row({"start": {"date": "2026-10-05"}, "end": {"date": "2026-10-08"}}, TZ)
+for _d in (5, 6, 7):
+    ok(S.is_busy(TZ.localize(datetime(2026, 10, _d, 11, 0)), [_multi], TZ),
+       "Oct %d is inside the multi-day block" % _d)
+ok(not S.is_busy(TZ.localize(datetime(2026, 10, 8, 11, 0)), [_multi], TZ),
+   "Oct 8 is the exclusive end and stays bookable")
+
+# The real Karen Fam case: with the fix, that day yields no slots at all.
+_now = TZ.localize(datetime(2026, 9, 14, 9, 0))
+_with = S.compute_slots(_now, [_row_ad], TZ, horizon_days=5, max_slots=10)
+ok(all(not sl["id"].startswith("2026-09-16") for sl in _with),
+   "compute_slots offers NOTHING on a day carrying an all-day Busy block")
+_without = S.compute_slots(_now, [], TZ, horizon_days=5, max_slots=10)
+ok(any(sl["id"].startswith("2026-09-16") for sl in _without),
+   "...and that day IS offered when the block is absent, so the test proves the block")
+
+# Fail closed: an event we cannot read must not become a booking.
+_junk = S.busy_row({"start": {"date": "not-a-date"}, "end": {"date": "also-not"}}, TZ)
+ok(_junk is not None, "an unreadable event still produces a row rather than vanishing")
+ok(S.is_busy(TZ.localize(datetime(2026, 9, 16, 13, 0)), [_junk], TZ),
+   "...and an unparseable row counts as BUSY")
+ok(S.row_window(_junk, TZ) is None, "row_window says plainly that it cannot read it")
+ok(S.row_window(_row_ad, TZ)[0] == TZ.localize(datetime(2026, 9, 16, 0, 0)),
+   "row_window returns local midnight for an all-day block")
+
+
 print("\nPATCH94_GATE_RESULT: " + ("PASS" if FAIL == 0 else "FAIL"))
 print("\n" + "=" * 62)
 print("  SLOTS (Patch #94): {} passed, {} failed".format(PASS, FAIL))

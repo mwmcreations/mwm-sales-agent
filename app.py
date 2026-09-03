@@ -4078,19 +4078,15 @@ def get_available_slots():
             orderBy="startTime"
         ).execute(num_retries=3)
 
+        # PATCH #118 — one rule for what blocks, shared with check_specific_slot
+        # and book_appointment. This loop used to require dateTime on both ends,
+        # which silently dropped every ALL-DAY event while the public booking
+        # form honoured them. See slots.busy_row for the whole story.
         busy_times = []
         for event in events_result.get("items", []):
-            start_info = event.get("start", {})
-            end_info = event.get("end", {})
-            # Skip FREE events (transparency="transparent") — they're reminders,
-            # not real blocks. Only "opaque" (busy) events block availability.
-            if event.get("transparency") == "transparent":
-                continue
-            if "dateTime" in start_info and "dateTime" in end_info:
-                busy_times.append({
-                    "start": start_info["dateTime"],
-                    "end": end_info["dateTime"]
-                })
+            _row = _slots.busy_row(event, tz)
+            if _row:
+                busy_times.append(_row)
 
         # PATCH #94 — the period is a PREFERENCE, not a gate. The old loop
         # locked each day to one period and skipped the whole day when that
@@ -4423,12 +4419,13 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 timeMax=buffer_end.isoformat(),
                 singleEvents=True,
             ).execute(num_retries=3).get("items", [])
-            # Filter to timed BUSY events only (ignore all-day events and FREE events)
-            # transparency="transparent" means FREE — it's a reminder, not a real block
+            # PATCH #118 — this used to require `"dateTime" in ev["start"]`, so an
+            # all-day Busy block could not stop a booking. It is now the same
+            # rule the booking form uses: FREE blocks nothing, a timed event
+            # blocks its hours, an all-day Busy event blocks the whole day.
             timed_conflicts = [
                 ev for ev in conflict_events
-                if "dateTime" in ev.get("start", {})
-                and ev.get("transparency") != "transparent"
+                if _slots.busy_row(ev, tz) is not None
                 # PATCH #104 — the lead's OWN event, held for deletion, is not
                 # a double-booking. Before #104 it had already been deleted by
                 # this point, so it could never appear here; now that it
@@ -5330,17 +5327,19 @@ def check_specific_slot(requested_datetime):
 
         blocking_events = []
         for event in events_result.get("items", []):
-            start_info = event.get("start", {})
-            end_info = event.get("end", {})
-            # Skip all-day events
-            if "dateTime" not in start_info or "dateTime" not in end_info:
+            # PATCH #118 — the comment here used to read "# Skip all-day events",
+            # and it did exactly that. An all-day Busy block now blocks the whole
+            # day, matching the booking form. FREE still blocks nothing.
+            _row = _slots.busy_row(event, tz)
+            if _row is None:
                 continue
-            # Skip FREE events (transparency="transparent") — they're reminders,
-            # not real blocks. Only "opaque" (busy) events block availability.
-            if event.get("transparency") == "transparent":
+            _win = _slots.row_window(_row, tz)
+            if _win is None:
+                # Unreadable block. Refuse the slot rather than book over
+                # something we could not parse.
+                blocking_events.append(event.get("summary", "unreadable event"))
                 continue
-            ev_start = datetime.fromisoformat(start_info["dateTime"]).astimezone(tz)
-            ev_end = datetime.fromisoformat(end_info["dateTime"]).astimezone(tz)
+            ev_start, ev_end = _win
             # Check overlap against the BUFFERED window, not the raw slot time.
             # This must match book_appointment's race guard logic — any busy event
             # inside the buffer window blocks the slot (prevents back-to-back meetings).
