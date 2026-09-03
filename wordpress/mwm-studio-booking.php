@@ -3,7 +3,7 @@
  * Plugin Name: MWM Studio Booking
  * Plugin URI: https://mwmcreations.com
  * Description: Self-service studio booking portal for MWM package clients. Manage client hours, bookings, and availability.
- * Version: 2.8.1
+ * Version: 2.8.2
  * Author: MWM Creations & Studios
  * Author URI: https://mwmcreations.com
  * License: Proprietary
@@ -20,6 +20,39 @@ define( 'MWM_STUDIO_FILE', __FILE__ );
 /**
  * Main plugin class. Everything lives here to keep this a single-file, drop-in plugin.
  */
+/**
+ * Client-facing time and date formatting.  v2.8.2
+ *
+ * Michael, 3 Sep 2026, holding a reminder that read "Starting soon — 2026-09-03
+ * at 14:15": clients get am/pm.  Times are stored as HH:MM 24-hour and MUST stay
+ * that way on the wire — the machine parses start_time/end_time out of the JSON
+ * payloads and the calendar sync depends on them.  These two helpers are for
+ * WORDS A CLIENT READS, and nothing else.
+ *
+ * mwm_sb_t12 is deliberately lexical — it does no timezone maths at all.  The
+ * stored time is already local studio time, so converting it through a
+ * timestamp is a way to be an hour wrong twice a year and never notice.
+ */
+if ( ! function_exists( 'mwm_sb_t12' ) ) {
+	function mwm_sb_t12( $t ) {
+		if ( ! preg_match( '/^\s*(\d{1,2}):(\d{2})/', (string) $t, $m ) ) {
+			return (string) $t;          // unparseable: show it rather than lose it
+		}
+		$h  = (int) $m[1];
+		$ap = $h >= 12 ? 'PM' : 'AM';
+		$h  = $h % 12;
+		if ( 0 === $h ) { $h = 12; }
+		return $h . ':' . $m[2] . ' ' . $ap;
+	}
+}
+if ( ! function_exists( 'mwm_sb_d12' ) ) {
+	function mwm_sb_d12( $d ) {
+		$ts = strtotime( (string) $d );
+		return $ts ? date_i18n( 'l, F j', $ts ) : (string) $d;
+	}
+}
+
+
 class MWM_Studio_Booking {
 
 	/** @var MWM_Studio_Booking */
@@ -1256,17 +1289,17 @@ class MWM_Studio_Booking {
 		$this->notify_admin( $subject, $message );
 
 		// S12: client confirmation email + machine push (S19: branded HTML)
-		$mwm_client_subject = sprintf( 'Booking confirmed — %s at %s | %s', $date, $start_time, $settings['studio_name'] );
+		$mwm_client_subject = sprintf( 'Booking confirmed — %s at %s | %s', mwm_sb_d12( $date ), mwm_sb_t12( $start_time ), $settings['studio_name'] );
 		$mwm_cancel_h       = intval( $settings['cancellation_hours'] );
 		$mwm_client_html    = $this->get_branded_email_html( array(
 			'eyebrow'    => 'Booking Confirmed',
 			'title'      => 'Your Studio Session Is Booked',
-			'preheader'  => sprintf( 'Your studio session on %s at %s is confirmed.', date_i18n( 'F j, Y', strtotime( $date ) ), $start_time ),
+			'preheader'  => sprintf( 'Your studio session on %s at %s is confirmed.', date_i18n( 'F j, Y', strtotime( $date ) ), mwm_sb_t12( $start_time ) ),
 			'name'       => $client->name,
 			'intro'      => 'Great news — your studio session is confirmed. Here are your details:',
 			'rows'       => array(
 				'Date'     => date_i18n( 'l, F j, Y', strtotime( $date ) ),
-				'Time'     => $start_time . ' – ' . substr( $end_time, 0, 5 ),
+				'Time'     => mwm_sb_t12( $start_time ) . ' – ' . mwm_sb_t12( $end_time ),
 				'Duration' => $duration . ' hour(s)',
 				'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
 			),
@@ -1499,7 +1532,7 @@ class MWM_Studio_Booking {
 			'intro'      => 'Your studio session below has been cancelled.',
 			'rows'       => array(
 				'Date' => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
-				'Time' => $start . ' – ' . $end,
+				'Time' => mwm_sb_t12( $start ) . ' – ' . mwm_sb_t12( $end ),
 			),
 			'body_after' => $policy . ' We would love to see you back — you can book a new session any time.',
 			'cta_label'  => 'Book a New Session',
@@ -1555,7 +1588,7 @@ class MWM_Studio_Booking {
 			wp_send_json_error( array( 'message' => 'That time was just taken — please pick another slot.' ) );
 		}
 		$settings  = $this->get_settings();
-		$old_label = date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ) . ' · ' . substr( $booking->start_time, 0, 5 ) . '–' . substr( $booking->end_time, 0, 5 );
+		$old_label = date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ) . ' · ' . mwm_sb_t12( $booking->start_time ) . '–' . mwm_sb_t12( $booking->end_time );
 		$old_date  = $booking->booking_date;
 		// Remove the OLD calendar event first (old idempotency id).
 		$this->push_booking_event( 'booking_cancelled', array(
@@ -1690,17 +1723,17 @@ class MWM_Studio_Booking {
 		if ( $is24 ) {
 			$title     = 'Your Session Is Tomorrow';
 			$intro     = 'Just a friendly reminder — your studio session is coming up. Here are the details:';
-			$preheader = sprintf( 'Reminder: your studio session is tomorrow at %s.', $start );
+			$preheader = sprintf( 'Reminder: your studio session is tomorrow at %s.', mwm_sb_t12( $start ) );
 			$body      = $is_rental
 				? 'Need to change plans? Up to <strong>24 hours</strong> before your session you can reschedule free of charge, or cancel for a refund minus payment-processing fees — after that the booking is non-refundable. Please arrive 5–10 minutes early so we can get you set up.'
 				: 'Plans changed? You can cancel or rebook from your client portal up to <strong>24 hours</strong> before your session. Please arrive 5–10 minutes early so we can get you set up.';
-			$subject   = sprintf( 'Reminder: session tomorrow — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+			$subject   = sprintf( 'Reminder: session tomorrow — %s at %s | %s', mwm_sb_d12( $booking->booking_date ), mwm_sb_t12( $start ), $settings['studio_name'] );
 		} else {
 			$title     = 'See You Soon!';
 			$intro     = 'Your studio session starts in about two hours. Here are the details:';
-			$preheader = sprintf( 'Your studio session starts at %s today.', $start );
+			$preheader = sprintf( 'Your studio session starts at %s today.', mwm_sb_t12( $start ) );
 			$body      = 'Please arrive 5–10 minutes early so we can get you set up. See you shortly!';
-			$subject   = sprintf( 'Starting soon — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+			$subject   = sprintf( 'Starting soon — %s at %s | %s', mwm_sb_d12( $booking->booking_date ), mwm_sb_t12( $start ), $settings['studio_name'] );
 		}
 		$html = $this->get_branded_email_html( array(
 			'eyebrow'    => 'Session Reminder',
@@ -1710,7 +1743,7 @@ class MWM_Studio_Booking {
 			'intro'      => $intro,
 			'rows'       => array(
 				'Date'     => $date_label,
-				'Time'     => $start . ' – ' . $end,
+				'Time'     => mwm_sb_t12( $start ) . ' – ' . mwm_sb_t12( $end ),
 				'Duration' => $booking->duration_hours . ' hour(s)',
 				'Location' => $settings['studio_name'] . ', ' . $settings['studio_address'],
 			),
@@ -2261,10 +2294,10 @@ MWMJS;
 		$end      = substr( $booking->end_time, 0, 5 );
 		$paid     = $amount ? number_format( $amount / 100, 2 ) : '';
 
-		$subject  = sprintf( 'Booking confirmed — %s at %s | %s', $booking->booking_date, $start, $settings['studio_name'] );
+		$subject  = sprintf( 'Booking confirmed — %s at %s | %s', mwm_sb_d12( $booking->booking_date ), mwm_sb_t12( $start ), $settings['studio_name'] );
 		$mwm_rows = array(
 			'Date'     => date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
-			'Time'     => $start . ' – ' . $end,
+			'Time'     => mwm_sb_t12( $start ) . ' – ' . mwm_sb_t12( $end ),
 			'Duration' => $booking->duration_hours . ' hour(s)',
 		);
 		if ( $paid ) {
@@ -2367,8 +2400,8 @@ MWMJS;
 			$client->name,
 			$client->email,
 			date_i18n( 'l, F j, Y', strtotime( $booking->booking_date ) ),
-			substr( $booking->start_time, 0, 5 ),
-			substr( $booking->end_time, 0, 5 )
+			mwm_sb_t12( $booking->start_time ),
+			mwm_sb_t12( $booking->end_time )
 		);
 		$this->notify_admin( $subject, $message );
 
