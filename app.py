@@ -4935,13 +4935,42 @@ def approve_out_of_hours(token):
         with _approval_lock:
             req["status"] = APPROVAL_DECLINED
             req["resolved_at"] = _now_naive.isoformat()
-        _approval_tell_lead(req, (
+        # ── PATCH #119 · a decline must PROVE it reached the lead ──
+        # This branch used to call _approval_tell_lead and throw the answer
+        # away, then return "the lead has been told" whether or not anything
+        # landed. Two of the three IG failure paths are deliberately silent:
+        # the S84 pre-flight gate returns with "no API call, no alert", and a
+        # repeat 403 only bumps a counter. So on an Instagram lead with no
+        # email on file — no fallback channel at all — the lead could wait
+        # forever while this page told Michael the opposite. Same contract as
+        # the approve branch below: capture it, stamp it, and say so when it
+        # failed. (Found 5 Sep 2026 on request AR-A2B36E, lead Joseph, IG.)
+        told = _approval_tell_lead(req, (
             f"Hi {req.get('lead_name') or 'there'} — I wasn't able to get an "
             "evening confirmed on Michael's side, and I'm sorry for the wait. "
             f"He does have standard hours open, weekdays {STANDARD_HOURS_START} "
             "AM to 5 PM ET — tell me a day that works and I'll get it booked. "
             "Or if it's easier, we can take it by email."))
-        return "<p>Declined. The lead has been told and offered standard hours.</p>", 200
+        with _approval_lock:
+            if told:
+                req["lead_told_at"] = _now_naive.isoformat()
+        if not told:
+            _notify_error_to_dev(
+                "Declined But Lead Not Reachable",
+                f"You declined the out-of-hours request for "
+                f"{req.get('lead_name') or 'the lead'} ({req['id']}), but the "
+                "message offering standard hours could NOT be delivered on "
+                "their channel. They are still waiting and do not know. "
+                "Nothing else will chase this — the request is closed.",
+                lead_info=(f"{req.get('lead_name')} "
+                           f"({req.get('lead_email') or 'no email on file'})"),
+                severity="WARNING",
+            )
+        return ((
+            "<p><strong>Declined.</strong> The lead has been told and offered "
+            "standard hours.</p>") if told else (
+            "<p><strong>Declined — but we could not reach the lead.</strong>"
+            "<br>They have NOT been told. This is in #dev.</p>")), 200
 
     try:
         idx = int(request.args.get("slot", "-1"))
