@@ -39,6 +39,7 @@ import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
 import shadow as _shadow      # Patch #95 — a shadow log a human can find
 import burst as _burst        # Patch #96 — one reply per burst, not per fragment
+import pg_store as _pgs  # Patch #125 — approvals must survive a deploy
 import known_client as _kc  # Patch #110 — a client is not a lead
 import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
@@ -4654,6 +4655,69 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
 
 # request id -> request dict (see event_rail.build_approval_request)
 approval_requests = {}
+APPROVAL_STATE_KEY = "out_of_hours_approvals"
+
+
+def _approvals_save():
+    """Persist the whole approval table. PATCH #125.
+
+    Found while shipping #119: this table lived ONLY in memory. Every deploy
+    and every restart silently emptied it — the request vanished, the nag
+    thread had nothing left to nag about, and neither Michael nor the lead was
+    ever told. A lead who asked for an evening simply never heard back, and
+    nothing anywhere recorded that we dropped them. Exactly the failure #119
+    fixed one layer up, and the reason #119's fix was worth nothing on its own
+    if the request it protects can evaporate at 08:25 on a Friday.
+
+    Writes are best-effort: losing persistence must never break a live
+    approval, so a failure here is reported and swallowed.
+    """
+    if not _pgs.enabled():
+        return False
+    try:
+        with _approval_lock:
+            snapshot = {k: dict(v) for k, v in approval_requests.items()}
+        for _r in snapshot.values():
+            _ca = _r.get("created_at")
+            if hasattr(_ca, "isoformat"):
+                _r["created_at"] = _ca.isoformat()
+        _pgs.save_state(APPROVAL_STATE_KEY, snapshot)
+        return True
+    except Exception as exc:
+        _report_error("approvals_save", exc)
+        return False
+
+
+def _approvals_load():
+    """Rehydrate the approval table at boot, dropping anything already dead."""
+    if not _pgs.enabled():
+        print("[APPROVALS] no Postgres — approvals are memory-only this boot")
+        return 0
+    try:
+        rows = _pgs.load_state(APPROVAL_STATE_KEY, {}) or {}
+        if not isinstance(rows, dict):
+            return 0
+        _tz = pytz.timezone(TIMEZONE)
+        _now = datetime.now(_tz).replace(tzinfo=None)
+        kept = 0
+        with _approval_lock:
+            for rid, req in rows.items():
+                if not isinstance(req, dict) or not req.get("token"):
+                    continue
+                try:
+                    if approval_is_open(req) and approval_has_expired(req, _now):
+                        req["status"] = APPROVAL_EXPIRED
+                        req["resolved_at"] = _now.isoformat()
+                except Exception:
+                    pass
+                approval_requests[rid] = req
+                kept += 1
+        _open = sum(1 for r in approval_requests.values() if approval_is_open(r))
+        print(f"[APPROVALS] rehydrated {kept} request(s), {_open} still open")
+        return kept
+    except Exception as exc:
+        _report_error("approvals_load", exc)
+        return 0
 _approval_lock = threading.Lock()
 # PATCH #66 — last time each request's undeliverable-email alarm was posted to
 # #dev, so a permanent failure pages once an hour instead of six times.
@@ -4829,6 +4893,7 @@ def request_out_of_hours_approval(lead_name, lead_email, lead_phone, slots,
     )
     with _approval_lock:
         approval_requests[rid] = req
+    _approvals_save()          # PATCH #125 — a promise that survives a deploy
 
     sent = _approval_notify_michael(req)
     display = ", ".join(_approval_slot_display(s) for s in clean)
@@ -4888,6 +4953,7 @@ def _approval_sweep():
                             continue
                         _live["status"] = APPROVAL_EXPIRED
                         _live["resolved_at"] = _now.isoformat()
+                    _approvals_save()
                     _notify_error_to_dev(
                         "Out-of-Hours Approval EXPIRED",
                         f"Every time {req.get('lead_name') or 'the lead'} offered "
@@ -4906,6 +4972,8 @@ def _approval_sweep():
                 pass
 
 
+_approvals_load()      # PATCH #125 — before the sweep, so it can nag about
+                       # requests this process never saw created.
 threading.Thread(target=_approval_sweep, daemon=True).start()
 
 
@@ -4935,6 +5003,7 @@ def approve_out_of_hours(token):
         with _approval_lock:
             req["status"] = APPROVAL_DECLINED
             req["resolved_at"] = _now_naive.isoformat()
+        _approvals_save()
         # ── PATCH #119 · a decline must PROVE it reached the lead ──
         # This branch used to call _approval_tell_lead and throw the answer
         # away, then return "the lead has been told" whether or not anything
@@ -5014,6 +5083,7 @@ def approve_out_of_hours(token):
         req["status"] = APPROVAL_APPROVED
         req["chosen_slot"] = chosen
         req["resolved_at"] = _now_naive.isoformat()
+    _approvals_save()
 
     told = _approval_tell_lead(req, (
         f"Good news — Michael can do {_approval_slot_display(chosen)}. "
@@ -8458,6 +8528,29 @@ _SMS_CONSENT_LAG_S     = 3600   # re-read the last hour each poll; merge() makes
                                 # replaying a row we already hold a no-op
 
 
+# ── PATCH #124 · a consent bridge that is dead looks exactly like one that
+# is idle. `SMS_CONSENT_WIRED` is a hardcoded True, the poller heartbeats
+# BEFORE it calls the pull (so the watchdog stays green while every pull
+# fails), a clean poll of zero rows prints nothing, and a missing
+# WP_PORTAL_SECRET returns quietly behind a once-an-hour rate limiter. Six
+# days were spent unable to answer "is this thread working?" from /health.
+# One dict answers it.
+_SMS_CONSENT_LAST = {"ok_at": None, "seen": 0, "written": 0,
+                     "last_error": "", "polls_ok": 0, "polls_failed": 0}
+
+
+def _sms_consent_note(err=""):
+    """Record the outcome of one poll so /health can be asked, not guessed."""
+    if err:
+        _SMS_CONSENT_LAST["last_error"] = str(err)[:200]
+        _SMS_CONSENT_LAST["polls_failed"] += 1
+    else:
+        _SMS_CONSENT_LAST["last_error"] = ""
+        _SMS_CONSENT_LAST["polls_ok"] += 1
+        _SMS_CONSENT_LAST["ok_at"] = datetime.now(
+            pytz.timezone(TIMEZONE)).isoformat()
+
+
 def _sms_consent_pull():
     """One poll of the WordPress consent ledger. Returns (seen, written)."""
     import pg_store as _pg
@@ -8466,6 +8559,7 @@ def _sms_consent_pull():
     secret = os.getenv("WP_PORTAL_SECRET", "")
     if not secret:
         _report_error("sms_consent_pull", "WP_PORTAL_SECRET not set")
+        _sms_consent_note("WP_PORTAL_SECRET not set")
         return (0, 0)
 
     since = 0.0
@@ -8525,6 +8619,9 @@ def _sms_consent_pull():
 
     if seen or written:
         print(f"[SMS-CONSENT] pull: {seen} row(s) seen, {written} written")
+    _SMS_CONSENT_LAST["seen"] = seen
+    _SMS_CONSENT_LAST["written"] = written
+    _sms_consent_note()          # PATCH #124 — a clean poll is now provable
     return (seen, written)
 
 
@@ -8535,10 +8632,15 @@ def _sms_consent_poller():
     _t.sleep(120)                          # let boot settle before the first call
     while True:
         try:
-            _heartbeat("sms_consent_poller")
             _sms_consent_pull()
+            # PATCH #124 — heartbeat AFTER the pull. Beating first meant the
+            # watchdog reported a healthy thread that had achieved nothing
+            # since 31 August.
+            _heartbeat("sms_consent_poller")
         except Exception as _e:
             _report_error("sms_consent_poller", _e)
+            _sms_consent_note(_e)
+            _heartbeat("sms_consent_poller")
         for _ in range(max(1, SMS_CONSENT_POLL_S // 300)):
             _t.sleep(300)
             _heartbeat("sms_consent_poller")
@@ -18320,6 +18422,13 @@ def health_check():
         "sms": _sms_readiness(),
         # Patch #111: who the machine believes already pays us.
         "client_roster": _CLIENT_ROSTER.summary(),
+        "sms_consent": dict(_SMS_CONSENT_LAST),   # PATCH #124
+        "approvals": {                             # PATCH #125
+            "total": len(approval_requests),
+            "open": sum(1 for _r in approval_requests.values()
+                        if approval_is_open(_r)),
+            "persisted": bool(_pgs.enabled()),
+        },
         "api_keys_present": api_keys,
         "uptime": str(datetime.now(pytz.timezone(TIMEZONE))),
         "nonce": str(_uuid_health.uuid4()),  # unique per request — proves response is not cached
@@ -20368,7 +20477,16 @@ def _calsync_service():
     if not _cs_delegate:
         return get_calendar_service()
     try:
-        return get_calendar_service(impersonate=_cs_delegate)
+        _svc = get_calendar_service(impersonate=_cs_delegate)
+        # ── PATCH #123 · this fallback was dead code for two months ──
+        # with_subject() and build() do no token exchange; the JWT-for-token
+        # swap happens on the FIRST API call. So unauthorized_client was never
+        # raised here — it surfaced deep inside sync_once's list() and was
+        # reported as a sync failure instead of falling back. book_appointment
+        # already proves the fix: one cheap call inside the try forces the
+        # exchange where we can catch it.
+        _svc.calendarList().list(maxResults=1).execute(num_retries=2)
+        return _svc
     except Exception as _cs_err:
         if "unauthorized_client" in str(_cs_err) or "invalid_grant" in str(_cs_err):
             print(f"[GCAL SYNC] delegation unavailable ({_cs_err}) — direct access")
@@ -22196,6 +22314,10 @@ def booking_form_submit():
     try:
         _svc = (get_calendar_service(impersonate=_bf_delegate)
                 if _bf_delegate else get_calendar_service())
+        if _bf_delegate:
+            # PATCH #123 — force the JWT-for-token exchange INSIDE the try, or
+            # the fallback below can never fire (build() authenticates nothing).
+            _svc.calendarList().list(maxResults=1).execute(num_retries=2)
     except Exception as _bf_dwd_err:
         # Only the delegation-config errors fall back. Anything else must raise.
         if ("unauthorized_client" in str(_bf_dwd_err)

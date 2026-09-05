@@ -9,6 +9,8 @@ Run: python3 test_patch94_wiring.py
 import sys
 
 APP = open("app.py").read()
+import io
+
 PASS = FAIL = 0
 
 
@@ -48,7 +50,17 @@ ok("day_patterns = [" not in fn, "and its table with it")
 # ── §4 · the rule lives in ONE place ────────────────────────────────────────
 ok(APP.count("(15, 0), (14, 0)") == 0,
    "the afternoon time table is not duplicated back into app.py")
-ok("transparency" in fn, "FREE/transparent events are still skipped before the rule runs")
+# PATCH #118 moved this rule OUT of app.py and into slots.busy_row, which is
+# the whole point of #118 — three call sites each had their own version and one
+# disagreed, so an all-day Busy block did not block Maya. This check used to
+# grep app.py for the word "transparency"; it now checks the rule wherever it
+# actually lives, so #94's intent survives #118 instead of failing on it.
+_SLOTS = io.open("slots.py", encoding="utf-8").read()
+ok('"transparent"' in _SLOTS,
+   "FREE/transparent events are still skipped — the rule now lives in "
+   "slots.busy_row (PATCH #118), not inline in app.py")
+ok("_slots.busy_row(" in fn,
+   "and this function asks slots.busy_row rather than rolling its own")
 
 # ── §5 · the docstring no longer promises the broken behaviour ──────────────
 doc = body("def get_available_slots():", '"""', )

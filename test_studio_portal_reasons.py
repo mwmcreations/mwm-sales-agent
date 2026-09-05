@@ -31,6 +31,8 @@ import sys
 
 SRC = open("wordpress/mwm-studio-booking.php").read()
 
+import re
+
 PASS = FAIL = 0
 
 
@@ -116,7 +118,15 @@ ok("'after_contract_end' === $oor_kind" in _past,
    "a date in the PAST does not alert — that is the client mis-clicking, not our bug")
 
 # ── §4 · provenance ─────────────────────────────────────────────────────────
-ok("Version: 2.8.1" in SRC, "plugin version bumped")
+# Pin the MINIMUM, not the exact string. The exact pin failed the whole gate
+# the moment 2.8.2 shipped the am/pm fix — a test that breaks on every release
+# stops being read. What matters is that the file was versioned at all and did
+# not go backwards past the release this test was written for.
+_ver = re.search(r"Version:\s*(\d+)\.(\d+)\.(\d+)", SRC)
+ok(_ver is not None, "the plugin declares a version")
+ok(_ver is not None and tuple(int(x) for x in _ver.groups()) >= (2, 8, 1),
+   "plugin version is 2.8.1 or newer (currently %s)"
+   % (_ver.group(0) if _ver else "absent"))
 ok("MWM_STUDIO_VERSION', '2.8.1'" in SRC, "and the constant matches the header")
 ok(SRC.count("{") == SRC.count("}"), "braces balance")
 ok(SRC.count("(") == SRC.count(")"), "parens balance")

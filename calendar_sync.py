@@ -80,6 +80,16 @@ _deps = {}
 # hand twelve hours later. An instrument is not optional.
 _LAST = {"mode": "never run", "at": None}
 _CONSECUTIVE_BOOTSTRAPS = 0
+# PATCH #123 — sync_once failed twice on 3 Sep with a Domain-Wide Delegation
+# unauthorized_client error and then went quiet for 37 hours. Nothing was
+# fixed; nothing said so either. Three things conspired: _report_error is
+# rate-limited to one Slack post per hour per context, loop() heartbeats
+# BEFORE calling sync_once so the watchdog stays green while every tick
+# fails, and _check_persistence's escalation is scoped to bootstrap mode.
+# A thread that is alive and achieving nothing is the hardest failure to see.
+_CONSECUTIVE_FAILURES = 0
+_FAILURE_ALERTED = False
+FAILURE_ALERT_AFTER = 3          # ~6 minutes at a 2-minute cycle
 _NO_PERSISTENCE_ALERTED = False
 
 
@@ -641,6 +651,10 @@ def sync_once():
         summary["failed"] += 1
         _report("sync_once", exc, "mode={}".format(summary["mode"]))
     try:
+        _note_failure_streak(summary)
+    except Exception as exc:
+        _report("failure_streak", exc)
+    try:
         _check_persistence(summary)
     except Exception as exc:
         _report("check_persistence", exc)
@@ -657,6 +671,42 @@ def _record(summary):
         rec["at"] = None
     _LAST = rec
     return summary
+
+
+def _note_failure_streak(summary):
+    """Count consecutive failing ticks and say so ONCE. PATCH #123.
+
+    The heartbeat proves the thread is alive. It says nothing about whether
+    the thread is doing its job, and on 3 Sep those two facts diverged for a
+    day and a half. This is the difference between 37 hours of silence and
+    one message.
+    """
+    global _CONSECUTIVE_FAILURES, _FAILURE_ALERTED
+    if not summary.get("failed"):
+        if _FAILURE_ALERTED:
+            _slack("dev_channel",
+                   ":white_check_mark: *Calendar sync is working again* — "
+                   "after {} consecutive failing ticks. Anything a client "
+                   "moved during the outage replays now, because the sync "
+                   "token is never advanced on a failure."
+                   .format(_CONSECUTIVE_FAILURES))
+        _CONSECUTIVE_FAILURES = 0
+        _FAILURE_ALERTED = False
+        summary["consecutive_failures"] = 0
+        return
+    _CONSECUTIVE_FAILURES += 1
+    summary["consecutive_failures"] = _CONSECUTIVE_FAILURES
+    if _FAILURE_ALERTED or _CONSECUTIVE_FAILURES < FAILURE_ALERT_AFTER:
+        return
+    _FAILURE_ALERTED = True
+    _slack("dev_channel",
+           ":rotating_light: *Calendar sync has failed {} ticks in a row* "
+           "(mode={}). The thread is alive and its heartbeat is green — it is "
+           "achieving nothing. While this lasts, a booking dragged on the "
+           "calendar does NOT move its WordPress row, its hours or its "
+           "reminder, and the client is told the old time. Sent once; "
+           "recovery is announced separately."
+           .format(_CONSECUTIVE_FAILURES, summary.get("mode")))
 
 
 def _check_persistence(summary):
