@@ -18489,8 +18489,38 @@ def webhook_smoke_test():
     Returns 200 if _handle_incoming runs without crashing, 500 otherwise.
     """
     import traceback as _tb
+    # ══ PATCH #127 · this endpoint could DELETE ANY LEAD, from anywhere ══
+    # It took `sender` straight from an unauthenticated POST body, ran the
+    # full incoming handler as that person, and then called
+    # `lead_data.pop(test_sender)`. LeadStore.pop records the key in
+    # `_deleted`, and flush() turns that into a real DELETE against the leads
+    # table within FLUSH_INTERVAL (15s). So one unauthenticated request with a
+    # real lead key wrote a fake message into that person's history and then
+    # erased them from memory AND from Postgres, permanently and silently.
+    #
+    # Verified 5 Sep 2026 from the open internet: GET /webhook-test returns
+    # 405 (route exists, method wrong) while /admin/approvals returns 401 and
+    # an unknown path returns 404 — i.e. nothing was guarding it.
+    #
+    # This is the ONLY code path in the repository that deletes a lead. It is
+    # therefore the only candidate mechanism for the 8 booked records that
+    # vanished at ~03:20 ET on 1 Sep with no purge and no migration.
+    #
+    # Two locks, not one: the secret, AND a hard synthetic-namespace pin. Even
+    # holding the secret, this endpoint can no longer name a real person.
+    if not _admin_secret_ok(request.values.get("secret", "")
+                            or (request.get_json(force=True, silent=True) or {}).get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     test_sender = data.get("sender", "smoke_test_000")
+    if not str(test_sender).startswith("smoke_test_"):
+        return jsonify({
+            "ok": False,
+            "error": "sender must start with 'smoke_test_' — this endpoint "
+                     "deletes the lead it creates and must never be able to "
+                     "name a real one",
+        }), 400
+    _preexisting = test_sender in lead_data     # never delete what we did not create
     test_msg = data.get("message", "Hi, I'm interested in booking a session.")
 
     try:
@@ -18505,9 +18535,11 @@ def webhook_smoke_test():
             wa_value={},
             wa_messages=[],
         )
-        # Clean up test data so it doesn't pollute real leads
-        conversation_history.pop(test_sender, None)
-        lead_data.pop(test_sender, None)
+        # Clean up test data so it doesn't pollute real leads.
+        # PATCH #127 — but never delete a record that existed before this call.
+        if not _preexisting:
+            conversation_history.pop(test_sender, None)
+            lead_data.pop(test_sender, None)
         return jsonify({
             "status": "pass",
             "message": "_handle_incoming executed without crash",
