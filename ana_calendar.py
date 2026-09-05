@@ -242,6 +242,19 @@ def _parse_date_range(text):
     return start, end
 
 
+_IMPLAUSIBLE_TITLES = {
+    # Fragments the parser has produced, or trivially could, from ordinary
+    # sentences. None of these is ever a real event name.
+    "a day", "all day", "a meeting", "an event", "a block", "a day off",
+    "a call", "a note", "a reminder", "an appointment", "the day", "a time",
+    "a slot", "a session", "it", "this", "that", "something",
+}
+_IMPLAUSIBLE_LOCATIONS = {
+    "all", "all day", "any", "anywhere", "everywhere", "none", "tbd", "n/a",
+    "here", "there", "it", "this", "that",
+}
+
+
 def _parse_event_details(text):
     """Parse event creation details from natural language."""
     details = {
@@ -597,6 +610,25 @@ def _create_event(text):
     """Create a new event on the MWM CREATIONS calendar."""
     try:
         details = _parse_event_details(text)
+
+        # ── PATCH #121 · a fragment of a sentence is not an event name ──
+        # On 3 Sep this path wrote an event titled "a day" at location "all".
+        # Both came out of the parser, from two different bugs in the same
+        # sentence: the "add X to my calendar" branch keeps the indefinite
+        # article (unlike the verb branch, which strips it), and the location
+        # regex reads the idiom "at all" as a place name. Rather than chase an
+        # open-ended class of regex misses, refuse the implausible result —
+        # and say why, so the person can just re-send it.
+        _loc = (details.get("location") or "").strip()
+        if _loc.lower() in _IMPLAUSIBLE_LOCATIONS or len(_loc) < 4:
+            if _loc:
+                print("[ANA] dropping implausible parsed location %r" % _loc)
+            details["location"] = None
+        _title = (details.get("title") or "").strip()
+        if _title.lower() in _IMPLAUSIBLE_TITLES:
+            return ("⚠️ I read that as an event called \u201c%s\u201d, which looks like a "
+                    "piece of your sentence rather than a name. Send it again with "
+                    "the title in quotes and I will create it." % _title)
 
         # Try DWD first; fall back to direct service account if DWD fails
         delegate = os.getenv("GOOGLE_DELEGATE_EMAIL")

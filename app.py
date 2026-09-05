@@ -20122,26 +20122,70 @@ def _bt_get_event(event_id):
         return _bt.LOOKUP_FAILED
 
 
+BT_LOOKBACK_DAYS = 30      # how far BACK a real session still counts as evidence
+BT_LOOKAHEAD_DAYS = 120
+BT_MAX_PAGES = 10          # 2,500 events; past that we say so instead of guessing
+
+
+def _bt_list_window(svc, t_min, t_max):
+    """Every event between two datetimes, following nextPageToken.
+
+    PATCH #120 — the old version took ONE page of 250 with no pagination and
+    no warning, which is the same silent-truncation class PATCH #100 made
+    loud in calendar_sync._list. A truncated index does not fail; it invents
+    false "never had an event" rows for whoever fell off the end.
+    """
+    items, token, pages = [], None, 0
+    while pages < BT_MAX_PAGES:
+        res = svc.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=t_min.isoformat(), timeMax=t_max.isoformat(),
+            singleEvents=True, orderBy="startTime", maxResults=250,
+            pageToken=token,
+        ).execute(num_retries=2)
+        items.extend(res.get("items", []))
+        token = res.get("nextPageToken")
+        pages += 1
+        if not token:
+            return items, False
+    return items, True     # truncated — the caller must not assert on this
+
+
 def _bt_upcoming_by_email():
-    """{attendee email -> event} for everything still ahead of us.
+    """{attendee email -> event} for every session we can prove exists.
 
     S30b — Gema Hiatt was reported as "never had an event" when her Sep 4
     session was sitting on the calendar the whole time: it was booked in
     wp-admin, so nothing ever wrote event_id back onto her lead. That is a
     linkage gap, not a broken promise, and reporting it as one is how an
     alert earns its way into being ignored.
+
+    PATCH #120 — and then it happened to her AGAIN on 4 Sep, because this
+    index only looked FORWARD. Her session ran 12:00-16:00 and the sweep ran
+    at 16:11:55, so `timeMin=now` excluded the event by eleven minutes and
+    the rescue this function exists for could not fire. A session that just
+    ended is the strongest possible evidence a booking was real. The window
+    now reaches BT_LOOKBACK_DAYS backwards.
+
+    Returns None — not {} — when the calendar could not be read. An empty
+    dict silently downgrades every rescue into a red alert, which is exactly
+    the wrong direction to fail in.
     """
     out = {}
     try:
         svc = get_calendar_service()
         now = datetime.now(pytz.timezone(TIMEZONE))
-        res = svc.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=now.isoformat(),
-            timeMax=(now + timedelta(days=120)).isoformat(),
-            singleEvents=True, orderBy="startTime", maxResults=250,
-        ).execute(num_retries=2)
-        for ev in res.get("items", []):
+        # Future first, so a live upcoming session always wins the key over a
+        # past one for the same attendee (setdefault keeps the first writer).
+        ahead, trunc_a = _bt_list_window(
+            svc, now, now + timedelta(days=BT_LOOKAHEAD_DAYS))
+        behind, trunc_b = _bt_list_window(
+            svc, now - timedelta(days=BT_LOOKBACK_DAYS), now)
+        if trunc_a or trunc_b:
+            print("[BOOKING_TRUTH] calendar window TRUNCATED at "
+                  f"{BT_MAX_PAGES} pages — refusing to assert on a partial index")
+            return None
+        for ev in list(ahead) + list(behind):
             if str(ev.get("status", "")).lower() == "cancelled":
                 continue
             for att in ev.get("attendees") or []:
@@ -20149,8 +20193,8 @@ def _bt_upcoming_by_email():
                 if em:
                     out.setdefault(em, ev)
     except Exception as e:
-        print(f"[BOOKING_TRUTH] upcoming-by-email lookup failed (non-fatal): {e}")
-        return {}          # empty == no link evidence; never invents one
+        print(f"[BOOKING_TRUTH] upcoming-by-email lookup failed: {e}")
+        return None        # unproven == no verdict; never a red alert
     return out
 
 
@@ -20159,7 +20203,16 @@ _bt_last_fingerprint = {"value": None, "loaded": False}
 
 def _bt_sweep_once():
     now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
-    report = _bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_upcoming_by_email())
+    # PATCH #120 — no index, no verdict. Without it every LINK_MISSING becomes
+    # a red "BOOKINGS THAT DO NOT EXIST" row, so a calendar hiccup would
+    # accuse us of breaking promises we kept.
+    _bt_index = _bt_upcoming_by_email()
+    if _bt_index is None:
+        _bt_last.update({"ran_at": now_iso, "skipped_no_index": True})
+        print("[BOOKING_TRUTH] attendee index unavailable — sweep skipped, "
+              "nothing posted on unproven data")
+        return None
+    report = _bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_index)
     _bt_last.update({
         "ran_at": now_iso,
         "checked": report["checked"],

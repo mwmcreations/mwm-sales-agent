@@ -16,6 +16,8 @@ Run: python3 test_s30_wiring.py
 import sys
 
 APP = open("app.py").read()
+import io
+
 PASS = FAIL = 0
 
 
@@ -42,7 +44,9 @@ ok(APP.index("def _bt_sweep_loop(") < APP.index("threading.Thread(target=_bt_swe
    "defined before it is started")
 
 # ── §2 · THE ONE THAT MATTERS · an outage is not an absent booking ──────────
-look = body("def _bt_get_event(", "def _bt_sweep_once(")
+# PATCH #120 put helper functions between these two, so anchor the slice on
+# the very next def instead of on a function three definitions away.
+look = body("def _bt_get_event(", "\ndef ")
 ok("_bt.LOOKUP_FAILED" in look, "the lookup can report that it could not answer")
 ok("(404, 410)" in look, "only a genuinely gone event returns None")
 ok(look.index("return None") < look.index("return _bt.LOOKUP_FAILED"),
@@ -101,12 +105,38 @@ ok(once_fn2.count("_post_to_slack_async") == 2,
 
 # ── §7 · S30b · a real event under the lead's email is linkage, not a lie ──
 link = body("def _bt_upcoming_by_email(", "_bt_last_fingerprint")
-ok("timeMin=" in link and "singleEvents=True" in link, "the attendee index reads real upcoming events")
+ok("timeMin=" in link or "_bt_list_window(" in link,
+   "the attendee index reads real events off the calendar")
 ok('status", "")).lower() == "cancelled"' in link, "cancelled events are excluded from it")
-ok("return {}" in link,
-   "a failed lookup returns an EMPTY index — no evidence, never an invented link")
-ok("_bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_upcoming_by_email())" in APP,
-   "and the sweep actually passes it in")
+
+# ── §7b · PATCH #120 · the window looks BACKWARD too ───────────────────────
+# Gema Hiatt was accused twice. The second time, on 4 Sep, her session ran
+# 12:00-16:00 and the sweep ran at 16:11:55 — the rescue built for her in S30b
+# could not fire because the index started at `now`. Eleven minutes.
+ok("BT_LOOKBACK_DAYS" in APP and "now - timedelta(days=BT_LOOKBACK_DAYS)" in link,
+   "the index reaches backwards — a session that just ended is still evidence")
+ok(link.index("ahead, trunc_a") < link.index("behind, trunc_b"),
+   "future events are indexed FIRST, so a live booking outranks a finished one")
+ok("pageToken=token" in APP and "nextPageToken" in APP,
+   "the listing paginates — a truncated index invents false accusations")
+ok("refusing to assert on a partial index" in APP,
+   "and says so out loud rather than reporting a partial index as fact")
+ok("return None" in link and "return {}" not in link,
+   "an unreadable calendar returns None, NOT an empty index — {} would silently "
+   "downgrade every rescue into a red alert")
+ok("if _bt_index is None:" in APP and "sweep skipped" in APP,
+   "the sweep refuses to post a verdict it cannot prove")
+ok("_bt.reconcile(lead_data, _bt_get_event, now_iso, _bt_index)" in APP,
+   "and the sweep actually passes the index in")
+
+# ── §7c · PATCH #120 · a tombstone is not a broken promise ─────────────────
+BT = io.open("booking_truth.py", encoding="utf-8").read()
+_cancel = BT.split('if str(event.get("status", "")).lower() == "cancelled":')[1]
+_cancel = _cancel.split("start = _event_start")[0]
+ok("_live_link(lead, events_by_email)" in _cancel,
+   "the cancelled branch consults the link index, like the absent branch does")
+ok("LINK_MISSING" in _cancel and "CANCELLED" in _cancel,
+   "a rescheduled session reads as linkage, and a real cancellation still reads red")
 
 print("\nS30_WIRING_GATE: " + ("PASS" if FAIL == 0 else "FAIL"))
 print("\n" + "=" * 62)

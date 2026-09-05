@@ -47,6 +47,7 @@ still appears; it just says the true thing.
 """
 
 import re
+import unicodedata
 
 # Dropped from business names before comparison: legal form, not identity.
 _LEGAL_SUFFIXES = {
@@ -174,10 +175,62 @@ def is_client_record(rec):
     return "client" in status.lower()
 
 
+# ── PATCH #122 · the person's own name, and their Instagram handle ──────────
+# Gisele Kolbrich (2 Sep), Luzia Costa and Philip Kolbrich (4 Sep) were all
+# cold-pitched by the sales path WHILE THEY WERE PAYING CLIENTS — two of them
+# while physically recording in our studio, after they tagged us in a story.
+#
+# The guard was not missing. It could not see them. The index identifies people
+# by business, email and phone; on Instagram we hold none of those. What we DO
+# hold is the display name — `_fetch_ig_profile` writes it onto the lead before
+# Maya ever answers — and the index simply never looked at a person's name
+# unless it carried a business pin.
+#
+# A name is weaker evidence than an email, so it is ranked last and fenced:
+# two real tokens minimum, and an AMBIGUOUS name (two different clients sharing
+# one) never matches. Suppressing a genuine lead is the failure nobody notices,
+# so the bar to claim "this is a client" stays high.
+_NAME_NOISE = {
+    "the", "and", "of", "for", "mr", "mrs", "ms", "dr", "jr", "sr", "ii", "iii",
+    "official", "real", "the real", "team", "studio", "studios", "photography",
+}
+
+
+def normalize_person_name(value):
+    """A comparable full name, or "" when it is not one.
+
+    "" is not evidence of sameness — a single token, a handle, or a string of
+    emoji all normalise to "" rather than to something that could collide.
+    """
+    if not value:
+        return ""
+    s = unicodedata.normalize("NFKD", str(value))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-zA-Z\s'-]", " ", s).lower()
+    toks = [t for t in re.split(r"[\s'-]+", s)
+            if len(t) >= 2 and t not in _NAME_NOISE]
+    if len(toks) < 2:
+        return ""                      # one token is not a person, it is a word
+    out = " ".join(toks)
+    return out if len(out) >= 6 else ""
+
+
+def instagram_key(value):
+    """An Instagram handle or IGSID, comparably. "" when there is none."""
+    if not value:
+        return ""
+    s = str(value).strip().lower().lstrip("@")
+    if s.startswith("instagram:"):
+        s = s.split(":", 1)[1]
+    s = re.sub(r"[^a-z0-9._]", "", s)
+    return s if len(s) >= 3 else ""
+
+
 def build_client_index(records):
     """Index every paying client we hold, by the things that identify a
     person across channels. Records is any iterable of lead dicts."""
-    index = {"businesses": set(), "emails": set(), "phones": set()}
+    index = {"businesses": set(), "emails": set(), "phones": set(),
+             "names": set(), "ambiguous_names": set(), "instagram": set()}
     for rec in records or []:
         if not is_client_record(rec):
             continue
@@ -193,6 +246,20 @@ def build_client_index(records):
         p = phone_key(rec.get("phone"))
         if p:
             index["phones"].add(p)
+        # PATCH #122 — the person, and the handle they message us from.
+        n = normalize_person_name(rec.get("name"))
+        if n:
+            _owner = normalize_email(rec.get("email")) or phone_key(rec.get("phone")) \
+                     or normalize_business(rec.get("business")) or n
+            _seen = index.setdefault("_name_owner", {})
+            if n in _seen and _seen[n] != _owner:
+                index["ambiguous_names"].add(n)   # two clients, one name
+            _seen.setdefault(n, _owner)
+            index["names"].add(n)
+        for _ig_field in ("ig_username", "instagram", "instagram_id", "igsid"):
+            g = instagram_key(rec.get(_ig_field))
+            if g:
+                index["instagram"].add(g)
         # Squashed forms, so a spaced business name can meet an email domain.
         for form in (b, pinned):
             if form:
@@ -204,6 +271,24 @@ def build_client_index(records):
     return index
 
 
+def _contradicts(candidate, index):
+    """True when the candidate has told us they are someone the roster does
+    not know. PATCH #122.
+
+    A shared full name is only evidence while nothing stronger disagrees. If
+    this person handed us an email or a real phone number and neither belongs
+    to any client, they are a stranger with a familiar name — and suppressing
+    a genuine lead is the failure nobody would ever notice.
+    """
+    e = normalize_email(candidate.get("email"))
+    if e and e not in index.get("emails", ()):
+        return True
+    p = phone_key(candidate.get("phone"))
+    if p and p not in index.get("phones", ()):
+        return True
+    return False
+
+
 def match_known_client(candidate, index):
     """(matched, reason). Strongest, least ambiguous signal wins.
 
@@ -211,6 +296,13 @@ def match_known_client(candidate, index):
     normalisation never matches, because "" is not evidence of sameness."""
     if not isinstance(candidate, dict) or not index:
         return False, "no_match"
+
+    # PATCH #122 — the handle is as hard an identifier as a phone number, and
+    # it is the ONLY one we hold for someone who only ever DMs us.
+    for _ig_field in ("ig_username", "instagram", "instagram_id", "igsid", "phone"):
+        g = instagram_key(candidate.get(_ig_field))
+        if g and g in index.get("instagram", ()):
+            return True, "instagram:%s" % g
 
     e = normalize_email(candidate.get("email"))
     if e and e in index.get("emails", ()):
@@ -223,6 +315,23 @@ def match_known_client(candidate, index):
     b = normalize_business(candidate.get("business"))
     if b and b in index.get("businesses", ()):
         return True, "business:%s" % b
+
+    # PATCH #122 — the person's own name. Ranked BELOW business on purpose,
+    # refused when two clients share it, and refused when the candidate has
+    # already identified themselves as somebody else.
+    #
+    # ⚠️ This REVERSES a deliberate Patch #110 decision ("a person's NAME alone
+    # never matches — there is more than one Jaysee"). That call was defensible
+    # and it was wrong: it has now cold-pitched three paying clients in a week,
+    # twice while they were recording in our studio, because on Instagram the
+    # display name is the ONLY identifier we hold. #110's real fear was a bare
+    # first name colliding. That fear is answered by normalize_person_name's
+    # two-token bar and by the two guards below, not by refusing names outright.
+    n = normalize_person_name(candidate.get("name"))
+    if n and n in index.get("names", ()) \
+            and n not in index.get("ambiguous_names", ()) \
+            and not _contradicts(candidate, index):
+        return True, "person_name:%s" % n
 
     # The business as written into an Instagram display name.
     pinned = business_from_name(candidate.get("name"))

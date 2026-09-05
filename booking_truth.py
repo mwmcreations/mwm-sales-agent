@@ -127,7 +127,16 @@ def derive(lead, get_event, now_iso=None, events_by_email=None):
         return (CLEAR, None)
 
     if str(event.get("status", "")).lower() == "cancelled":
-        return ((CANCELLED, event) if flagged else (CLEAR, event))
+        # PATCH #120 — a wp-admin reschedule DELETES the old event and creates
+        # a new one (see calendar_sync's own note), so the lead's event_id is
+        # left pointing at a tombstone while the real session lives under a
+        # new id nothing wrote back. Google returns that tombstone as
+        # status=cancelled, which sent it straight to the red alert. Consult
+        # the same link index the absent-event branch already consults.
+        if flagged:
+            linked = _live_link(lead, events_by_email)
+            return ((LINK_MISSING, linked) if linked else (CANCELLED, event))
+        return (CLEAR, event)
 
     start = _event_start(event)
     if now_iso and start and str(start) < str(now_iso):

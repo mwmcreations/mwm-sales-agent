@@ -122,8 +122,23 @@ ok(K.match_known_client({"business": "Altamonte Family Hearing Center"}, IDX)[0]
    "a LONGER name is a different business — no substring matching")
 ok(K.match_known_client({"business": "Family Hearing"}, IDX)[0] is False,
    "a shorter fragment is not the same business either")
-ok(K.match_known_client({"name": "Jaysee Soto"}, IDX)[0] is False,
-   "a person's NAME alone never matches — there is more than one Jaysee")
+# PATCH #122 REVISES THIS — read the reasoning before changing it back.
+# #110 ruled that a name alone never matches, fearing "there is more than one
+# Jaysee". Between 2 and 4 Sep 2026 that rule let the sales path cold-pitch
+# THREE paying clients (Gisele Kolbrich, Luzia Costa, Philip Kolbrich), two of
+# them while recording in our studio, because on Instagram a display name is
+# the only identifier we hold. #122 keeps the fear and drops the blanket rule:
+# a FULL name matches; a bare first name, an ambiguous name, or a name
+# contradicted by an unknown email/phone still does not.
+ok(K.match_known_client({"name": "Jaysee"}, IDX)[0] is False,
+   "a bare FIRST name never matches — there is more than one Jaysee")
+ok(K.match_known_client({"name": "Jaysee Soto",
+                         "email": "someone.else@example.com"}, IDX)[0] is False,
+   "a matching name with a stranger's email never matches — the email wins")
+ok(K.match_known_client({"name": "Jaysee Soto", "phone": "instagram:9988776"},
+                        IDX)[0] is True,
+   "but the full name of a client who DMs us from Instagram IS the client "
+   "(this is the Gisele/Luzia/Philip fix)")
 ok(K.match_known_client({"business": "Some Other Company"}, IDX)[0] is False,
    "a business that is only a lead is not treated as a client")
 ok(K.match_known_client({"business": "", "email": "", "phone": ""}, IDX)

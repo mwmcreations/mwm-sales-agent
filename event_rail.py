@@ -1152,13 +1152,27 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
             _kind = classify_event(body)[0]
         except Exception:
             _kind = KIND_UNKNOWN
-        _clean = client_description(
-            _kind,
-            studio_address=(loc if venue_of(_kind) == VENUE_STUDIO else None),
-            callback_number=None,
-        )
-        notes.append("description was empty after redaction — replaced with "
-                     "standard client copy")
+        if _kind == KIND_UNKNOWN:
+            # ── PATCH #121 · do not hand the studio script to a stranger ──
+            # client_description()'s fallback arm IS the studio-visit copy, so
+            # anything we could not classify was silently dressed up as a
+            # client booking. That is how the 3 Sep junk block titled "a day",
+            # located "all", with no attendees, came to carry the exact
+            # machine studio-visit template and sit on the client calendar.
+            # An event we cannot name is an event we must not narrate.
+            issues.append("unclassifiable event left without client copy: %r"
+                          % (body.get("summary") or "?"))
+            _clean = ""
+            notes.append("description empty and event unclassifiable — "
+                         "deliberately left blank rather than guessed")
+        else:
+            _clean = client_description(
+                _kind,
+                studio_address=(loc if venue_of(_kind) == VENUE_STUDIO else None),
+                callback_number=None,
+            )
+            notes.append("description was empty after redaction — replaced with "
+                         "standard client copy")
     body["description"] = _clean
     # A strip is not routine. It means SOMETHING still composes internal text
     # into a client-facing field, and whoever owns that write-site should hear
