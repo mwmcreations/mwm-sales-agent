@@ -40,6 +40,7 @@ import slots as _slots        # Patch #94 — which times we offer, and why
 import shadow as _shadow      # Patch #95 — a shadow log a human can find
 import burst as _burst        # Patch #96 — one reply per burst, not per fragment
 import pg_store as _pgs  # Patch #125 — approvals must survive a deploy
+import lead_watch as _lw  # Patch #128 — somebody has to count the leads
 import known_client as _kc  # Patch #110 — a client is not a lead
 import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
@@ -8508,6 +8509,125 @@ def _client_roster_poller():
 
 
 threading.Thread(target=_client_roster_poller, daemon=True).start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #128 · THE LEAD TRIPWIRE
+# Eight booked records vanished at ~03:20 on 1 Sep. Nothing alerted, nothing
+# logged it, and by 8 Sep Railway's logs for that deployment were gone — so the
+# cause is now permanently unprovable. #127 closed the one hole we found.
+# This is the part that means we never have to do archaeology again: if leads
+# disappear, we hear about it the same minute, with their keys named.
+# ══════════════════════════════════════════════════════════════════════
+LEAD_WATCH_PEAK_KEY = "lead_watch_peak"
+LEAD_WATCH_CYCLE_S = 60
+_lead_watch = _lw.new_state()
+_lead_watch_last = {"at": None, "verdict": None, "count": 0, "db": None,
+                    "peak": 0, "alerts": 0, "restore_checked": False}
+
+
+def _lead_watch_peak_load():
+    """The high-water mark from before the last restart.
+
+    This is the half that catches a BAD RESTORE. lead_data is rebuilt from
+    Postgres at boot; if that rebuild comes back short, memory and the table
+    agree with each other and a live-only comparison sees nothing wrong.
+    Comparing against what we held before the restart is the only way to see it.
+    """
+    if not _pgs.enabled():
+        return 0
+    try:
+        row = _pgs.load_state(LEAD_WATCH_PEAK_KEY, {}) or {}
+        return int(row.get("peak") or 0)
+    except Exception as exc:
+        _report_error("lead_watch.peak_load", exc)
+        return 0
+
+
+def _lead_watch_peak_save(peak):
+    if not _pgs.enabled():
+        return
+    try:
+        _pgs.save_state(LEAD_WATCH_PEAK_KEY, {
+            "peak": int(peak),
+            "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()})
+    except Exception as exc:
+        _report_error("lead_watch.peak_save", exc)
+
+
+def _lead_watch_tick():
+    """One sample. Never raises — a watchdog that can die is not a watchdog."""
+    try:
+        db = _leads_db.count() if _leads_db.enabled() else None
+    except Exception:
+        db = None
+    verdict, detail = _lw.observe(_lead_watch, lead_data, db)
+
+    _lead_watch_last.update({
+        "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+        "verdict": verdict, "count": detail.get("after"),
+        "db": detail.get("db_after"), "peak": detail.get("peak"),
+    })
+
+    if verdict == _lw.DROP:
+        _lead_watch_last["alerts"] += 1
+        _TALLY.bump("leads.dropped", _lw.describe(detail)[:180])
+        _notify_error_to_dev(
+            "LEADS DISAPPEARED",
+            _lw.describe(detail) + ". Nothing in this codebase deletes a lead "
+            "except the smoke-test endpoint, which has required the admin "
+            "secret and a synthetic sender since Patch #127 — so this should "
+            "not be possible. Check Railway logs NOW: a removed deployment "
+            "loses them far sooner than its entry leaves the deploy list.",
+            severity="CRITICAL")
+    elif verdict == _lw.RECOVERED:
+        _notify_error_to_dev(
+            "Lead count recovered",
+            "Back to {} leads (peak {}). The earlier drop may have been a "
+            "transient read rather than a deletion — but it was real enough to "
+            "count, so it is worth knowing what caused it."
+            .format(detail.get("after"), detail.get("peak")),
+            severity="WARNING")
+
+    # The bad-restore check — once per boot, after warmup has settled.
+    if (not _lead_watch_last["restore_checked"]
+            and _lead_watch["samples"] > _lw.DEFAULTS["warmup_samples"]):
+        _lead_watch_last["restore_checked"] = True
+        was = _lead_watch_peak_load()
+        now_n = detail.get("after") or 0
+        if was and (was - now_n) >= _lw.DEFAULTS["min_drop"]:
+            _notify_error_to_dev(
+                "Fewer leads after restart than before it",
+                "We held {} leads before the last restart and restored {}. "
+                "Memory and the leads table can agree with each other and both "
+                "be short — this is the only check that sees that."
+                .format(was, now_n),
+                severity="CRITICAL")
+
+    if (detail.get("peak") or 0) > _lead_watch_peak_load():
+        _lead_watch_peak_save(detail.get("peak"))
+
+
+def _lead_watch_loop():
+    import time as _t
+    print(f"[LEADWATCH] started (every {LEAD_WATCH_CYCLE_S}s)")
+    _heartbeat("lead_watch")
+    _t.sleep(45)                      # let the boot restore finish first
+    while True:
+        try:
+            _lead_watch_tick()
+        except Exception as _e:
+            try:
+                _report_error("lead_watch", _e)
+            except Exception:
+                pass
+        # PATCH #124's lesson: heartbeat AFTER the work, never before it.
+        _heartbeat("lead_watch")
+        _t.sleep(LEAD_WATCH_CYCLE_S)
+
+
+threading.Thread(target=_lead_watch_loop, daemon=True,
+                 name="lead_watch").start()
 
 
 # ── PATCH #109 — the bridge from the WordPress ledger to pg_store ──────────
@@ -18423,6 +18543,7 @@ def health_check():
         # Patch #111: who the machine believes already pays us.
         "client_roster": _CLIENT_ROSTER.summary(),
         "sms_consent": dict(_SMS_CONSENT_LAST),   # PATCH #124
+        "lead_watch": dict(_lead_watch_last),    # PATCH #128
         "approvals": {                             # PATCH #125
             "total": len(approval_requests),
             "open": sum(1 for _r in approval_requests.values()
