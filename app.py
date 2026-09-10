@@ -24830,9 +24830,54 @@ except Exception as _sx:
 # file gains six lines instead of three hundred. Routes are gated on the
 # existing fail-closed admin check for now; Phase 2 puts a real @victoryma.com
 # sign-in in front of the same handlers.
+def _vi_send_email(to_addr, subject, text_body, html_body=None):
+    """Patch #130 — send a Victory Intelligence sign-in link.
+
+    Sent AS info@mwmcreations.com, not as Michael. A login link is a system
+    message: it should not look like it came from him personally, and it
+    should not land in a thread anyone might reply to expecting a human.
+
+    Returns True only when Gmail confirms. The caller must treat False as
+    "the person did not get a link", never as "probably fine" — this is the
+    difference between a door and a locked door.
+    """
+    import base64 as _b64
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    sender = os.getenv("VI_MAIL_FROM", "info@mwmcreations.com")
+    try:
+        svc = get_gmail_service(impersonate=sender)
+        if html_body:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(text_body, "plain", "utf-8"))
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            msg = MIMEText(text_body, "plain", "utf-8")
+        msg["To"] = to_addr
+        msg["From"] = f"MWM Creations <{sender}>"
+        msg["Subject"] = subject
+        raw = _b64.urlsafe_b64encode(msg.as_bytes()).decode()
+        # S28: no retries on a message send — an ambiguous 5xx retry could
+        # deliver two links, and two links means two chances to be phished.
+        res = svc.users().messages().send(userId="me", body={"raw": raw}).execute()
+        return bool(res.get("id"))
+    except Exception as _mx:
+        _report_error("vi_send_email", _mx, f"to={to_addr}")
+        return False
+
+
+def _vi_notify(text):
+    """A line into #dev — someone new signing in, or a grant being made."""
+    try:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, text)
+    except Exception:
+        pass
+
+
 try:
     import victory_routes as _vi_routes
-    _vi_routes.register(app, _admin_secret_ok, _report_error)
+    _vi_routes.register(app, _admin_secret_ok, _report_error,
+                        send_email=_vi_send_email, notify=_vi_notify)
     _vi_routes.boot()
 except Exception as _vix:
     # A Victory Intelligence problem must never stop the sales machine booting.

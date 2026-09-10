@@ -87,5 +87,36 @@ class TestPatch129Wiring(unittest.TestCase):
         self.assertNotIn("mwm-media-2026", window)
 
 
+class TestPatch130Wiring(unittest.TestCase):
+    """Phase 2: the mailer and the #dev notifier are actually attached."""
+
+    def test_the_mailer_is_passed_in(self):
+        self.assertRegex(CODE, r"_vi_routes\.register\([^)]*send_email\s*=\s*_vi_send_email")
+
+    def test_the_notifier_is_passed_in(self):
+        self.assertRegex(CODE, r"_vi_routes\.register\([^)]*notify\s*=\s*_vi_notify")
+
+    def test_both_helpers_are_defined(self):
+        self.assertIn("def _vi_send_email(", CODE)
+        self.assertIn("def _vi_notify(", CODE)
+
+    def test_links_are_sent_as_info_not_as_michael(self):
+        # a login link should not look like it came from Michael personally
+        i = CODE.index("def _vi_send_email(")
+        window = CODE[i:i + 1400]
+        self.assertIn("info@mwmcreations.com", window)
+        self.assertNotIn("MICHAEL_EMAIL", window)
+
+    def test_the_mailer_reports_failure_rather_than_assuming_success(self):
+        i = CODE.index("def _vi_send_email(")
+        window = CODE[i:i + 1800]
+        self.assertIn("return False", window)
+        self.assertIn("_report_error", window)
+
+    def test_the_auth_modules_are_present_on_disk(self):
+        for m in ("victory_auth.py", "victory_store.py", "victory_page.py"):
+            self.assertTrue(os.path.exists(os.path.join(HERE, m)), m)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
