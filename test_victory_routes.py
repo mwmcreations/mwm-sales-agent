@@ -224,6 +224,8 @@ class TestSignInForm(VICase):
         self.assertIn("Check your email", pages[0])
 
     def test_a_link_is_created_only_for_an_allowed_domain(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"   # this test is about the door, not the lock
+        self.addCleanup(os.environ.pop, va.CLIENT_EMAIL_ENV, None)
         self.c.post("/vi/login", data={"email": "jim@victoryma.com"})
         self.assertEqual(len(self.store.links), 1)
         self.c.post("/vi/login", data={"email": "attacker@gmail.com"})
@@ -231,6 +233,8 @@ class TestSignInForm(VICase):
         self.assertEqual(len(self.store.links), 1, "no link for an untrusted domain")
 
     def test_repeated_requests_are_rate_limited(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"   # this test is about the door, not the lock
+        self.addCleanup(os.environ.pop, va.CLIENT_EMAIL_ENV, None)
         for _ in range(va.LINK_MAX_PER_EMAIL + 6):
             self.c.post("/vi/login", data={"email": "jim@victoryma.com"})
         self.assertLessEqual(len(self.store.links), va.LINK_MAX_PER_EMAIL)
@@ -417,12 +421,14 @@ class TestGrant(VICase):
 
 class TestIssueLink(VICase):
     def test_returns_a_working_link_without_emailing(self):
-        r = self.c.post("/vi/issue-link", json={"email": "jim@victoryma.com",
-                                               "secret": SECRET})
+        # our own address: while the send lock is on, minting a CLIENT link is
+        # forbidden even here, because a URL in a log is still a credential
+        r = self.c.post("/vi/issue-link", json={"email": "michael@mwmcreations.com",
+                                                "secret": SECRET})
         self.assertEqual(r.status_code, 200)
         url = self._j(r)["url"]
         self.assertIn("/vi/auth?token=", url)
-        self.store.grant("jim@victoryma.com", va.ROLE_HQ)
+        self.store.grant("michael@mwmcreations.com", va.ROLE_MWM)
         follow = self.c.get(url[url.index("/vi/auth"):])
         self.assertEqual(follow.status_code, 302)
 
@@ -431,11 +437,11 @@ class TestIssueLink(VICase):
         self.assertEqual(r.status_code, 400)
 
     def test_the_link_it_mints_is_still_single_use(self):
-        r = self.c.post("/vi/issue-link", json={"email": "jim@victoryma.com",
+        r = self.c.post("/vi/issue-link", json={"email": "michael@mwmcreations.com",
                                                 "secret": SECRET})
         path = self._j(r)["url"]
         path = path[path.index("/vi/auth"):]
-        self.store.grant("jim@victoryma.com", va.ROLE_HQ)
+        self.store.grant("michael@mwmcreations.com", va.ROLE_MWM)
         self.assertEqual(self.c.get(path).status_code, 302)
         self.assertEqual(self.c.get(path).status_code, 400)
 
@@ -489,6 +495,8 @@ class TestExternalGrants(VICase):
         self.assertEqual(len(self.store.links), 0)
 
     def test_a_granted_external_address_does_get_a_link(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"   # this test is about the door, not the lock
+        self.addCleanup(os.environ.pop, va.CLIENT_EMAIL_ENV, None)
         self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
         self.c.post("/vi/login", data={"email": "victoryhvs@aol.com"})
         self.assertEqual(len(self.store.links), 1)
@@ -501,10 +509,69 @@ class TestExternalGrants(VICase):
         self.assertEqual(self._j(r)["found"], 34)
 
     def test_a_stranger_at_the_same_domain_still_gets_nothing(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"   # this test is about the door, not the lock
+        self.addCleanup(os.environ.pop, va.CLIENT_EMAIL_ENV, None)
         self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
         self.c.post("/vi/login", data={"email": "someone-else@aol.com"})
         self.assertEqual(len(self.store.links), 0,
                          "granting one aol address must not trust aol.com")
+
+
+class TestSendLockLive(VICase):
+    """The lock, through the actual routes."""
+
+    def setUp(self):
+        VICase.setUp(self)
+        os.environ.pop(va.CLIENT_EMAIL_ENV, None)      # locked, as it ships
+
+    def tearDown(self):
+        os.environ.pop(va.CLIENT_EMAIL_ENV, None)
+        VICase.tearDown(self)
+
+    def test_no_link_is_even_created_for_a_victory_address(self):
+        self.c.post("/vi/login", data={"email": "gmvs@victoryma.com"})
+        self.assertEqual(len(self.store.links), 0,
+                         "a link that exists is a link that can leak")
+
+    def test_no_link_is_created_for_a_granted_external_address(self):
+        self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
+        self.c.post("/vi/login", data={"email": "victoryhvs@aol.com"})
+        self.assertEqual(len(self.store.links), 0)
+
+    def test_our_own_address_still_works(self):
+        self.c.post("/vi/login", data={"email": "michael@mwmcreations.com"})
+        self.assertEqual(len(self.store.links), 1)
+
+    def test_the_locked_response_is_indistinguishable(self):
+        a = self.c.post("/vi/login", data={"email": "gmvs@victoryma.com"}).data
+        b = self.c.post("/vi/login", data={"email": "michael@mwmcreations.com"}).data
+        self.assertEqual(a, b, "the lock must not become an enumeration oracle")
+
+    def test_dev_is_told_when_the_lock_stops_something(self):
+        self.c.post("/vi/login", data={"email": "gmvs@victoryma.com"})
+        self.assertTrue(any("locked to internal testing" in n for n in self.notes))
+
+    def test_issue_link_is_locked_too(self):
+        r = self.c.post("/vi/issue-link", json={"email": "gmvs@victoryma.com",
+                                                "secret": SECRET})
+        self.assertEqual(r.status_code, 423)
+        self.assertTrue(self._j(r)["locked"])
+        self.assertEqual(len(self.store.links), 0)
+
+    def test_issue_link_still_works_for_our_own_address(self):
+        r = self.c.post("/vi/issue-link", json={"email": "michael@mwmcreations.com",
+                                                "secret": SECRET})
+        self.assertEqual(r.status_code, 200)
+
+    def test_lifting_the_lock_restores_normal_behaviour(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"
+        self.c.post("/vi/login", data={"email": "gmvs@victoryma.com"})
+        self.assertEqual(len(self.store.links), 1)
+
+    def test_health_reports_the_lock_state(self):
+        out = self._j(self.c.get("/vi/health?secret=" + SECRET))
+        self.assertTrue(out["auth"]["send_lock"])
+        self.assertFalse(out["auth"]["client_email_enabled"])
 
 
 if __name__ == "__main__":

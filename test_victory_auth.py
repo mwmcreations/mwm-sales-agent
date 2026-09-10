@@ -249,5 +249,56 @@ class TestNamedExternalAddresses(unittest.TestCase):
         self.assertFalse(va.is_external(None))
 
 
+class TestSendLock(unittest.TestCase):
+    """The lock that exists because a sign-in link reached the Grand Master.
+
+    These tests are the apology written as code: they assert that no
+    instruction, test or script can put mail in front of a client while the
+    lock is on, and that the lock is on unless somebody deliberately turns it
+    off.
+    """
+
+    def _env(self, value):
+        return lambda k, d="": value if k == va.CLIENT_EMAIL_ENV else d
+
+    def test_the_lock_is_on_when_the_variable_is_missing(self):
+        self.assertFalse(va.client_email_enabled(self._env("")))
+        self.assertFalse(va.client_email_enabled(lambda k, d="": d))
+
+    def test_the_lock_is_on_for_anything_that_is_not_a_clear_yes(self):
+        for v in ("0", "false", "no", "off", "maybe", "TRUEISH", " ", "None"):
+            self.assertFalse(va.client_email_enabled(self._env(v)), repr(v))
+
+    def test_the_lock_lifts_only_on_an_explicit_yes(self):
+        for v in ("1", "true", "TRUE", "yes", "on", " true "):
+            self.assertTrue(va.client_email_enabled(self._env(v)), repr(v))
+
+    def test_our_own_people_are_never_locked_out(self):
+        self.assertTrue(va.may_email("michael@mwmcreations.com", self._env("")))
+        self.assertFalse(va.is_client_address("michael@mwmcreations.com"))
+
+    def test_victory_addresses_are_locked(self):
+        for e in ("gmvs@victoryma.com", "master-john.faett@victoryma.com",
+                  "lakenona@victoryma.com"):
+            self.assertTrue(va.is_client_address(e), e)
+            self.assertFalse(va.may_email(e, self._env("")), e)
+
+    def test_a_granted_external_address_is_also_locked(self):
+        # the bug this guards: an allowlist keyed on victoryma.com would have
+        # let a link through to Master Hermann on aol.com while locked
+        self.assertTrue(va.is_client_address("victoryhvs@aol.com"))
+        self.assertFalse(va.may_email("victoryhvs@aol.com", self._env("")))
+
+    def test_a_stranger_is_locked_too(self):
+        self.assertFalse(va.may_email("someone@gmail.com", self._env("")))
+
+    def test_lifting_the_lock_lets_client_mail_through(self):
+        self.assertTrue(va.may_email("gmvs@victoryma.com", self._env("1")))
+
+    def test_rubbish_is_not_a_client_address(self):
+        for bad in ("", None, "not-an-email"):
+            self.assertFalse(va.is_client_address(bad), repr(bad))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

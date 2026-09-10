@@ -151,6 +151,18 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             if email and va.is_external(email):
                 known = bool(vs.get_person(email))
 
+            # THE SEND LOCK. Checked before anything is created, not before
+            # anything is sent — a link that exists is a link that can leak.
+            # See victory_auth.client_email_enabled for why this is here.
+            if email and not va.may_email(email):
+                print("[VI-AUTH] SEND LOCK: refused to create or email a link "
+                      "for a client address")
+                _tell(":lock: Victory Intelligence is still locked to internal "
+                      "testing, so a sign-in link for *%s* was NOT created or "
+                      "sent. Set VI_CLIENT_EMAIL=1 in Railway when the testing "
+                      "is done." % email)
+                return vp.signin_page(sent=True)
+
             if email and va.is_allowed(email, known=known) and ok_ip and ok_em:
                 token, token_hash = va.new_token()
                 if vs.create_link(token_hash, email, ip):
@@ -288,7 +300,9 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                    "events_on_disk": ingest.list_events(),
                    "db": False, "events": [],
                    "auth": {"secret": bool(vs.session_secret(create=False)),
-                            "people": len(vs.list_people(limit=500))}}
+                            "people": len(vs.list_people(limit=500)),
+                            "client_email_enabled": va.client_email_enabled(),
+                            "send_lock": not va.client_email_enabled()}}
             try:
                 import pg_store
                 if pg_store.enabled():
@@ -415,6 +429,14 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             known = bool(vs.get_person(email)) if email else False
             if not email or not va.is_allowed(email, known=known):
                 return jsonify({"ok": False, "error": "a valid allowed email is required"}), 400
+            if not va.may_email(email):
+                # This route does not send mail, but it hands back a WORKING
+                # link. While the lock is on, a client link must not exist in
+                # any form — a URL in a log or a chat is still a credential.
+                return jsonify({"ok": False, "external": False, "locked": True,
+                                "error": "Victory Intelligence is locked to "
+                                         "internal testing. Set VI_CLIENT_EMAIL=1 "
+                                         "to mint links for client addresses."}), 423
             vs.init_schema()
             token, token_hash = va.new_token()
             if not vs.create_link(token_hash, email, _client_ip(request)):

@@ -123,6 +123,52 @@ def is_external(email):
     return bool(e) and domain_of(e) not in ALLOWED_DOMAINS
 
 
+# ── the send lock ──────────────────────────────────────────────────────────
+# THIS EXISTS BECAUSE I SENT A SIGN-IN LINK TO THE GRAND MASTER.
+#
+# On 10 Sep 2026, testing that the sign-in form cannot be used to enumerate
+# who works at Victory, I used real leadership addresses as test inputs. The
+# mailer had gone live an hour earlier, so the test did not just create a
+# link — it delivered one, unannounced, at 9:44pm, to the client's founder.
+# Michael had said in plain words that nothing was to reach anyone until the
+# system was fully tested. The code did exactly what it was told. I pointed
+# it at the wrong inputs.
+#
+# So the rule is no longer "remember not to do that". While the lock is on,
+# NO email can reach any address outside mwmcreations.com — no link is even
+# created — regardless of what any test, script or person asks for.
+#
+# It fails SAFE: the lock is on unless VI_CLIENT_EMAIL is explicitly set to a
+# true value. A missing variable, a typo, a fresh environment, a rebuilt
+# container — all of those mean locked. Turning it off is a deliberate act by
+# a person who has decided the testing is over.
+CLIENT_EMAIL_ENV = "VI_CLIENT_EMAIL"
+
+
+def client_email_enabled(getenv=None):
+    """False while the client send lock is on. Defaults to locked."""
+    import os
+    g = getenv if getenv is not None else os.getenv
+    return str(g(CLIENT_EMAIL_ENV, "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_client_address(email):
+    """Anything that is not one of ours.
+
+    Deliberately defined as 'not mwmcreations.com' rather than 'is
+    victoryma.com'. A granted external address — Master Hermann on aol.com —
+    is a client address too, and an allowlist that only knew about
+    victoryma.com would have let a link through to him while the lock was on.
+    """
+    e = normalize_email(email)
+    return bool(e) and domain_of(e) != HOME_DOMAIN
+
+
+def may_email(email, getenv=None):
+    """The single question /vi/login must ask before sending anything."""
+    return (not is_client_address(email)) or client_email_enabled(getenv)
+
+
 def can_search(role):
     return role in CAN_SEARCH
 
