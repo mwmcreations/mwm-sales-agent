@@ -269,5 +269,58 @@ class TestNeverRaises(unittest.TestCase):
         self.assertEqual(vi.corpus_size(), 1873)
 
 
+class TestResidentCache(unittest.TestCase):
+    """Live search cost 815-844 ms per query, all of it one Postgres round
+    trip. These tests defend the cache that removed it."""
+
+    def setUp(self):
+        vi.set_corpus(CORPUS)
+
+    def test_set_corpus_clears_the_cache_by_default(self):
+        vi.set_corpus(CORPUS, resident={"x": {"id": "x"}})
+        self.assertEqual(vi.resident_count(), 1)
+        vi.set_corpus(CORPUS)
+        self.assertEqual(vi.resident_count(), 0)
+
+    def test_hydrate_serves_from_memory_without_a_database(self):
+        resident = {r["id"]: {"id": r["id"], "title": r["t"]} for r in CORPUS[:20]}
+        vi.set_corpus(CORPUS, resident=resident)
+        got = vi.hydrate([CORPUS[0]["id"], CORPUS[1]["id"]])
+        self.assertEqual(len(got), 2)
+
+    def test_hydrate_returns_what_it_has_when_some_are_missing(self):
+        # a partial cache must degrade to partial results, never to an
+        # exception and never to silently dropping the hit
+        resident = {CORPUS[0]["id"]: {"id": CORPUS[0]["id"]}}
+        vi.set_corpus(CORPUS, resident=resident)
+        got = vi.hydrate([CORPUS[0]["id"], CORPUS[1]["id"]])
+        self.assertIn(CORPUS[0]["id"], got)
+
+    def test_search_returns_full_rows_when_resident(self):
+        resident = {r["id"]: {"id": r["id"], "title": r["t"], "drive_id": "abc"}
+                    for r in CORPUS}
+        vi.set_corpus(CORPUS, resident=resident)
+        out = vi.search("candlelight")
+        self.assertEqual(out["found"], 34)
+        self.assertTrue(all("drive_id" in r for r in out["results"]))
+
+    def test_ranking_is_unchanged_by_the_cache(self):
+        resident = {r["id"]: {"id": r["id"]} for r in CORPUS}
+        vi.set_corpus(CORPUS, resident=resident)
+        for q in QUERIES:
+            rows, _, _, _ = vi.search_corpus(q, CORPUS)
+            self.assertEqual(len(rows), RANKING[q]["found"], "changed for %r" % (q,))
+
+    def test_full_cols_excludes_the_search_blob(self):
+        # blob is search fodder only; carrying it would double resident size
+        self.assertNotIn("blob", vi.FULL_COLS)
+        self.assertIn("drive_id", vi.FULL_COLS)
+        self.assertIn("thumb", vi.FULL_COLS)
+
+    def test_resident_max_is_a_real_guard(self):
+        self.assertGreater(vi.RESIDENT_MAX, 1873, "Convention must fit")
+        self.assertLess(vi.RESIDENT_MAX, 1000000, "must still bound memory")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

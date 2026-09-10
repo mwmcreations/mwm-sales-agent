@@ -41,6 +41,22 @@ _corpus = []          # list of dicts: id, ord, event, k, t, cat, ses, s, w, qb
 _corpus_lock = threading.Lock()
 _corpus_event = None  # which event_key the loaded corpus covers (None = all)
 
+# Full records, kept resident so a search does not need a database round trip.
+#
+# MEASURED, not assumed: with hydrate going to Postgres on every query, live
+# search ran 815-844 ms across 38 queries. That variance is far too tight for
+# compute — scoring 1,873 records in memory is single-digit milliseconds — so
+# the whole cost was one cross-region round trip per search.
+#
+# Convention 2026 is 1,873 records and about 2.5 MB of pointers (no media, no
+# base64), so holding all of it costs nothing worth measuring. RESIDENT_MAX is
+# the guard for later: when the archive grows past it we stop filling the cache
+# and fall back to fetching the seven rows a person is actually looking at,
+# which is the behaviour this replaced.
+RESIDENT_MAX = 25000
+_records = {}         # id -> full record dict
+_records_lock = threading.Lock()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # THE PORT — everything between here and END OF PORT mirrors the demo's JS.
@@ -304,6 +320,12 @@ DDL = [
 # The scorer reads these and nothing else.
 CORPUS_COLS = "id, ord, event_key, kind, title, category, session, blob, weight, quotable"
 
+# Everything a result row shows. Deliberately excludes `blob`, which is only
+# search fodder and would double the resident size for no display value.
+FULL_COLS = ("id, event_key, kind, title, category, session, weight, quotable, "
+             "day_no, date_label, camera, file, folder, source_id, drive_id, "
+             "thumb, timecode, duration, seconds, priority, quote, topics, media")
+
 
 def _row_to_rec(row):
     """DB row -> the compact shape score() expects (demo key names kept)."""
@@ -333,7 +355,7 @@ def load_corpus(event_key=None, force=False):
     Called once at boot and after an ingest. Cheap enough to re-run; the guard
     is only there to stop every request paying for it.
     """
-    global _corpus, _corpus_event
+    global _corpus, _corpus_event, _records
     with _corpus_lock:
         if _corpus and not force and _corpus_event == event_key:
             return len(_corpus)
@@ -341,20 +363,29 @@ def load_corpus(event_key=None, force=False):
         import pg_store
         if not pg_store.enabled():
             return len(_corpus)
-        sql = f"SELECT {CORPUS_COLS} FROM vi_record"
-        args = ()
-        if event_key:
-            sql += " WHERE event_key = %s"
-            args = (event_key,)
-        sql += " ORDER BY event_key, ord"
+        where = " WHERE event_key = %s" if event_key else ""
+        args = (event_key,) if event_key else ()
         with pg_store._conn() as c, c.cursor() as cur:
-            cur.execute(sql, args)
+            cur.execute(f"SELECT {CORPUS_COLS} FROM vi_record{where}"
+                        " ORDER BY event_key, ord", args)
             rows = [_row_to_rec(r) for r in cur.fetchall()]
+            # One extra query at boot buys every later search its round trip
+            # back. Skipped entirely once the archive outgrows RESIDENT_MAX.
+            resident = {}
+            if len(rows) <= RESIDENT_MAX:
+                cur.execute(f"SELECT {FULL_COLS} FROM vi_record{where}", args)
+                cols = [d[0] for d in cur.description]
+                for r in cur.fetchall():
+                    rec = dict(zip(cols, r))
+                    resident[rec["id"]] = rec
         with _corpus_lock:
             _corpus = rows
             _corpus_event = event_key
+        with _records_lock:
+            _records = resident
         print(f"[VI] corpus loaded: {len(rows)} records"
-              f"{' for ' + event_key if event_key else ''}")
+              f"{' for ' + event_key if event_key else ''}"
+              f", {len(resident)} resident")
         return len(rows)
     except Exception as e:
         print(f"[VI] load_corpus failed: {e}")
@@ -366,13 +397,24 @@ def corpus_size():
         return len(_corpus)
 
 
-def set_corpus(records):
-    """Install a corpus directly. Used by the tests and by offline tooling."""
-    global _corpus, _corpus_event
+def set_corpus(records, resident=None):
+    """Install a corpus directly. Used by the tests and by offline tooling.
+
+    Clears the resident cache unless one is supplied, so a test can never be
+    served a row left behind by an earlier one.
+    """
+    global _corpus, _corpus_event, _records
     with _corpus_lock:
         _corpus = list(records)
         _corpus_event = None
+    with _records_lock:
+        _records = dict(resident or {})
     return len(_corpus)
+
+
+def resident_count():
+    with _records_lock:
+        return len(_records)
 
 
 def hydrate(ids):
@@ -384,22 +426,27 @@ def hydrate(ids):
     """
     if not ids:
         return {}
+    ids = list(ids)
+    with _records_lock:
+        out = {i: _records[i] for i in ids if i in _records}
+    missing = [i for i in ids if i not in out]
+    if not missing:
+        return out
     try:
         import pg_store
         if not pg_store.enabled():
-            return {}
+            return out
         with pg_store._conn() as c, c.cursor() as cur:
-            cur.execute(
-                """SELECT id, event_key, kind, title, category, session, weight,
-                          quotable, day_no, date_label, camera, file, folder,
-                          source_id, drive_id, thumb, timecode, duration,
-                          seconds, priority, quote, topics, media
-                     FROM vi_record WHERE id = ANY(%s)""", (list(ids),))
+            cur.execute(f"SELECT {FULL_COLS} FROM vi_record WHERE id = ANY(%s)",
+                        (missing,))
             cols = [d[0] for d in cur.description]
-            return {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+            for r in cur.fetchall():
+                rec = dict(zip(cols, r))
+                out[rec["id"]] = rec
+        return out
     except Exception as e:
         print(f"[VI] hydrate failed: {e}")
-        return {}
+        return out
 
 
 def search(q, event_key=None, limit=7):
