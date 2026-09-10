@@ -79,9 +79,25 @@ def domain_of(email):
     return e.split("@", 1)[1] if e else ""
 
 
-def is_allowed(email):
-    """May this address be sent a sign-in link at all?"""
-    return domain_of(email) in ALLOWED_DOMAINS
+def is_allowed(email, known=False):
+    """May this address be sent a sign-in link at all?
+
+    Two ways in, and only two:
+
+      1. The address is at a trusted domain. This is the self-service path —
+         anyone at victoryma.com can ask for a link without us doing anything.
+
+      2. `known` is True, meaning Michael has already granted this exact
+         address a role. This exists because Victory's leadership list is not
+         all on victoryma.com: three of the people on every leadership thread
+         use me.com, yahoo.com and aol.com addresses, and one of them is a
+         Von Schmeling. Refusing them would have quietly excluded senior
+         people from their own platform.
+
+    What this deliberately does NOT do is trust those domains. me.com is not
+    allowlisted; ONE named address at me.com is, because a human decided so.
+    """
+    return bool(known) or domain_of(email) in ALLOWED_DOMAINS
 
 
 def default_role(email):
@@ -95,6 +111,16 @@ def default_role(email):
     if d == CLIENT_DOMAIN:
         return ROLE_PENDING
     return ""
+
+
+def is_external(email):
+    """True when an address is outside both trusted domains.
+
+    Granting one of these is a deliberate act — /vi/grant makes the caller say
+    so explicitly, because a typo here hands a stranger a real account.
+    """
+    e = normalize_email(email)
+    return bool(e) and domain_of(e) not in ALLOWED_DOMAINS
 
 
 def can_search(role):

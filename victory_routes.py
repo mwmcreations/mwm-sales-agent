@@ -142,7 +142,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             ok_ip = limiter.allow("ip:" + ip, va.LINK_MAX_PER_IP)
             ok_em = limiter.allow("em:" + email, va.LINK_MAX_PER_EMAIL) if email else True
 
-            if email and va.is_allowed(email) and ok_ip and ok_em:
+            # An address off a trusted domain is allowed ONLY if Michael has
+            # already granted it a role. Three of Victory's leadership are on
+            # me.com, yahoo.com and aol.com; without this they could not sign
+            # in to their own platform. The lookup is skipped for trusted
+            # domains so the common path costs nothing.
+            known = False
+            if email and va.is_external(email):
+                known = bool(vs.get_person(email))
+
+            if email and va.is_allowed(email, known=known) and ok_ip and ok_em:
                 token, token_hash = va.new_token()
                 if vs.create_link(token_hash, email, ip):
                     url = "%s/vi/auth?token=%s" % (_base_url(), token)
@@ -162,7 +171,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                               "(no mailer)" % email)
                         _tell(":warning: Victory Intelligence could not email a "
                               "sign-in link to %s — the mailer is not wired." % email)
-            elif email and not va.is_allowed(email):
+            elif email and not va.is_allowed(email, known=known):
                 print("[VI-AUTH] refused a link for a domain we do not trust")
             elif not (ok_ip and ok_em):
                 print("[VI-AUTH] rate limited a link request")
@@ -336,9 +345,19 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             school = request.values.get("school", body.get("school", "")) or ""
             if not email:
                 return jsonify({"ok": False, "error": "a valid email is required"}), 400
-            if not va.is_allowed(email):
-                return jsonify({"ok": False,
-                                "error": "that domain is not allowed to sign in"}), 400
+            external = va.is_external(email)
+            allow_external = str(request.values.get(
+                "allow_external", body.get("allow_external", ""))).lower() in ("1", "true", "yes")
+            if external and not allow_external:
+                # Deliberate friction. A typo in a granted address hands a real
+                # account to a stranger, and an address off victoryma.com is
+                # exactly where a typo is least likely to be noticed.
+                return jsonify({
+                    "ok": False,
+                    "error": "%s is outside victoryma.com and mwmcreations.com. "
+                             "Re-send with allow_external=true to grant it "
+                             "anyway." % email,
+                    "external": True}), 400
             if role not in va.ROLES:
                 return jsonify({"ok": False, "error": "role must be one of %s"
                                 % (list(va.ROLES),)}), 400
@@ -348,11 +367,14 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             vs.init_schema()
             if not vs.grant(email, role, school):
                 return jsonify({"ok": False, "error": "could not write the grant"}), 500
-            print("[VI-AUTH] granted %s -> %s %s" % (email, role, school))
+            print("[VI-AUTH] granted %s -> %s %s%s"
+                  % (email, role, school, " [EXTERNAL]" if external else ""))
             _tell(":white_check_mark: Victory Intelligence access for *%s* set to "
-                  "*%s*%s." % (email, role, (" (%s)" % school) if school else ""))
+                  "*%s*%s.%s" % (email, role, (" (%s)" % school) if school else "",
+                                 "  :warning: this address is outside "
+                                 "victoryma.com." if external else ""))
             return jsonify({"ok": True, "email": email, "role": role,
-                            "school": school}), 200
+                            "school": school, "external": external}), 200
         except Exception as e:
             _err("vi_grant", e)
             return jsonify({"ok": False, "error": "exception"}), 500
@@ -390,7 +412,8 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
         try:
             body = request.get_json(force=True, silent=True) or {}
             email = va.normalize_email(request.values.get("email", body.get("email", "")))
-            if not email or not va.is_allowed(email):
+            known = bool(vs.get_person(email)) if email else False
+            if not email or not va.is_allowed(email, known=known):
                 return jsonify({"ok": False, "error": "a valid allowed email is required"}), 400
             vs.init_schema()
             token, token_hash = va.new_token()

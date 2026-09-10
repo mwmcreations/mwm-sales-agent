@@ -208,5 +208,46 @@ class TestLinkEmail(unittest.TestCase):
         self.assertIn("Victory Intelligence", va.LINK_SUBJECT)
 
 
+class TestNamedExternalAddresses(unittest.TestCase):
+    """Victory's leadership is not all on victoryma.com.
+
+    Three of the people on every leadership thread use me.com, yahoo.com and
+    aol.com addresses. Refusing them would have quietly excluded senior people
+    from their own platform — but trusting those DOMAINS would be reckless.
+    The rule is: one named address, granted by a human.
+    """
+
+    def test_an_external_address_is_refused_by_default(self):
+        self.assertFalse(va.is_allowed("lnery1@me.com"))
+        self.assertFalse(va.is_allowed("rubenvon@yahoo.com"))
+        self.assertFalse(va.is_allowed("victoryhvs@aol.com"))
+
+    def test_a_known_external_address_is_allowed(self):
+        self.assertTrue(va.is_allowed("lnery1@me.com", known=True))
+
+    def test_knowing_one_address_does_not_trust_the_domain(self):
+        self.assertTrue(va.is_allowed("victoryhvs@aol.com", known=True))
+        self.assertFalse(va.is_allowed("someone-else@aol.com"))
+        for d in ("aol.com", "me.com", "yahoo.com"):
+            self.assertNotIn(d, va.ALLOWED_DOMAINS)
+
+    def test_is_external_identifies_the_right_addresses(self):
+        for e in ("lnery1@me.com", "rubenvon@yahoo.com", "victoryhvs@aol.com",
+                  "ninja@cpcninja.com"):
+            self.assertTrue(va.is_external(e), e)
+        for e in ("gmvs@victoryma.com", "michael@mwmcreations.com"):
+            self.assertFalse(va.is_external(e), e)
+
+    def test_an_external_address_has_no_default_role(self):
+        # it can only ever be here because a grant put it here
+        self.assertEqual(va.default_role("lnery1@me.com"), "")
+        self.assertFalse(va.can_search(va.default_role("lnery1@me.com")))
+
+    def test_rubbish_is_not_external_it_is_nothing(self):
+        self.assertFalse(va.is_external("not-an-email"))
+        self.assertFalse(va.is_external(""))
+        self.assertFalse(va.is_external(None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -456,5 +456,56 @@ class TestBoot(unittest.TestCase):
         self.assertEqual(vr.boot(), 0)
 
 
+class TestExternalGrants(VICase):
+    """Granting an address off victoryma.com must be deliberate."""
+
+    def _grant(self, **kw):
+        kw["secret"] = SECRET
+        return self.c.post("/vi/grant", json=kw)
+
+    def test_an_external_grant_is_refused_without_saying_so(self):
+        r = self._grant(email="victoryhvs@aol.com", role="hq")
+        self.assertEqual(r.status_code, 400)
+        body = self._j(r)
+        self.assertTrue(body.get("external"))
+        self.assertIn("allow_external", body["error"])
+        self.assertNotIn("victoryhvs@aol.com", self.store.people)
+
+    def test_an_external_grant_succeeds_when_stated(self):
+        r = self._grant(email="victoryhvs@aol.com", role="hq", allow_external=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(self._j(r)["external"])
+        self.assertEqual(self.store.people["victoryhvs@aol.com"]["role"], "hq")
+
+    def test_an_external_grant_is_flagged_in_the_announcement(self):
+        self._grant(email="victoryhvs@aol.com", role="hq", allow_external=True)
+        self.assertTrue(any("outside" in n for n in self.notes))
+
+    def test_a_victoryma_grant_needs_no_flag(self):
+        self.assertEqual(self._grant(email="gmvs@victoryma.com", role="hq").status_code, 200)
+
+    def test_an_ungranted_external_address_gets_no_link(self):
+        self.c.post("/vi/login", data={"email": "victoryhvs@aol.com"})
+        self.assertEqual(len(self.store.links), 0)
+
+    def test_a_granted_external_address_does_get_a_link(self):
+        self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
+        self.c.post("/vi/login", data={"email": "victoryhvs@aol.com"})
+        self.assertEqual(len(self.store.links), 1)
+
+    def test_a_granted_external_address_can_sign_in_and_search(self):
+        self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
+        self._sign_in_as("victoryhvs@aol.com", va.ROLE_HQ)
+        r = self.c.get("/vi/search?q=candlelight")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._j(r)["found"], 34)
+
+    def test_a_stranger_at_the_same_domain_still_gets_nothing(self):
+        self.store.grant("victoryhvs@aol.com", va.ROLE_HQ)
+        self.c.post("/vi/login", data={"email": "someone-else@aol.com"})
+        self.assertEqual(len(self.store.links), 0,
+                         "granting one aol address must not trust aol.com")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
