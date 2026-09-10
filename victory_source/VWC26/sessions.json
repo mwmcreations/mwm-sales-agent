@@ -1,0 +1,376 @@
+[
+ {
+  "day_no": 1,
+  "date_label": "Thursday 23 July",
+  "session_label": "Welcome Center Arrivals",
+  "priority": "standard",
+  "ranges": [
+   {
+    "camera": "CAM_D",
+    "camera_body": "Sony A7 IV",
+    "camera_short": "camera D",
+    "card": "CARD 1",
+    "id_kind": "C",
+    "lo": 4130,
+    "hi": 4186
+   }
+  ]
+ },
+ {
+  "day_no": 1,
+  "date_label": "Thursday 23 July",
+  "session_label": "Masters Training",
+  "priority": "high",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 1",
+    "id_kind": "C",
+    "lo": 9615,
+    "hi": 9657
+   }
+  ]
+ },
+ {
+  "day_no": 1,
+  "date_label": "Thursday 23 July",
+  "session_label": "Victory Dinner",
+  "priority": "high",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 1",
+    "id_kind": "C",
+    "lo": 9658,
+    "hi": 9697
+   }
+  ]
+ },
+ {
+  "day_no": 2,
+  "date_label": "Friday 24 July",
+  "session_label": "Instructor Training Certification",
+  "priority": "high",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 1",
+    "id_kind": "C",
+    "lo": 9698,
+    "hi": 9729
+   },
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 3",
+    "id_kind": "C",
+    "lo": 9730,
+    "hi": 9732
+   },
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 2",
+    "id_kind": "C",
+    "lo": 347,
+    "hi": 454
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_001",
+    "id_kind": "D",
+    "lo": 805,
+    "hi": 857
+   }
+  ]
+ },
+ {
+  "day_no": 2,
+  "date_label": "Friday 24 July",
+  "session_label": "XMA Seminar Training",
+  "priority": "low",
+  "ranges": [
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 4",
+    "id_kind": "C",
+    "lo": 455,
+    "hi": 515
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_001",
+    "id_kind": "D",
+    "lo": 859,
+    "hi": 924
+   }
+  ]
+ },
+ {
+  "day_no": 2,
+  "date_label": "Friday 24 July",
+  "session_label": "Mass class block",
+  "priority": "standard",
+  "ranges": [
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 4",
+    "id_kind": "C",
+    "lo": 516,
+    "hi": 530
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_001",
+    "id_kind": "D",
+    "lo": 925,
+    "hi": 929
+   }
+  ]
+ },
+ {
+  "day_no": 2,
+  "date_label": "Friday 24 July",
+  "session_label": "Victory for Life Reception",
+  "priority": "standard",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 3",
+    "id_kind": "C",
+    "lo": 9733,
+    "hi": 9734
+   },
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 4",
+    "id_kind": "C",
+    "lo": 531,
+    "hi": 552
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_001",
+    "id_kind": "D",
+    "lo": 930,
+    "hi": 932
+   }
+  ]
+ },
+ {
+  "day_no": 3,
+  "date_label": "Saturday 25 July",
+  "session_label": "Victory Tournament Finals",
+  "priority": "high",
+  "ranges": [
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 7",
+    "id_kind": "C",
+    "lo": 553,
+    "hi": 816
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_001",
+    "id_kind": "D",
+    "lo": 933,
+    "hi": 999
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_002",
+    "id_kind": "D",
+    "lo": 1,
+    "hi": 58
+   },
+   {
+    "camera": "DRONE",
+    "camera_body": "DJI drone",
+    "camera_short": "drone",
+    "card": "DRONE",
+    "id_kind": "C",
+    "lo": 49,
+    "hi": 65
+   }
+  ]
+ },
+ {
+  "day_no": 3,
+  "date_label": "Saturday 25 July",
+  "session_label": "Night of Champions",
+  "priority": "hero",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 10",
+    "id_kind": "C",
+    "lo": 9735,
+    "hi": 9735
+   },
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 5",
+    "id_kind": "C",
+    "lo": 818,
+    "hi": 819
+   },
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 7",
+    "id_kind": "C",
+    "lo": 817,
+    "hi": 817
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_002",
+    "id_kind": "D",
+    "lo": 59,
+    "hi": 82
+   }
+  ]
+ },
+ {
+  "day_no": 3,
+  "date_label": "Saturday 25 July",
+  "session_label": "Night of Champions",
+  "priority": "hero",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 10",
+    "id_kind": "C",
+    "lo": 9736,
+    "hi": 9736
+   },
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 12",
+    "id_kind": "C",
+    "lo": 820,
+    "hi": 822
+   },
+   {
+    "camera": "CAM_C",
+    "camera_body": "Sony FX30",
+    "camera_short": "camera C",
+    "card": "CARD 11",
+    "id_kind": "C",
+    "lo": 8,
+    "hi": 8
+   }
+  ]
+ },
+ {
+  "day_no": 4,
+  "date_label": "Sunday 26 July",
+  "session_label": "5K Run",
+  "priority": "low",
+  "ranges": [
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_002",
+    "id_kind": "D",
+    "lo": 83,
+    "hi": 96
+   }
+  ]
+ },
+ {
+  "day_no": 4,
+  "date_label": "Sunday 26 July",
+  "session_label": "Black Belt Testing / Candlelight",
+  "priority": "high",
+  "ranges": [
+   {
+    "camera": "CAM_A",
+    "camera_body": "Sony FX6",
+    "camera_short": "camera A",
+    "card": "CARD 6",
+    "id_kind": "C",
+    "lo": 9737,
+    "hi": 9740
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_002",
+    "id_kind": "D",
+    "lo": 97,
+    "hi": 213
+   }
+  ]
+ },
+ {
+  "day_no": 4,
+  "date_label": "Sunday 26 July",
+  "session_label": "Candlelight Finale",
+  "priority": "hero",
+  "ranges": [
+   {
+    "camera": "CAM_B",
+    "camera_body": "Sony FX3",
+    "camera_short": "camera B",
+    "card": "CARD 7",
+    "id_kind": "C",
+    "lo": 847,
+    "hi": 849
+   },
+   {
+    "camera": "OSMO",
+    "camera_body": "DJI Osmo (roaming)",
+    "camera_short": "roaming camera",
+    "card": "DJI_002",
+    "id_kind": "D",
+    "lo": 215,
+    "hi": 239
+   }
+  ]
+ }
+]

@@ -24819,6 +24819,26 @@ except Exception as _sx:
     _report_error("_startup_ig_auto_reply_audit:L14827", _sx)  # S6.5 silent-except sweep
 
 
+# ── PATCH #129 — Victory Intelligence, Phase 1 ─────────────────────────────
+# The demo carried 1,873 records and the whole search engine inside a 45.8 MB
+# HTML file, and it knew one event. victory_index.py is that same scorer moved
+# server-side (parity proven against the demo's own JavaScript in
+# test_victory_index.py) and made event-agnostic, because the scope is now
+# three years of Victory footage rather than four days of convention.
+#
+# Everything lives in victory_routes / victory_index / victory_ingest so this
+# file gains six lines instead of three hundred. Routes are gated on the
+# existing fail-closed admin check for now; Phase 2 puts a real @victoryma.com
+# sign-in in front of the same handlers.
+try:
+    import victory_routes as _vi_routes
+    _vi_routes.register(app, _admin_secret_ok, _report_error)
+    _vi_routes.boot()
+except Exception as _vix:
+    # A Victory Intelligence problem must never stop the sales machine booting.
+    print(f"[VI] wiring skipped (non-fatal): {_vix!r}")
+
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")

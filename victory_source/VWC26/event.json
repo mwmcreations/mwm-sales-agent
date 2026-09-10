@@ -1,0 +1,8 @@
+{
+ "event_key": "VWC26",
+ "title": "Victory World Convention 2026",
+ "client": "victory",
+ "starts_on": "2026-07-23",
+ "ends_on": "2026-07-26",
+ "note": "Four days, 40 schools. Sessions and camera-card ranges migrated out of build_index.py (the demo hardcoded them) on 9 Sep 2026."
+}

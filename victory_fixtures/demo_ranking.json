@@ -1,0 +1,699 @@
+{
+ "candlelight": {
+  "found": 34,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87,
+   88,
+   89,
+   90,
+   91
+  ]
+ },
+ "iconic moments from convention 2026": {
+  "found": 40,
+  "peak": true,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   23,
+   25,
+   63,
+   66,
+   60,
+   61,
+   62,
+   64,
+   65,
+   67,
+   72,
+   73
+  ]
+ },
+ "why parents enrolled their kids": {
+  "found": 21,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   716,
+   719,
+   410,
+   320,
+   326,
+   151,
+   466,
+   463,
+   585,
+   390,
+   591,
+   346
+  ]
+ },
+ "punctuality": {
+  "found": 111,
+  "peak": false,
+  "speech": false,
+  "fallback": true,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87,
+   88,
+   89,
+   90,
+   91
+  ]
+ },
+ "black belt testing": {
+  "found": 31,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   68,
+   69,
+   70,
+   1692,
+   928,
+   615,
+   1139,
+   1691,
+   1346,
+   921,
+   71,
+   72
+  ]
+ },
+ "bo staff": {
+  "found": 2,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   31,
+   43
+  ]
+ },
+ "night of champions": {
+  "found": 17,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   1713,
+   1522,
+   1530,
+   1547,
+   1706,
+   93,
+   94,
+   95,
+   96,
+   97,
+   743,
+   717
+  ]
+ },
+ "winner arm raised": {
+  "found": 2,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   26,
+   24
+  ]
+ },
+ "crowd cheering": {
+  "found": 21,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   93,
+   108,
+   104,
+   106,
+   107,
+   100,
+   101,
+   110,
+   1503,
+   769,
+   94,
+   95
+  ]
+ },
+ "drone": {
+  "found": 1,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   18
+  ]
+ },
+ "on perseverance": {
+  "found": 8,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   864,
+   1418,
+   1345,
+   604,
+   1372,
+   463,
+   1349,
+   464
+  ]
+ },
+ "what did they say about confidence": {
+  "found": 43,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   459,
+   1418,
+   1358,
+   1612,
+   609,
+   603,
+   613,
+   1424,
+   1560,
+   1656,
+   327,
+   591
+  ]
+ },
+ "board break": {
+  "found": 11,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   75,
+   76,
+   1017,
+   1416,
+   79,
+   72,
+   73,
+   74,
+   77,
+   78,
+   71
+  ]
+ },
+ "forms competitor": {
+  "found": 8,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   0,
+   1,
+   17,
+   21,
+   27,
+   110,
+   3,
+   8
+  ]
+ },
+ "the best moments": {
+  "found": 27,
+  "peak": true,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   23,
+   25,
+   24,
+   26,
+   27,
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86
+  ]
+ },
+ "grandmaster speech": {
+  "found": 33,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   1257,
+   81,
+   86,
+   66,
+   67,
+   118,
+   69,
+   1480,
+   80,
+   1066,
+   1199,
+   156
+  ]
+ },
+ "sparring": {
+  "found": 6,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   4,
+   5,
+   13,
+   6,
+   7,
+   9
+  ]
+ },
+ "proud moms": {
+  "found": 5,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   108,
+   410,
+   1359,
+   832,
+   1395
+  ]
+ },
+ "emotional": {
+  "found": 25,
+  "peak": true,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   108,
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87,
+   88,
+   89,
+   90
+  ]
+ },
+ "training seminar": {
+  "found": 26,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   41,
+   55,
+   32,
+   42,
+   45,
+   46,
+   29,
+   33,
+   34,
+   37,
+   38,
+   39
+  ]
+ },
+ "podcast": {
+  "found": 438,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   930,
+   1040,
+   455,
+   151,
+   459,
+   466,
+   471,
+   743,
+   928,
+   1034,
+   1053,
+   1093
+  ]
+ },
+ "medal podium": {
+  "found": 8,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   23,
+   102,
+   344,
+   345,
+   25,
+   98,
+   99,
+   346
+  ]
+ },
+ "": {
+  "found": 8,
+  "peak": false,
+  "speech": false,
+  "fallback": true,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87
+  ]
+ },
+ "   ": {
+  "found": 8,
+  "peak": false,
+  "speech": false,
+  "fallback": true,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87
+  ]
+ },
+ "the a an of": {
+  "found": 8,
+  "peak": false,
+  "speech": false,
+  "fallback": true,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87
+  ]
+ },
+ "zzzzqqqq nothing matches this": {
+  "found": 1,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   571
+  ]
+ },
+ "kids": {
+  "found": 67,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   320,
+   1424,
+   395,
+   449,
+   326,
+   421,
+   337,
+   93,
+   94,
+   1716,
+   466,
+   1349
+  ]
+ },
+ "children training": {
+  "found": 29,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   55,
+   41,
+   39,
+   32,
+   53,
+   54,
+   42,
+   45,
+   46,
+   29,
+   33,
+   34
+  ]
+ },
+ "belt ceremony": {
+  "found": 25,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   69,
+   68,
+   70,
+   66,
+   67,
+   62,
+   63,
+   61,
+   60,
+   64,
+   65,
+   1692
+  ]
+ },
+ "tournament finals": {
+  "found": 54,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   3,
+   8,
+   0,
+   27,
+   383,
+   110,
+   755,
+   386,
+   341,
+   757,
+   1,
+   2
+  ]
+ },
+ "aerial overhead": {
+  "found": 1,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   18
+  ]
+ },
+ "instructor teaching": {
+  "found": 54,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   90,
+   1040,
+   1034,
+   1053,
+   1662,
+   468,
+   1483,
+   1658,
+   1033,
+   1064,
+   886,
+   81
+  ]
+ },
+ "victory dinner": {
+  "found": 103,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   24,
+   455,
+   928,
+   1424,
+   117,
+   175,
+   930,
+   1079,
+   1129,
+   1139,
+   1379,
+   1417
+  ]
+ },
+ "5k run": {
+  "found": 111,
+  "peak": false,
+  "speech": false,
+  "fallback": true,
+  "top": [
+   80,
+   81,
+   82,
+   83,
+   84,
+   85,
+   86,
+   87,
+   88,
+   89,
+   90,
+   91
+  ]
+ },
+ "candle": {
+  "found": 34,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   81,
+   85,
+   86,
+   87,
+   89,
+   82,
+   83,
+   84,
+   88,
+   91,
+   92,
+   80
+  ]
+ },
+ "boy board about": {
+  "found": 52,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   1017,
+   455,
+   459,
+   1548,
+   1551,
+   613,
+   1424,
+   1345,
+   1453,
+   1519,
+   1528,
+   1560
+  ]
+ },
+ "respect and discipline": {
+  "found": 7,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   604,
+   1349,
+   464,
+   1418,
+   1345,
+   1372,
+   463
+  ]
+ },
+ "family community": {
+  "found": 67,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   1612,
+   1869,
+   1640,
+   455,
+   338,
+   1040,
+   466,
+   471,
+   743,
+   1034,
+   1093,
+   1422
+  ]
+ },
+ "interview testimonial": {
+  "found": 665,
+  "peak": false,
+  "speech": true,
+  "fallback": false,
+  "top": [
+   1847,
+   1400,
+   125,
+   1120,
+   327,
+   129,
+   389,
+   1090,
+   593,
+   616,
+   618,
+   1105
+  ]
+ },
+ "day 3": {
+  "found": 5,
+  "peak": false,
+  "speech": false,
+  "fallback": false,
+  "top": [
+   461,
+   334,
+   1554,
+   1254,
+   43
+  ]
+ }
+}
