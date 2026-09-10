@@ -286,6 +286,75 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             _err("vi_search", e, "q=%r" % (request.values.get("q", ""),))
             return jsonify({"ok": False, "error": "exception"}), 500
 
+    @app.route("/vi/request", methods=["POST"])
+    def vi_request():
+        """A signed-in person picked some moments and asked for something.
+
+        This is the front of the Phase 3 queue. It stores the ask and tells
+        #dev; it does not render anything yet, and the page says so in plain
+        words rather than implying a video is on its way.
+        """
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            if not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "no access yet"}), 403
+
+            body = request.get_json(force=True, silent=True) or {}
+            items = body.get("items") or []
+            note = (body.get("note") or "").strip()
+            if not isinstance(items, list) or not items:
+                return jsonify({"ok": False, "error": "pick at least one moment"}), 400
+            if len(items) > 60:
+                return jsonify({"ok": False, "error": "that is too many at once"}), 400
+
+            # Keep only fields we put there. The page is ours, but a request
+            # body is a request body — it is not a place to trust shape.
+            clean = []
+            for it in items[:60]:
+                if not isinstance(it, dict):
+                    continue
+                clean.append({k: str(it.get(k) or "")[:300]
+                              for k in ("id", "title", "kind", "file", "quote")})
+            if not clean:
+                return jsonify({"ok": False, "error": "pick at least one moment"}), 400
+
+            vs.init_schema()
+            rid = vs.create_request(sess["email"], sess["role"],
+                                    sess.get("school", ""), note, clean)
+            if not rid:
+                return jsonify({"ok": False, "error": "could not save the request"}), 500
+
+            lines = "\n".join("   \u2022 %s" % (i["title"] or i["quote"] or i["id"])[:80]
+                               for i in clean[:8])
+            if len(clean) > 8:
+                lines += "\n   \u2026 and %d more" % (len(clean) - 8)
+            _tell(":clapper: *Victory Intelligence \u2014 a cut was requested* (#%s)\n"
+                  "*%s* picked %d moment%s.\n%s\n> %s"
+                  % (rid, sess["email"], len(clean), "" if len(clean) == 1 else "s",
+                     lines, note or "_no note given_"))
+            print("[VI] request #%s from %s \u2014 %d items"
+                  % (rid, sess["email"], len(clean)))
+            return jsonify({"ok": True, "id": rid, "items": len(clean)}), 200
+        except Exception as e:
+            _err("vi_request", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/requests", methods=["GET"])
+    def vi_requests():
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            rows = vs.list_requests(limit=int(request.values.get("limit", 50)))
+            for r in rows:
+                r["at"] = str(r["at"])
+            return jsonify({"ok": True, "count": len(rows), "requests": rows}), 200
+        except Exception as e:
+            _err("vi_requests", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
     # ── admin ──────────────────────────────────────────────────────────────
     @app.route("/vi/health", methods=["GET"])
     def vi_health():

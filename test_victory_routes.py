@@ -72,6 +72,7 @@ class FakeStore(object):
         self.links = {}      # token_hash -> [email, issued_at, used]
         self.people = {}     # email -> {role, school}
         self.searches = []
+        self.requests = []
         self.secret = SIGNING
 
     def init_schema(self):
@@ -118,6 +119,14 @@ class FakeStore(object):
     def purge_links(self, older_than_seconds=86400):
         return 0
 
+    def create_request(self, email, role, school, note, items):
+        self.requests.append({"email": email, "role": role, "note": note,
+                              "items": items})
+        return len(self.requests)
+
+    def list_requests(self, limit=50, state=None):
+        return list(self.requests)
+
 
 _REAL = {}
 
@@ -126,7 +135,8 @@ def install_fake_store(fake):
     """Swap victory_store's functions for the fake's bound methods."""
     for name in ("init_schema", "session_secret", "create_link", "consume_link",
                  "get_person", "remember_person", "grant", "list_people",
-                 "log_search", "recent_searches", "purge_links"):
+                 "log_search", "recent_searches", "purge_links",
+                 "create_request", "list_requests"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -572,6 +582,99 @@ class TestSendLockLive(VICase):
         out = self._j(self.c.get("/vi/health?secret=" + SECRET))
         self.assertTrue(out["auth"]["send_lock"])
         self.assertFalse(out["auth"]["client_email_enabled"])
+
+
+class TestAskForACut(VICase):
+    """The answer to "I found things but don't know how to use it"."""
+
+    def setUp(self):
+        VICase.setUp(self)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+
+    def _ask(self, **kw):
+        return self.c.post("/vi/request", json=kw)
+
+    def test_a_request_is_stored(self):
+        r = self._ask(items=[{"id": "VWC26:x", "title": "Kids cheering", "kind": "clip"}],
+                      note="30s reel for Lake Nona")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(self.store.requests), 1)
+        self.assertEqual(self.store.requests[0]["note"], "30s reel for Lake Nona")
+
+    def test_it_records_who_asked(self):
+        self._ask(items=[{"id": "a", "title": "t", "kind": "clip"}])
+        self.assertEqual(self.store.requests[0]["email"], "jim@victoryma.com")
+
+    def test_dev_is_told_what_was_asked_for(self):
+        self._ask(items=[{"id": "a", "title": "Kids cheering", "kind": "clip"}],
+                  note="for the lobby screen")
+        joined = " ".join(self.notes)
+        self.assertIn("cut was requested", joined)
+        self.assertIn("Kids cheering", joined)
+        self.assertIn("for the lobby screen", joined)
+
+    def test_a_note_is_optional(self):
+        self.assertEqual(self._ask(items=[{"id": "a", "title": "t"}]).status_code, 200)
+
+    def test_an_empty_pick_is_refused(self):
+        self.assertEqual(self._ask(items=[], note="hi").status_code, 400)
+        self.assertEqual(self._ask(note="hi").status_code, 400)
+
+    def test_a_silly_number_of_items_is_refused(self):
+        many = [{"id": str(i), "title": "t"} for i in range(200)]
+        self.assertEqual(self._ask(items=many).status_code, 400)
+
+    def test_junk_shapes_do_not_get_through(self):
+        self.assertEqual(self._ask(items=["not-a-dict", 42, None]).status_code, 400)
+
+    def test_only_known_fields_are_kept(self):
+        self._ask(items=[{"id": "a", "title": "t", "role": "hq", "evil": "x"}])
+        self.assertEqual(set(self.store.requests[0]["items"][0].keys()),
+                         {"id", "title", "kind", "file", "quote"})
+
+    def test_a_signed_out_person_cannot_ask(self):
+        self.c.get("/vi/logout")
+        self.assertEqual(self._ask(items=[{"id": "a"}]).status_code, 401)
+
+    def test_a_pending_person_cannot_ask(self):
+        self.c.get("/vi/logout")
+        self._sign_in_as("nobody-new@victoryma.com", va.ROLE_PENDING)
+        self.assertEqual(self._ask(items=[{"id": "a"}]).status_code, 403)
+
+    def test_the_queue_is_admin_only_to_read(self):
+        self.assertEqual(self.c.get("/vi/requests").status_code, 401)
+        self.assertEqual(self.c.get("/vi/requests?secret=" + SECRET).status_code, 200)
+
+
+class TestThePageHelps(VICase):
+    """The page has to answer 'what do I type' and 'what do I do next'."""
+
+    def setUp(self):
+        VICase.setUp(self)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.page = self.c.get("/vi/").data.decode("utf-8")
+
+    def test_it_suggests_what_to_search_for(self):
+        for chip in ("candlelight", "why parents enrolled", "night of champions"):
+            self.assertIn(chip, self.page)
+
+    def test_it_offers_a_way_to_act_on_results(self):
+        self.assertIn("Ask for a cut", self.page)
+        self.assertIn("/vi/request", self.page)
+
+    def test_it_separates_footage_from_talking(self):
+        self.assertIn("Footage", self.page)
+        self.assertIn("What people said", self.page)
+
+    def test_clips_get_a_real_thumbnail(self):
+        self.assertIn("drive.google.com/thumbnail", self.page)
+
+    def test_ios_does_not_linkify_the_header(self):
+        self.assertIn("format-detection", self.page)
+
+    def test_it_asks_for_the_things_that_make_a_cut_possible(self):
+        for hint in ("where it is going", "how long", "who it is for"):
+            self.assertIn(hint, self.page)
 
 
 if __name__ == "__main__":

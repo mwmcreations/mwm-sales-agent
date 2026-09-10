@@ -59,7 +59,27 @@ DDL = [
            ip        TEXT
        )""",
     "CREATE INDEX IF NOT EXISTS vi_search_log_at ON vi_search_log (at DESC)",
+    # The request queue. Phase 3 will render from these rows; the page can
+    # already write them, because "I found things and don't know what to do
+    # with them" was the first thing a real user said.
+    """CREATE TABLE IF NOT EXISTS vi_request (
+           id         BIGSERIAL PRIMARY KEY,
+           at         TIMESTAMPTZ DEFAULT now(),
+           email      TEXT NOT NULL,
+           role       TEXT,
+           school     TEXT,
+           note       TEXT,
+           items      JSONB NOT NULL,
+           state      TEXT NOT NULL DEFAULT 'asked',
+           handled_at TIMESTAMPTZ,
+           handled_by TEXT
+       )""",
+    "CREATE INDEX IF NOT EXISTS vi_request_state ON vi_request (state, at DESC)",
 ]
+
+# asked -> planned -> rendering -> ready -> approved -> delivered
+REQUEST_STATES = ("asked", "planned", "rendering", "ready", "approved",
+                  "delivered", "declined")
 
 
 def _pg():
@@ -274,6 +294,53 @@ def log_search(email, role, q, event_key, found, ms, ip=""):
     except Exception as e:
         print("[VI-AUTH] log_search failed: %r" % (e,))
         return False
+
+
+# ── requests ───────────────────────────────────────────────────────────────
+def create_request(email, role, school, note, items):
+    """Someone picked some moments and asked for something. Returns the id.
+
+    Never raises: losing the row would be bad, but taking the page down while
+    someone is mid-ask would be worse — and the caller reports the failure
+    honestly rather than showing a false confirmation.
+    """
+    import json as _json
+    pg = _pg()
+    if not pg or not email:
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO vi_request (email, role, school, note, items)
+                        VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+                (email, role or "", school or "", (note or "")[:4000],
+                 _json.dumps(items or [])))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print("[VI] create_request failed: %r" % (e,))
+        return None
+
+
+def list_requests(limit=50, state=None):
+    pg = _pg()
+    if not pg:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            if state:
+                cur.execute(
+                    """SELECT id, at, email, role, note, items, state
+                         FROM vi_request WHERE state = %s
+                        ORDER BY at DESC LIMIT %s""", (state, int(limit)))
+            else:
+                cur.execute(
+                    """SELECT id, at, email, role, note, items, state
+                         FROM vi_request ORDER BY at DESC LIMIT %s""", (int(limit),))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as e:
+        print("[VI] list_requests failed: %r" % (e,))
+        return []
 
 
 def recent_searches(limit=50):
