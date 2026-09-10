@@ -14095,11 +14095,14 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
 10. Drive search (search Google Drive for files/folders by keyword)
 11. Drive create folder (create a new folder inside _CLIENTS for a client)
 12. Drive share (share a Drive file/folder with an external email address — e.g. editor or client)
+13. Drive open link (make a client folder shareable — anyone with the link → reader — so a delivery link opens instead of saying "Request access")
+14. Drive check link (read-only: is this folder actually shared?)
+15. Drive close link (remove anyone-with-the-link from a folder)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share, drive_open_link, drive_check_link, drive_close_link
 
 Drive examples:
 - "What's in the footage drive?" → {"action": "drive_list_footage", "command": "list footage files"}
@@ -15687,11 +15690,14 @@ If it is NOT a Cris action, respond with: {"action": "none"}""",
 10. Drive search (search Google Drive for files/folders by keyword)
 11. Drive create folder (create a new folder inside _CLIENTS for a client)
 12. Drive share (share a Drive file/folder with an external email address — e.g. editor or client)
+13. Drive open link (make a client folder shareable — anyone with the link → reader — so a delivery link opens instead of saying "Request access")
+14. Drive check link (read-only: is this folder actually shared?)
+15. Drive close link (remove anyone-with-the-link from a folder)
 
 If it IS a Lara action, respond with ONLY valid JSON:
 {"action": "<action_type>", "command": "<clear English command>"}
 
-action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share
+action_type must be one of: production_overview, client_status, update_client, upcoming_shoots, send_client_email, check_calendar, read_emails, drive_list_footage, drive_list_client, drive_search, drive_create_folder, drive_share, drive_open_link, drive_check_link, drive_close_link
 
 The "command" should rephrase the user's message as a clear English instruction Lara can parse.
 Examples:
@@ -16040,6 +16046,60 @@ def _task_claim(task, date_str, ttl_days=7):
             return False, f"already claimed at {_task_claims_mem[key]} (memory)"
         _task_claims_mem[key] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
         return True, "claimed (memory)"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #135 · RUNNING LARA'S LINK ACTIONS WITHOUT SLACK
+#
+# Patch #134 gave LARA open_link / close_link / check_link, but the ONLY way
+# into them was a Slack message in #lara. When that path is quiet — the app
+# not receiving the event, the bot out of the channel, Slack having a bad
+# afternoon — a capability that exists and is deployed still cannot be used,
+# and the client still cannot see their files. That is the same shape of
+# problem Patch #134 was written to end.
+#
+# So: one admin route, same rails, no new powers. It calls the SAME handlers
+# LARA calls, which call the SAME lara_share rules — `anyone` is always
+# reader, nothing outside _CLIENTS is touched, an unset root refuses
+# everything, and the permission is read back from Drive afterwards. This
+# route cannot do anything LARA could not already do; it just does not need
+# Slack to be listening.
+#
+# It also answers a question nothing else could: whether
+# LARA_DRIVE_CLIENTS_FOLDER_ID is actually set in production. A `check` on a
+# folder known to live under _CLIENTS says so in its own words.
+#
+# Fails closed on auth (_admin_secret_ok refuses when UPLOAD_SECRET is unset).
+# ══════════════════════════════════════════════════════════════════════
+@app.route("/admin/lara-link", methods=["POST"])
+def admin_lara_link():
+    """open | close | check a client folder's share link. Admin-secret only."""
+    data = request.get_json(force=True, silent=True) or {}
+    provided = data.get("secret") or request.headers.get("X-Admin-Secret", "")
+    if not _admin_secret_ok(provided):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    action = str(data.get("action") or "check").strip().lower()
+    folder = str(data.get("folder") or "").strip()
+    if action not in ("open", "close", "check"):
+        return jsonify({"ok": False,
+                        "error": "action must be open, close or check"}), 400
+    if not folder:
+        return jsonify({"ok": False, "error": "folder is required"}), 400
+
+    try:
+        from lara_drive import DRIVE_HANDLERS
+        import lara_share as _ls
+        handler = DRIVE_HANDLERS["drive_%s_link" % action]
+        result = handler(folder)
+    except Exception as e:
+        print("[ADMIN-LARA-LINK] error: %s" % e)
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
+
+    print("[ADMIN-LARA-LINK] %s %s" % (action, _ls.extract_folder_id(folder) or folder))
+    return jsonify({"ok": True, "action": action,
+                    "folder_id": _ls.extract_folder_id(folder),
+                    "result": result})
 
 
 @app.route("/admin/task-claim", methods=["GET", "POST"])
