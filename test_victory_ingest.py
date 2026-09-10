@@ -189,5 +189,96 @@ class TestIngestContract(unittest.TestCase):
         self.assertEqual(ing._JSON_COLS, {"topics", "media"})
 
 
+class TestBatchedInsert(unittest.TestCase):
+    """The first version issued one INSERT per record and Railway killed the
+    worker at two minutes. These tests are the regression."""
+
+    class FakeCur(object):
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, args=None):
+            self.executed.append((sql, args))
+
+    def _batched(self, rows, chunk=500):
+        """Inject a stand-in execute_values so the batched path is exercised
+        even where psycopg2 is not installed."""
+        import sys, types
+        calls = []
+
+        def execute_values(cur, sql, argslist, page_size=None):
+            calls.append((sql, list(argslist), page_size))
+
+        mod = types.ModuleType("psycopg2.extras")
+        mod.execute_values = execute_values
+        pkg = sys.modules.get("psycopg2")
+        made = False
+        if pkg is None:
+            pkg = types.ModuleType("psycopg2")
+            sys.modules["psycopg2"] = pkg
+            made = True
+        old = sys.modules.get("psycopg2.extras")
+        sys.modules["psycopg2.extras"] = mod
+        pkg.extras = mod
+        try:
+            cur = self.FakeCur()
+            n = ing._insert_many(cur, "INSERT INTO t (a) VALUES %s", rows, chunk=chunk)
+            return n, calls, cur
+        finally:
+            if old is not None:
+                sys.modules["psycopg2.extras"] = old
+            else:
+                sys.modules.pop("psycopg2.extras", None)
+            if made:
+                sys.modules.pop("psycopg2", None)
+
+    def test_1873_records_become_four_statements_not_1873(self):
+        rows = [(i,) for i in range(1873)]
+        n, calls, cur = self._batched(rows, chunk=500)
+        self.assertEqual(n, 1873)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(cur.executed), 0, "nothing should go one row at a time")
+
+    def test_every_row_is_sent_exactly_once(self):
+        rows = [(i,) for i in range(1873)]
+        _, calls, _ = self._batched(rows, chunk=500)
+        sent = [r for _, batch, _ in calls for r in batch]
+        self.assertEqual(sent, rows)
+
+    def test_order_is_preserved_across_chunks(self):
+        # ord order is what keeps the ranking identical to the demo
+        rows = [(i,) for i in range(1200)]
+        _, calls, _ = self._batched(rows, chunk=500)
+        sent = [r[0] for _, batch, _ in calls for r in batch]
+        self.assertEqual(sent, sorted(sent))
+
+    def test_empty_rows_do_nothing(self):
+        n, calls, cur = self._batched([])
+        self.assertEqual(n, 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(cur.executed, [])
+
+    def test_fallback_still_inserts_everything(self):
+        import sys
+        saved = sys.modules.get("psycopg2.extras")
+        sys.modules["psycopg2.extras"] = None      # force the ImportError path
+        try:
+            cur = self.FakeCur()
+            n = ing._insert_many(cur, "INSERT INTO t (a) VALUES %s", [(1,), (2,), (3,)])
+            self.assertEqual(n, 3)
+            self.assertEqual(len(cur.executed), 3)
+            self.assertNotIn("VALUES %s", cur.executed[0][0])
+            self.assertIn("VALUES (%s)", cur.executed[0][0])
+        finally:
+            if saved is not None:
+                sys.modules["psycopg2.extras"] = saved
+            else:
+                sys.modules.pop("psycopg2.extras", None)
+
+    def test_chunk_size_is_sane(self):
+        self.assertGreaterEqual(ing.INSERT_CHUNK, 100)
+        self.assertLessEqual(ing.INSERT_CHUNK, 1000)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

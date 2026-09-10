@@ -158,6 +158,33 @@ RECORD_COLS = [
 
 _JSON_COLS = {"topics", "media"}
 
+INSERT_CHUNK = 500
+
+
+def _insert_many(cur, sql, rows, chunk=INSERT_CHUNK):
+    """Insert rows in batches, falling back to one-at-a-time if psycopg2's
+    extras are unavailable.
+
+    `sql` must end in `VALUES %s` for the batched path. The fallback rebuilds a
+    normal parameterised INSERT — still safe, just slow — so a missing extras
+    module degrades the speed rather than the correctness.
+    """
+    if not rows:
+        return 0
+    try:
+        from psycopg2.extras import execute_values
+    except Exception:
+        execute_values = None
+    if execute_values is not None:
+        for i in range(0, len(rows), chunk):
+            execute_values(cur, sql, rows[i:i + chunk], page_size=chunk)
+        return len(rows)
+    marks = "(" + ",".join(["%s"] * len(rows[0])) + ")"
+    one = sql.replace("VALUES %s", "VALUES " + marks)
+    for r in rows:
+        cur.execute(one, r)
+    return len(rows)
+
 
 def ingest(event_key, dry_run=False):
     """Load one event. Returns a summary dict; never raises into a caller."""
@@ -225,17 +252,27 @@ def ingest(event_key, dry_run=False):
                          r.get("id_kind"), r.get("lo"), r.get("hi")))
 
             # Records: clear this event, then insert in ord order.
+            #
+            # BATCHED, and not as an optimisation. The first version issued one
+            # INSERT per record — 1,873 round trips to a cross-region Postgres
+            # from inside a web request — and Railway killed the worker at two
+            # minutes with a 500. execute_values sends them in chunks, so this
+            # is four statements instead of 1,873.
+            #
+            # The DELETE and the INSERTs share one transaction: a failure part
+            # way through rolls the whole thing back rather than leaving the
+            # event half-loaded, which would be worse than not loading it.
             cur.execute("DELETE FROM vi_record WHERE event_key = %s", (event_key,))
-            cols = ",".join(RECORD_COLS)
-            marks = ",".join(["%s"] * len(RECORD_COLS))
-            sql = "INSERT INTO vi_record (%s) VALUES (%s)" % (cols, marks)
+            rows = []
             for rec in records:
                 vals = []
                 for col in RECORD_COLS:
                     v = rec.get(col)
                     vals.append(json.dumps(v) if col in _JSON_COLS and v is not None else v)
-                cur.execute(sql, vals)
-            summary["written"] = len(records)
+                rows.append(tuple(vals))
+            sql = "INSERT INTO vi_record (%s) VALUES %%s" % ",".join(RECORD_COLS)
+            _insert_many(cur, sql, rows)
+            summary["written"] = len(rows)
 
         vi.load_corpus(force=True)
         summary["corpus"] = vi.corpus_size()
