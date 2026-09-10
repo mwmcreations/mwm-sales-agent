@@ -334,5 +334,54 @@ class TestDescribe(unittest.TestCase):
         self.assertIn("could not read", ls.describe_permissions([]))
 
 
+# ── routing ────────────────────────────────────────────────────────────────
+# These exist because the first version of Patch #134 routed
+# "open the link on <url>" correctly but dropped "make that folder shareable"
+# and "is this folder shared?" on the floor — the patterns only knew
+# "the folder", not "that folder". A phrasing that silently matches nothing
+# is worse than one that errors: LARA just answers from the model and nobody
+# finds out the tool was never called.
+class TestRouting(unittest.TestCase):
+
+    def _intent(self, text):
+        from lara_actions import detect_lara_intent
+        r = detect_lara_intent(text)
+        return r[0] if isinstance(r, tuple) else r
+
+    def test_open_phrasings(self):
+        for t in ("open the link on https://drive.google.com/drive/folders/"
+                  "1ODe0fNXadpcnCn0XXDLDeGX2wVwRGTNa",
+                  "make that folder shareable",
+                  "make this folder shareable",
+                  "set the folder to anyone with the link",
+                  "open it up for the client",
+                  "publish the link"):
+            self.assertEqual(self._intent(t), "drive_open_link", t)
+
+    def test_check_phrasings(self):
+        for t in ("is this folder shared?",
+                  "is that folder open?",
+                  "is it shared",
+                  "check the sharing on that folder",
+                  "check the permissions",
+                  "who can see that folder"):
+            self.assertEqual(self._intent(t), "drive_check_link", t)
+
+    def test_close_phrasings(self):
+        for t in ("close the link on that folder",
+                  "stop sharing",
+                  "make it private"):
+            self.assertEqual(self._intent(t), "drive_close_link", t)
+
+    def test_a_named_person_still_goes_to_the_old_flow(self):
+        """`share X with a@b.com` must NOT become a public link."""
+        self.assertEqual(self._intent("share the iRise folder with cleo@expo.com"),
+                         "drive_share")
+
+    def test_it_did_not_swallow_client_status(self):
+        self.assertEqual(self._intent("what's the status of the iRise project"),
+                         "client_status")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -477,7 +477,7 @@ LARA_ACTION_INTENTS = {
     # so "share the link" does not fall through to the named-editor flow.
     "drive_open_link": [
         r"\b(?:open|unlock|publish|share)\s+(?:the\s+)?(?:link|folder\s+link|access)\b",
-        r"\b(?:make|set)\s+(?:it|this|that|the\s+folder)\s+(?:shareable|public|open|viewable)\b",
+        r"\b(?:make|set)\s+(?:it|this|that|(?:this|that|the)\s+folder)\s+(?:shareable|public|open|viewable)\b",
         r"\bshare\s+(?:the\s+)?folder\b(?!.*@)",
         r"\banyone\s+with\s+(?:the\s+)?link\b",
         r"\bopen\s+(?:it|this|that)\s+(?:up\s+)?for\s+the\s+client\b",
@@ -488,7 +488,7 @@ LARA_ACTION_INTENTS = {
         r"\bmake\s+(?:it|this|that)\s+private\b",
     ],
     "drive_check_link": [
-        r"\bis\s+(?:it|this|that|the\s+folder)\s+(?:shared|open|public|shareable)\b",
+        r"\bis\s+(?:it|this|that|(?:this|that|the)\s+folder)\s+(?:shared|open|public|shareable)\b",
         r"\bcheck\s+(?:the\s+)?(?:sharing|permissions?|folder\s+access)\b",
         r"\bwho\s+can\s+(?:see|access)\s+(?:it|this|that|the\s+folder)\b",
     ],
