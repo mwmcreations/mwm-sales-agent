@@ -16074,7 +16074,13 @@ def _task_claim(task, date_str, ttl_days=7):
 @app.route("/admin/lara-link", methods=["POST"])
 def admin_lara_link():
     """open | close | check a client folder's share link. Admin-secret only."""
+    # Accept JSON or form-encoded. The deploy daemon's existing `viadmin`
+    # action posts urlencoded params and holds the admin secret on Michael's
+    # Mac, where it stays — accepting its shape means this route needs no new
+    # secret handling and no new daemon action.
     data = request.get_json(force=True, silent=True) or {}
+    if not data:
+        data = request.form.to_dict() or {}
     provided = data.get("secret") or request.headers.get("X-Admin-Secret", "")
     if not _admin_secret_ok(provided):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
