@@ -555,10 +555,73 @@ LARA_DRIVE_INTENTS = {
 }
 
 
+# ── Link sharing (Patch #134) ───────────────────────────────────────
+# LARA and EDDIE were both blocked, repeatedly, on Michael setting a folder to
+# shareable. iRise sat 53 days from the shoot with 454 finished files the
+# client could not see; Cléo chased three times for an animation that was
+# already rendered. share_with_external could not help: it adds ONE NAMED
+# PERSON as an EDITOR, while the house pattern for a delivery is
+# `anyone with the link → reader` — what the Enzo and Hablando Claro folders
+# actually use, and what makes a link in an email open instead of saying
+# "Request access".
+#
+# The rules live in lara_share.py, which takes the Drive service as an
+# argument so they can be tested without a network. These are the three lines
+# that give LARA the service and the audit log.
+
+def open_client_link(text):
+    """`anyone with the link → reader` on a client folder."""
+    import lara_share as _ls
+    fid = _ls.extract_folder_id(text)
+    if not fid:
+        return ("🤔 Send me the folder link and I will open it — e.g.\n"
+                "*lara open https://drive.google.com/drive/folders/…*")
+    try:
+        ok, msg = _ls.open_link(_get_drive_service(), fid, CLIENTS_FOLDER_ID,
+                                root_label="_CLIENTS", audit=_audit_log_share)
+        return msg
+    except Exception as e:
+        print(f"[LARA] open_client_link error: {e}")
+        return f"⚠️ Could not open that folder: {str(e)[:200]}"
+
+
+def close_client_link(text):
+    """Remove `anyone with the link` from a client folder."""
+    import lara_share as _ls
+    fid = _ls.extract_folder_id(text)
+    if not fid:
+        return "🤔 Send me the folder link and I will close it."
+    try:
+        ok, msg = _ls.close_link(_get_drive_service(), fid, CLIENTS_FOLDER_ID,
+                                 root_label="_CLIENTS", audit=_audit_log_share)
+        return msg
+    except Exception as e:
+        print(f"[LARA] close_client_link error: {e}")
+        return f"⚠️ Could not close that folder: {str(e)[:200]}"
+
+
+def check_client_link(text):
+    """Is this folder actually shared? Changes nothing."""
+    import lara_share as _ls
+    fid = _ls.extract_folder_id(text)
+    if not fid:
+        return "🤔 Send me the folder link and I will check it."
+    try:
+        ok, msg = _ls.check_link(_get_drive_service(), fid, CLIENTS_FOLDER_ID,
+                                 root_label="_CLIENTS")
+        return msg
+    except Exception as e:
+        print(f"[LARA] check_client_link error: {e}")
+        return f"⚠️ Could not read that folder: {str(e)[:200]}"
+
+
 DRIVE_HANDLERS = {
     "drive_list_footage": list_footage_files,
     "drive_list_client": list_client_files,
     "drive_create_folder": create_client_folder,
     "drive_share": share_with_external,
+    "drive_open_link": open_client_link,
+    "drive_close_link": close_client_link,
+    "drive_check_link": check_client_link,
     "drive_search": search_drive,
 }

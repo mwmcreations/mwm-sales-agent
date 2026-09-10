@@ -473,6 +473,25 @@ MWM_CLIENTS = []
 
 # ── Intent Detection ────────────────────────────────────────────────
 LARA_ACTION_INTENTS = {
+    # Patch #134 — the delivery share. Deliberately matched BEFORE drive_share
+    # so "share the link" does not fall through to the named-editor flow.
+    "drive_open_link": [
+        r"\b(?:open|unlock|publish|share)\s+(?:the\s+)?(?:link|folder\s+link|access)\b",
+        r"\b(?:make|set)\s+(?:it|this|that|the\s+folder)\s+(?:shareable|public|open|viewable)\b",
+        r"\bshare\s+(?:the\s+)?folder\b(?!.*@)",
+        r"\banyone\s+with\s+(?:the\s+)?link\b",
+        r"\bopen\s+(?:it|this|that)\s+(?:up\s+)?for\s+the\s+client\b",
+    ],
+    "drive_close_link": [
+        r"\b(?:close|revoke|unshare|lock)\s+(?:the\s+)?(?:link|folder|access|sharing)\b",
+        r"\bstop\s+sharing\b",
+        r"\bmake\s+(?:it|this|that)\s+private\b",
+    ],
+    "drive_check_link": [
+        r"\bis\s+(?:it|this|that|the\s+folder)\s+(?:shared|open|public|shareable)\b",
+        r"\bcheck\s+(?:the\s+)?(?:sharing|permissions?|folder\s+access)\b",
+        r"\bwho\s+can\s+(?:see|access)\s+(?:it|this|that|the\s+folder)\b",
+    ],
     # ── Broad overviews first ──
     "production_overview": [
         r"(?:production|project|client)\s*(?:status|summary|overview|report|board|tracker)",
