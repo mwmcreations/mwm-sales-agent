@@ -5,12 +5,13 @@
     "spec": "ROB, #dev Sep 11 2026 07:55 ET, §1-§9 plus the ToS thread.",
     "addon_quote": "MWM_Diaria_Adicional_Miami_MWM-LC-2026-01.pdf Rev 8, 10 Sep 2026 — the live Miami quote. Drive id 1Mio5kaBPNM33KFx_mrjL3cMCZd0TsjWD.",
     "emails": "standing_contacts.py BUILTIN — luziahcosta@hotmail.com, Nicole.formore@gmail.com on every email and every calendar invite (Michael, 2 Sep 2026).",
-    "studio": "PORTAL_CLIENTS.json as of 2026-08-28 — 'Luzia Costa', package '4h Podcast - Mensal', 8.00 contract hours, 4.00 used, 2026-07-01 to 2026-10-01. SEPARATE PRODUCT. See _open_questions."
+    "studio": "PORTAL_CLIENTS.json as of 2026-08-28 — 'Luzia Costa', package '4h Podcast - Mensal', 8.00 contract hours, 4.00 used, 2026-07-01 to 2026-10-01. SEPARATE PRODUCT. See _open_questions.",
+    "stripe": "Live Stripe, read 11 Sep 2026. sub_1S3LVRDAWlnEb9RfI74ktw4D on cus_S5XO7htqJAl9ir, price_1SfP8BDAWlnEb9RfhdwyDoFQ $2,497.00/mo, product prod_OIxgvyHybU4UJG (GOLD PLAN). billing_cycle_anchor 2025-09-03 → the 3rd. ROB's metadata: term_start 2026-10-03, term_end 2027-10-02, term_months 12, rate_card_version MWM-LC-2026-02-Rev5, signature_status pending, upgraded in place from price_1S3LUwDAWlnEb9Rf ($600 4h Podcast mensal) on 2026-09-11."
   },
   "_open_questions": [
-    "OPEN — contract_start is BLANK in the signed PDF ('Início: ___/___/2026') and both signature dates are blank. billing_anchor_day is therefore unknown, and it anchors the whole no-rollover cycle. Michael, 11 Sep: hold. Left null on purpose — a guessed anchor expires her hours on the wrong day, silently.",
-    "OPEN — ToS §2 defines a filming day as 8 hours INCLUDING travel; the Portuguese summary §1 and the Miami quote both say recording time starts on crew ARRIVAL; and §7 says the ToS prevail on any divergence. Michael, 11 Sep: not sure yet. The portal currently states the client-facing version (travel does not consume her hours), which is what MWM-LC-2026-01 Rev 8 already promised Nicole in writing. Do not change it without a ruling — it is the version she has been given.",
-    "OPEN — no annual roadmap has been authored for her yet, so campaigns is empty by design rather than invented. The portal renders a 'being built' state — never 12 empty boxes (spec §11.2)."
+    "OPEN — no annual roadmap has been authored for her yet, so campaigns is empty by design rather than invented. The portal renders a 'being built' state — never 12 empty boxes (spec §11.2).",
+    "🔴 OPEN — signature_status on the live subscription is 'pending'. She has not signed MWM-LC-2026-02 Rev 5. The portal can be built and seeded, but nothing goes to her until the agreement comes back signed.",
+    "OPEN — the Miami day proposed for 2026-09-26 falls BEFORE her GOLD term starts (2026-10-03). It is priced at GOLD annual-plan rates as a deliberate welcome courtesy, so it must not be counted against a GOLD cycle that has not begun. Recorded here so nobody later 'fixes' it into the October cycle."
   ],
   "client": {
     "client_name": "Luzia Costa",
@@ -22,13 +23,13 @@
     "strategist": "Michael Moraes",
     "language": "en",
     "contract_ref": "MWM-LC-2026-02 Rev 5",
-    "contract_start": null,
-    "contract_end": null,
+    "contract_start": "2026-10-03",
+    "contract_end": "2027-10-02",
     "term_months": 12,
     "billing_mode": "monthly",
-    "billing_anchor_day": null,
+    "billing_anchor_day": 3,
     "monthly_cents": 249700,
-    "rate_card_version": "2026-09",
+    "rate_card_version": "MWM-LC-2026-02-Rev5",
     "travel_policy_version": "v1.1",
     "included_location_hours": 4.0,
     "included_studio_hours": 4.0,
@@ -36,7 +37,10 @@
     "studio_client_id": null,
     "campaigns_allowed": 0,
     "captures_allowed": 0,
-    "studio_hours_allowed": 0
+    "studio_hours_allowed": 0,
+    "stripe_customer_id": "cus_S5XO7htqJAl9ir",
+    "stripe_subscription_id": "sub_1S3LVRDAWlnEb9RfI74ktw4D",
+    "signature_status": "pending"
   },
   "plan_copy": {
     "headline": "GOLD ROADMAP",
@@ -82,13 +86,16 @@
     }
   ],
   "_rulings": {
-    "studio_package": "RULED — Michael, 11 Sep 2026: the Studio Package ENDS and GOLD ABSORBS IT. Her studio time comes from GOLD's 4 included hours per cycle, one ledger, no double-counting. Therefore studio_client_id stays null: linking to wp_mwm_studio_clients #? would make the roadmap portal read a second, now-defunct hours ledger and show her more hours than she has. Her old package was '4h Podcast - Mensal', 8.00h/month, running to 2026-10-01 — see _handover below."
+    "studio_package": "RULED — Michael, 11 Sep 2026: the Studio Package ENDS and GOLD ABSORBS IT. Her studio time comes from GOLD's 4 included hours per cycle, one ledger, no double-counting. Therefore studio_client_id stays null: linking to wp_mwm_studio_clients #? would make the roadmap portal read a second, now-defunct hours ledger and show her more hours than she has. Her old package was '4h Podcast - Mensal', 8.00h/month, running to 2026-10-01 — see _handover below.",
+    "billing_anchor": "RULED — Michael, 11 Sep 2026: billed on the 3rd. Verified independently against Stripe rather than taken on trust: billing_cycle_anchor is 2025-09-03, so the cycle runs the 3rd to the 2nd. The two agree.",
+    "travel_time": "RULED — Michael, 11 Sep 2026: travel does NOT come out of her hours; the clock starts on crew arrival. This is what the portal already said and what MWM-LC-2026-01 Rev 8 promised Nicole in writing, so nothing changes on the page. 🔴 It does NOT resolve the document problem: ToS §2 still defines a filming day as 8 hours INCLUDING travel, and contract §7 says the ToS prevail on divergence. The ToS is now the one document that contradicts our own written promise to this client. That is ROB's to fix, not the portal's."
   },
   "_handover": {
-    "note": "Her Studio Package had 8.00 contracted hours per month and 4.00 used as of the 2026-08-28 roster, on a term ending 2026-10-01. GOLD includes 4 studio hours per cycle. So the absorption is a REDUCTION in studio hours, not an increase — worth saying out loud to her rather than letting her discover it. Not a portal bug; a conversation.",
+    "note": "Her Studio Package was '4h Podcast - mensal' at $600.00/month, 8.00 hours, term ending 2026-10-01. The 3 Sep 2026 invoice (903C1BC1-0015, paid) was the old $600 line — no proration was applied when ROB swapped the price, so her current period to 2 Oct is still the old package. GOLD's first charge is 3 Oct at $2,497. Two things worth saying to her rather than letting her find them: the studio allowance goes from EIGHT hours a month to FOUR, and GOLD's hours do not start until 3 October.",
     "old_package": "4h Podcast - Mensal",
     "old_monthly_hours": 8.0,
     "old_term_end": "2026-10-01",
-    "gold_studio_hours_per_cycle": 4.0
+    "gold_studio_hours_per_cycle": 4.0,
+    "old_monthly_price_cents": 60000
   }
 }

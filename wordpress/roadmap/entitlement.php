@@ -112,6 +112,14 @@ function mwm_rm_rate_card( $version = '2026-09' ) {
 }
 
 function mwm_rm_shipped_rate_card( $version = '2026-09' ) {
+	// ROB stamped rate_card_version = "MWM-LC-2026-02-Rev5" on the live Stripe
+	// subscription before this file existed. The subscription is the record of
+	// what she is on, so its spelling wins and '2026-09' becomes the alias —
+	// not the other way round. Two names for one card is survivable; a lookup
+	// that misses and silently prices at list is not.
+	$alias = array( 'MWM-LC-2026-02-Rev5' => '2026-09', 'MWM-LC-2026-02' => '2026-09' );
+	if ( isset( $alias[ $version ] ) ) { $version = $alias[ $version ]; }
+
 	$cards = array(
 		'2026-09' => array(
 			'version'      => '2026-09',
@@ -296,6 +304,22 @@ function mwm_rm_hours_state( $plan, $used_location, $used_studio, $cycle ) {
 		),
 		'counts_from'    => 'crew arrival on location',
 	);
+}
+
+// ── is she actually on the plan yet? ─────────────────────────────────────
+// 🔴 Luzia's GOLD term starts 3 Oct 2026, and today she is still finishing the
+// $600 podcast package she is upgrading from. A portal that shows her a live
+// GOLD cycle before then is showing hours she cannot yet spend, against a
+// subscription she has not yet been charged for — and she signs nothing until
+// the agreement comes back (Stripe: signature_status = pending).
+//
+// So the phase is computed, not assumed, and the page says which one she is in.
+function mwm_rm_plan_phase( $term_start, $term_end = null, $today = null ) {
+	$today = $today ? $today : date( 'Y-m-d' );
+	if ( empty( $term_start ) ) { return 'unknown'; }
+	if ( $today < $term_start ) { return 'pending'; }
+	if ( $term_end && $today > $term_end ) { return 'ended'; }
+	return 'active';
 }
 
 // ── §2 · DELIVERY CEILINGS ────────────────────────────────────────────────

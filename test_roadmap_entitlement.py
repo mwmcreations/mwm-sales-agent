@@ -407,5 +407,73 @@ class TestRateCardIsData(unittest.TestCase):
         self.assertEqual(out["unit_cents"], 24900)
 
 
+class TestRateCardVersionAlias(unittest.TestCase):
+    """ROB stamped rate_card_version = "MWM-LC-2026-02-Rev5" on the live Stripe
+    subscription before this file existed. The subscription is the record of
+    what she is on, so its spelling has to resolve — a lookup that misses would
+    return null and a caller that shrugs would price at list."""
+
+    def test_robs_spelling_resolves(self):
+        for v in ("MWM-LC-2026-02-Rev5", "MWM-LC-2026-02", "2026-09"):
+            c = call("mwm_rm_rate_card", v)
+            self.assertIsNotNone(c, v)
+            self.assertEqual(c["items"]["studio_hour"]["annual_cents"], 24900, v)
+
+    def test_pricing_through_the_alias_matches(self):
+        a = call("mwm_rm_price_addon", "MWM-LC-2026-02-Rev5", "studio_hour", 4, True)
+        b = call("mwm_rm_price_addon", "2026-09", "studio_hour", 4, True)
+        self.assertEqual(a["total_cents"], b["total_cents"])
+
+    def test_a_genuinely_unknown_version_still_refuses(self):
+        self.assertIsNone(call("mwm_rm_rate_card", "MWM-LC-2099-99-Rev1"))
+
+
+class TestPlanPhase(unittest.TestCase):
+    """Her GOLD term starts 2026-10-03. Today she is still on the $600 podcast
+    package she is upgrading from, and Stripe's 3 Sep invoice proves it."""
+
+    def test_before_the_term_she_is_not_on_the_plan(self):
+        self.assertEqual(call("mwm_rm_plan_phase", "2026-10-03", "2027-10-02", "2026-09-11"),
+                         "pending")
+
+    def test_on_the_first_day_she_is(self):
+        self.assertEqual(call("mwm_rm_plan_phase", "2026-10-03", "2027-10-02", "2026-10-03"),
+                         "active")
+
+    def test_after_the_term_it_has_ended(self):
+        self.assertEqual(call("mwm_rm_plan_phase", "2026-10-03", "2027-10-02", "2027-10-03"),
+                         "ended")
+
+    def test_the_last_day_is_still_active(self):
+        self.assertEqual(call("mwm_rm_plan_phase", "2026-10-03", "2027-10-02", "2027-10-02"),
+                         "active")
+
+    def test_no_start_date_is_unknown_not_active(self):
+        """🔴 Defaulting an unset term to 'active' would hand out hours nobody
+        has been charged for."""
+        self.assertEqual(call("mwm_rm_plan_phase", None, None, "2026-09-11"), "unknown")
+        self.assertEqual(call("mwm_rm_plan_phase", "", None, "2026-09-11"), "unknown")
+
+
+class TestHerRealCycle(unittest.TestCase):
+    """The cycle Stripe actually bills: anchor day 3."""
+
+    def test_her_first_gold_cycle(self):
+        c = call("mwm_rm_cycle_window", 3, "2026-10-05")
+        self.assertEqual(c["start"], "2026-10-03")
+        self.assertEqual(c["end"], "2026-11-02")
+
+    def test_hours_expire_on_the_second(self):
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-05")
+        st = php("echo json_encode(mwm_rm_hours_state('gold', 0, 0, %s));" % php_lit(cyc))
+        self.assertEqual(st["expires_on"], "2026-11-02")
+
+    def test_the_miami_day_falls_before_her_term(self):
+        """26 Sep is inside the OLD package, not the first GOLD cycle. It must
+        never be counted against a cycle that has not begun."""
+        self.assertEqual(call("mwm_rm_plan_phase", "2026-10-03", "2027-10-02", "2026-09-26"),
+                         "pending")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

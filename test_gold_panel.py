@@ -54,7 +54,8 @@ PANEL = _find("gold-panel.php")
 DATA = _find("luzia_data.json")
 
 
-def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None, campaigns=None):
+def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None,
+           campaigns=None, today=None):
     """Render the panel exactly as WordPress would, and hand back the HTML."""
     assets = assets if assets is not None else []
     code = """
@@ -63,14 +64,16 @@ def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None, campaig
     %s
     $hs = null;
     %s
-    echo mwm_rm_gold_panel($d, $hs, json_decode('%s', true));
+    echo mwm_rm_gold_panel($d, $hs, json_decode('%s', true), %s);
     """ % (
         ENT, PANEL, DATA,
         ("$d['campaigns'] = json_decode('%s', true);" % json.dumps(campaigns)) if campaigns is not None else "",
-        ("""$cy = mwm_rm_cycle_window(%d, '2026-09-20');
-            $hs = mwm_rm_hours_state('gold', %r, %r, $cy);""" % (anchor, used_location, used_studio))
+        ("""$cy = mwm_rm_cycle_window(%d, '%s');
+            $hs = mwm_rm_hours_state('gold', %r, %r, $cy);"""
+         % (anchor, today or '2026-10-20', used_location, used_studio))
         if anchor else "",
         json.dumps(assets).replace("'", "\\'"),
+        ("'%s'" % today) if today else "null",
     )
     r = subprocess.run(["php", "-r", code], capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
@@ -147,24 +150,24 @@ class TestNothingReadsAsABalanceOwed(unittest.TestCase):
 class TestHoursAreShownBecauseTheyExpire(unittest.TestCase):
 
     def test_it_says_hours_do_not_carry_over(self):
-        html = render(anchor=14, used_location=1.5)
+        html = render(today="2026-10-20", anchor=3, used_location=1.5)
         self.assertIn("do not carry over", html)
 
     def test_it_names_the_date_they_die(self):
-        self.assertIn("13 October 2026", render(anchor=14, used_location=1.5))
+        self.assertIn("2 November 2026", render(today="2026-10-20", anchor=3, used_location=1.5))
 
     def test_it_shows_hours_left(self):
-        html = render(anchor=14, used_location=1.5, used_studio=0.5)
+        html = render(today="2026-10-20", anchor=3, used_location=1.5, used_studio=0.5)
         self.assertIn("2.5 h left", html)
         self.assertIn("3.5 h left", html)
 
     def test_it_says_travel_does_not_eat_the_window(self):
-        self.assertIn("Travel never comes out of your hours", render(anchor=14))
+        self.assertIn("Travel never comes out of your hours", render(today="2026-10-20", anchor=3))
 
     def test_an_unknown_cycle_says_so_instead_of_guessing(self):
         """🔴 Her contract has no start date. A guessed anchor expires her hours
         on the wrong day and nothing on screen would admit it."""
-        html = render()   # no anchor
+        html = render(today="2026-10-20")   # in term, but no billing anchor
         self.assertIn("confirming that with you", html)
         self.assertNotIn("h left", html)
 
@@ -278,6 +281,37 @@ class TestMarkupIsSafe(unittest.TestCase):
                                "delivered_at": "2026-09-01",
                                "url": '"><script>alert(1)</script>'}])
         self.assertNotIn("<script>alert", html)
+
+
+class TestPreTermState(unittest.TestCase):
+    """🔴 On 11 September her GOLD term has not started. A full meter would show
+    hours she cannot spend against a subscription she has not been charged for
+    — and the first thing she would do is try to book them."""
+
+    def test_it_says_the_plan_starts_later(self):
+        html = render()
+        self.assertIn('data-phase="pending"', html)
+        self.assertIn("GOLD begins on 3 October 2026", html)
+
+    def test_it_shows_no_hours_meter_before_the_term(self):
+        html = render()
+        self.assertNotIn("h left", html)
+        self.assertNotIn("rm-bar", html)
+
+    def test_it_does_not_claim_hours_are_expiring(self):
+        cycle = render().split('rm-cycle')[1].split('</section>')[0]
+        self.assertNotIn("do not carry over", cycle)
+
+    def test_it_still_says_what_she_will_get(self):
+        html = render()
+        self.assertIn("up to 4 hours on location", html)
+        self.assertIn("4 hours in the studio", html)
+
+    def test_it_does_not_leave_her_current_arrangement_unmentioned(self):
+        """She is mid-package until 2 Oct. Silence there reads as 'nothing is
+        happening', which is not true and is the kind of gap that generates an
+        email."""
+        self.assertIn("carries on as normal", render())
 
 
 if __name__ == "__main__":

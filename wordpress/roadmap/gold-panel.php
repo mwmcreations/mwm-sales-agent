@@ -66,11 +66,33 @@ function mwm_rm_hour_meter( $label, $state, $note = '' ) {
 }
 
 // ── §1 · this cycle ───────────────────────────────────────────────────────
-function mwm_rm_cycle_panel( $client, $hours_state ) {
-	$h = '<section class="rm-card rm-cycle"><h2>This cycle</h2>';
+function mwm_rm_cycle_panel( $client, $hours_state, $today = null ) {
+	$phase = mwm_rm_plan_phase(
+		isset( $client['contract_start'] ) ? $client['contract_start'] : null,
+		isset( $client['contract_end'] ) ? $client['contract_end'] : null,
+		$today
+	);
 
-	// 🔴 The anchor is unknown when the contract was signed without a start
-	// date. Guessing one would expire her hours on the wrong day and nothing on
+	// 🔴 Before the term starts she has no GOLD hours, because she has not been
+	// charged for any. Showing her a full meter on 11 September would be showing
+	// hours she cannot spend against a subscription that has not begun — and the
+	// first thing she would do is try to book them.
+	if ( $phase === 'pending' ) {
+		$h  = '<section class="rm-card rm-cycle" data-phase="pending"><h2>Your plan starts soon</h2>';
+		$h .= '<p class="rm-pending">GOLD begins on '
+		    . esc_html( mwm_rm_date_long( $client['contract_start'] ) )
+		    . '. From that date you will have up to 4 hours on location and up to'
+		    . ' 4 hours in the studio every cycle, and this is where you will see'
+		    . ' what you have used and what is left.</p>';
+		$h .= '<p class="rm-meter-note">Until then, everything already booked'
+		    . ' under your current arrangement carries on as normal.</p>';
+		return $h . '</section>';
+	}
+
+	$h = '<section class="rm-card rm-cycle" data-phase="' . esc_attr( $phase ) . '"><h2>This cycle</h2>';
+
+	// The anchor is unknown when a contract is signed without a start date.
+	// Guessing one would expire her hours on the wrong day and nothing on
 	// screen would say so. An honest gap beats a confident wrong number.
 	if ( ! $hours_state ) {
 		$h .= '<p class="rm-pending">Your billing cycle starts on the date your'
@@ -266,7 +288,7 @@ function mwm_rm_terms_panel( $version = '2026-09' ) {
 }
 
 // ── the whole panel ──────────────────────────────────────────────────────
-function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array() ) {
+function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array(), $today = null ) {
 	$c    = (array) $data['client'];
 	$copy = isset( $data['plan_copy'] ) ? (array) $data['plan_copy'] : array();
 
@@ -288,7 +310,7 @@ function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array() ) {
 	}
 	$h .= '</section>';
 
-	$h .= mwm_rm_cycle_panel( $c, $hours_state );
+	$h .= mwm_rm_cycle_panel( $c, $hours_state, $today );
 	$h .= mwm_rm_delivered_panel( $assets );
 	$h .= mwm_rm_roadmap_panel( isset( $data['campaigns'] ) ? $data['campaigns'] : array() );
 	$h .= mwm_rm_requests_panel( isset( $data['addons'] ) ? $data['addons'] : array() );

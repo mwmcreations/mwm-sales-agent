@@ -9,10 +9,16 @@ $d = json_decode( file_get_contents( __DIR__ . '/luzia_data.json' ), true );
 
 // 🔴 No billing anchor on the signed contract, so no cycle. The panel is built
 // to say so rather than invent one — this render shows that real state.
+$today  = isset( $argv[1] ) ? $argv[1] : null;
+$c      = $d['client'];
 $hours  = null;
+if ( $c['billing_anchor_day'] && mwm_rm_plan_phase( $c['contract_start'], $c['contract_end'], $today ) === 'active' ) {
+	$cy    = mwm_rm_cycle_window( $c['billing_anchor_day'], $today );
+	$hours = mwm_rm_hours_state( 'gold', 0, 0, $cy );
+}
 $assets = array();   // nothing delivered under GOLD yet
 
-$html = mwm_rm_gold_panel( $d, $hours, $assets );
+$html = mwm_rm_gold_panel( $d, $hours, $assets, $today );
 $css = <<<'CSS'
 :root{--bg:#fbfaf8;--card:#fff;--ink:#1b1a18;--mut:#6b6862;--line:#e6e2da;
 --gold:#a8813c;--accent:#8a6a2f;--warn:#8a3b2f;--ok:#3d6b4a;--radius:14px}
