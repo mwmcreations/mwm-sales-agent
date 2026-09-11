@@ -475,52 +475,102 @@ class TestHerRealCycle(unittest.TestCase):
                          "pending")
 
 
-# ── §5 · scheduling ───────────────────────────────────────────────────────
-class TestNoticeRules(unittest.TestCase):
-    """Michael's rules, set 9 Aug 2026: 48 hours for the studio, 7 days on
-    location. A location day is a full crew mobilisation and cannot be
-    assembled in two days; the studio is already lit."""
+# ── §5 · scheduling · two modes ───────────────────────────────────────────
+class TestBookingModes(unittest.TestCase):
+    """Michael, 11 Sep: studio is a real booking she makes herself; location is
+    a request he approves after checking the crew. The first build made both
+    requests, which quietly made the studio harder to use for a GOLD client
+    than for a Studio Package client paying a quarter as much."""
 
-    def test_the_two_rules(self):
-        self.assertEqual(call("mwm_rm_notice_hours", "studio"), 48)
+    def test_studio_is_instant(self):
+        self.assertEqual(call("mwm_rm_booking_mode", "studio"), "instant")
+
+    def test_location_is_a_request(self):
+        self.assertEqual(call("mwm_rm_booking_mode", "location"), "request")
+
+    def test_an_unknown_kind_has_no_mode(self):
+        self.assertIsNone(call("mwm_rm_booking_mode", "drone"))
+
+
+class TestNoticeRules(unittest.TestCase):
+    """Michael asked for the location rule to be CHECKED, not assumed. The repo
+    has one consistent answer in his own words (9 Aug 2026): "at least seven
+    days in advance if it's an exterior film shoot" — ROADMAP_Portal_Spec.md
+    §6.2 and §6.5, ROADMAP_Strategy.md §197. He confirmed 7 days on 11 Sep.
+    No five-day rule has ever existed in this repo."""
+
+    def test_location_is_seven_days(self):
         self.assertEqual(call("mwm_rm_notice_hours", "location"), 168)
 
-    def test_an_unknown_kind_refuses(self):
+    def test_studio_has_no_minimum(self):
+        """🔴 Zero, not 48. The live studio portal has no lead-time gate, and a
+        GOLD client must not wait two days for a room another client can have
+        this afternoon."""
+        self.assertEqual(call("mwm_rm_notice_hours", "studio"), 0)
+
+    def test_zero_is_a_real_answer_not_a_missing_one(self):
+        """array_key_exists, not isset — isset() treats a legitimate 0 the same
+        as an absent key and would have made the studio unbookable."""
+        self.assertIsNotNone(call("mwm_rm_notice_hours", "studio"))
         self.assertIsNone(call("mwm_rm_notice_hours", "drone"))
-        self.assertIsNone(call("mwm_rm_earliest_bookable", "drone", "2026-10-20"))
 
 
 class TestEarliestBookable(unittest.TestCase):
 
-    def test_studio_is_two_days_out(self):
-        # 20 Oct 2026 is a Tuesday; +2 days = Thursday 22 Oct
-        self.assertEqual(call("mwm_rm_earliest_bookable", "studio", "2026-10-20"), "2026-10-22")
+    def test_studio_can_be_today(self):
+        self.assertEqual(call("mwm_rm_earliest_bookable", "studio", "2026-10-20"),
+                         "2026-10-20")
 
     def test_location_is_seven_days_out(self):
-        self.assertEqual(call("mwm_rm_earliest_bookable", "location", "2026-10-20"), "2026-10-27")
+        self.assertEqual(call("mwm_rm_earliest_bookable", "location", "2026-10-20"),
+                         "2026-10-27")
 
-    def test_it_skips_sunday(self):
-        """18 Oct 2026 is a Sunday. Studio from the 16th lands on it and must move."""
-        self.assertEqual(call("mwm_rm_earliest_bookable", "studio", "2026-10-16"), "2026-10-19")
+    def test_no_client_can_ask_for_a_location_day_tomorrow(self):
+        """Michael's words: "no client can book on location film shoots for the
+        day after"."""
+        earliest = call("mwm_rm_earliest_bookable", "location", "2026-10-20")
+        self.assertGreater(earliest, "2026-10-21")
 
-    def test_it_never_offers_a_date_before_the_plan_starts(self):
-        """🔴 Her hours do not exist before 3 Oct. Seven days' notice from today
-        clears the notice rule and still has nothing to spend, so the clamp —
-        not the notice rule — decides. 3 Oct is a Saturday, and only Sundays
-        are closed."""
+    def test_studio_skips_a_sunday(self):
+        """18 Oct 2026 is a Sunday — same-day is not offered on a closed day."""
+        self.assertEqual(call("mwm_rm_earliest_bookable", "studio", "2026-10-18"),
+                         "2026-10-19")
+
+    def test_neither_is_offered_before_the_plan_starts(self):
+        """🔴 No GOLD hours exist before 3 Oct. 3 Oct is a Saturday and only
+        Sundays are closed."""
+        for kind in ("studio", "location"):
+            self.assertEqual(
+                call("mwm_rm_earliest_bookable", kind, "2026-09-11", "2026-10-03"),
+                "2026-10-03", kind)
+
+    def test_the_horizon_matches_the_studio_portal(self):
+        self.assertEqual(call("mwm_rm_max_advance_days", "studio"), 30)
+        self.assertEqual(call("mwm_rm_latest_bookable", "studio", "2026-10-20"),
+                         "2026-11-19")
+
+    def test_the_horizon_counts_from_the_plan_start_when_it_is_ahead(self):
+        """🔴 Counting from today alone collapsed the window and did it quietly.
+        On 11 Sep with a term starting 3 Oct, a 30-day horizon from today read
+        as "3 October to 11 October" — eight days, presented as the offer."""
         self.assertEqual(
-            call("mwm_rm_earliest_bookable", "location", "2026-09-11", "2026-10-03"),
-            "2026-10-03")
+            call("mwm_rm_latest_bookable", "studio", "2026-09-11", "2026-10-03"),
+            "2026-11-02")
 
-    def test_studio_before_the_term_is_also_clamped(self):
-        self.assertEqual(
-            call("mwm_rm_earliest_bookable", "studio", "2026-09-11", "2026-10-03"),
-            "2026-10-03")
+    def test_the_window_can_never_invert(self):
+        """Push the term start far enough out and the old code produced a latest
+        date BEFORE the earliest — a sentence no client could act on and no
+        error anyone would see."""
+        for term in ("2026-10-03", "2026-12-01", "2027-06-15"):
+            for kind in ("studio", "location"):
+                e = call("mwm_rm_earliest_bookable", kind, "2026-09-11", term)
+                l = call("mwm_rm_latest_bookable", kind, "2026-09-11", term)
+                self.assertLess(e, l, "%s / %s" % (kind, term))
 
-    def test_inside_the_term_the_clamp_stops_applying(self):
+    def test_once_the_term_has_started_it_counts_from_today_again(self):
         self.assertEqual(
-            call("mwm_rm_earliest_bookable", "studio", "2026-11-10", "2026-10-03"),
-            "2026-11-12")
+            call("mwm_rm_latest_bookable", "studio", "2026-10-20", "2026-10-03"),
+            "2026-11-19")
 
 
 class TestRequestValidation(unittest.TestCase):
@@ -533,25 +583,47 @@ class TestRequestValidation(unittest.TestCase):
         return php("echo json_encode(mwm_rm_validate_request(%s, %s, %s, %s));"
                    % (php_lit(kind), php_lit(date), php_lit(self.CLIENT), php_lit(today)))
 
-    def test_a_good_studio_date_passes(self):
-        r = self._v("studio", "2026-10-22", "2026-10-20")
+    def test_a_studio_pick_lands_on_booked(self):
+        r = self._v("studio", "2026-10-20", "2026-10-20")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "booked")
+        self.assertEqual(r["mode"], "instant")
+
+    def test_a_studio_booking_still_has_to_hold_the_slot(self):
+        """🔴 'booked' means the RULES allow it. A free slot can stop being free
+        between rendering the page and clicking the button, so availability is
+        re-checked at write time — the flag says so out loud."""
+        self.assertTrue(self._v("studio", "2026-10-20", "2026-10-20")["needs_availability_check"])
+
+    def test_a_location_pick_lands_on_requested_never_booked(self):
+        r = self._v("location", "2026-10-27", "2026-10-20")
         self.assertTrue(r["ok"])
         self.assertEqual(r["state"], "requested")
+        self.assertTrue(r["needs_approval"])
+        self.assertNotEqual(r["state"], "booked")
 
-    def test_a_date_inside_the_notice_window_is_refused(self):
-        r = self._v("studio", "2026-10-21", "2026-10-20")
+    def test_a_location_day_tomorrow_is_refused(self):
+        r = self._v("location", "2026-10-21", "2026-10-20")
         self.assertFalse(r["ok"])
-        self.assertIn("earliest", r["error"].lower())
+        self.assertIn("7 days", r["error"])
 
-    def test_a_location_date_inside_seven_days_is_refused(self):
-        self.assertFalse(self._v("location", "2026-10-24", "2026-10-20")["ok"])
+    def test_a_location_day_inside_seven_days_is_refused(self):
+        self.assertFalse(self._v("location", "2026-10-26", "2026-10-20")["ok"])
 
-    def test_sunday_is_refused(self):
-        self.assertFalse(self._v("studio", "2026-10-25", "2026-10-20")["ok"])
+    def test_the_seventh_day_is_allowed(self):
+        self.assertTrue(self._v("location", "2026-10-27", "2026-10-20")["ok"])
 
-    def test_a_date_before_the_plan_starts_is_refused(self):
-        """Even with months of notice — there are no hours to spend."""
-        self.assertFalse(self._v("studio", "2026-09-30", "2026-09-11")["ok"])
+    def test_sunday_is_refused_for_both(self):
+        for kind in ("studio", "location"):
+            self.assertFalse(self._v(kind, "2026-11-01", "2026-10-20")["ok"], kind)
+
+    def test_a_date_before_the_plan_starts_is_refused_and_says_why(self):
+        r = self._v("studio", "2026-09-30", "2026-09-11")
+        self.assertFalse(r["ok"])
+        self.assertIn("plan starts", r["error"])
+
+    def test_past_the_horizon_is_refused(self):
+        self.assertFalse(self._v("studio", "2027-01-20", "2026-10-20")["ok"])
 
     def test_no_date_is_refused(self):
         self.assertFalse(self._v("studio", "", "2026-10-20")["ok"])
@@ -560,18 +632,13 @@ class TestRequestValidation(unittest.TestCase):
     def test_a_location_request_demands_an_address(self):
         """🔴 A location day with no address is a refusal, not a fallback —
         defaulting to the studio sends a van to the wrong city (spec §13.1)."""
-        r = self._v("location", "2026-10-27", "2026-10-20")
-        self.assertTrue(r["ok"])
-        self.assertTrue(r["needs_address"])
+        self.assertTrue(self._v("location", "2026-10-27", "2026-10-20")["needs_address"])
 
-    def test_nothing_validates_straight_to_booked(self):
-        """A validated request is `requested`. There is no path to a confirmed
-        state that does not pass through Michael."""
-        for kind, date in (("studio", "2026-10-22"), ("location", "2026-10-27")):
-            r = self._v(kind, date, "2026-10-20")
-            self.assertEqual(r["state"], "requested")
-            self.assertNotIn("confirmed", json.dumps(r))
-            self.assertNotIn("booked", json.dumps(r))
+    def test_only_the_studio_can_ever_produce_booked(self):
+        for date in ("2026-10-27", "2026-11-10", "2026-12-01"):
+            r = self._v("location", date, "2026-10-20")
+            if r.get("ok"):
+                self.assertNotEqual(r["state"], "booked", date)
 
 
 if __name__ == "__main__":

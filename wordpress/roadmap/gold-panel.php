@@ -265,16 +265,108 @@ function mwm_rm_requests_panel( $addons ) {
 	return $h . '</section>';
 }
 
-// ── §5 · THE SCHEDULING SURFACE ──────────────────────────────────────────
-// Michael, 11 Sep: she books studio time and SUGGESTS exterior time, and both
-// wait on his approval before they reach a calendar.
+// ── §5 · THE SCHEDULING SURFACE · TWO CARDS, BECAUSE THEY ARE TWO THINGS ──
 //
-// 🔴 So this panel must never produce the word "booked". Every string here is
-// written so that a client who reads only the headline still understands the
-// day is not hers yet. The verb differs on purpose — "Request" for the studio,
-// "Suggest" for location — because the second is a bigger ask of the crew and
-// the language should not pretend otherwise.
-function mwm_rm_scheduling_panel( $client, $today = null ) {
+// Michael, 11 Sep: studio is a real booking she makes herself; location is a
+// request he approves after checking the crew.
+//
+// 🔴 The first build rendered one panel with a shared lede saying "Michael
+// approves every date personally". That sentence is now FALSE for the studio,
+// and falsehoods in this direction are expensive in a quiet way — she would
+// read it, assume she has to wait, and not book the room she is paying for.
+// So the approval language lives ONLY on the location card.
+//
+// The other half of the rule still holds absolutely: nothing on the LOCATION
+// card may claim a day is hers.
+function mwm_rm_studio_booking_card( $o, $slots = null ) {
+	$h  = '<article class="rm-option rm-option-instant" data-kind="studio" data-mode="instant">';
+	$h .= '<h3>' . esc_html( $o['label'] ) . '</h3>';
+	$h .= '<p class="rm-option-where">' . esc_html( $o['where'] ) . ' · up to '
+	    . esc_html( mwm_rm_hrs( $o['included_hours'] ) ) . ' hours included each cycle</p>';
+	$h .= '<p class="rm-option-lede">Pick a time that is open and it is yours'
+	    . ' straight away — no request, no waiting for us to come back to you.</p>';
+
+	$h .= '<ul class="rm-option-rules">';
+	$h .= '<li>Our live calendar is below. If a time shows, it is free.</li>';
+	$h .= '<li>No minimum notice — today counts, if there is a slot open.</li>';
+	if ( ! empty( $o['earliest'] ) ) {
+		$h .= '<li>Choosing from <strong>' . esc_html( mwm_rm_date_long( $o['earliest'] ) )
+		    . '</strong> to <strong>' . esc_html( mwm_rm_date_long( $o['latest'] ) )
+		    . '</strong>.</li>';
+	}
+	$h .= '<li>Closed Sundays.</li>';
+	$h .= '</ul>';
+
+	$h .= mwm_rm_slot_area( 'studio', $slots );
+	$h .= '<button type="button" class="rm-btn rm-btn-primary" data-kind="studio">'
+	    . esc_html( $o['verb'] ) . ' studio time</button>';
+	return $h . '</article>';
+}
+
+function mwm_rm_location_request_card( $o, $slots = null ) {
+	$h  = '<article class="rm-option rm-option-request" data-kind="location" data-mode="request">';
+	$h .= '<h3>' . esc_html( $o['label'] ) . '</h3>';
+	$h .= '<p class="rm-option-where">' . esc_html( $o['where'] ) . ' · up to '
+	    . esc_html( mwm_rm_hrs( $o['included_hours'] ) ) . ' hours included each cycle</p>';
+	// The reason, in his words, because a rule with a reason is one people keep.
+	$h .= '<p class="rm-option-lede">You can see what is open below, but a day'
+	    . ' out on location takes a full crew — so this one comes to us as a'
+	    . ' request first. Michael checks the crew and confirms it with you'
+	    . ' before anything goes in the diary.</p>';
+
+	$h .= '<ul class="rm-option-rules">';
+	$h .= '<li>We need at least <strong>7 days</strong> notice. We cannot put a'
+	    . ' crew together for tomorrow.</li>';
+	if ( ! empty( $o['earliest'] ) ) {
+		$h .= '<li>The earliest day you can ask for is <strong>'
+		    . esc_html( mwm_rm_date_long( $o['earliest'] ) ) . '</strong>.</li>';
+	}
+	$h .= '<li>We will need the address — we cannot hold a location day without one.</li>';
+	$h .= '<li>Outside Greater Orlando a travel fee applies. The table is below,'
+	    . ' and you will know the figure before you commit.</li>';
+	$h .= '<li>Closed Sundays.</li>';
+	$h .= '</ul>';
+
+	$h .= mwm_rm_slot_area( 'location', $slots );
+	$h .= '<button type="button" class="rm-btn" data-kind="location">'
+	    . esc_html( $o['verb'] ) . ' a day</button>';
+	$h .= '<p class="rm-request-caveat">Asking for a day does not hold it. We will'
+	    . ' come back to you to confirm.</p>';
+	return $h . '</article>';
+}
+
+// The calendar area. Real slots when the availability feed has answered,
+// an honest placeholder when it has not.
+//
+// 🔑 "No times" and "we could not reach the calendar" must never look the same.
+// A feed that fails silently and renders an empty day tells a paying client the
+// studio is full when it is wide open — that exact bug cost us a visit in
+// August (slots.py, Patch #94).
+function mwm_rm_slot_area( $kind, $slots = null ) {
+	if ( $slots === null ) {
+		return '<div class="rm-slots" data-state="loading" data-kind="' . esc_attr( $kind )
+		     . '"><p class="rm-slots-note">Loading our calendar…</p></div>';
+	}
+	if ( ! is_array( $slots ) || count( $slots ) === 0 ) {
+		return '<div class="rm-slots" data-state="empty" data-kind="' . esc_attr( $kind )
+		     . '"><p class="rm-slots-note">Nothing open in this window. Try a later'
+		     . ' date, or tell us what suits and we will find it.</p></div>';
+	}
+	$h = '<div class="rm-slots" data-state="ready" data-kind="' . esc_attr( $kind ) . '"><ul>';
+	foreach ( $slots as $day ) {
+		$day = (array) $day;
+		$h  .= '<li class="rm-slot-day"><span class="rm-slot-date">'
+		     . esc_html( mwm_rm_date_long( $day['date'] ) ) . '</span> ';
+		foreach ( (array) $day['times'] as $t ) {
+			$h .= '<button type="button" class="rm-slot" data-date="' . esc_attr( $day['date'] )
+			   .  '" data-time="' . esc_attr( $t ) . '">' . esc_html( $t ) . '</button> ';
+		}
+		$h .= '</li>';
+	}
+	return $h . '</ul></div>';
+}
+
+function mwm_rm_scheduling_panel( $client, $today = null, $slots = array() ) {
 	$opts  = mwm_rm_request_options( $client, $today );
 	$phase = mwm_rm_plan_phase(
 		isset( $client['contract_start'] ) ? $client['contract_start'] : null,
@@ -283,10 +375,8 @@ function mwm_rm_scheduling_panel( $client, $today = null ) {
 	);
 
 	$h  = '<section class="rm-card rm-schedule"><h2>Plan your filming</h2>';
-	$h .= '<p class="rm-lede">Tell us the day that suits you and we will come'
-	    . ' back to confirm it. Michael approves every date personally before'
-	    . ' anything goes in the diary — so nothing here is booked until you'
-	    . ' hear from us.</p>';
+	$h .= '<p class="rm-lede">Studio time you book yourself. A day out on'
+	    . ' location you ask for, and we confirm.</p>';
 
 	if ( $phase === 'pending' && ! empty( $client['contract_start'] ) ) {
 		$h .= '<p class="rm-meter-note">Your plan starts on '
@@ -295,36 +385,16 @@ function mwm_rm_scheduling_panel( $client, $today = null ) {
 	}
 
 	foreach ( $opts as $o ) {
-		$h .= '<article class="rm-option" data-kind="' . esc_attr( $o['kind'] ) . '">';
-		$h .= '<h3>' . esc_html( $o['label'] ) . '</h3>';
-		$h .= '<p class="rm-option-where">' . esc_html( $o['where'] ) . ' · up to '
-		    . esc_html( mwm_rm_hrs( $o['included_hours'] ) ) . ' hours included each cycle</p>';
-		$h .= '<ul class="rm-option-rules">';
-		$h .= '<li>We need at least <strong>' . esc_html( $o['notice_words'] )
-		    . '</strong> notice.</li>';
-		if ( $o['earliest'] ) {
-			$h .= '<li>The earliest day you can choose is <strong>'
-			    . esc_html( mwm_rm_date_long( $o['earliest'] ) ) . '</strong>.</li>';
-		}
-		if ( ! empty( $o['needs_address'] ) ) {
-			$h .= '<li>We will need the address — we cannot hold a location day'
-			    . ' without one.</li>';
-			$h .= '<li>Outside Greater Orlando a travel fee applies. The table is'
-			    . ' below, and you will know the figure before you commit.</li>';
-		}
-		$h .= '<li>Closed Sundays.</li>';
-		$h .= '</ul>';
-		$h .= '<button type="button" class="rm-btn" data-kind="' . esc_attr( $o['kind'] )
-		    . '">' . esc_html( $o['verb'] ) . ' a day</button>';
-		$h .= '</article>';
+		$given = is_array( $slots ) && array_key_exists( $o['kind'], $slots )
+			? $slots[ $o['kind'] ] : null;
+		$h .= $o['kind'] === 'studio'
+			? mwm_rm_studio_booking_card( $o, $given )
+			: mwm_rm_location_request_card( $o, $given );
 	}
 
-	// Said once, plainly, at the bottom — the things that cost her money or a
-	// day, published BEFORE she acts rather than discovered after (spec §10.8.3).
-	$h .= '<p class="rm-schedule-foot">Everything depends on studio and crew'
-	    . ' availability. Hours come from the cycle the date falls in, and they'
-	    . ' do not carry over. Moving or cancelling a confirmed day needs 72'
-	    . ' hours\' notice — inside that, the day counts as used.</p>';
+	$h .= '<p class="rm-schedule-foot">Hours come from the cycle the date falls'
+	    . ' in, and they do not carry over. Moving or cancelling a confirmed day'
+	    . ' needs 72 hours\' notice — inside that, the day counts as used.</p>';
 	return $h . '</section>';
 }
 
@@ -351,7 +421,7 @@ function mwm_rm_terms_panel( $version = '2026-09' ) {
 }
 
 // ── the whole panel ──────────────────────────────────────────────────────
-function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array(), $today = null ) {
+function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array(), $today = null, $slots = array() ) {
 	$c    = (array) $data['client'];
 	$copy = isset( $data['plan_copy'] ) ? (array) $data['plan_copy'] : array();
 
@@ -374,7 +444,7 @@ function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array(), $toda
 	$h .= '</section>';
 
 	$h .= mwm_rm_cycle_panel( $c, $hours_state, $today );
-	$h .= mwm_rm_scheduling_panel( $c, $today );
+	$h .= mwm_rm_scheduling_panel( $c, $today, $slots );
 	$h .= mwm_rm_delivered_panel( $assets );
 	$h .= mwm_rm_roadmap_panel( isset( $data['campaigns'] ) ? $data['campaigns'] : array() );
 	$h .= mwm_rm_requests_panel( isset( $data['addons'] ) ? $data['addons'] : array() );

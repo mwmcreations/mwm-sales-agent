@@ -55,7 +55,7 @@ DATA = _find("luzia_data.json")
 
 
 def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None,
-           campaigns=None, today=None):
+           campaigns=None, today=None, slots=None):
     """Render the panel exactly as WordPress would, and hand back the HTML."""
     assets = assets if assets is not None else []
     code = """
@@ -64,7 +64,7 @@ def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None,
     %s
     $hs = null;
     %s
-    echo mwm_rm_gold_panel($d, $hs, json_decode('%s', true), %s);
+    echo mwm_rm_gold_panel($d, $hs, json_decode('%s', true), %s, json_decode('%s', true));
     """ % (
         ENT, PANEL, DATA,
         ("$d['campaigns'] = json_decode('%s', true);" % json.dumps(campaigns)) if campaigns is not None else "",
@@ -74,6 +74,7 @@ def render(used_location=0.0, used_studio=0.0, anchor=None, assets=None,
         if anchor else "",
         json.dumps(assets).replace("'", "\\'"),
         ("'%s'" % today) if today else "null",
+        json.dumps(slots if slots is not None else {}).replace("'", "\\'"),
     )
     r = subprocess.run(["php", "-r", code], capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
@@ -298,78 +299,131 @@ class TestPreTermState(unittest.TestCase):
 
 
 # ── §5 · the scheduling surface ───────────────────────────────────────────
-class TestSchedulingPanel(unittest.TestCase):
+class TestStudioIsABookingNotARequest(unittest.TestCase):
+    """🔴 The correction that matters most. The first build put the studio
+    behind a request and shared a lede saying "Michael approves every date
+    personally". For the studio that is now FALSE, and false in an expensive,
+    quiet way: she reads it, assumes she must wait, and does not book the room
+    she is paying for."""
 
-    def test_both_options_are_offered(self):
+    def test_the_studio_card_is_marked_instant(self):
         html = render()
-        self.assertIn('data-kind="studio"', html)
-        self.assertIn('data-kind="location"', html)
-        self.assertIn("Studio time", html)
-        self.assertIn("Filming on location", html)
+        self.assertIn('data-kind="studio" data-mode="instant"', html)
 
-    def test_the_verbs_differ_on_purpose(self):
-        """"Request" for the studio, "Suggest" for location — the second is a
-        bigger ask of the crew and the language should not pretend otherwise."""
+    def test_the_verb_is_book(self):
+        self.assertIn("Book studio time", render())
+
+    def test_it_promises_no_waiting(self):
         html = render()
-        self.assertIn("Request a day", html)
-        self.assertIn("Suggest a day", html)
+        self.assertIn("it is yours straight away", html)
+        self.assertIn("no request, no waiting", html)
 
-    def test_each_rule_sits_beside_its_own_control(self):
+    def test_the_studio_card_carries_no_approval_language(self):
         html = render()
-        self.assertIn("48 hours", html)
-        self.assertIn("7 days", html)
+        card = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        for word in ("approve", "approval", "confirm it with you", "request first"):
+            self.assertNotIn(word, card.lower(),
+                             "the studio card says %r — it is a real booking" % word)
 
-    def test_it_names_the_earliest_day_rather_than_the_raw_cutoff(self):
-        html = render(today="2026-10-20")
-        self.assertIn("22 October 2026", html)   # studio
-        self.assertIn("27 October 2026", html)   # location
+    def test_it_says_there_is_no_minimum_notice(self):
+        self.assertIn("No minimum notice", render())
 
-    def test_before_the_term_it_offers_nothing_earlier_than_the_start(self):
-        html = render()   # 11 Sep, term starts 3 Oct
-        self.assertIn("3 October 2026", html)   # Sat 3 Oct — her term start, and Saturdays are open
-        self.assertNotIn("September 2026</strong>", html)
+    def test_it_does_not_repeat_the_old_48_hour_rule(self):
+        """Superseded by Michael on 11 Sep — the studio portal has no lead-time
+        gate and a GOLD client must not be worse off."""
+        html = render()
+        card = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        self.assertNotIn("48", card)
 
-    def test_a_location_day_asks_for_the_address(self):
+
+class TestLocationIsARequest(unittest.TestCase):
+
+    def test_the_location_card_is_marked_request(self):
+        self.assertIn('data-kind="location" data-mode="request"', render())
+
+    def test_it_says_michael_confirms_before_the_diary(self):
+        html = render()
+        self.assertIn("Michael checks the crew and confirms", html)
+        self.assertIn("before anything goes in the diary", html)
+
+    def test_it_gives_the_reason_not_just_the_rule(self):
+        """A rule with a reason is one people keep."""
+        self.assertIn("takes a full crew", render())
+
+    def test_seven_days_and_the_no_tomorrow_rule(self):
+        html = render()
+        self.assertIn("at least <strong>7 days</strong>", html)
+        self.assertIn("cannot put a crew together for tomorrow", html)
+
+    def test_asking_does_not_hold_the_day(self):
+        self.assertIn("Asking for a day does not hold it", render())
+
+    def test_it_asks_for_the_address(self):
         self.assertIn("cannot hold a location day without one", render())
 
-    def test_it_says_sundays_are_closed(self):
-        self.assertIn("Closed Sundays", render())
+    def test_the_earliest_location_date_respects_seven_days(self):
+        html = render(today="2026-10-20")
+        card = html.split('data-kind="location" data-mode="request"')[1].split('</article>')[0]
+        self.assertIn("27 October 2026", card)
 
 
-class TestNothingOnThisPageSaysBooked(unittest.TestCase):
-    """🔴 Michael approves every date before it reaches a calendar. A client who
-    reads only a headline must still understand the day is not hers yet."""
+class TestTheTwoCardsAreNotConfused(unittest.TestCase):
 
-    def test_every_mention_of_booked_is_a_denial(self):
-        """A blacklist on the word itself was wrong — the page SHOULD say
-        "nothing here is booked". What must never appear is an AFFIRMATIVE
-        claim, so the test checks that each occurrence sits inside a negation
-        rather than that the word is absent."""
-        neg = ("nothing", "not ", "never", "until", "no ")
-        for label, html in (("today", render()),
-                            ("mid-cycle", render(today="2026-10-20", anchor=3))):
-            low = html.lower()
-            for word in ("booked", "confirmed"):
-                i = low.find(word)
-                while i != -1:
-                    before = low[max(0, i - 70):i]
-                    self.assertTrue(
-                        any(n in before for n in neg),
-                        "%s page states %r affirmatively: ...%s<<%s>>..."
-                        % (label, word, before[-60:], word))
-                    i = low.find(word, i + 1)
-
-    def test_it_says_michael_approves_every_date(self):
+    def test_the_shared_lede_names_both_behaviours(self):
         html = render()
-        self.assertIn("approves every date", html)
+        self.assertIn("Studio time you book yourself", html)
+        self.assertIn("location you ask for, and we confirm", html)
 
-    def test_it_says_nothing_is_booked_until_we_come_back(self):
-        self.assertIn("nothing here is booked until you hear from us", render())
-
-    def test_it_states_availability_and_the_72_hour_rule_up_front(self):
+    def test_only_the_location_card_talks_about_approval(self):
         html = render()
-        self.assertIn("studio and crew availability", html)
-        self.assertIn("72", html)
+        studio = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        loc = html.split('data-kind="location" data-mode="request"')[1].split('</article>')[0]
+        self.assertNotIn("confirms", studio.lower())
+        self.assertIn("confirms", loc.lower())
+
+    def test_the_location_card_never_claims_a_day_is_hers(self):
+        html = render()
+        loc = html.split('data-kind="location" data-mode="request"')[1].split('</article>')[0]
+        neg = ("nothing", "not ", "never", "until", "no ", "does not")
+        low = loc.lower()
+        for word in ("booked", "confirmed"):
+            i = low.find(word)
+            while i != -1:
+                before = low[max(0, i - 70):i]
+                self.assertTrue(any(n in before for n in neg),
+                                "location card states %r affirmatively" % word)
+                i = low.find(word, i + 1)
+
+
+class TestSlotArea(unittest.TestCase):
+    """🔴 "No times" and "we could not reach the calendar" must never look the
+    same. A feed that fails silently and renders an empty day tells a paying
+    client the studio is full when it is wide open — the exact bug that cost us
+    a visit in August (slots.py, Patch #94)."""
+
+    def test_no_feed_yet_says_loading(self):
+        self.assertIn('data-state="loading"', render())
+
+    def test_an_empty_feed_says_nothing_open_not_loading(self):
+        html = render(slots={"studio": []})
+        self.assertIn('data-state="empty"', html)
+        self.assertIn("Nothing open in this window", html)
+
+    def test_real_slots_render_as_buttons(self):
+        html = render(slots={"studio": [{"date": "2026-10-22", "times": ["10:00", "14:00"]}]})
+        self.assertIn('data-state="ready"', html)
+        self.assertIn('data-date="2026-10-22"', html)
+        self.assertIn('data-time="10:00"', html)
+        self.assertIn("22 October 2026", html)
+
+    def test_the_three_states_are_distinguishable(self):
+        states = {
+            "loading": render(),
+            "empty": render(slots={"studio": []}),
+            "ready": render(slots={"studio": [{"date": "2026-10-22", "times": ["10:00"]}]}),
+        }
+        for name, html in states.items():
+            self.assertIn('data-state="%s"' % name, html, name)
 
 
 class TestMiamiIsGone(unittest.TestCase):

@@ -18,7 +18,21 @@ if ( $c['billing_anchor_day'] && mwm_rm_plan_phase( $c['contract_start'], $c['co
 }
 $assets = array();   // nothing delivered under GOLD yet
 
-$html = mwm_rm_gold_panel( $d, $hours, $assets, $today );
+$slots = array();
+if ( $today === '2026-10-20' ) {
+	// Illustrative only — in production these come from the live availability
+	// feed the studio portal already exposes (app.py, S15 + S25d).
+	$slots['studio'] = array(
+		array( 'date' => '2026-10-20', 'times' => array( '2:00 pm', '3:00 pm' ) ),
+		array( 'date' => '2026-10-21', 'times' => array( '10:00 am', '11:00 am', '3:00 pm' ) ),
+		array( 'date' => '2026-10-22', 'times' => array( '10:00 am', '2:00 pm' ) ),
+	);
+	$slots['location'] = array(
+		array( 'date' => '2026-10-27', 'times' => array( 'Morning', 'Full day' ) ),
+		array( 'date' => '2026-10-29', 'times' => array( 'Full day' ) ),
+	);
+}
+$html = mwm_rm_gold_panel( $d, $hours, $assets, $today, $slots );
 $css = <<<'CSS'
 :root{--bg:#fbfaf8;--card:#fff;--ink:#1b1a18;--mut:#6b6862;--line:#e6e2da;
 --gold:#a8813c;--accent:#8a6a2f;--warn:#8a3b2f;--ok:#3d6b4a;--radius:14px}
@@ -74,6 +88,26 @@ text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rm-price{font-weight:640;color:var(--accent)}
 .rm-rate-note td{text-align:left;border-top:0;padding:0 0 8px;
 color:var(--mut);font-size:.85rem;white-space:normal}
+.rm-option{border:1px solid var(--line);border-radius:12px;padding:16px 16px 14px;margin:0 0 14px}
+.rm-option-instant{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 5%,transparent)}
+.rm-option h3{margin:0 0 2px;font-size:1rem}
+.rm-option-where{margin:0 0 8px;font-size:.85rem;color:var(--mut)}
+.rm-option-lede{margin:0 0 10px;font-size:.93rem}
+.rm-option-rules{margin:0 0 12px;padding-left:1.15em;font-size:.89rem;color:var(--mut)}
+.rm-option-rules li{margin:.26em 0}
+.rm-option-rules strong{color:var(--ink);font-weight:620}
+.rm-btn{appearance:none;border:1px solid var(--gold);background:transparent;color:var(--gold);
+font:inherit;font-size:.9rem;font-weight:620;padding:9px 18px;border-radius:99px;cursor:pointer}
+.rm-btn-primary{background:var(--gold);color:#fff;border-color:var(--gold)}
+@media(prefers-color-scheme:dark){.rm-btn-primary{color:#1a1712}}
+.rm-slots{margin:0 0 12px;padding:11px 12px;border:1px dashed var(--line);border-radius:10px}
+.rm-slots-note{margin:0;font-size:.86rem;color:var(--mut)}
+.rm-slots ul{list-style:none;padding:0;margin:0}
+.rm-slot-day{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding:5px 0}
+.rm-slot-date{font-size:.86rem;font-weight:600;min-width:150px}
+.rm-slot{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--ink);
+font:inherit;font-size:.84rem;padding:5px 12px;border-radius:8px;cursor:pointer}
+.rm-schedule-foot{margin:14px 0 0;font-size:.85rem;color:var(--mut)}
 .rm-terms-list{margin:0;display:grid;grid-template-columns:180px 1fr;gap:10px 18px;font-size:.93rem}
 .rm-terms-list dt{font-weight:600}.rm-terms-list dd{margin:0;color:var(--mut)}
 @media(max-width:560px){.rm-terms-list{grid-template-columns:1fr;gap:2px 0}

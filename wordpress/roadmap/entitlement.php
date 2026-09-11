@@ -322,22 +322,51 @@ function mwm_rm_plan_phase( $term_start, $term_end = null, $today = null ) {
 	return 'active';
 }
 
-// ── §5 · SCHEDULING · WHAT SHE MAY ASK FOR, AND WHEN ─────────────────────
-// Michael, 11 Sep: she should be able to book studio time and SUGGEST exterior
-// shooting time — and both need his approval before anything reaches a calendar.
+// ── §5 · SCHEDULING · TWO DIFFERENT THINGS, AND THE DIFFERENCE IS THE POINT
 //
-// That is the distinction the whole surface rests on, and it already has a name
-// in this codebase: a PRE-SCHEDULE IS NOT A BOOKING. Picking a day files a
-// request and holds the slot. The shoot is not real until Michael confirms.
-// Nothing here may ever produce a screen that says "booked".
+// Michael, 11 Sep 2026, correcting the first build:
+//   · STUDIO is a REAL BOOKING. She picks a free slot on our calendar and it is
+//     hers — no request, no approval, exactly how every other studio client
+//     books today. The room is either free or it is not; there is nothing for a
+//     human to decide.
+//   · ON LOCATION is a REQUEST. She can see availability, but she asks. "We
+//     need to go over our crew to make sure we are okay with it before
+//     anything." A location day is a full crew mobilisation, and a calendar
+//     that merely looks free does not mean the crew is.
 //
-// The notice rules are his, set Aug 9 2026 and unchanged:
-//   studio    → 48 hours   ·   on location → 7 days
-// A location day costs a full crew mobilisation and cannot be assembled in two
-// days; the studio is already lit.
+// 🔑 That is why booking_mode exists as its own idea rather than being implied
+// by the notice rule. The first build treated both as requests with different
+// notice periods, which is wrong in a way that is easy to miss: it made the
+// studio harder to use than it is for clients paying less.
+function mwm_rm_booking_mode( $kind ) {
+	$modes = array( 'studio' => 'instant', 'location' => 'request' );
+	return isset( $modes[ $kind ] ) ? $modes[ $kind ] : null;
+}
+
+// ── NOTICE ────────────────────────────────────────────────────────────────
+// Location: SEVEN DAYS. Michael asked for this to be checked rather than
+// assumed, and the repo has one consistent answer in his own words (9 Aug 2026):
+//   "at least seven days in advance if it's an exterior film shoot"
+// documented at ROADMAP_Portal_Spec.md §6.2, §6.5 and ROADMAP_Strategy.md §197.
+// He confirmed it on 11 Sep. No five-day rule has ever existed in this repo.
+//
+// Studio: NO MINIMUM. Michael, 11 Sep — the same as every other studio client.
+// The live studio portal has no lead-time gate at all: same-day booking is
+// allowed if the slot is free. 🔴 The ROADMAP spec's old 48-hour figure is
+// SUPERSEDED for the studio and is deliberately not honoured here; keeping it
+// would make a GOLD client wait two days for a room a Studio Package client can
+// have this afternoon.
+//
+// Zero is a real answer here, not a missing one — hence the explicit array.
 function mwm_rm_notice_hours( $kind ) {
-	$rules = array( 'studio' => 48, 'location' => 168 );
-	return isset( $rules[ $kind ] ) ? $rules[ $kind ] : null;
+	$rules = array( 'studio' => 0, 'location' => 168 );
+	return array_key_exists( $kind, $rules ) ? $rules[ $kind ] : null;
+}
+
+// How far ahead either can go. 30 days matches the studio portal's
+// max_advance_days, so a GOLD client sees the same horizon as everyone else.
+function mwm_rm_max_advance_days( $kind = 'studio' ) {
+	return $kind === 'location' ? 90 : 30;
 }
 
 // Sundays are closed by default (spec §6.3).
@@ -347,29 +376,25 @@ function mwm_rm_is_closed_day( $ymd, $closed_dows = array( 0 ) ) {
 	return in_array( (int) date( 'w', $ts ), (array) $closed_dows, true );
 }
 
-// The first date she can actually pick.
+// The first date she can pick.
 //
-// 🔴 Three separate constraints, and missing any one of them offers her a day
-// we would then have to take back:
-//   1. the notice rule,
+// 🔴 Three constraints, and missing any one offers her a day we would take back:
+//   1. the notice rule (zero for the studio — today counts),
 //   2. a closed day,
-//   3. 🔑 her plan has not started — before 3 Oct she has no hours to spend, so
-//      a date before term_start is not bookable no matter how much notice it has.
-//
-// Days inside the window are NOT offered and NOT warned about. A rule you can
-// click through is a rule you will be asked to break.
+//   3. 🔑 her plan has not started. Before 3 Oct she has no GOLD hours, so a
+//      date before term_start is not bookable however much notice it carries.
 function mwm_rm_earliest_bookable( $kind, $today = null, $term_start = null,
                                    $closed_dows = array( 0 ), $max_scan = 60 ) {
 	$notice = mwm_rm_notice_hours( $kind );
 	if ( $notice === null ) { return null; }
 	$today = $today ? $today : date( 'Y-m-d' );
-	$ts    = strtotime( $today );
-	if ( $ts === false ) { return null; }
+	if ( strtotime( $today ) === false ) { return null; }
 
-	// Notice is counted in whole days from today, rounding UP — 48 hours from
-	// some point today means the day after tomorrow, not tomorrow.
+	// Whole days, rounding UP: 168 hours from some point today is seven days
+	// out, and zero hours is today itself.
 	$days = (int) ceil( $notice / 24 );
-	$cand = date( 'Y-m-d', strtotime( $today . ' +' . $days . ' day' ) );
+	$cand = $days === 0 ? $today
+	        : date( 'Y-m-d', strtotime( $today . ' +' . $days . ' day' ) );
 
 	if ( $term_start && $cand < $term_start ) { $cand = $term_start; }
 
@@ -380,69 +405,109 @@ function mwm_rm_earliest_bookable( $kind, $today = null, $term_start = null,
 	return null;
 }
 
-// The two things she can ask for, each carrying its own rule so the page can
-// state it beside the control rather than in a paragraph nobody reads.
+// 🔴 Counted from whichever is LATER: today, or the day the plan starts.
+//
+// Counting from today alone is wrong whenever the term has not begun, and it
+// fails silently. On 11 September, with the term starting 3 October, a 30-day
+// horizon from today gave a window of "3 October to 11 October" — eight days
+// wide, presented as if that were the offer. Push the term start past 30 days
+// and the window inverts entirely: a latest date BEFORE the earliest one, which
+// renders as a sentence no client could act on and no error anyone would see.
+//
+// The horizon belongs to the plan, not to the calendar date someone opened the
+// page on.
+function mwm_rm_latest_bookable( $kind, $today = null, $term_start = null ) {
+	$today = $today ? $today : date( 'Y-m-d' );
+	if ( strtotime( $today ) === false ) { return null; }
+	$from = ( $term_start && $term_start > $today ) ? $term_start : $today;
+	return date( 'Y-m-d', strtotime( $from . ' +' . mwm_rm_max_advance_days( $kind ) . ' day' ) );
+}
+
+// The two things on the page, each carrying its own rule so the page can state
+// it beside the control rather than in a paragraph nobody reads.
 function mwm_rm_request_options( $client, $today = null ) {
 	$term_start = isset( $client['contract_start'] ) ? $client['contract_start'] : null;
 	return array(
 		array(
-			'kind'            => 'studio',
-			'label'           => 'Studio time',
-			'where'           => 'MWM Studios, Orlando',
-			'notice_hours'    => mwm_rm_notice_hours( 'studio' ),
-			'notice_words'    => '48 hours',
-			'draws_from'      => 'studio',
-			'included_hours'  => 4.0,
-			'earliest'        => mwm_rm_earliest_bookable( 'studio', $today, $term_start ),
-			'needs_address'   => false,
-			'verb'            => 'Request',
+			'kind'           => 'studio',
+			'mode'           => 'instant',
+			'label'          => 'Studio time',
+			'where'          => 'MWM Studios, Orlando',
+			'notice_hours'   => 0,
+			'notice_words'   => 'no minimum — today counts if a slot is free',
+			'included_hours' => 4.0,
+			'earliest'       => mwm_rm_earliest_bookable( 'studio', $today, $term_start ),
+			'latest'         => mwm_rm_latest_bookable( 'studio', $today, $term_start ),
+			'needs_address'  => false,
+			'needs_approval' => false,
+			'verb'           => 'Book',
 		),
 		array(
-			'kind'            => 'location',
-			'label'           => 'Filming on location',
-			'where'           => 'Your location',
-			'notice_hours'    => mwm_rm_notice_hours( 'location' ),
-			'notice_words'    => '7 days',
-			'draws_from'      => 'location',
-			'included_hours'  => 4.0,
-			'earliest'        => mwm_rm_earliest_bookable( 'location', $today, $term_start ),
-			'needs_address'   => true,
-			'verb'            => 'Suggest',
+			'kind'           => 'location',
+			'mode'           => 'request',
+			'label'          => 'Filming on location',
+			'where'          => 'Your location',
+			'notice_hours'   => 168,
+			'notice_words'   => '7 days',
+			'included_hours' => 4.0,
+			'earliest'       => mwm_rm_earliest_bookable( 'location', $today, $term_start ),
+			'latest'         => mwm_rm_latest_bookable( 'location', $today, $term_start ),
+			'needs_address'  => true,
+			'needs_approval' => true,
+			'verb'           => 'Request',
 		),
 	);
 }
 
-// Validate a date she picks. Server-side, because the client-side block is
-// convenience and never security — never trust the browser on a rule that
-// costs a crew day.
+// Validate server-side. The client-side block is convenience and never
+// security — never trust the browser on a rule that costs a crew day.
+//
+// Returns the STATE the action lands in, which differs by mode: a studio pick
+// becomes 'booked', a location pick becomes 'requested'. Nothing else may
+// produce 'booked'.
 function mwm_rm_validate_request( $kind, $date, $client, $today = null ) {
-	$earliest = mwm_rm_earliest_bookable(
-		$kind, $today,
-		isset( $client['contract_start'] ) ? $client['contract_start'] : null
-	);
-	if ( $earliest === null ) {
+	$mode = mwm_rm_booking_mode( $kind );
+	if ( $mode === null ) {
 		return array( 'ok' => false, 'error' => 'unknown request type' );
 	}
 	if ( ! $date || strtotime( $date ) === false ) {
 		return array( 'ok' => false, 'error' => 'pick a date' );
 	}
-	if ( $date < $earliest ) {
-		return array(
-			'ok'       => false,
-			'error'    => sprintf( 'The earliest we can take is %s.', $earliest ),
-			'earliest' => $earliest,
-		);
+
+	$term_start = isset( $client['contract_start'] ) ? $client['contract_start'] : null;
+	$earliest   = mwm_rm_earliest_bookable( $kind, $today, $term_start );
+	$latest     = mwm_rm_latest_bookable( $kind, $today, $term_start );
+
+	if ( $earliest !== null && $date < $earliest ) {
+		$why = ( $term_start && $date < $term_start )
+			? sprintf( 'Your plan starts on %s.', $term_start )
+			: sprintf( 'We need at least %s.', $kind === 'location' ? '7 days' : 'a free slot' );
+		return array( 'ok' => false, 'error' => $why . ' The earliest we can take is ' . $earliest . '.',
+		              'earliest' => $earliest );
+	}
+	if ( $latest !== null && $date > $latest ) {
+		return array( 'ok' => false,
+		              'error' => 'That is further ahead than we open the diary. The latest is ' . $latest . '.',
+		              'latest' => $latest );
 	}
 	if ( mwm_rm_is_closed_day( $date ) ) {
 		return array( 'ok' => false, 'error' => 'We are closed on Sundays.' );
 	}
-	// 🔴 A location day with no usable address is a REFUSAL, not a fallback.
-	// Defaulting to the studio address sends a van to Winter Park while the
-	// client waits at her own office (spec §13.1).
-	if ( $kind === 'location' ) {
-		return array( 'ok' => true, 'state' => 'requested', 'needs_address' => true );
+
+	if ( $mode === 'instant' ) {
+		// 🔑 'booked' here means the RULES allow it. The caller must still hold
+		// the slot against the live calendar — availability is the studio
+		// portal's job and is re-checked at write time, because a free slot can
+		// stop being free between rendering a page and clicking a button.
+		return array( 'ok' => true, 'mode' => 'instant', 'state' => 'booked',
+		              'needs_availability_check' => true );
 	}
-	return array( 'ok' => true, 'state' => 'requested' );
+
+	// 🔴 A location day with no usable address is a REFUSAL, not a fallback.
+	// Defaulting to the studio sends a van to Winter Park while the client
+	// waits at her own office (spec §13.1).
+	return array( 'ok' => true, 'mode' => 'request', 'state' => 'requested',
+	              'needs_address' => true, 'needs_approval' => true );
 }
 
 // ── §2 · DELIVERY CEILINGS ────────────────────────────────────────────────
