@@ -8,9 +8,9 @@
     "studio": "PORTAL_CLIENTS.json as of 2026-08-28 — 'Luzia Costa', package '4h Podcast - Mensal', 8.00 contract hours, 4.00 used, 2026-07-01 to 2026-10-01. SEPARATE PRODUCT. See _open_questions."
   },
   "_open_questions": [
-    "contract_start is BLANK in the signed PDF ('Início: ___/___/2026') and both signature dates are blank. billing_anchor_day is therefore unknown, and it is the anchor for the whole no-rollover cycle. Left null on purpose — a guessed anchor expires her hours on the wrong day, silently.",
-    "Her existing Studio Package ('4h Podcast - Mensal', 8h/mo, ends 2026-10-01) overlaps GOLD's included 4 studio hours. Does the studio package continue alongside, get absorbed, or end? studio_client_id is left null until that is answered, because linking the ledgers would double-count her hours.",
-    "No annual roadmap has been authored for her yet, so campaigns is empty by design rather than invented. The portal renders a 'being built' state — never 12 empty boxes (spec §11.2)."
+    "OPEN — contract_start is BLANK in the signed PDF ('Início: ___/___/2026') and both signature dates are blank. billing_anchor_day is therefore unknown, and it anchors the whole no-rollover cycle. Michael, 11 Sep: hold. Left null on purpose — a guessed anchor expires her hours on the wrong day, silently.",
+    "OPEN — ToS §2 defines a filming day as 8 hours INCLUDING travel; the Portuguese summary §1 and the Miami quote both say recording time starts on crew ARRIVAL; and §7 says the ToS prevail on any divergence. Michael, 11 Sep: not sure yet. The portal currently states the client-facing version (travel does not consume her hours), which is what MWM-LC-2026-01 Rev 8 already promised Nicole in writing. Do not change it without a ruling — it is the version she has been given.",
+    "OPEN — no annual roadmap has been authored for her yet, so campaigns is empty by design rather than invented. The portal renders a 'being built' state — never 12 empty boxes (spec §11.2)."
   ],
   "client": {
     "client_name": "Luzia Costa",
@@ -80,5 +80,15 @@
       "detail": "Michael is putting together the year — the themes, the shape of each campaign and what we film when. It will appear here as soon as it is ready, and you will be able to see the whole 12 months at once.",
       "due_date": null
     }
-  ]
+  ],
+  "_rulings": {
+    "studio_package": "RULED — Michael, 11 Sep 2026: the Studio Package ENDS and GOLD ABSORBS IT. Her studio time comes from GOLD's 4 included hours per cycle, one ledger, no double-counting. Therefore studio_client_id stays null: linking to wp_mwm_studio_clients #? would make the roadmap portal read a second, now-defunct hours ledger and show her more hours than she has. Her old package was '4h Podcast - Mensal', 8.00h/month, running to 2026-10-01 — see _handover below."
+  },
+  "_handover": {
+    "note": "Her Studio Package had 8.00 contracted hours per month and 4.00 used as of the 2026-08-28 roster, on a term ending 2026-10-01. GOLD includes 4 studio hours per cycle. So the absorption is a REDUCTION in studio hours, not an increase — worth saying out loud to her rather than letting her discover it. Not a portal bug; a conversation.",
+    "old_package": "4h Podcast - Mensal",
+    "old_monthly_hours": 8.0,
+    "old_term_end": "2026-10-01",
+    "gold_studio_hours_per_cycle": 4.0
+  }
 }
