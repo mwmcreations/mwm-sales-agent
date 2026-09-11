@@ -14,7 +14,8 @@ $c      = $d['client'];
 $hours  = null;
 if ( $c['billing_anchor_day'] && mwm_rm_plan_phase( $c['contract_start'], $c['contract_end'], $today ) === 'active' ) {
 	$cy    = mwm_rm_cycle_window( $c['billing_anchor_day'], $today );
-	$hours = mwm_rm_hours_state( 'gold', 0, 0, $cy );
+	$ul = isset($argv[2]) ? (float)$argv[2] : 0; $us = isset($argv[3]) ? (float)$argv[3] : 0;
+	$hours = mwm_rm_hours_state( 'gold', $ul, $us, $cy );
 }
 $assets = array();   // nothing delivered under GOLD yet
 
@@ -31,6 +32,10 @@ if ( $today === '2026-10-20' ) {
 		array( 'date' => '2026-10-27', 'times' => array( 'Morning', 'Full day' ) ),
 		array( 'date' => '2026-10-29', 'times' => array( 'Full day' ) ),
 	);
+}
+if ( $today === '2026-11-01' ) {       // hours spent, and the calendar is down
+	$slots['studio']   = false;
+	$slots['location'] = false;
 }
 $html = mwm_rm_gold_panel( $d, $hours, $assets, $today, $slots );
 $css = <<<'CSS'
@@ -100,6 +105,11 @@ color:var(--mut);font-size:.85rem;white-space:normal}
 font:inherit;font-size:.9rem;font-weight:620;padding:9px 18px;border-radius:99px;cursor:pointer}
 .rm-btn-primary{background:var(--gold);color:#fff;border-color:var(--gold)}
 @media(prefers-color-scheme:dark){.rm-btn-primary{color:#1a1712}}
+.rm-block-note{margin:0 0 10px;padding:9px 11px;border-radius:8px;font-size:.88rem;
+background:color-mix(in srgb,var(--warn) 9%,transparent);color:var(--ink)}
+.rm-block-note[data-reason="not_started"]{background:color-mix(in srgb,var(--mut) 10%,transparent);color:var(--mut)}
+.rm-slots[data-state="blocked"]{display:none}
+.rm-slots[data-state="unavailable"]{border-color:var(--warn)}
 .rm-slots{margin:0 0 12px;padding:11px 12px;border:1px dashed var(--line);border-radius:10px}
 .rm-slots-note{margin:0;font-size:.86rem;color:var(--mut)}
 .rm-slots ul{list-style:none;padding:0;margin:0}

@@ -278,7 +278,7 @@ function mwm_rm_requests_panel( $addons ) {
 //
 // The other half of the rule still holds absolutely: nothing on the LOCATION
 // card may claim a day is hers.
-function mwm_rm_studio_booking_card( $o, $slots = null ) {
+function mwm_rm_studio_booking_card( $o, $slots = null, $block = null, $copy = null ) {
 	$h  = '<article class="rm-option rm-option-instant" data-kind="studio" data-mode="instant">';
 	$h .= '<h3>' . esc_html( $o['label'] ) . '</h3>';
 	$h .= '<p class="rm-option-where">' . esc_html( $o['where'] ) . ' · up to '
@@ -297,13 +297,19 @@ function mwm_rm_studio_booking_card( $o, $slots = null ) {
 	$h .= '<li>Closed Sundays.</li>';
 	$h .= '</ul>';
 
-	$h .= mwm_rm_slot_area( 'studio', $slots );
-	$h .= '<button type="button" class="rm-btn rm-btn-primary" data-kind="studio">'
-	    . esc_html( $o['verb'] ) . ' studio time</button>';
+	if ( $copy ) {
+		$h .= '<p class="rm-block-note" data-reason="' . esc_attr( $block['reason'] )
+		    . '">' . esc_html( $copy ) . '</p>';
+	}
+	$h .= mwm_rm_slot_area( 'studio', $slots, $block );
+	if ( ! ( $block && ! empty( $block['blocking'] ) ) ) {
+		$h .= '<button type="button" class="rm-btn rm-btn-primary" data-kind="studio">'
+		    . esc_html( $o['verb'] ) . ' studio time</button>';
+	}
 	return $h . '</article>';
 }
 
-function mwm_rm_location_request_card( $o, $slots = null ) {
+function mwm_rm_location_request_card( $o, $slots = null, $block = null, $copy = null ) {
 	$h  = '<article class="rm-option rm-option-request" data-kind="location" data-mode="request">';
 	$h .= '<h3>' . esc_html( $o['label'] ) . '</h3>';
 	$h .= '<p class="rm-option-where">' . esc_html( $o['where'] ) . ' · up to '
@@ -327,9 +333,15 @@ function mwm_rm_location_request_card( $o, $slots = null ) {
 	$h .= '<li>Closed Sundays.</li>';
 	$h .= '</ul>';
 
-	$h .= mwm_rm_slot_area( 'location', $slots );
-	$h .= '<button type="button" class="rm-btn" data-kind="location">'
-	    . esc_html( $o['verb'] ) . ' a day</button>';
+	if ( $copy ) {
+		$h .= '<p class="rm-block-note" data-reason="' . esc_attr( $block['reason'] )
+		    . '">' . esc_html( $copy ) . '</p>';
+	}
+	$h .= mwm_rm_slot_area( 'location', $slots, $block );
+	if ( ! ( $block && ! empty( $block['blocking'] ) ) ) {
+		$h .= '<button type="button" class="rm-btn" data-kind="location">'
+		    . esc_html( $o['verb'] ) . ' a day</button>';
+	}
 	$h .= '<p class="rm-request-caveat">Asking for a day does not hold it. We will'
 	    . ' come back to you to confirm.</p>';
 	return $h . '</article>';
@@ -342,10 +354,28 @@ function mwm_rm_location_request_card( $o, $slots = null ) {
 // A feed that fails silently and renders an empty day tells a paying client the
 // studio is full when it is wide open — that exact bug cost us a visit in
 // August (slots.py, Patch #94).
-function mwm_rm_slot_area( $kind, $slots = null ) {
+function mwm_rm_slot_area( $kind, $slots = null, $block = null ) {
+	// A structural reason outranks the feed. Showing an empty calendar to a
+	// client whose plan has not started tells her the studio is full.
+	if ( $block && ! empty( $block['blocking'] ) ) {
+		return '<div class="rm-slots" data-state="blocked" data-kind="' . esc_attr( $kind )
+		     . '" data-reason="' . esc_attr( $block['reason'] ) . '"></div>';
+	}
 	if ( $slots === null ) {
 		return '<div class="rm-slots" data-state="loading" data-kind="' . esc_attr( $kind )
 		     . '"><p class="rm-slots-note">Loading our calendar…</p></div>';
+	}
+	// 🔴 THE FOURTH STATE, AND THE ONE THAT COSTS MONEY IF IT IS MISSING.
+	// `false` means we could not reach the calendar. It must NEVER render as
+	// "nothing open" — that tells a paying client the studio is full when the
+	// truth is we do not know. The live studio portal fails closed for exactly
+	// this reason (mwm-studio-booking.php, S15) and so does this.
+	if ( $slots === false ) {
+		return '<div class="rm-slots" data-state="unavailable" data-kind="' . esc_attr( $kind )
+		     . '"><p class="rm-slots-note">We cannot reach our calendar at the'
+		     . ' moment, so we are not showing times rather than showing you the'
+		     . ' wrong ones. Try again shortly, or tell us what suits and we will'
+		     . ' sort it.</p></div>';
 	}
 	if ( ! is_array( $slots ) || count( $slots ) === 0 ) {
 		return '<div class="rm-slots" data-state="empty" data-kind="' . esc_attr( $kind )
@@ -366,7 +396,7 @@ function mwm_rm_slot_area( $kind, $slots = null ) {
 	return $h . '</ul></div>';
 }
 
-function mwm_rm_scheduling_panel( $client, $today = null, $slots = array() ) {
+function mwm_rm_scheduling_panel( $client, $today = null, $slots = array(), $hours_state = null ) {
 	$opts  = mwm_rm_request_options( $client, $today );
 	$phase = mwm_rm_plan_phase(
 		isset( $client['contract_start'] ) ? $client['contract_start'] : null,
@@ -387,9 +417,12 @@ function mwm_rm_scheduling_panel( $client, $today = null, $slots = array() ) {
 	foreach ( $opts as $o ) {
 		$given = is_array( $slots ) && array_key_exists( $o['kind'], $slots )
 			? $slots[ $o['kind'] ] : null;
+		$block = mwm_rm_block_reason( $client, $hours_state, $today, $o['kind'] );
+		$copy  = mwm_rm_block_copy( $block, $client,
+			isset( $client['rate_card_version'] ) ? $client['rate_card_version'] : null );
 		$h .= $o['kind'] === 'studio'
-			? mwm_rm_studio_booking_card( $o, $given )
-			: mwm_rm_location_request_card( $o, $given );
+			? mwm_rm_studio_booking_card( $o, $given, $block, $copy )
+			: mwm_rm_location_request_card( $o, $given, $block, $copy );
 	}
 
 	$h .= '<p class="rm-schedule-foot">Hours come from the cycle the date falls'
@@ -444,7 +477,7 @@ function mwm_rm_gold_panel( $data, $hours_state = null, $assets = array(), $toda
 	$h .= '</section>';
 
 	$h .= mwm_rm_cycle_panel( $c, $hours_state, $today );
-	$h .= mwm_rm_scheduling_panel( $c, $today, $slots );
+	$h .= mwm_rm_scheduling_panel( $c, $today, $slots, $hours_state );
 	$h .= mwm_rm_delivered_panel( $assets );
 	$h .= mwm_rm_roadmap_panel( isset( $data['campaigns'] ) ? $data['campaigns'] : array() );
 	$h .= mwm_rm_requests_panel( isset( $data['addons'] ) ? $data['addons'] : array() );

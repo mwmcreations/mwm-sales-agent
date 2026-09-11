@@ -641,5 +641,195 @@ class TestRequestValidation(unittest.TestCase):
                 self.assertNotEqual(r["state"], "booked", date)
 
 
+# ── why there are no slots ────────────────────────────────────────────────
+class TestBlockReasons(unittest.TestCase):
+    """slots.py, Patch #94: "a tool that returns 'nothing' without stating why
+    will have the reason invented by whatever narrates its output." That bug
+    told Jaysee Soto the studio was fully booked on a wide-open afternoon.
+
+    An empty calendar has four causes and they are not interchangeable."""
+
+    CLIENT = {"contract_start": "2026-10-03", "contract_end": "2027-10-02",
+              "rate_card_version": "MWM-LC-2026-02-Rev5"}
+
+    def _b(self, today, hours=None, kind="studio"):
+        return php("echo json_encode(mwm_rm_block_reason(%s, %s, %s, %s));"
+                   % (php_lit(self.CLIENT), php_lit(hours), php_lit(today), php_lit(kind)))
+
+    def test_before_the_term_it_says_not_started(self):
+        b = self._b("2026-09-11")
+        self.assertEqual(b["reason"], "not_started")
+        self.assertTrue(b["blocking"])
+
+    def test_not_started_does_not_raise_an_alert(self):
+        """Expected and temporary. An email about it is noise."""
+        self.assertFalse(self._b("2026-09-11")["alert"])
+
+    def test_after_the_term_it_alerts(self):
+        b = self._b("2027-11-01")
+        self.assertEqual(b["reason"], "contract_ended")
+        self.assertTrue(b["alert"])
+
+    def test_nothing_wrong_returns_nothing(self):
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-20")
+        hs = php("echo json_encode(mwm_rm_hours_state('gold', 0, 0, %s));" % php_lit(cyc))
+        self.assertIsNone(self._b("2026-10-20", hs))
+
+    def test_spent_hours_are_reported_but_do_not_block(self):
+        """🔑 Her hours are gone, but the contract lets her buy more. Turning
+        that into "nothing available" loses a sale and reads as a fault."""
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-20")
+        hs = php("echo json_encode(mwm_rm_hours_state('gold', 0, 4, %s));" % php_lit(cyc))
+        b = self._b("2026-10-20", hs, "studio")
+        self.assertEqual(b["reason"], "hours_spent")
+        self.assertFalse(b["blocking"])
+
+    def test_the_two_buckets_are_independent(self):
+        """Studio hours spent must not block a location day, or vice versa."""
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-20")
+        hs = php("echo json_encode(mwm_rm_hours_state('gold', 0, 4, %s));" % php_lit(cyc))
+        self.assertIsNone(self._b("2026-10-20", hs, "location"))
+
+    def test_spent_copy_offers_her_own_rate(self):
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-20")
+        hs = php("echo json_encode(mwm_rm_hours_state('gold', 0, 4, %s));" % php_lit(cyc))
+        b = self._b("2026-10-20", hs, "studio")
+        copy = php("echo json_encode(mwm_rm_block_copy(%s, %s, %s));"
+                   % (php_lit(b), php_lit(self.CLIENT), php_lit("MWM-LC-2026-02-Rev5")))
+        self.assertIn("$249 an hour", copy)
+        self.assertIn("next invoice", copy)
+        self.assertIn("no deposit", copy)
+
+    def test_location_spent_copy_uses_the_location_rate(self):
+        cyc = call("mwm_rm_cycle_window", 3, "2026-10-20")
+        hs = php("echo json_encode(mwm_rm_hours_state('gold', 4, 0, %s));" % php_lit(cyc))
+        b = self._b("2026-10-20", hs, "location")
+        copy = php("echo json_encode(mwm_rm_block_copy(%s, %s, %s));"
+                   % (php_lit(b), php_lit(self.CLIENT), php_lit("MWM-LC-2026-02-Rev5")))
+        self.assertIn("$300 an hour", copy)
+
+    def test_every_reason_has_a_sentence(self):
+        """A new reason must not be addable without someone writing the words."""
+        for reason in ("not_started", "contract_ended", "hours_spent"):
+            b = {"reason": reason, "blocking": True, "since": "2026-10-03",
+                 "bucket": "studio"}
+            copy = php("echo json_encode(mwm_rm_block_copy(%s, %s, %s));"
+                       % (php_lit(b), php_lit(self.CLIENT), php_lit("MWM-LC-2026-02-Rev5")))
+            self.assertTrue(copy and len(copy) > 10, reason)
+
+
+# ── §5 · the request has to land somewhere ────────────────────────────────
+class TestShootRequestRow(unittest.TestCase):
+    """🔴 A request button that writes nothing and tells nobody is worse than no
+    button: the client believes she has asked, and nothing is true on our side."""
+
+    CLIENT = {"id": 1, "client_name": "Luzia Costa", "email": "luziahcosta@hotmail.com",
+              "contract_start": "2026-10-03", "contract_end": "2027-10-02",
+              "rate_card_version": "MWM-LC-2026-02-Rev5"}
+
+    def _row(self, date="2026-10-27", window="full", address="1200 Brickell Ave, Miami, FL",
+             notes="", today="2026-10-20", miles=None):
+        return php("echo json_encode(mwm_rm_shoot_request_row(%s, %s, %s, %s, %s, %s, %s));"
+                   % (php_lit(self.CLIENT), php_lit(date), php_lit(window),
+                      php_lit(address), php_lit(notes), php_lit(today), php_lit(miles)))
+
+    def test_a_valid_request_produces_a_row(self):
+        r = self._row()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["row"]["state"], "requested")
+        self.assertEqual(r["row"]["requested_by"], "luziahcosta@hotmail.com")
+
+    def test_it_never_produces_booked(self):
+        self.assertNotEqual(self._row()["row"]["state"], "booked")
+
+    def test_no_address_is_refused(self):
+        for bad in ("", "   "):
+            r = self._row(address=bad)
+            self.assertFalse(r["ok"])
+            self.assertIn("address", r["error"].lower())
+
+    def test_it_reuses_the_notice_rule_rather_than_restating_it(self):
+        r = self._row(date="2026-10-21")
+        self.assertFalse(r["ok"])
+        self.assertIn("7 days", r["error"])
+
+    def test_an_included_day_is_priced_at_zero_not_null(self):
+        """🔑 null means "not offered on this basis" everywhere else in this
+        file. Reusing it for "free" makes a real refusal indistinguishable
+        from a freebie."""
+        row = self._row()["row"]
+        self.assertEqual(row["unit_cents"], 0)
+        self.assertEqual(row["total_cents"], 0)
+        self.assertEqual(row["code"], "included_location_day")
+
+    def test_the_travel_zone_is_computed_when_miles_are_given(self):
+        row = self._row(miles=235)["row"]
+        self.assertEqual(row["travel_zone"], 4)
+        self.assertEqual(row["travel_fee_cents"], 100000)
+
+    def test_travel_is_left_unknown_when_miles_are_not(self):
+        row = self._row()["row"]
+        self.assertIsNone(row["travel_zone"])
+        self.assertIsNone(row["travel_fee_cents"])
+
+    def test_an_unknown_window_falls_back_to_full_day(self):
+        self.assertEqual(self._row(window="teatime")["row"]["window"], "full")
+
+
+class TestRequestNotification(unittest.TestCase):
+    """Spec §7.3: the subject carries the DECISION INPUTS, so Michael can triage
+    from a lock screen without opening anything."""
+
+    CLIENT = TestShootRequestRow.CLIENT
+
+    def _n(self, **kw):
+        r = TestShootRequestRow._row(TestShootRequestRow(), **kw)
+        self.assertTrue(r["ok"], r.get("error"))
+        return php("echo json_encode(mwm_rm_request_notification(%s, %s));"
+                   % (php_lit(r["row"]), php_lit(self.CLIENT)))
+
+    def test_the_subject_carries_who_when_and_where(self):
+        s = self._n(miles=235)["subject"]
+        self.assertIn("Luzia Costa", s)
+        self.assertIn("27 Oct", s)
+        self.assertIn("full day", s)
+        self.assertIn("ON LOCATION", s)
+        self.assertIn("Miami", s)
+
+    def test_it_goes_to_the_shared_box_not_a_person(self):
+        """§7.4 — a personal box makes Michael the single point of failure on a
+        seven-day clock, and he travels."""
+        self.assertEqual(self._n()["to"], "info@mwmcreations.com")
+
+    def test_it_states_nothing_is_held(self):
+        self.assertIn("Nothing is held until you confirm", self._n()["body"])
+
+    def test_a_known_travel_zone_is_priced_in_the_body(self):
+        b = self._n(miles=235)["body"]
+        self.assertIn("Zone 4", b)
+        self.assertIn("$1,000", b)
+
+    def test_an_unknown_distance_says_unknown_rather_than_included(self):
+        """🔴 Printing "Zone 1 — included" because nobody supplied a distance is
+        how a $1,000 fee goes unbilled."""
+        b = self._n()["body"]
+        self.assertIn("UNKNOWN", b)
+        self.assertNotIn("Zone 1", b)
+        self.assertIn("$1,000", b)   # names the worst case so it gets checked
+
+    def test_zone_one_is_stated_as_included_when_it_really_is(self):
+        b = self._n(miles=12)["body"]
+        self.assertIn("Zone 1 — included", b)
+
+    def test_notes_ride_along_when_given(self):
+        self.assertIn("gate code 4412", self._n(notes="Two interviews, gate code 4412")["body"])
+
+    def test_a_decline_is_told_to_carry_a_reason(self):
+        self.assertIn("decline needs a reason", self._n()["body"])
+
+    def test_both_actions_are_offered(self):
+        self.assertEqual(self._n()["actions"], ["confirm", "decline"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -185,8 +185,14 @@ class TestEmptyStatesAreHonestNotPunishing(unittest.TestCase):
         has happened, inside a product she already pays for."""
         html = render()
         self.assertLessEqual(html.count('class="rm-campaign"'), 0)
-        for word in ("locked", "padlock", "upgrade to unlock"):
-            self.assertNotIn(word, html.lower())
+        # A bare "locked" substring was a false positive — data-state="blocked"
+        # contains it. What must be absent is padlock iconography and
+        # upgrade-gating, so test for those rather than for five letters.
+        low = html.lower()
+        for word in ("padlock", "unlock", "\U0001f512", "upgrade to see", "upgrade to view"):
+            self.assertNotIn(word, low, "the page gates her own year behind %r" % word)
+        self.assertIsNone(re.search(r"\block(ed)?\b", low),
+                          "something reads as locked to the client")
 
     def test_nothing_delivered_yet_is_a_promise_not_a_blank(self):
         self.assertIn("Everything we finish will appear here", render())
@@ -311,7 +317,7 @@ class TestStudioIsABookingNotARequest(unittest.TestCase):
         self.assertIn('data-kind="studio" data-mode="instant"', html)
 
     def test_the_verb_is_book(self):
-        self.assertIn("Book studio time", render())
+        self.assertIn("Book studio time", render(today="2026-10-20", anchor=3))
 
     def test_it_promises_no_waiting(self):
         html = render()
@@ -402,15 +408,16 @@ class TestSlotArea(unittest.TestCase):
     a visit in August (slots.py, Patch #94)."""
 
     def test_no_feed_yet_says_loading(self):
-        self.assertIn('data-state="loading"', render())
+        self.assertIn('data-state="loading"', render(today="2026-10-20", anchor=3))
 
     def test_an_empty_feed_says_nothing_open_not_loading(self):
-        html = render(slots={"studio": []})
+        html = render(today="2026-10-20", anchor=3, slots={"studio": []})
         self.assertIn('data-state="empty"', html)
         self.assertIn("Nothing open in this window", html)
 
     def test_real_slots_render_as_buttons(self):
-        html = render(slots={"studio": [{"date": "2026-10-22", "times": ["10:00", "14:00"]}]})
+        html = render(today="2026-10-20", anchor=3,
+                      slots={"studio": [{"date": "2026-10-22", "times": ["10:00", "14:00"]}]})
         self.assertIn('data-state="ready"', html)
         self.assertIn('data-date="2026-10-22"', html)
         self.assertIn('data-time="10:00"', html)
@@ -418,9 +425,10 @@ class TestSlotArea(unittest.TestCase):
 
     def test_the_three_states_are_distinguishable(self):
         states = {
-            "loading": render(),
-            "empty": render(slots={"studio": []}),
-            "ready": render(slots={"studio": [{"date": "2026-10-22", "times": ["10:00"]}]}),
+            "loading": render(today="2026-10-20", anchor=3),
+            "empty": render(today="2026-10-20", anchor=3, slots={"studio": []}),
+            "ready": render(today="2026-10-20", anchor=3,
+                            slots={"studio": [{"date": "2026-10-22", "times": ["10:00"]}]}),
         }
         for name, html in states.items():
             self.assertIn('data-state="%s"' % name, html, name)
@@ -445,6 +453,67 @@ class TestMiamiIsGone(unittest.TestCase):
         """The zone table is reference material for future location days and
         stays — it is not Miami-specific."""
         self.assertIn("151 to 250 miles", render())
+
+
+class TestTheCalendarNeverLiesAboutBeingFull(unittest.TestCase):
+    """🔴 The state that costs money if it is missing. `false` means we could
+    not reach the calendar, and it must never render as "nothing open" — that
+    tells a paying client the studio is full when the truth is we do not know.
+    The live studio portal fails closed for exactly this reason (S15)."""
+
+    def test_a_dead_feed_is_its_own_state(self):
+        html = render(today="2026-10-20", anchor=3, slots={"studio": False})
+        self.assertIn('data-state="unavailable"', html)
+
+    def test_a_dead_feed_does_not_say_nothing_open(self):
+        html = render(today="2026-10-20", anchor=3, slots={"studio": False})
+        studio = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        self.assertNotIn("Nothing open", studio)
+
+    def test_a_dead_feed_admits_we_do_not_know(self):
+        html = render(today="2026-10-20", anchor=3, slots={"studio": False})
+        self.assertIn("cannot reach our calendar", html)
+        self.assertIn("rather than showing you the wrong ones", html)
+
+    def test_all_five_states_are_distinguishable(self):
+        cases = {
+            "loading": render(today="2026-10-20", anchor=3),
+            "empty": render(today="2026-10-20", anchor=3, slots={"studio": []}),
+            "unavailable": render(today="2026-10-20", anchor=3, slots={"studio": False}),
+            "ready": render(today="2026-10-20", anchor=3,
+                            slots={"studio": [{"date": "2026-10-22", "times": ["10:00"]}]}),
+            "blocked": render(),   # 11 Sep — plan not started
+        }
+        for name, html in cases.items():
+            self.assertIn('data-state="%s"' % name, html, name)
+
+
+class TestBlockedStatesExplainThemselves(unittest.TestCase):
+
+    def test_before_the_term_the_card_says_why(self):
+        html = render()
+        self.assertIn('data-reason="not_started"', html)
+        self.assertIn("there is nothing to book yet", html)
+
+    def test_a_blocked_card_hides_the_button(self):
+        """Offering a button that cannot work is worse than offering none."""
+        html = render()
+        studio = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        self.assertNotIn("<button", studio)
+
+    def test_spent_hours_still_show_the_button(self):
+        """🔑 Not blocking — she can buy more at her own rate."""
+        html = render(today="2026-10-20", anchor=3, used_studio=4,
+                      slots={"studio": [{"date": "2026-10-22", "times": ["10:00"]}]})
+        studio = html.split('data-kind="studio" data-mode="instant"')[1].split('</article>')[0]
+        self.assertIn("Book studio time", studio)
+        self.assertIn("used all your included hours", studio)
+        self.assertIn("$249 an hour", studio)
+
+    def test_spent_studio_hours_do_not_block_a_location_day(self):
+        html = render(today="2026-10-20", anchor=3, used_studio=4)
+        loc = html.split('data-kind="location" data-mode="request"')[1].split('</article>')[0]
+        self.assertNotIn("used all your included hours", loc)
 
 
 if __name__ == "__main__":

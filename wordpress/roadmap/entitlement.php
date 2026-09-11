@@ -510,6 +510,190 @@ function mwm_rm_validate_request( $kind, $date, $client, $today = null ) {
 	              'needs_address' => true, 'needs_approval' => true );
 }
 
+// ── WHY THERE ARE NO SLOTS · never let the reason be invented ─────────────
+//
+// slots.py, Patch #94: "a tool that returns 'nothing' without stating why will
+// have the reason invented by whatever narrates its output." That bug told
+// Jaysee Soto the studio was "fully booked" on a wide-open afternoon.
+//
+// An empty calendar has FOUR different causes and they are not interchangeable:
+//   · the feed is down          → we do not know. Say so. Never show zero.
+//   · her plan has not started  → nothing is wrong; it starts on a date.
+//   · her hours are spent       → she can still book, at her add-on rate.
+//   · genuinely nothing free    → the only one that means "full".
+//
+// 🔴 Collapsing any of the first three into the fourth tells a paying client
+// the studio is full when it is not. That is the same defect as August's,
+// wearing a different coat.
+//
+// The studio portal already alerts Michael when a client is structurally
+// blocked (mwm-studio-booking.php, S29) precisely because a client can
+// otherwise sit in front of an empty calendar for weeks and the only way we
+// find out is if she happens to email. Same posture here: the reason is
+// returned, so it can be shown AND alerted on.
+function mwm_rm_block_reason( $client, $hours_state = null, $today = null, $kind = 'studio' ) {
+	$phase = mwm_rm_plan_phase(
+		isset( $client['contract_start'] ) ? $client['contract_start'] : null,
+		isset( $client['contract_end'] ) ? $client['contract_end'] : null,
+		$today
+	);
+	if ( $phase === 'pending' ) {
+		return array(
+			'reason'   => 'not_started',
+			'blocking' => true,
+			'alert'    => false,   // expected and temporary — not worth an email
+			'since'    => isset( $client['contract_start'] ) ? $client['contract_start'] : null,
+		);
+	}
+	if ( $phase === 'ended' ) {
+		return array( 'reason' => 'contract_ended', 'blocking' => true, 'alert' => true );
+	}
+	if ( $hours_state ) {
+		$bucket = ( $kind === 'location' ) ? 'location' : 'studio';
+		if ( isset( $hours_state[ $bucket ]['left'] ) && (float) $hours_state[ $bucket ]['left'] <= 0 ) {
+			// 🔑 NOT blocking. Her hours are spent, but the contract lets her buy
+			// more at her own rate — so the page offers that instead of an empty
+			// calendar. Turning "you have used your hours" into "nothing is
+			// available" loses a sale and reads as a fault.
+			return array( 'reason' => 'hours_spent', 'blocking' => false, 'alert' => false,
+			              'bucket' => $bucket );
+		}
+	}
+	return null;
+}
+
+// What the page says about it, in her words. Kept beside the reasons so a new
+// reason cannot be added without someone writing the sentence for it.
+function mwm_rm_block_copy( $block, $client = array(), $rate_card = null ) {
+	if ( ! $block ) { return null; }
+	switch ( $block['reason'] ) {
+		case 'not_started':
+			return 'Your plan starts on ' . $block['since'] . ', so there is nothing to book yet.';
+		case 'contract_ended':
+			return 'Your plan has finished. Talk to us and we will pick it back up.';
+		case 'hours_spent':
+			$extra = '';
+			if ( $rate_card ) {
+				$code  = $block['bucket'] === 'location' ? 'location_hour' : 'studio_hour';
+				$price = mwm_rm_price_addon( $rate_card, $code, 1, true );
+				if ( $price ) {
+					$extra = ' You can still book at $' . number_format( $price['unit_cents'] / 100, 0 )
+					       . ' an hour, and it goes on your next invoice — no deposit,'
+					       . ' and editing is included.';
+				}
+			}
+			return 'You have used all your included hours this cycle.' . $extra;
+	}
+	return null;
+}
+
+// ── §5 · A LOCATION REQUEST HAS TO LAND SOMEWHERE ────────────────────────
+//
+// 🔴 A request button that writes nothing and tells nobody is worse than no
+// button: the client believes she has asked, and nothing is true on our side.
+// Spec §7.2 says it plainly — a pre-schedule "is not an FYI, it is a task with
+// a deadline". Seven days of notice is not seven days of runway if the message
+// sits unread for three of them.
+//
+// The row reuses mwm_roadmap_addons rather than inventing a second table with
+// the same state machine. `code` distinguishes an included day from a paid one,
+// and an INCLUDED day is priced at zero rather than left null — null means "not
+// offered on this basis" everywhere else in this file, and reusing it for
+// "free" would make a real refusal indistinguishable from a freebie.
+function mwm_rm_shoot_request_row( $client, $date, $window, $address, $notes = '',
+                                   $today = null, $miles = null ) {
+	$check = mwm_rm_validate_request( 'location', $date, $client, $today );
+	if ( empty( $check['ok'] ) ) { return array( 'ok' => false, 'error' => $check['error'] ); }
+
+	// The address rule, enforced at the write site as well as the UI. A
+	// location day with nowhere to go sends a van to the studio's own postcode.
+	$address = trim( (string) $address );
+	if ( $address === '' ) {
+		return array( 'ok' => false,
+		              'error' => 'We need the address before we can hold a location day.' );
+	}
+
+	$windows = array( 'morning' => 'Morning', 'afternoon' => 'Afternoon', 'full' => 'Full day' );
+	$window  = isset( $windows[ $window ] ) ? $window : 'full';
+
+	$zone = $miles === null ? null : mwm_rm_zone_for_miles( $miles );
+
+	return array(
+		'ok'  => true,
+		'row' => array(
+			'client_id'        => isset( $client['id'] ) ? $client['id'] : null,
+			'code'             => 'included_location_day',
+			'label'            => 'Location day — ' . $windows[ $window ],
+			'qty'              => 1,
+			'unit_cents'       => 0,          // included in the plan, not unpriced
+			'total_cents'      => 0,
+			'rate_card_version'=> isset( $client['rate_card_version'] ) ? $client['rate_card_version'] : '',
+			'state'            => 'requested',
+			'requested_by'     => isset( $client['email'] ) ? $client['email'] : '',
+			'requested_at'     => $today ? $today . ' 00:00:00' : date( 'Y-m-d H:i:s' ),
+			'scheduled_for'    => $date . ' 00:00:00',
+			'travel_miles'     => $miles,
+			'travel_zone'      => $zone ? $zone['zone'] : null,
+			'travel_fee_cents' => $zone ? $zone['fee_cents'] : null,
+			'notes'            => trim( (string) $notes ),
+			'address'          => $address,
+			'window'           => $window,
+		),
+	);
+}
+
+// What reaches info@. Spec §7.3: the subject carries the DECISION INPUTS, so
+// Michael can triage from a phone lock screen without opening anything.
+//
+// 🔑 Travel is stated as unknown when it is unknown. Printing "Zone 1 —
+// included" because nobody supplied a distance is how a $1,000 fee goes
+// unbilled, and the honest version costs one extra line.
+function mwm_rm_request_notification( $row, $client ) {
+	$row  = (array) $row;
+	$when = strtotime( $row['scheduled_for'] );
+	$day  = $when ? date( 'D j M', $when ) : $row['scheduled_for'];
+	$name = isset( $client['client_name'] ) ? $client['client_name'] : 'Client';
+
+	$windows = array( 'morning' => 'morning', 'afternoon' => 'afternoon', 'full' => 'full day' );
+	$w = isset( $windows[ $row['window'] ] ) ? $windows[ $row['window'] ] : 'full day';
+
+	$subject = sprintf( '🎬 Requested — %s · %s, %s · ON LOCATION (%s)',
+		$name, $day, $w, $row['address'] );
+
+	if ( $row['travel_zone'] === null ) {
+		$travel = 'Travel: distance not supplied, so the zone is UNKNOWN. '
+		        . 'Check it before approving — Zone 4 is $1,000.';
+	} elseif ( ! empty( $row['travel_fee_cents'] ) ) {
+		$travel = sprintf( 'Travel: Zone %d — $%s.', $row['travel_zone'],
+		                   number_format( $row['travel_fee_cents'] / 100, 0 ) );
+	} else {
+		$travel = sprintf( 'Travel: Zone %d — included.', $row['travel_zone'] );
+	}
+
+	$lines = array(
+		$name . ' has asked for a location day. Nothing is held until you confirm.',
+		'',
+		'Date:     ' . ( $when ? date( 'l j F Y', $when ) : $row['scheduled_for'] ),
+		'Window:   ' . ucfirst( $w ),
+		'Address:  ' . $row['address'],
+		$travel,
+		'Hours:    comes out of her included location hours for that cycle.',
+	);
+	if ( ! empty( $row['notes'] ) ) {
+		$lines[] = 'Notes:    ' . $row['notes'];
+	}
+	$lines[] = '';
+	$lines[] = 'Crew check is the reason this is a request and not a booking.';
+	$lines[] = 'Confirm or decline below — a decline needs a reason, and she sees it verbatim.';
+
+	return array(
+		'to'      => 'info@mwmcreations.com',
+		'subject' => $subject,
+		'body'    => implode( "\n", $lines ),
+		'actions' => array( 'confirm', 'decline' ),
+	);
+}
+
 // ── §2 · DELIVERY CEILINGS ────────────────────────────────────────────────
 // 🔴 INTERNAL ONLY. Read the file header before using this anywhere near a
 // client-facing string. It exists so production can plan capacity (ROB §8b)
