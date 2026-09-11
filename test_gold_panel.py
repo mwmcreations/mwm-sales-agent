@@ -192,23 +192,6 @@ class TestEmptyStatesAreHonestNotPunishing(unittest.TestCase):
 
 
 # ── §5 · nothing is booked without written approval ──────────────────────
-class TestRequestsNeverReadAsBooked(unittest.TestCase):
-
-    def test_a_held_date_says_it_is_not_booked(self):
-        html = render()
-        self.assertIn("nothing is booked until you confirm in writing", html)
-
-    def test_the_miami_request_is_not_approved(self):
-        html = render()
-        self.assertIn('data-state="requested"', html)
-        self.assertIn("Waiting for your go-ahead", html)
-
-    def test_the_quoted_total_and_travel_are_both_shown(self):
-        html = render()
-        self.assertIn("$2,050", html)
-        self.assertIn("$1,000 travel, zone 4", html)
-
-
 # ── §3/§5 · prices on the page, before she acts ──────────────────────────
 class TestPricesArePublishedUpFront(unittest.TestCase):
 
@@ -312,6 +295,102 @@ class TestPreTermState(unittest.TestCase):
         happening', which is not true and is the kind of gap that generates an
         email."""
         self.assertIn("carries on as normal", render())
+
+
+# ── §5 · the scheduling surface ───────────────────────────────────────────
+class TestSchedulingPanel(unittest.TestCase):
+
+    def test_both_options_are_offered(self):
+        html = render()
+        self.assertIn('data-kind="studio"', html)
+        self.assertIn('data-kind="location"', html)
+        self.assertIn("Studio time", html)
+        self.assertIn("Filming on location", html)
+
+    def test_the_verbs_differ_on_purpose(self):
+        """"Request" for the studio, "Suggest" for location — the second is a
+        bigger ask of the crew and the language should not pretend otherwise."""
+        html = render()
+        self.assertIn("Request a day", html)
+        self.assertIn("Suggest a day", html)
+
+    def test_each_rule_sits_beside_its_own_control(self):
+        html = render()
+        self.assertIn("48 hours", html)
+        self.assertIn("7 days", html)
+
+    def test_it_names_the_earliest_day_rather_than_the_raw_cutoff(self):
+        html = render(today="2026-10-20")
+        self.assertIn("22 October 2026", html)   # studio
+        self.assertIn("27 October 2026", html)   # location
+
+    def test_before_the_term_it_offers_nothing_earlier_than_the_start(self):
+        html = render()   # 11 Sep, term starts 3 Oct
+        self.assertIn("3 October 2026", html)   # Sat 3 Oct — her term start, and Saturdays are open
+        self.assertNotIn("September 2026</strong>", html)
+
+    def test_a_location_day_asks_for_the_address(self):
+        self.assertIn("cannot hold a location day without one", render())
+
+    def test_it_says_sundays_are_closed(self):
+        self.assertIn("Closed Sundays", render())
+
+
+class TestNothingOnThisPageSaysBooked(unittest.TestCase):
+    """🔴 Michael approves every date before it reaches a calendar. A client who
+    reads only a headline must still understand the day is not hers yet."""
+
+    def test_every_mention_of_booked_is_a_denial(self):
+        """A blacklist on the word itself was wrong — the page SHOULD say
+        "nothing here is booked". What must never appear is an AFFIRMATIVE
+        claim, so the test checks that each occurrence sits inside a negation
+        rather than that the word is absent."""
+        neg = ("nothing", "not ", "never", "until", "no ")
+        for label, html in (("today", render()),
+                            ("mid-cycle", render(today="2026-10-20", anchor=3))):
+            low = html.lower()
+            for word in ("booked", "confirmed"):
+                i = low.find(word)
+                while i != -1:
+                    before = low[max(0, i - 70):i]
+                    self.assertTrue(
+                        any(n in before for n in neg),
+                        "%s page states %r affirmatively: ...%s<<%s>>..."
+                        % (label, word, before[-60:], word))
+                    i = low.find(word, i + 1)
+
+    def test_it_says_michael_approves_every_date(self):
+        html = render()
+        self.assertIn("approves every date", html)
+
+    def test_it_says_nothing_is_booked_until_we_come_back(self):
+        self.assertIn("nothing here is booked until you hear from us", render())
+
+    def test_it_states_availability_and_the_72_hour_rule_up_front(self):
+        html = render()
+        self.assertIn("studio and crew availability", html)
+        self.assertIn("72", html)
+
+
+class TestMiamiIsGone(unittest.TestCase):
+    """Michael, 11 Sep: not approved, not happening. A dead request sitting on a
+    client's screen invites a question nobody wants to answer."""
+
+    def test_the_request_itself_is_gone(self):
+        html = render()
+        for token in ("Additional location day — Miami", "2,050",
+                      "$1,000 travel", "Waiting for your go-ahead",
+                      "26 September", "Held for"):
+            self.assertNotIn(token, html, "the page still mentions %r" % token)
+
+    def test_the_open_requests_section_is_absent_not_empty(self):
+        html = render()
+        self.assertNotIn("Open requests", html)
+
+    def test_the_travel_table_still_lists_zone_4(self):
+        """The zone table is reference material for future location days and
+        stays — it is not Miami-specific."""
+        self.assertIn("151 to 250 miles", render())
 
 
 if __name__ == "__main__":

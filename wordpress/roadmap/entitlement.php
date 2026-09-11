@@ -322,6 +322,129 @@ function mwm_rm_plan_phase( $term_start, $term_end = null, $today = null ) {
 	return 'active';
 }
 
+// ── §5 · SCHEDULING · WHAT SHE MAY ASK FOR, AND WHEN ─────────────────────
+// Michael, 11 Sep: she should be able to book studio time and SUGGEST exterior
+// shooting time — and both need his approval before anything reaches a calendar.
+//
+// That is the distinction the whole surface rests on, and it already has a name
+// in this codebase: a PRE-SCHEDULE IS NOT A BOOKING. Picking a day files a
+// request and holds the slot. The shoot is not real until Michael confirms.
+// Nothing here may ever produce a screen that says "booked".
+//
+// The notice rules are his, set Aug 9 2026 and unchanged:
+//   studio    → 48 hours   ·   on location → 7 days
+// A location day costs a full crew mobilisation and cannot be assembled in two
+// days; the studio is already lit.
+function mwm_rm_notice_hours( $kind ) {
+	$rules = array( 'studio' => 48, 'location' => 168 );
+	return isset( $rules[ $kind ] ) ? $rules[ $kind ] : null;
+}
+
+// Sundays are closed by default (spec §6.3).
+function mwm_rm_is_closed_day( $ymd, $closed_dows = array( 0 ) ) {
+	$ts = strtotime( $ymd );
+	if ( $ts === false ) { return true; }
+	return in_array( (int) date( 'w', $ts ), (array) $closed_dows, true );
+}
+
+// The first date she can actually pick.
+//
+// 🔴 Three separate constraints, and missing any one of them offers her a day
+// we would then have to take back:
+//   1. the notice rule,
+//   2. a closed day,
+//   3. 🔑 her plan has not started — before 3 Oct she has no hours to spend, so
+//      a date before term_start is not bookable no matter how much notice it has.
+//
+// Days inside the window are NOT offered and NOT warned about. A rule you can
+// click through is a rule you will be asked to break.
+function mwm_rm_earliest_bookable( $kind, $today = null, $term_start = null,
+                                   $closed_dows = array( 0 ), $max_scan = 60 ) {
+	$notice = mwm_rm_notice_hours( $kind );
+	if ( $notice === null ) { return null; }
+	$today = $today ? $today : date( 'Y-m-d' );
+	$ts    = strtotime( $today );
+	if ( $ts === false ) { return null; }
+
+	// Notice is counted in whole days from today, rounding UP — 48 hours from
+	// some point today means the day after tomorrow, not tomorrow.
+	$days = (int) ceil( $notice / 24 );
+	$cand = date( 'Y-m-d', strtotime( $today . ' +' . $days . ' day' ) );
+
+	if ( $term_start && $cand < $term_start ) { $cand = $term_start; }
+
+	for ( $i = 0; $i < $max_scan; $i++ ) {
+		if ( ! mwm_rm_is_closed_day( $cand, $closed_dows ) ) { return $cand; }
+		$cand = date( 'Y-m-d', strtotime( $cand . ' +1 day' ) );
+	}
+	return null;
+}
+
+// The two things she can ask for, each carrying its own rule so the page can
+// state it beside the control rather than in a paragraph nobody reads.
+function mwm_rm_request_options( $client, $today = null ) {
+	$term_start = isset( $client['contract_start'] ) ? $client['contract_start'] : null;
+	return array(
+		array(
+			'kind'            => 'studio',
+			'label'           => 'Studio time',
+			'where'           => 'MWM Studios, Orlando',
+			'notice_hours'    => mwm_rm_notice_hours( 'studio' ),
+			'notice_words'    => '48 hours',
+			'draws_from'      => 'studio',
+			'included_hours'  => 4.0,
+			'earliest'        => mwm_rm_earliest_bookable( 'studio', $today, $term_start ),
+			'needs_address'   => false,
+			'verb'            => 'Request',
+		),
+		array(
+			'kind'            => 'location',
+			'label'           => 'Filming on location',
+			'where'           => 'Your location',
+			'notice_hours'    => mwm_rm_notice_hours( 'location' ),
+			'notice_words'    => '7 days',
+			'draws_from'      => 'location',
+			'included_hours'  => 4.0,
+			'earliest'        => mwm_rm_earliest_bookable( 'location', $today, $term_start ),
+			'needs_address'   => true,
+			'verb'            => 'Suggest',
+		),
+	);
+}
+
+// Validate a date she picks. Server-side, because the client-side block is
+// convenience and never security — never trust the browser on a rule that
+// costs a crew day.
+function mwm_rm_validate_request( $kind, $date, $client, $today = null ) {
+	$earliest = mwm_rm_earliest_bookable(
+		$kind, $today,
+		isset( $client['contract_start'] ) ? $client['contract_start'] : null
+	);
+	if ( $earliest === null ) {
+		return array( 'ok' => false, 'error' => 'unknown request type' );
+	}
+	if ( ! $date || strtotime( $date ) === false ) {
+		return array( 'ok' => false, 'error' => 'pick a date' );
+	}
+	if ( $date < $earliest ) {
+		return array(
+			'ok'       => false,
+			'error'    => sprintf( 'The earliest we can take is %s.', $earliest ),
+			'earliest' => $earliest,
+		);
+	}
+	if ( mwm_rm_is_closed_day( $date ) ) {
+		return array( 'ok' => false, 'error' => 'We are closed on Sundays.' );
+	}
+	// 🔴 A location day with no usable address is a REFUSAL, not a fallback.
+	// Defaulting to the studio address sends a van to Winter Park while the
+	// client waits at her own office (spec §13.1).
+	if ( $kind === 'location' ) {
+		return array( 'ok' => true, 'state' => 'requested', 'needs_address' => true );
+	}
+	return array( 'ok' => true, 'state' => 'requested' );
+}
+
 // ── §2 · DELIVERY CEILINGS ────────────────────────────────────────────────
 // 🔴 INTERNAL ONLY. Read the file header before using this anywhere near a
 // client-facing string. It exists so production can plan capacity (ROB §8b)
