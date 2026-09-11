@@ -1,0 +1,84 @@
+{
+  "_note": "Canonical Luzia Costa GOLD ROADMAP portal data. ONE source, two consumers: the local harness and gen_wp_seeder. Never edit the generated PHP. Card titles carry {tokens}, never numbers — a stored figure is true on the day it is seeded and contradicts the live meters afterwards (portal v1.5.0).",
+  "_sources": {
+    "contract": "MWM_Contrato_Plano_GOLD_MWM-LC-2026-02.pdf Rev 5, 11 Sep 2026 — read in full, §1-§7 plus the ToS appended as pages 5-6. Drive id 1Te6vIf7DsmTSc4ub36f7RY-DHzuC7dC8.",
+    "spec": "ROB, #dev Sep 11 2026 07:55 ET, §1-§9 plus the ToS thread.",
+    "addon_quote": "MWM_Diaria_Adicional_Miami_MWM-LC-2026-01.pdf Rev 8, 10 Sep 2026 — the live Miami quote. Drive id 1Mio5kaBPNM33KFx_mrjL3cMCZd0TsjWD.",
+    "emails": "standing_contacts.py BUILTIN — luziahcosta@hotmail.com, Nicole.formore@gmail.com on every email and every calendar invite (Michael, 2 Sep 2026).",
+    "studio": "PORTAL_CLIENTS.json as of 2026-08-28 — 'Luzia Costa', package '4h Podcast - Mensal', 8.00 contract hours, 4.00 used, 2026-07-01 to 2026-10-01. SEPARATE PRODUCT. See _open_questions."
+  },
+  "_open_questions": [
+    "contract_start is BLANK in the signed PDF ('Início: ___/___/2026') and both signature dates are blank. billing_anchor_day is therefore unknown, and it is the anchor for the whole no-rollover cycle. Left null on purpose — a guessed anchor expires her hours on the wrong day, silently.",
+    "Her existing Studio Package ('4h Podcast - Mensal', 8h/mo, ends 2026-10-01) overlaps GOLD's included 4 studio hours. Does the studio package continue alongside, get absorbed, or end? studio_client_id is left null until that is answered, because linking the ledgers would double-count her hours.",
+    "No annual roadmap has been authored for her yet, so campaigns is empty by design rather than invented. The portal renders a 'being built' state — never 12 empty boxes (spec §11.2)."
+  ],
+  "client": {
+    "client_name": "Luzia Costa",
+    "company": "",
+    "email": "luziahcosta@hotmail.com",
+    "primary_contact": "Nicole — assistant (Nicole.formore@gmail.com)",
+    "plan": "gold",
+    "status": "active",
+    "strategist": "Michael Moraes",
+    "language": "en",
+    "contract_ref": "MWM-LC-2026-02 Rev 5",
+    "contract_start": null,
+    "contract_end": null,
+    "term_months": 12,
+    "billing_mode": "monthly",
+    "billing_anchor_day": null,
+    "monthly_cents": 249700,
+    "rate_card_version": "2026-09",
+    "travel_policy_version": "v1.1",
+    "included_location_hours": 4.0,
+    "included_studio_hours": 4.0,
+    "editing_waived": 1,
+    "studio_client_id": null,
+    "campaigns_allowed": 0,
+    "captures_allowed": 0,
+    "studio_hours_allowed": 0
+  },
+  "plan_copy": {
+    "headline": "GOLD ROADMAP",
+    "price_line": "$2,497 / month · 12-month term",
+    "included_lines": [
+      "One location day each cycle — up to 4 hours, crew, camera, audio and lighting at your location",
+      "Studio time at MWM Studios, Orlando — up to 4 hours each cycle",
+      "Concept creation for new programmes, and the scripts for everything we film under the plan",
+      "Your annual content roadmap"
+    ],
+    "hours_note": "Hours are per cycle and do not carry over — anything unused expires at the end of the cycle. Recording time starts when the crew arrives, so travel never eats into your window."
+  },
+  "campaigns": [],
+  "addons": [
+    {
+      "code": "location_day_4h",
+      "label": "Additional location day — Miami, 4 hours",
+      "qty": 1,
+      "state": "requested",
+      "quote_ref": "MWM-LC-2026-01 Rev 8",
+      "quoted_on": "2026-09-10",
+      "quote_valid_days": 7,
+      "proposed_for": "2026-09-26",
+      "location": "Miami, FL",
+      "travel_zone": 4,
+      "travel_fee_cents": 100000,
+      "list_unit_cents": 175000,
+      "quoted_unit_cents": 105000,
+      "quoted_total_cents": 205000,
+      "note": "Quoted at the dedicated-operator format with a GOLD welcome courtesy of $1,150 ($700 off the day, $450 lodging waived on a same-day round trip). Delivers up to 1 main video and 10 vertical cuts, 2 rounds of adjustments, 5 business days. NOT approved — no written approval on record, so it stays in `requested`."
+    }
+  ],
+  "actions": [
+    {
+      "title": "Miami location day — awaiting your go-ahead",
+      "detail": "We have held Saturday 26 September for the Miami day quoted on 10 September. Nothing is booked until you confirm in writing, and the quote is valid for 7 days from that date. It goes on your next invoice with the subscription — no deposit, no separate charge.",
+      "due_date": "2026-09-17"
+    },
+    {
+      "title": "Your annual roadmap is being built",
+      "detail": "Michael is putting together the year — the themes, the shape of each campaign and what we film when. It will appear here as soon as it is ready, and you will be able to see the whole 12 months at once.",
+      "due_date": null
+    }
+  ]
+}
