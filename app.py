@@ -13064,6 +13064,10 @@ def _followup_scheduler():
             now = datetime.now(pytz.timezone(TIMEZONE))
             due, untracked = [], []
             seen_emails = set()
+            # Patch #141 — the alarm's real signal, gathered in the loop that
+            # already reads these stamps. No extra query, and it measures
+            # follow-ups rather than 'any email at all'.
+            _last_fu_at = None
             for phone, data in list(lead_data.items()):
                 email = str(data.get("email") or "").strip().lower()
                 if not email or "@" not in email:
@@ -13095,6 +13099,8 @@ def _followup_scheduler():
                 if fu:
                     at = _parse(fu.get("at") if isinstance(fu, dict) else fu)
                     if at:
+                        if _last_fu_at is None or at > _last_fu_at:
+                            _last_fu_at = at
                         days_since = (now - at).total_seconds() / 86400
                         if days_since >= FOLLOWUP_SPACING_DAYS:
                             due.append({"email": email, "name": name, "biz": biz,
@@ -13159,36 +13165,47 @@ def _followup_scheduler():
             lines.append("_Reply-to-lead timing rules: 24h after welcome, 3-day spacing. Stamps update automatically when you send via /api/send-email._")
             _post_to_slack_async(SLACK_SUSAN_CHANNEL, "\n".join(lines))
 
-            # PATCH #38 — ZERO-SEND ALARM. Work is due and the rail has sent
-            # nothing for days: that is the rail being DOWN, not busy, and it
-            # must page on its own rather than wait for a human to go looking.
+            # PATCH #38 — ZERO-SEND ALARM · REWIRED BY PATCH #141.
+            #
+            # 🔴 It read `followup_last_send_at`, which `_email_send` stamps on
+            # EVERY successful outbound email — booking confirmations, session
+            # reminders, operator self-tests, the lot. MWM sends transactional
+            # mail most hours of most days, so that value is almost always
+            # minutes old and the alarm could not fire no matter how dead this
+            # rail was. It last fired 8 Sep; the rail then sent nothing for
+            # seven days while the digest posted four more times and Dondrique
+            # Lewis aged 38.7 -> 40.7 days at exactly +1.0 a day.
+            #
+            # Patch #69 put that stamp in the shared wrapper on purpose, to fix
+            # the opposite bug (the counter read "never" while mail flowed and
+            # paged MATT three times). It cured the false positive and created
+            # a false negative — and a silent alarm is indistinguishable from a
+            # healthy rail, which is how this ran for a week under a human who
+            # read the digest every morning.
+            #
+            # The right signal was already in memory: `_last_fu_at`, the most
+            # recent `followup_sent` stamp across all leads. The decision lives
+            # in followup_alarm.py so it can be tested without a database.
             try:
-                _last_send = _p.load_state("followup_last_send_at", None)
-                _dry_days = None
-                if _last_send:
-                    # Parsed inline on purpose: `_parse` above is a loop-local
-                    # and relying on it leaking out of the loop is exactly the
-                    # kind of thing that NameErrors on an edge path in prod.
-                    try:
-                        _ls = datetime.fromisoformat(str(_last_send))
-                        if _ls.tzinfo is None:
-                            _ls = pytz.timezone(TIMEZONE).localize(_ls)
-                        _dry_days = (now - _ls).total_seconds() / 86400
-                    except Exception:
-                        _dry_days = None
+                import followup_alarm as _fa
+                _state = _fa.rail_state(now, len(due), _last_fu_at,
+                                        threshold_days=FOLLOWUP_DRY_ALARM_DAYS)
+                if _state.get("alarm"):
+                    _akey = "followup_dry_alarm:" + now.strftime("%Y-%m-%d")
+                    if not _p.load_state(_akey, False):
+                        _p.save_state(_akey, True)
+                        _worst = max(due, key=lambda d: d["overdue_days"]) if due else None
+                        _msg = _fa.alarm_text(
+                            _state, len(due),
+                            oldest_name=_worst["name"] if _worst else None,
+                            oldest_days=_worst["overdue_days"] if _worst else None)
+                        if _msg:
+                            _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
                 else:
-                    _dry_days = 999    # never sent since instrumentation
-                if due and _dry_days is not None and _dry_days >= FOLLOWUP_DRY_ALARM_DAYS:
-                    if not _p.load_state("followup_dry_alarm:" + now.strftime("%Y-%m-%d"), False):
-                        _p.save_state("followup_dry_alarm:" + now.strftime("%Y-%m-%d"), True)
-                        _dry_txt = ("never (since instrumentation)" if _dry_days >= 999
-                                    else f"{_dry_days:.1f} days ago")
-                        _post_to_slack_async(SLACK_MATT_CHANNEL,
-                            f":rotating_light: *ZERO-SEND ALARM — the follow-up rail is not sending.*\n"
-                            f"{len(due)} follow-up(s) are DUE and the last successful send via "
-                            f"`/api/send-email` was *{_dry_txt}*.\n"
-                            f"Due work plus no sends means the rail is DOWN, not busy. "
-                            f"Check the send token and the scheduled run before assuming a quiet week.")
+                    # Logged even when quiet. "No alarm" had three different
+                    # causes and no way to tell them apart from outside.
+                    print(f"[Followup Scheduler] rail ok — {_state.get('reason')} "
+                          f"(dry={_state.get('dry_days')}, due={len(due)})")
             except Exception as _za:
                 print(f"[Followup Scheduler] zero-send alarm check failed (non-fatal): {_za}")
 
