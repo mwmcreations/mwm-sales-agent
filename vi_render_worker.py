@@ -184,6 +184,7 @@ def do_job(job, clips, reframe, library, search_fn):
     plan["render_seconds"] = round(time.time() - t, 1)
     plan["worker"] = WORKER
     plan["encoder"] = ENCODER
+    plan["titles"] = bool(vc.font_path() and vc.has_filter(FFMPEG, "drawtext"))
     plan["bytes"] = os.path.getsize(out_path)
     seconds = sum(s["dur"] for s in plan["shots"])
     log("  rendered %s (%d bytes) in %.0fs; uploading" % (out_name, plan["bytes"], plan["render_seconds"]))

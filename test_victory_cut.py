@@ -188,10 +188,18 @@ class TestTheCommands(unittest.TestCase):
         head, outro = vc.titles_for("kids' night: 100% fun; the best")
         self.assertEqual(head[0], "KIDS' NIGHT 100 FUN")     # the apostrophe is escaped later, by _esc
         self.assertEqual(vc._esc("a:b 'c' 100%"), "a\\:b \u2019c\u2019 100%%")
+        vc._filters_cache[("f", "drawtext")] = True        # pretend this ffmpeg can draw
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 29.0, ("x:y", "z"), outro, "/f.ttf")
         vf = cmd[cmd.index("-vf") + 1]
         self.assertIn("text='x\\:y'", vf)
         self.assertIn("loudnorm", " ".join(cmd))
+
+    def test_an_ffmpeg_without_drawtext_still_cuts_just_without_titles(self):
+        # Homebrew's ffmpeg 8 on the Mini: "No such filter: 'drawtext'" — 14 Sep
+        vc._filters_cache[("plainffmpeg", "drawtext")] = False
+        cmd = vc.final_cmd("plainffmpeg", "body.mp4", "m.wav", "out.mp4", 29.0, ("A", "B"), ("C", "D"), "/f.ttf")
+        self.assertNotIn("drawtext", " ".join(cmd))
+        self.assertIn("fade=t=out", " ".join(cmd))
 
     def test_no_music_still_normalises(self):
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)

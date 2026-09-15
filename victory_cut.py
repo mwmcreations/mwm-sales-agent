@@ -235,10 +235,27 @@ def concat_cmd(ffmpeg, list_file, dst):
     return [ffmpeg, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", dst]
 
 
+_filters_cache = {}
+
+
+def has_filter(ffmpeg, name):
+    """Does this ffmpeg build have a filter? Homebrew's ffmpeg 8 on the Mini
+    ships without drawtext (no freetype), so titles are optional, not fatal."""
+    key = (ffmpeg, name)
+    if key not in _filters_cache:
+        try:
+            out = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True,
+                                 text=True, timeout=60).stdout
+            _filters_cache[key] = (" %s " % name) in out
+        except Exception:
+            _filters_cache[key] = False
+    return _filters_cache[key]
+
+
 def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264"):
     end = float(total)
     filters = []
-    if font:
+    if font and has_filter(ffmpeg, "drawtext"):
         filters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
                     _drawtext(font, head[1], 42, "h*0.40+100", 0.5, 3.2, "0xE8E8E8"),
                     _drawtext(font, outro[0], 76, "h*0.42", end - 3.0, end - 0.1),
