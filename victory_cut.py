@@ -264,7 +264,7 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
 def probe(ffprobe, path):
     r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
                         "stream=width,height,duration", "-of", "json", path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=120)
     s = json.loads(r.stdout)["streams"][0]
     return int(s["width"]), int(s["height"]), float(s.get("duration") or 0)
 
@@ -280,7 +280,7 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
         dur = min(s["dur"], max(0.5, length - s["in"] - 0.05)) if length else s["dur"]
         dst = os.path.join(workdir, "seg%02d.mp4" % i)
         subprocess.run(segment_cmd(ffmpeg, src, dst, width, height, s["x"], s["in"], dur, encoder),
-                       check=True, capture_output=True, text=True)
+                       check=True, capture_output=True, text=True, timeout=600)
         segs.append(dst)
         total += dur
         log("  seg %02d %-48s in %.1f dur %.1f x %.2f (%s)" % (i, s["id"][:48], s["in"], dur, s["x"], s["framed_by"]))
@@ -289,10 +289,10 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
         for sgm in segs:
             f.write("file '%s'\n" % sgm)
     body = os.path.join(workdir, "body.mp4")
-    subprocess.run(concat_cmd(ffmpeg, lst, body), check=True, capture_output=True, text=True)
+    subprocess.run(concat_cmd(ffmpeg, lst, body), check=True, capture_output=True, text=True, timeout=300)
     head, outro = titles_for(plan_["ask"], event_title)
     subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder),
-                   check=True, capture_output=True, text=True)
+                   check=True, capture_output=True, text=True, timeout=900)
     return out_path, round(total, 2)
 
 

@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -241,6 +242,13 @@ def main():
                                                                       len(library.get("tracks", []))))
             try:
                 do_job(job, clips, reframe, library, search_fn)
+            except subprocess.CalledProcessError as e:
+                err = "ffmpeg failed: %s" % ((e.stderr or str(e))[-500:],)
+                log("  job #%s FAILED: %s" % (job["id"], err))
+                try:
+                    _post_json("/vi/jobs/%s/fail" % job["id"], {"error": err, "worker": WORKER})
+                except Exception as e2:
+                    log("  and could not report it: %r" % (e2,))
             except Exception as e:
                 err = "%s: %s" % (type(e).__name__, str(e)[:500])
                 log("  job #%s FAILED: %s" % (job["id"], err))
