@@ -201,8 +201,9 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
 
 def titles_for(ask, event_title="Convention 2026"):
     """A head card and a sign-off from the ask. Short, uppercase, no cleverness."""
-    words = [w for w in re.findall(r"[A-Za-z0-9']+", ask or "") if w.lower() not in STOP]
-    head = " ".join(words[:4]).upper() if words else event_title.upper()
+    words = [w for w in re.findall(r"[A-Za-z0-9']+", ask or "")
+             if w.lower() not in STOP and not w.isdigit()]
+    head = " ".join(words[:3]).upper() if words else event_title.upper()
     if len(head) > 22:
         head = head[:22].rsplit(" ", 1)[0]
     return (head or event_title.upper(), event_title), ("Victory Martial Arts", event_title)
@@ -252,29 +253,46 @@ def has_filter(ffmpeg, name):
     return _filters_cache[key]
 
 
-def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264"):
+def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None):
+    """cards: optional (head_png, outro_png) paths — transparent 1080x1920
+    pictures of the titles, used when this ffmpeg cannot draw text itself."""
     end = float(total)
-    filters = []
-    if font and has_filter(ffmpeg, "drawtext"):
-        filters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
-                    _drawtext(font, head[1], 42, "h*0.40+100", 0.5, 3.2, "0xE8E8E8"),
-                    _drawtext(font, outro[0], 76, "h*0.42", end - 3.0, end - 0.1),
-                    _drawtext(font, outro[1], 48, "h*0.42+100", end - 2.8, end - 0.1, "0xE8E8E8")]
-    filters.append("fade=t=out:st=%.2f:d=0.5" % (end - 0.5))
     venc = ["-c:v", encoder] + (["-b:v", "10M", "-allow_sw", "1"] if "videotoolbox" in encoder
                                  else ["-preset", "medium", "-crf", "21"])
     cmd = [ffmpeg, "-v", "error", "-y", "-i", body]
+    chain = []          # filter_complex parts
+    vin = "[0:v]"
+    n_in = 1
     if music:
-        cmd += ["-i", music, "-filter_complex",
-                "[0:a]volume=0.25[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
-                "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5[mus];"
-                "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                "loudnorm=I=-14:TP=-1.5:LRA=11[a]" % (end, end - 1.5),
-                "-map", "0:v", "-map", "[a]"]
+        cmd += ["-i", music]
+        chain.append("[0:a]volume=0.25[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
+                     "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5[mus];"
+                     "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
+                     "loudnorm=I=-14:TP=-1.5:LRA=11[a]" % (end, end - 1.5))
+        n_in = 2
     else:
-        cmd += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
-    cmd += ["-vf", ",".join(filters)] + venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-                                               "-movflags", "+faststart", "-t", "%.3f" % end, dst]
+        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[a]")
+    vfilters = []
+    if cards and cards[0] and cards[1]:
+        cmd += ["-loop", "1", "-i", cards[0], "-loop", "1", "-i", cards[1]]
+        h, o = n_in, n_in + 1
+        chain.append("[%d:v]format=rgba,fade=t=in:st=0.3:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[hc]"
+                     % (h, 2.8))
+        chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[oc]"
+                     % (o, end - 3.0, end - 0.5))
+        chain.append("%s[hc]overlay=0:0:enable='between(t,0.3,3.2)'[v1]" % vin)
+        chain.append("[v1][oc]overlay=0:0:enable='between(t,%.2f,%.2f)'[v2]" % (end - 3.0, end))
+        vin = "[v2]"
+    elif font and has_filter(ffmpeg, "drawtext"):
+        vfilters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
+                     _drawtext(font, head[1], 42, "h*0.40+100", 0.5, 3.2, "0xE8E8E8"),
+                     _drawtext(font, outro[0], 76, "h*0.42", end - 3.0, end - 0.1),
+                     _drawtext(font, outro[1], 48, "h*0.42+100", end - 2.8, end - 0.1, "0xE8E8E8")]
+    vfilters.append("fade=t=out:st=%.2f:d=0.5" % (end - 0.5))
+    chain.append("%s%s[v]" % (vin, ",".join(vfilters)))
+    cmd += ["-filter_complex", ";".join(chain), "-map", "[v]", "-map", "[a]"]
+    cmd += venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                   "-movflags", "+faststart", "-t", "%.3f" % end, dst]
     return cmd
 
 
@@ -287,7 +305,7 @@ def probe(ffprobe, path):
 
 
 def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
-           ffprobe="ffprobe", encoder="libx264", event_title="Convention 2026", log=print):
+           ffprobe="ffprobe", encoder="libx264", event_title="Convention 2026", log=print, cards=None):
     """Run the plan. clip_paths: id -> local file. Returns (out_path, seconds)."""
     os.makedirs(workdir, exist_ok=True)
     segs, total = [], 0.0
@@ -308,7 +326,8 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
     body = os.path.join(workdir, "body.mp4")
     subprocess.run(concat_cmd(ffmpeg, lst, body), check=True, capture_output=True, text=True, timeout=300)
     head, outro = titles_for(plan_["ask"], event_title)
-    subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder),
+    subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
+                             cards=cards),
                    check=True, capture_output=True, text=True, timeout=900)
     return out_path, round(total, 2)
 

@@ -25,6 +25,7 @@ its own.
     POST /vi/jobs/<id>/deliver   the finished file     (admin; multipart)
     POST /vi/jobs/<id>/fail      why it did not render (admin)
     POST /vi/jobs/<id>/requeue   back in the queue     (admin)
+    GET  /vi/card            a title card as a PNG     (admin; the worker)
     POST /vi/drive-selftest  prove the Drive path      (admin)
 
 TWO GATES, AND THE DIFFERENCE MATTERS
@@ -607,6 +608,36 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return jsonify({"ok": True, "id": rid, "state": "asked"}), 200
         except Exception as e:
             _err("vi_jobs_requeue", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/card", methods=["GET"])
+    def vi_card():
+        """A title card as a PNG (admin). The Mac worker fetches two per cut
+        because its ffmpeg cannot draw text. See victory_cards."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            import victory_cards as vc_
+            big = (request.values.get("big") or "")[:40]
+            small = (request.values.get("small") or "")[:40]
+            try:
+                y = float(request.values.get("y") or 0.40)
+            except ValueError:
+                y = 0.40
+            try:
+                size_big = int(request.values.get("size") or 70)
+            except ValueError:
+                size_big = 70
+            png = vc_.render_card(big, small, y_frac=max(0.05, min(0.9, y)), size_big=max(30, min(120, size_big)))
+            if not png:
+                return jsonify({"ok": False, "error": "could not render"}), 500
+            resp = make_response(png)
+            resp.headers["Content-Type"] = "image/png"
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+        except Exception as e:
+            _err("vi_card", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     @app.route("/vi/drive-selftest", methods=["POST"])

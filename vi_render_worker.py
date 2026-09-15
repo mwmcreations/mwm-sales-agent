@@ -74,6 +74,33 @@ def _post_json(path, body, timeout=60):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _get_bytes(path, params=None, timeout=60):
+    params = dict(params or {})
+    params["secret"] = SECRET
+    url = APP + path + "?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read()
+
+
+def fetch_cards(head, outro, workdir):
+    """The two title pictures, from the app. None if anything is off — the
+    cut then ships without titles, as it did before cards existed."""
+    try:
+        paths = []
+        for name, (big, small), y in (("head", head, 0.40), ("outro", outro, 0.42)):
+            png = _get_bytes("/vi/card", {"big": big, "small": small, "y": "%.2f" % y})
+            if not png.startswith(b"\x89PNG"):
+                raise RuntimeError("not a PNG for %s" % name)
+            p = os.path.join(workdir, name + ".png")
+            with open(p, "wb") as f:
+                f.write(png)
+            paths.append(p)
+        return tuple(paths)
+    except Exception as e:
+        log("  no title cards: %r" % (e,))
+        return None
+
+
 def _post_file(path, fields, file_field, file_path, timeout=600):
     """Multipart upload with the standard library."""
     boundary = "----vi" + uuid.uuid4().hex
@@ -179,12 +206,17 @@ def do_job(job, clips, reframe, library, search_fn):
     out_name = "VI_%s_req%s.mp4" % (re.sub(r"[^a-z0-9]+", "-", ask.lower())[:40].strip("-") or "cut", rid)
     out_path = os.path.join(workdir, out_name)
     t = time.time()
+    cards = None
+    if not (vc.font_path() and vc.has_filter(FFMPEG, "drawtext")):
+        head, outro = vc.titles_for(ask)
+        cards = fetch_cards(head, outro, workdir)
     vc.render(plan, paths, music_path, workdir, out_path, ffmpeg=FFMPEG, ffprobe=FFPROBE,
-              encoder=ENCODER, log=log)
+              encoder=ENCODER, log=log, cards=cards)
     plan["render_seconds"] = round(time.time() - t, 1)
     plan["worker"] = WORKER
     plan["encoder"] = ENCODER
-    plan["titles"] = bool(vc.font_path() and vc.has_filter(FFMPEG, "drawtext"))
+    plan["titles"] = "drawtext" if (vc.font_path() and vc.has_filter(FFMPEG, "drawtext")) \
+        else ("cards" if cards else "none")
     plan["bytes"] = os.path.getsize(out_path)
     seconds = sum(s["dur"] for s in plan["shots"])
     log("  rendered %s (%d bytes) in %.0fs; uploading" % (out_name, plan["bytes"], plan["render_seconds"]))

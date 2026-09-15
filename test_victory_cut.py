@@ -186,13 +186,26 @@ class TestTheCommands(unittest.TestCase):
     def test_user_text_cannot_break_the_filter(self):
         # titles_for keeps only words; and even raw text is escaped by _esc
         head, outro = vc.titles_for("kids' night: 100% fun; the best")
-        self.assertEqual(head[0], "KIDS' NIGHT 100 FUN")     # the apostrophe is escaped later, by _esc
+        self.assertEqual(head[0], "KIDS' NIGHT FUN")     # numbers dropped; the apostrophe is escaped later, by _esc
         self.assertEqual(vc._esc("a:b 'c' 100%"), "a\\:b \u2019c\u2019 100%%")
         vc._filters_cache[("f", "drawtext")] = True        # pretend this ffmpeg can draw
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 29.0, ("x:y", "z"), outro, "/f.ttf")
-        vf = cmd[cmd.index("-vf") + 1]
+        vf = cmd[cmd.index("-filter_complex") + 1]
         self.assertIn("text='x\\:y'", vf)
         self.assertIn("loudnorm", " ".join(cmd))
+
+    def test_cards_are_overlaid_when_given(self):
+        cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                           cards=("head.png", "outro.png"))
+        joined = " ".join(cmd)
+        self.assertIn("-loop 1 -i head.png", joined)
+        self.assertIn("overlay=0:0:enable='between(t,0.3,3.2)'", joined)
+        self.assertIn("between(t,27.00,30.00)", joined)
+        self.assertNotIn("drawtext", joined)
+
+    def test_titles_drop_numbers_and_stay_short(self):
+        head, _ = vc.titles_for("A 30-second reel for the Lake Nona page, aimed at parents.")
+        self.assertEqual(head[0], "LAKE NONA PARENTS")
 
     def test_an_ffmpeg_without_drawtext_still_cuts_just_without_titles(self):
         # Homebrew's ffmpeg 8 on the Mini: "No such filter: 'drawtext'" — 14 Sep
