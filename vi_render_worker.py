@@ -140,7 +140,7 @@ def local_search():
 
     def search(q):
         rows, peak, speech, fallback = vi.search_corpus(q, corpus)
-        return {"found": len(rows), "fallback": fallback,
+        return {"found": len(rows), "fallback": fallback, "peak": peak,
                 "results": [{"id": r["id"], "kind": r["k"]} for r in rows[:60]]}
     return search
 
@@ -197,6 +197,12 @@ def do_job(job, clips, reframe, library, search_fn):
 
 
 def main():
+    # launchd ends the daemon's whole process group when the daemon exits;
+    # a new session keeps this worker alive after its parent is gone.
+    try:
+        os.setsid()
+    except OSError:
+        pass
     if not SECRET:
         log("no VI_SECRET in the environment — nothing to do")
         return 2
