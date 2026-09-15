@@ -73,6 +73,7 @@ class FakeStore(object):
         self.people = {}     # email -> {role, school}
         self.searches = []
         self.requests = []
+        self.feedback = []
         self.secret = SIGNING
 
     def init_schema(self):
@@ -119,13 +120,86 @@ class FakeStore(object):
     def purge_links(self, older_than_seconds=86400):
         return 0
 
-    def create_request(self, email, role, school, note, items):
-        self.requests.append({"email": email, "role": role, "note": note,
-                              "items": items})
+    def create_request(self, email, role, school, note, items, length_s=30):
+        self.requests.append({"id": len(self.requests) + 1, "at": "2026-09-14 20:00:00",
+                              "email": email, "role": role, "school": school,
+                              "note": note, "items": items, "state": "asked",
+                              "handled_at": None, "handled_by": None,
+                              "length_s": length_s, "started_at": None, "finished_at": None,
+                              "result_drive_id": None, "result_file": None,
+                              "result_bytes": None, "result_seconds": None,
+                              "summary": None, "error": None})
         return len(self.requests)
 
     def list_requests(self, limit=50, state=None):
-        return list(self.requests)
+        rows = [dict(r) for r in self.requests if not state or r["state"] == state]
+        return list(reversed(rows))[:limit]
+
+    def list_requests_for(self, email, limit=50):
+        return [dict(r) for r in reversed(self.requests) if r["email"] == email][:limit]
+
+    def get_request(self, rid):
+        for r in self.requests:
+            if r["id"] == int(rid):
+                return dict(r)
+        return None
+
+    def claim_next_request(self, worker):
+        for r in self.requests:
+            if r["state"] == "asked":
+                r["state"] = "rendering"; r["handled_by"] = worker
+                r["handled_at"] = r["started_at"] = "2026-09-14 20:01:00"
+                return dict(r)
+        return None
+
+    def finish_request(self, rid, state, drive_id=None, file_name=None, size=None,
+                       seconds=None, summary=None, error=None):
+        for r in self.requests:
+            if r["id"] == int(rid):
+                r["state"] = state; r["finished_at"] = "2026-09-14 20:02:00"
+                if drive_id: r["result_drive_id"] = drive_id
+                if file_name: r["result_file"] = file_name
+                if size: r["result_bytes"] = size
+                if seconds: r["result_seconds"] = seconds
+                if summary is not None: r["summary"] = summary
+                r["error"] = error
+                return True
+        return False
+
+    def set_request_state(self, rid, state, by=""):
+        for r in self.requests:
+            if r["id"] == int(rid):
+                r["state"] = state; r["handled_by"] = by or r["handled_by"]
+                return True
+        return False
+
+    def requeue_stale(self, older_than_seconds=1800):
+        return 0
+
+    def queue_counts(self):
+        out = {}
+        for r in self.requests:
+            out[r["state"]] = out.get(r["state"], 0) + 1
+        return out
+
+    def recent_music(self, email, limit=2):
+        out = []
+        for r in reversed(self.requests):
+            if r["email"] == email and isinstance(r.get("summary"), dict) and r["summary"].get("music_id"):
+                out.append(r["summary"]["music_id"])
+        return out[:limit]
+
+    def add_feedback(self, rid, email, text):
+        self.feedback.append({"request_id": int(rid), "at": "2026-09-14 20:03:00",
+                              "email": email, "text": text})
+        return len(self.feedback)
+
+    def list_feedback(self, rids):
+        out = {}
+        for f in self.feedback:
+            if f["request_id"] in [int(r) for r in rids]:
+                out.setdefault(f["request_id"], []).append(dict(f))
+        return out
 
 
 _REAL = {}
@@ -136,7 +210,10 @@ def install_fake_store(fake):
     for name in ("init_schema", "session_secret", "create_link", "consume_link",
                  "get_person", "remember_person", "grant", "list_people",
                  "log_search", "recent_searches", "purge_links",
-                 "create_request", "list_requests"):
+                 "create_request", "list_requests", "list_requests_for", "get_request",
+                 "claim_next_request", "finish_request", "set_request_state",
+                 "requeue_stale", "queue_counts", "recent_music", "add_feedback",
+                 "list_feedback"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -146,10 +223,21 @@ def restore_store():
         setattr(vs, name, fn)
 
 
+UPLOADS = []
+
+
+def fake_drive_upload(name, data):
+    """Stands in for victory_drive.upload_video: remembers what it was given."""
+    UPLOADS.append({"name": name, "bytes": len(data)})
+    return {"id": "drive-%d" % len(UPLOADS), "link": "https://drive.google.com/file/d/x/view",
+            "download": "https://drive.google.com/uc?export=download&id=x"}
+
+
 def make_client(notes=None):
     app = Flask(__name__)
     app.config["TESTING"] = True
-    vr.register(app, admin_ok, notify=(notes.append if notes is not None else None))
+    vr.register(app, admin_ok, notify=(notes.append if notes is not None else None),
+                drive_upload=fake_drive_upload)
     return app.test_client()
 
 
@@ -609,16 +697,28 @@ class TestAskForACut(VICase):
         self._ask(items=[{"id": "a", "title": "Kids cheering", "kind": "clip"}],
                   note="for the lobby screen")
         joined = " ".join(self.notes)
-        self.assertIn("cut was requested", joined)
+        self.assertIn("requested", joined)
         self.assertIn("Kids cheering", joined)
         self.assertIn("for the lobby screen", joined)
 
     def test_a_note_is_optional(self):
         self.assertEqual(self._ask(items=[{"id": "a", "title": "t"}]).status_code, 200)
 
-    def test_an_empty_pick_is_refused(self):
-        self.assertEqual(self._ask(items=[], note="hi").status_code, 400)
-        self.assertEqual(self._ask(note="hi").status_code, 400)
+    def test_words_alone_are_enough_since_the_machine_finds_the_footage(self):
+        # 14 Sep: "a real automated system that actually finds the footage"
+        self.assertEqual(self._ask(items=[], note="best moments for parents").status_code, 200)
+        self.assertEqual(self._ask(note="candlelight").status_code, 200)
+        self.assertEqual(len(self.store.requests), 2)
+
+    def test_nothing_at_all_is_refused(self):
+        self.assertEqual(self._ask(items=[], note="").status_code, 400)
+        self.assertEqual(self._ask().status_code, 400)
+
+    def test_length_is_kept_and_kept_sane(self):
+        self._ask(note="x", length=60)
+        self._ask(note="x", length=7)
+        self._ask(note="x", length="sixty")
+        self.assertEqual([r["length_s"] for r in self.store.requests], [60, 30, 30])
 
     def test_a_silly_number_of_items_is_refused(self):
         many = [{"id": str(i), "title": "t"} for i in range(200)]
@@ -659,8 +759,13 @@ class TestThePageHelps(VICase):
             self.assertIn(chip, self.page)
 
     def test_it_offers_a_way_to_act_on_results(self):
-        self.assertIn("Ask for a cut", self.page)
+        self.assertIn("Make a video", self.page)
         self.assertIn("/vi/request", self.page)
+        self.assertIn("/vi/queue", self.page)
+
+    def test_it_offers_the_three_lengths(self):
+        for v in ("value=\"15\"", "value=\"30\"", "value=\"60\""):
+            self.assertIn(v, self.page)
 
     def test_it_separates_footage_from_talking(self):
         self.assertIn("Footage", self.page)
@@ -673,8 +778,154 @@ class TestThePageHelps(VICase):
         self.assertIn("format-detection", self.page)
 
     def test_it_asks_for_the_things_that_make_a_cut_possible(self):
-        for hint in ("where it is going", "how long", "who it is for"):
+        for hint in ("where it is going", "How long", "who it is for"):
             self.assertIn(hint, self.page)
+
+
+class TestTheMachineEditor(VICase):
+    """Phase 3: the worker claims, delivers or fails; the person sees it and
+    answers; nobody sees anyone else's video."""
+
+    def setUp(self):
+        VICase.setUp(self)
+        del UPLOADS[:]
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.c.post("/vi/request", json={"note": "best moments for parents", "length": 30})
+        self.c.post("/vi/request", json={"note": "candlelight", "length": 15})
+
+    def _next(self):
+        return self._j(self.c.get("/vi/jobs/next?worker=test&secret=" + SECRET))
+
+    def _deliver(self, rid, size=250_000, summary=None):
+        import io as _io
+        data = {"secret": SECRET, "summary": json.dumps(summary or {"music_id": "01", "shots": [1, 2, 3]}),
+                "seconds": "29.5", "video": (_io.BytesIO(b"v" * size), "VI_test_req%d.mp4" % rid)}
+        return self.c.post("/vi/jobs/%d/deliver" % rid, data=data,
+                           content_type="multipart/form-data")
+
+    def test_the_worker_side_is_admin_only(self):
+        self.assertEqual(self.c.get("/vi/jobs/next").status_code, 401)
+        self.assertEqual(self.c.post("/vi/jobs/1/deliver").status_code, 401)
+        self.assertEqual(self.c.post("/vi/jobs/1/fail", json={"error": "x"}).status_code, 401)
+        self.assertEqual(self.c.post("/vi/drive-selftest").status_code, 401)
+
+    def test_claiming_hands_out_the_oldest_first_and_only_once(self):
+        a = self._next()["job"]; b = self._next()["job"]; c = self._next()["job"]
+        self.assertEqual((a["id"], b["id"], c), (1, 2, None))
+        self.assertEqual(self.store.requests[0]["state"], "rendering")
+        self.assertEqual(a["length_s"], 30)
+        self.assertIn("recent_music", a)
+
+    def test_delivery_stores_the_file_in_drive_and_marks_it_ready(self):
+        self._next()
+        r = self._deliver(1)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(UPLOADS[0]["bytes"], 250_000)
+        row = self.store.get_request(1)
+        self.assertEqual(row["state"], "ready")
+        self.assertEqual(row["result_drive_id"], "drive-1")
+        self.assertEqual(row["result_seconds"], 29.5)
+        self.assertEqual(row["summary"]["music_id"], "01")
+        self.assertIn("ready", " ".join(self.notes))
+
+    def test_a_tiny_upload_is_not_a_video(self):
+        self._next()
+        self.assertEqual(self._deliver(1, size=10).status_code, 400)
+        self.assertEqual(self.store.get_request(1)["state"], "rendering")
+
+    def test_a_failed_drive_upload_is_a_failed_request_not_a_silent_one(self):
+        self._next()
+        c = Flask(__name__); c.config["TESTING"] = True
+        vr.register(c, admin_ok, notify=self.notes.append, drive_upload=lambda n, d: None)
+        tc = c.test_client()
+        import io as _io
+        r = tc.post("/vi/jobs/1/deliver", data={"secret": SECRET, "summary": "{}",
+                    "video": (_io.BytesIO(b"v" * 300000), "x.mp4")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 502)
+        self.assertEqual(self.store.get_request(1)["state"], "failed")
+        self.assertIn("Drive", self.store.get_request(1)["error"])
+
+    def test_the_worker_can_report_a_failure(self):
+        self._next()
+        r = self.c.post("/vi/jobs/1/fail?secret=" + SECRET, json={"error": "ffmpeg exploded", "worker": "test"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.store.get_request(1)["state"], "failed")
+        self.assertIn("ffmpeg exploded", " ".join(self.notes))
+
+    def test_the_music_this_person_already_heard_travels_with_the_next_job(self):
+        self._next(); self._deliver(1, summary={"music_id": "05"})
+        job = self._next()["job"]
+        self.assertEqual(job["recent_music"], ["05"])
+
+    def test_i_see_my_videos_and_only_mine(self):
+        self._next(); self._deliver(1)
+        mine = self._j(self.c.get("/vi/mine"))
+        self.assertEqual(mine["count"], 2)
+        self.assertEqual(mine["requests"][0]["state"], "asked")     # newest first
+        self.assertIn("preview_url", mine["requests"][1])
+        self.assertTrue(mine["busy"])
+        # someone else at Victory sees nothing of Jim's
+        self.c.get("/vi/logout")
+        self._sign_in_as("ann@victoryma.com", va.ROLE_SCHOOL, "Lake Nona")
+        self.assertEqual(self._j(self.c.get("/vi/mine"))["count"], 0)
+        page = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertNotIn("best moments for parents", page)
+
+    def test_mwm_sees_everyone(self):
+        self.c.get("/vi/logout")
+        self._sign_in_as("michael@mwmcreations.com", va.ROLE_MWM)
+        mine = self._j(self.c.get("/vi/mine"))
+        self.assertEqual(mine["count"], 2)
+        self.assertTrue(mine["all"])
+
+    def test_the_page_plays_the_cut_and_asks_what_i_think(self):
+        self._next(); self._deliver(1)
+        page = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertIn("drive.google.com/file/d/drive-1/preview", page)
+        self.assertIn("Send feedback", page)
+        self.assertIn("Approve", page)
+        self.assertIn("Cut it again", page)
+        self.assertIn("Download", page)
+
+    def test_feedback_is_kept_and_dev_hears_it(self):
+        self._next(); self._deliver(1)
+        r = self.c.post("/vi/feedback", json={"id": 1, "text": "music too loud, and the wide shots drag"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.store.feedback[0]["email"], "jim@victoryma.com")
+        self.assertIn("music too loud", " ".join(self.notes))
+        page = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertIn("music too loud", page)
+
+    def test_feedback_on_someone_elses_video_is_refused(self):
+        self.c.get("/vi/logout")
+        self._sign_in_as("ann@victoryma.com", va.ROLE_SCHOOL, "Lake Nona")
+        self.assertEqual(self.c.post("/vi/feedback", json={"id": 1, "text": "hi"}).status_code, 404)
+        self.assertEqual(self.c.post("/vi/decide", json={"id": 1, "decision": "approved"}).status_code, 404)
+
+    def test_empty_feedback_is_refused(self):
+        self.assertEqual(self.c.post("/vi/feedback", json={"id": 1, "text": "  "}).status_code, 400)
+
+    def test_redo_puts_it_back_in_the_queue(self):
+        self._next(); self._deliver(1)
+        r = self.c.post("/vi/decide", json={"id": 1, "decision": "redo"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.store.get_request(1)["state"], "asked")
+        self.assertEqual(self._next()["job"]["id"], 1)
+
+    def test_approve_and_a_nonsense_decision(self):
+        self._next(); self._deliver(1)
+        self.assertEqual(self.c.post("/vi/decide", json={"id": 1, "decision": "approved"}).status_code, 200)
+        self.assertEqual(self.store.get_request(1)["state"], "approved")
+        self.assertEqual(self.c.post("/vi/decide", json={"id": 1, "decision": "burn"}).status_code, 400)
+
+    def test_health_reports_the_queue(self):
+        h = self._j(self.c.get("/vi/health?secret=" + SECRET))
+        self.assertEqual(h["queue"], {"asked": 2})
+
+    def test_a_signed_out_person_sees_the_door_not_the_queue(self):
+        self.c.get("/vi/logout")
+        self.assertEqual(self.c.get("/vi/mine").status_code, 401)
+        self.assertIn("Sign in", self.c.get("/vi/queue").data.decode("utf-8"))
 
 
 if __name__ == "__main__":

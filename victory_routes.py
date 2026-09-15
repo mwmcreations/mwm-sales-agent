@@ -15,6 +15,17 @@ its own.
     GET  /vi/people      who has been granted    (admin)
     POST /vi/issue-link  mint a link WITHOUT emailing it (admin)
 
+    Phase 3 — the machine editor (14 Sep 2026):
+    POST /vi/request         ask for a cut (session)   — items optional now
+    GET  /vi/mine            my requests as JSON       (session)
+    GET  /vi/queue           my requests as a page     (session; mwm sees all)
+    POST /vi/feedback        a note on a finished cut  (session)
+    POST /vi/decide          approve / decline a cut   (session)
+    GET  /vi/jobs/next       claim the next request    (admin; the Mac worker)
+    POST /vi/jobs/<id>/deliver   the finished file     (admin; multipart)
+    POST /vi/jobs/<id>/fail      why it did not render (admin)
+    POST /vi/drive-selftest  prove the Drive path      (admin)
+
 TWO GATES, AND THE DIFFERENCE MATTERS
     Anything that changes the system — ingest, grant — stays behind the
     fail-closed admin secret, which only Michael and the deploy daemon hold.
@@ -44,7 +55,7 @@ def _client_ip(request):
     return request.remote_addr or ""
 
 
-def register(app, admin_ok, report_error=None, send_email=None, notify=None):
+def register(app, admin_ok, report_error=None, send_email=None, notify=None, drive_upload=None):
     """Attach the /vi/* routes.
 
     admin_ok(provided) -> bool          the app's fail-closed admin check
@@ -53,6 +64,8 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                                         link can be emailed and /vi/login says
                                         so in the log rather than pretending)
     notify(text)                        a line into #dev (optional)
+    drive_upload(name, bytes) -> {"id",..} | None   where a finished cut goes
+                                        (optional; defaults to victory_drive)
     """
     from flask import request, jsonify, make_response, redirect
 
@@ -61,6 +74,27 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
     import victory_page as vp
 
     limiter = va.RateLimiter()
+
+    if drive_upload is None:
+        def drive_upload(name, data):
+            import victory_drive as vd
+            return vd.upload_video(name, data)
+
+    def _is_mwm(sess):
+        return bool(sess) and sess.get("role") == va.ROLE_MWM
+
+    def _jsonable_request(r):
+        out = dict(r)
+        for k in ("at", "handled_at", "started_at", "finished_at"):
+            if out.get(k) is not None:
+                out[k] = str(out[k])
+        if isinstance(out.get("summary"), str):
+            try:
+                import json as _json
+                out["summary"] = _json.loads(out["summary"])
+            except Exception:
+                pass
+        return out
 
     def _err(where, exc, ctx=""):
         try:
@@ -304,8 +338,18 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
             body = request.get_json(force=True, silent=True) or {}
             items = body.get("items") or []
             note = (body.get("note") or "").strip()
-            if not isinstance(items, list) or not items:
-                return jsonify({"ok": False, "error": "pick at least one moment"}), 400
+            try:
+                length_s = int(body.get("length") or 30)
+            except (TypeError, ValueError):
+                length_s = 30
+            if length_s not in (15, 30, 60):
+                length_s = 30
+            if not isinstance(items, list):
+                items = []
+            # Since 14 Sep the machine finds the footage itself: a request may
+            # be words alone, moments alone, or both. Never neither.
+            if not items and not note:
+                return jsonify({"ok": False, "error": "say what you want, or pick a moment"}), 400
             if len(items) > 60:
                 return jsonify({"ok": False, "error": "that is too many at once"}), 400
 
@@ -317,12 +361,12 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                     continue
                 clean.append({k: str(it.get(k) or "")[:300]
                               for k in ("id", "title", "kind", "file", "quote")})
-            if not clean:
-                return jsonify({"ok": False, "error": "pick at least one moment"}), 400
+            if not clean and not note:
+                return jsonify({"ok": False, "error": "say what you want, or pick a moment"}), 400
 
             vs.init_schema()
             rid = vs.create_request(sess["email"], sess["role"],
-                                    sess.get("school", ""), note, clean)
+                                    sess.get("school", ""), note, clean, length_s=length_s)
             if not rid:
                 return jsonify({"ok": False, "error": "could not save the request"}), 500
 
@@ -330,13 +374,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                                for i in clean[:8])
             if len(clean) > 8:
                 lines += "\n   \u2026 and %d more" % (len(clean) - 8)
-            _tell(":clapper: *Victory Intelligence \u2014 a cut was requested* (#%s)\n"
-                  "*%s* picked %d moment%s.\n%s\n> %s"
-                  % (rid, sess["email"], len(clean), "" if len(clean) == 1 else "s",
-                     lines, note or "_no note given_"))
-            print("[VI] request #%s from %s \u2014 %d items"
-                  % (rid, sess["email"], len(clean)))
-            return jsonify({"ok": True, "id": rid, "items": len(clean)}), 200
+            _tell(":clapper: *Victory Intelligence \u2014 cut #%s requested* by *%s* (%ds)\n"
+                  "> %s\n%s"
+                  % (rid, sess["email"], length_s, note or "_no note given_",
+                     lines or "   _no moments picked \u2014 the machine chooses_"))
+            print("[VI] request #%s from %s \u2014 %d items, %ds"
+                  % (rid, sess["email"], len(clean), length_s))
+            return jsonify({"ok": True, "id": rid, "items": len(clean), "length": length_s}), 200
         except Exception as e:
             _err("vi_request", e)
             return jsonify({"ok": False, "error": "exception"}), 500
@@ -347,12 +391,215 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
         if blocked:
             return blocked
         try:
-            rows = vs.list_requests(limit=int(request.values.get("limit", 50)))
-            for r in rows:
-                r["at"] = str(r["at"])
+            rows = [_jsonable_request(r) for r in
+                    vs.list_requests(limit=int(request.values.get("limit", 50)))]
             return jsonify({"ok": True, "count": len(rows), "requests": rows}), 200
         except Exception as e:
             _err("vi_requests", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    # ── the machine editor: what a person sees ─────────────────────────────
+    def _mine(sess, limit=50):
+        if _is_mwm(sess):
+            rows = vs.list_requests(limit=limit)
+        else:
+            rows = vs.list_requests_for(sess["email"], limit=limit)
+        fb = vs.list_feedback([r["id"] for r in rows])
+        out = []
+        for r in rows:
+            j = _jsonable_request(r)
+            j["feedback"] = [{"at": str(f["at"]), "email": f["email"], "text": f["text"]}
+                             for f in fb.get(r["id"], [])]
+            if j.get("result_drive_id"):
+                import victory_drive as vd
+                j["preview_url"] = vd.preview_url(j["result_drive_id"])
+                j["download_url"] = vd.download_url(j["result_drive_id"])
+            out.append(j)
+        return out
+
+    @app.route("/vi/mine", methods=["GET"])
+    def vi_mine():
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            if not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "no access yet"}), 403
+            rows = _mine(sess)
+            busy = any(r["state"] in ("asked", "rendering") for r in rows)
+            return jsonify({"ok": True, "count": len(rows), "requests": rows, "busy": busy,
+                            "all": _is_mwm(sess)}), 200
+        except Exception as e:
+            _err("vi_mine", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/queue", methods=["GET"])
+    def vi_queue():
+        try:
+            sess = _session()
+            if not sess:
+                return vp.signin_page()
+            if not va.can_search(sess["role"]):
+                return vp.pending_page(sess["email"])
+            return vp.queue_page(sess["email"], sess["role"], _mine(sess), all_people=_is_mwm(sess))
+        except Exception as e:
+            _err("vi_queue", e)
+            return vp.signin_page(message="Something went wrong. Try again.")
+
+    @app.route("/vi/feedback", methods=["POST"])
+    def vi_feedback():
+        """A note on a cut. Michael's professional feedback is the whole point
+        of the test week, so it is stored, and it is posted to #dev where DEV
+        reads it."""
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            body = request.get_json(force=True, silent=True) or {}
+            rid = int(body.get("id") or request.values.get("id") or 0)
+            text = (body.get("text") or request.values.get("text") or "").strip()
+            if not rid or not text:
+                return jsonify({"ok": False, "error": "say something about a specific cut"}), 400
+            row = vs.get_request(rid)
+            if not row or (row["email"] != sess["email"] and not _is_mwm(sess)):
+                return jsonify({"ok": False, "error": "not yours"}), 404
+            fid = vs.add_feedback(rid, sess["email"], text)
+            if not fid:
+                return jsonify({"ok": False, "error": "could not save the note"}), 500
+            _tell(":memo: *Victory Intelligence \u2014 feedback on cut #%s* from *%s*\n> %s"
+                  % (rid, sess["email"], text[:900]))
+            return jsonify({"ok": True, "id": fid}), 200
+        except Exception as e:
+            _err("vi_feedback", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/decide", methods=["POST"])
+    def vi_decide():
+        """approve / decline a finished cut, or ask for it again (redo)."""
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            body = request.get_json(force=True, silent=True) or {}
+            rid = int(body.get("id") or 0)
+            decision = (body.get("decision") or "").strip().lower()
+            row = vs.get_request(rid) if rid else None
+            if not row or (row["email"] != sess["email"] and not _is_mwm(sess)):
+                return jsonify({"ok": False, "error": "not yours"}), 404
+            if decision == "redo":
+                # back to the queue; the machine cuts it again (music rotates,
+                # and any feedback left meanwhile is on the record)
+                ok = vs.set_request_state(rid, "asked", by=sess["email"])
+            elif decision in ("approved", "declined"):
+                ok = vs.set_request_state(rid, decision, by=sess["email"])
+            else:
+                return jsonify({"ok": False, "error": "decision must be approved, declined or redo"}), 400
+            if not ok:
+                return jsonify({"ok": False, "error": "could not record that"}), 500
+            _tell(":white_check_mark: Victory Intelligence \u2014 cut #%s marked *%s* by %s"
+                  % (rid, decision, sess["email"]))
+            return jsonify({"ok": True, "id": rid, "state": "asked" if decision == "redo" else decision}), 200
+        except Exception as e:
+            _err("vi_decide", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    # ── the machine editor: the worker's side (admin) ──────────────────────
+    @app.route("/vi/jobs/next", methods=["GET", "POST"])
+    def vi_jobs_next():
+        """The Mac worker asks for work. The claim is one UPDATE in the store."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            worker = (request.values.get("worker") or "worker")[:60]
+            vs.init_schema()
+            back = vs.requeue_stale()
+            if back:
+                print("[VI] requeued %d stalled render(s)" % back)
+            job = vs.claim_next_request(worker)
+            if not job:
+                return jsonify({"ok": True, "job": None}), 200
+            job = _jsonable_request(job)
+            job["recent_music"] = vs.recent_music(job["email"])
+            print("[VI] job #%s claimed by %s" % (job["id"], worker))
+            return jsonify({"ok": True, "job": job}), 200
+        except Exception as e:
+            _err("vi_jobs_next", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/jobs/<int:rid>/deliver", methods=["POST"])
+    def vi_jobs_deliver(rid):
+        """The finished file arrives. It goes to Drive; the row goes to 'ready'."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            import json as _json
+            row = vs.get_request(rid)
+            if not row:
+                return jsonify({"ok": False, "error": "no such request"}), 404
+            f = request.files.get("video")
+            if f is None:
+                return jsonify({"ok": False, "error": "no video in the upload"}), 400
+            data = f.read()
+            if len(data) < 100_000:
+                return jsonify({"ok": False, "error": "that file is too small to be a video"}), 400
+            try:
+                summary = _json.loads(request.form.get("summary") or "{}")
+            except Exception:
+                summary = {}
+            try:
+                seconds = float(request.form.get("seconds") or 0) or None
+            except ValueError:
+                seconds = None
+            name = f.filename or ("VI_req%s.mp4" % rid)
+            up = drive_upload(name, data)
+            if not up or not up.get("id"):
+                vs.finish_request(rid, "failed", summary=summary,
+                                  error="rendered, but the upload to Drive failed")
+                _tell(":x: Victory Intelligence \u2014 cut #%s rendered but could not be stored in Drive." % rid)
+                return jsonify({"ok": False, "error": "drive upload failed"}), 502
+            vs.finish_request(rid, "ready", drive_id=up["id"], file_name=name, size=len(data),
+                              seconds=seconds, summary=summary, error=None)
+            print("[VI] cut #%s ready -> drive %s (%d bytes)" % (rid, up["id"], len(data)))
+            _tell(":clapper: *Victory Intelligence \u2014 cut #%s is ready* for %s (%s, %d shots, %s)\n%s"
+                  % (rid, row["email"], "%.0fs" % seconds if seconds else "?s",
+                     len(summary.get("shots") or []), summary.get("music_title") or "no music",
+                     up.get("link", "")))
+            return jsonify({"ok": True, "id": rid, "drive_id": up["id"], "link": up.get("link")}), 200
+        except Exception as e:
+            _err("vi_jobs_deliver", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/jobs/<int:rid>/fail", methods=["POST"])
+    def vi_jobs_fail(rid):
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            body = request.get_json(force=True, silent=True) or {}
+            error = (body.get("error") or request.values.get("error") or "unknown")[:2000]
+            if not vs.get_request(rid):
+                return jsonify({"ok": False, "error": "no such request"}), 404
+            vs.finish_request(rid, "failed", error=error)
+            _tell(":x: *Victory Intelligence \u2014 cut #%s failed* on %s\n> %s"
+                  % (rid, body.get("worker") or "worker", error[:600]))
+            return jsonify({"ok": True, "id": rid, "state": "failed"}), 200
+        except Exception as e:
+            _err("vi_jobs_fail", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/drive-selftest", methods=["POST"])
+    def vi_drive_selftest():
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            import victory_drive as vd
+            out = vd.selftest()
+            return jsonify(out), (200 if out.get("ok") else 502)
+        except Exception as e:
+            _err("vi_drive_selftest", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     # ── admin ──────────────────────────────────────────────────────────────
@@ -368,6 +615,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None):
                    "resident": vi.resident_count(),
                    "events_on_disk": ingest.list_events(),
                    "db": False, "events": [],
+                   "queue": vs.queue_counts(),
                    "auth": {"secret": bool(vs.session_secret(create=False)),
                             "people": len(vs.list_people(limit=500)),
                             "client_email_enabled": va.client_email_enabled(),

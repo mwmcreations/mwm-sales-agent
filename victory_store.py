@@ -75,11 +75,32 @@ DDL = [
            handled_by TEXT
        )""",
     "CREATE INDEX IF NOT EXISTS vi_request_state ON vi_request (state, at DESC)",
+    # Phase 3 (14 Sep): the machine is the editor. These columns carry what it
+    # was asked for, what it did, and where the result lives. ADD COLUMN IF NOT
+    # EXISTS keeps the boot idempotent on a table that already has rows.
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS length_s   INT",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS result_drive_id TEXT",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS result_file TEXT",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS result_bytes BIGINT",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS result_seconds REAL",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS summary JSONB",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS error TEXT",
+    """CREATE TABLE IF NOT EXISTS vi_feedback (
+           id         BIGSERIAL PRIMARY KEY,
+           request_id BIGINT NOT NULL,
+           at         TIMESTAMPTZ DEFAULT now(),
+           email      TEXT,
+           text       TEXT NOT NULL
+       )""",
+    "CREATE INDEX IF NOT EXISTS vi_feedback_req ON vi_feedback (request_id, at)",
 ]
 
-# asked -> planned -> rendering -> ready -> approved -> delivered
+# asked -> rendering -> ready -> approved -> delivered, or failed / declined.
+# 'planned' is kept for rows that predate the machine editor; nothing sets it.
 REQUEST_STATES = ("asked", "planned", "rendering", "ready", "approved",
-                  "delivered", "declined")
+                  "delivered", "declined", "failed")
 
 
 def _pg():
@@ -297,7 +318,7 @@ def log_search(email, role, q, event_key, found, ms, ip=""):
 
 
 # ── requests ───────────────────────────────────────────────────────────────
-def create_request(email, role, school, note, items):
+def create_request(email, role, school, note, items, length_s=30):
     """Someone picked some moments and asked for something. Returns the id.
 
     Never raises: losing the row would be bad, but taking the page down while
@@ -311,10 +332,10 @@ def create_request(email, role, school, note, items):
     try:
         with pg._conn() as c, c.cursor() as cur:
             cur.execute(
-                """INSERT INTO vi_request (email, role, school, note, items)
-                        VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+                """INSERT INTO vi_request (email, role, school, note, items, length_s)
+                        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
                 (email, role or "", school or "", (note or "")[:4000],
-                 _json.dumps(items or [])))
+                 _json.dumps(items or []), int(length_s or 30)))
             return cur.fetchone()[0]
     except Exception as e:
         print("[VI] create_request failed: %r" % (e,))
@@ -329,18 +350,214 @@ def list_requests(limit=50, state=None):
         with pg._conn() as c, c.cursor() as cur:
             if state:
                 cur.execute(
-                    """SELECT id, at, email, role, note, items, state
-                         FROM vi_request WHERE state = %s
-                        ORDER BY at DESC LIMIT %s""", (state, int(limit)))
+                    "SELECT %s FROM vi_request WHERE state = %%s ORDER BY at DESC LIMIT %%s"
+                    % REQUEST_COLS, (state, int(limit)))
             else:
                 cur.execute(
-                    """SELECT id, at, email, role, note, items, state
-                         FROM vi_request ORDER BY at DESC LIMIT %s""", (int(limit),))
+                    "SELECT %s FROM vi_request ORDER BY at DESC LIMIT %%s"
+                    % REQUEST_COLS, (int(limit),))
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception as e:
         print("[VI] list_requests failed: %r" % (e,))
         return []
+
+
+REQUEST_COLS = ("id, at, email, role, school, note, items, state, handled_at, handled_by, "
+                "length_s, started_at, finished_at, result_drive_id, result_file, "
+                "result_bytes, result_seconds, summary, error")
+
+
+def list_requests_for(email, limit=50):
+    """One person's own requests, newest first. The page shows nobody else's."""
+    pg = _pg()
+    if not pg or not email:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT %s FROM vi_request WHERE email = %%s ORDER BY at DESC LIMIT %%s"
+                % REQUEST_COLS, (email, int(limit)))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception as e:
+        print("[VI] list_requests_for failed: %r" % (e,))
+        return []
+
+
+def get_request(rid):
+    pg = _pg()
+    if not pg:
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT %s FROM vi_request WHERE id = %%s" % REQUEST_COLS, (int(rid),))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(zip([d[0] for d in cur.description], row))
+    except Exception as e:
+        print("[VI] get_request failed: %r" % (e,))
+        return None
+
+
+def claim_next_request(worker):
+    """Hand the oldest 'asked' request to a worker, atomically.
+
+    The claim is the UPDATE itself — FOR UPDATE SKIP LOCKED means two workers
+    asking at the same instant get two different rows or one gets nothing.
+    Same principle as consume_link: the database decides, once.
+    """
+    pg = _pg()
+    if not pg:
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE vi_request
+                      SET state = 'rendering', handled_by = %%s, handled_at = now(),
+                          started_at = now(), error = NULL
+                    WHERE id = (SELECT id FROM vi_request WHERE state = 'asked'
+                                 ORDER BY at LIMIT 1 FOR UPDATE SKIP LOCKED)
+                RETURNING %s""" % REQUEST_COLS, (worker or "worker",))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return dict(zip([d[0] for d in cur.description], row))
+    except Exception as e:
+        print("[VI] claim_next_request failed: %r" % (e,))
+        return None
+
+
+def finish_request(rid, state, drive_id=None, file_name=None, size=None,
+                   seconds=None, summary=None, error=None):
+    """Record the outcome of a render: 'ready' with a result, or 'failed' with why."""
+    import json as _json
+    pg = _pg()
+    if not pg or state not in REQUEST_STATES:
+        return False
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE vi_request
+                      SET state = %s, finished_at = now(),
+                          result_drive_id = COALESCE(%s, result_drive_id),
+                          result_file = COALESCE(%s, result_file),
+                          result_bytes = COALESCE(%s, result_bytes),
+                          result_seconds = COALESCE(%s, result_seconds),
+                          summary = COALESCE(%s, summary),
+                          error = %s
+                    WHERE id = %s""",
+                (state, drive_id, file_name, size, seconds,
+                 _json.dumps(summary) if summary is not None else None,
+                 (error or "")[:2000] or None, int(rid)))
+            return cur.rowcount == 1
+    except Exception as e:
+        print("[VI] finish_request failed: %r" % (e,))
+        return False
+
+
+def set_request_state(rid, state, by=""):
+    """A person's decision on a finished cut: approved / declined / delivered."""
+    pg = _pg()
+    if not pg or state not in REQUEST_STATES:
+        return False
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE vi_request SET state = %s, handled_by = COALESCE(NULLIF(%s,''), handled_by),
+                          handled_at = now() WHERE id = %s""", (state, by or "", int(rid)))
+            return cur.rowcount == 1
+    except Exception as e:
+        print("[VI] set_request_state failed: %r" % (e,))
+        return False
+
+
+def requeue_stale(older_than_seconds=1800):
+    """A render that has been 'rendering' for half an hour is a render that died.
+    Put it back in the queue so the next worker pass picks it up; the summary
+    keeps the trace."""
+    pg = _pg()
+    if not pg:
+        return 0
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE vi_request SET state = 'asked',
+                          error = COALESCE(error, '') || ' [requeued after a stalled render]'
+                    WHERE state = 'rendering'
+                      AND started_at < now() - (%s * interval '1 second')""",
+                (int(older_than_seconds),))
+            return cur.rowcount
+    except Exception as e:
+        print("[VI] requeue_stale failed: %r" % (e,))
+        return 0
+
+
+def queue_counts():
+    pg = _pg()
+    if not pg:
+        return {}
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT state, count(*) FROM vi_request GROUP BY state")
+            return {r[0]: int(r[1]) for r in cur.fetchall()}
+    except Exception as e:
+        print("[VI] queue_counts failed: %r" % (e,))
+        return {}
+
+
+def recent_music(email, limit=2):
+    """The last tracks this person received, so the next cut rotates away from them."""
+    pg = _pg()
+    if not pg or not email:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT summary->>'music_id' FROM vi_request
+                    WHERE email = %s AND summary ? 'music_id'
+                    ORDER BY finished_at DESC NULLS LAST LIMIT %s""", (email, int(limit)))
+            return [r[0] for r in cur.fetchall() if r[0]]
+    except Exception as e:
+        print("[VI] recent_music failed: %r" % (e,))
+        return []
+
+
+# ── feedback ───────────────────────────────────────────────────────────────
+def add_feedback(rid, email, text):
+    pg = _pg()
+    if not pg or not text:
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO vi_feedback (request_id, email, text)
+                        VALUES (%s,%s,%s) RETURNING id""",
+                (int(rid), email or "", text[:4000]))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print("[VI] add_feedback failed: %r" % (e,))
+        return None
+
+
+def list_feedback(rids):
+    """Feedback for a set of requests, oldest first, keyed by request id."""
+    pg = _pg()
+    if not pg or not rids:
+        return {}
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT request_id, at, email, text FROM vi_feedback
+                    WHERE request_id = ANY(%s) ORDER BY at""", ([int(r) for r in rids],))
+            out = {}
+            for rid, at, email, text in cur.fetchall():
+                out.setdefault(rid, []).append({"at": at, "email": email, "text": text})
+            return out
+    except Exception as e:
+        print("[VI] list_feedback failed: %r" % (e,))
+        return {}
 
 
 def recent_searches(limit=50):

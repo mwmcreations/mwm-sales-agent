@@ -112,7 +112,56 @@ button:disabled{opacity:.45;cursor:default}
 .done{background:#eef7f2;border-left:3px solid #0f7a4d;padding:16px 18px;margin:0 0 18px;
  font-size:14.5px;color:#14532e}
 footer{padding:18px 24px 24px;background:#14171a;color:#767d85;font-size:12px}
+nav.sub{background:#1f2429;padding:0 24px;display:flex;gap:4px}
+nav.sub a{color:#9aa3ac;text-decoration:none;font:600 13.5px/1 inherit;padding:13px 12px;
+ border-bottom:2px solid transparent}
+nav.sub a.on{color:#fff;border-bottom-color:#C8102E}
+nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:100px;font-size:11px;
+ padding:2px 7px;margin-left:6px;vertical-align:1px}
+.len{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap;align-items:center}
+.len span{font-size:13px;color:#767d85;margin-right:4px}
+.len label{font:600 14px/1 inherit;padding:10px 14px;border:1px solid #d7dbe0;border-radius:100px;
+ cursor:pointer;color:#3b4249;background:#fff}
+.len input{display:none}
+.len input:checked+label{background:#14171a;color:#fff;border-color:#14171a}
+.mk{margin:0 0 16px}
+.mk button{width:100%;background:#C8102E}
+.req{border:1px solid #e2e5e9;border-radius:8px;padding:18px 20px;margin:0 0 18px}
+.req .hd{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline}
+.req .id{font-size:12.5px;color:#767d85}
+.req .id b{color:#14171a;font-size:14px}
+.status{display:inline-block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;
+ padding:4px 9px;border-radius:3px;background:#f2f3f5;color:#3b4249}
+.status.asked,.status.rendering{background:#fff3ea;color:#a3400a}
+.status.ready{background:#eef7f2;color:#0f7a4d}
+.status.approved,.status.delivered{background:#eef2fb;color:#1f4fa3}
+.status.failed,.status.declined{background:#fdf0f2;color:#C8102E}
+.ask{font-size:17px;font-weight:650;margin:10px 0 4px;line-height:1.4}
+.from{font-size:13px;color:#767d85;margin:0 0 12px}
+.moments{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 14px}
+.m .t{font-size:12.5px;font-weight:600;padding:6px 10px;border:1px solid #d7dbe0;border-radius:100px;
+ color:#3b4249;background:#fff}
+.player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:6px;background:#14171a;
+ display:block;margin:0 0 12px}
+.summ{font-size:12.5px;color:#767d85;margin:0 0 12px;line-height:1.5}
+.fb{margin:14px 0 0;border-top:1px solid #eceef1;padding-top:12px}
+.fb .note{background:#f7f8fa;border-left:3px solid #c9ced4;padding:8px 12px;font-size:14px;color:#3b4249;
+ margin:0 0 8px;white-space:pre-wrap}
+.fb .note small{display:block;color:#98a0a8;font-size:11.5px;margin-top:2px}
+.fb textarea{width:100%;font:15px/1.5 inherit;padding:11px 13px;border:1px solid #c9ced4;border-radius:4px;
+ min-height:70px;resize:vertical;-webkit-appearance:none;margin:0 0 8px}
+.acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.acts button.sec{background:#fff;color:#14171a;border:1px solid #d7dbe0}
+.acts button.quiet{background:none;color:#767d85;border:0;padding:12px 8px;font-weight:500}
+.acts a.dl{font-size:14px;font-weight:600}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid #f3c9a6;border-top-color:#a3400a;
+ border-radius:100px;animation:sp 1s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.errbox{background:#fdf0f2;border-left:3px solid #C8102E;padding:10px 14px;font-size:13.5px;color:#7a1020;
+ margin:0 0 12px;white-space:pre-wrap}
 @media(max-width:600px){
+ nav.sub{padding-left:16px;padding-right:16px}
+ .m{width:calc(33% - 7px)}
  header.cv,main,footer{padding-left:16px;padding-right:16px}
  .searchbar{flex-direction:column}.searchbar button{width:100%}
  .thumb{width:92px;flex:0 0 92px}
@@ -137,12 +186,17 @@ def _shell(title, body, extra=""):
     )
 
 
-def _head(email, event_title="Convention 2026"):
+def _head(email, event_title="Convention 2026", tab="library", badge=0):
+    b = ("<span class=\"n\">%d</span>" % badge) if badge else ""
     return ("<header class=\"cv\"><div class=\"top\">"
             "<h1>Victory Intelligence</h1><span class=\"ev\">%s</span></div>"
             "<div class=\"who\"><span class=\"e\">%s</span> &middot; "
             "<a href=\"/vi/logout\">sign out</a></div></header>"
-            % (event_title, email))
+            "<nav class=\"sub\"><a href=\"/vi/\"%s>Library</a>"
+            "<a href=\"/vi/queue\"%s>My videos%s</a></nav>"
+            % (event_title, email,
+               " class=\"on\"" if tab == "library" else "",
+               " class=\"on\"" if tab == "queue" else "", b))
 
 
 def signin_page(sent=False, message=""):
@@ -299,25 +353,28 @@ APP_JS = r"""
   document.getElementById('ask').onclick=function(){ panel.className='panel on'; note.focus(); };
   document.getElementById('cancel').onclick=function(){ panel.className='panel'; };
 
+  document.getElementById('mkbtn').onclick=function(){ panel.className='panel on'; note.focus(); };
+  function chosenLength(){
+    var r=document.querySelector('input[name=len]:checked'); return r ? parseInt(r.value,10) : 30;
+  }
   document.getElementById('send').onclick=function(){
     var ids=Object.keys(picked), b=this;
-    if(!ids.length) return;
+    if(!ids.length && !note.value.trim()){ note.focus(); return; }
     b.disabled=true; b.textContent='Sending…';
     fetch('/vi/request', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note: note.value, items: ids.map(function(i){
+      body: JSON.stringify({note: note.value, length: chosenLength(), items: ids.map(function(i){
         return {id:i, title: picked[i].title, kind: picked[i].kind,
                 file: picked[i].file, quote: picked[i].quote}; })})})
     .then(function(r){ return r.json(); })
     .then(function(d){
-      b.disabled=false; b.textContent='Send to MWM';
-      if(!d.ok){ alert('That did not send. Try again in a moment.'); return; }
+      b.disabled=false; b.textContent='Make it';
+      if(!d.ok){ alert(d.error || 'That did not send. Try again in a moment.'); return; }
       panel.className='panel'; picked={}; note.value='';
       paint(); painBar();
-      meta.innerHTML = '<span style="color:#0f7a4d;font-weight:600">Sent to MWM. ' +
-        'We will come back to you.</span>';
+      window.location.href='/vi/queue#req' + d.id;
     })
-    .catch(function(){ b.disabled=false; b.textContent='Send to MWM';
+    .catch(function(){ b.disabled=false; b.textContent='Make it';
       alert('That did not send. Try again in a moment.'); });
   };
 
@@ -358,8 +415,9 @@ APP_JS = r"""
 def app_page(email, role, event_title="Convention 2026", records=0):
     chips = "".join("<button class=\"chip\">%s</button>" % c for c in CHIPS)
     body = (
-        "<div class=\"wrap\">" + _head(email, event_title) +
+        "<div class=\"wrap\">" + _head(email, event_title, tab="library") +
         "<main>"
+        "<div class=\"mk\"><button id=\"mkbtn\">Make a video</button></div>"
         "<div class=\"searchbar\">"
         "<input type=\"text\" id=\"q\" autocomplete=\"off\" autocorrect=\"off\" "
         "placeholder=\"What are you looking for?\">"
@@ -377,25 +435,200 @@ def app_page(email, role, event_title="Convention 2026", records=0):
         "<div class=\"bar\" id=\"bar\"><div class=\"in\">"
         "<span class=\"n\" id=\"barn\"></span>"
         "<button class=\"clr\" id=\"clr\">Clear</button>"
-        "<button class=\"go\" id=\"ask\">Ask for a cut</button>"
+        "<button class=\"go\" id=\"ask\">Make a video with these</button>"
         "</div></div>"
 
         "<div class=\"panel\" id=\"panel\"><div class=\"card\">"
-        "<h2>Ask MWM for a cut</h2>"
-        "<p class=\"h\">Your picked moments go with this. Say what you want made "
-        "and we will come back to you.</p>"
+        "<h2>Make a video</h2>"
+        "<p class=\"h\">Say what you want. Any moments you picked go in for sure; "
+        "the machine finds the rest, cuts it, and it appears under "
+        "<strong>My videos</strong> in a few minutes.</p>"
         "<ul>"
         "<li>Say where it is going — Instagram, a screen in the lobby, an email.</li>"
-        "<li>Say how long, if you mind. Fifteen to thirty seconds is our usual.</li>"
         "<li>Say who it is for — parents, students, a specific school.</li>"
+        "<li>Say the feel, if you have one — proud, fun, epic, quiet.</li>"
         "</ul>"
-        "<textarea id=\"note\" placeholder=\"A 30-second reel for the Lake Nona "
-        "page, aimed at parents — the candlelight moments, no music over the "
-        "talking.\"></textarea>"
+        "<textarea id=\"note\" placeholder=\"A reel for the Lake Nona page, aimed at "
+        "parents — the candlelight moments.\"></textarea>"
+        "<div class=\"len\"><span>How long</span>"
+        "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
+        "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"
+        "<input type=\"radio\" name=\"len\" id=\"l60\" value=\"60\"><label for=\"l60\">60 s</label>"
+        "</div>"
         "<div class=\"acts\">"
         "<button class=\"cancel\" id=\"cancel\">Cancel</button>"
-        "<button id=\"send\">Send to MWM</button>"
+        "<button id=\"send\">Make it</button>"
         "</div></div></div>"
         % ("{:,}".format(records), event_title)
     )
     return _shell("Victory Intelligence", body, APP_JS)
+
+
+# ── My videos: what the machine made, and the box to say what you think ────
+STATE_LABEL = {
+    "asked": "In the queue", "planned": "Planned", "rendering": "Cutting it now",
+    "ready": "Ready to watch", "approved": "Approved", "delivered": "Delivered",
+    "declined": "Declined", "failed": "Did not work",
+}
+
+
+def _e(s):
+    return (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;") \
+        .replace(">", "&gt;").replace("\"", "&quot;")
+
+
+def _when(ts):
+    """'Sep 14, 11:44 PM' from a datetime or its string form. Never raises."""
+    try:
+        import datetime as _dt
+        if isinstance(ts, str):
+            ts = _dt.datetime.fromisoformat(ts.replace(" ", "T", 1)[:19])
+        return ts.strftime("%b %-d, %-I:%M %p")
+    except Exception:
+        return _e(str(ts or ""))[:16]
+
+
+def _request_card(r, mine_only):
+    st = r.get("state") or "asked"
+    items = r.get("items") or []
+    if isinstance(items, str):
+        try:
+            import json as _json
+            items = _json.loads(items)
+        except Exception:
+            items = []
+    summ = r.get("summary") or {}
+    if isinstance(summ, str):
+        try:
+            import json as _json
+            summ = _json.loads(summ)
+        except Exception:
+            summ = {}
+    rid = r.get("id")
+    h = ["<div class=\"req\" id=\"req%s\">" % rid,
+         "<div class=\"hd\"><span class=\"id\"><b>Video #%s</b> &middot; %s%s</span>"
+         "<span class=\"status %s\">%s%s</span></div>"
+         % (rid, _when(r.get("at")),
+            ("" if mine_only else " &middot; %s" % _e(r.get("email"))),
+            _e(st), "<i class=\"spin\"></i>" if st in ("asked", "rendering") else "",
+            STATE_LABEL.get(st, st))]
+    h.append("<div class=\"ask\">&ldquo;%s&rdquo;</div>" % _e(r.get("note") or "(no words — just the picked moments)"))
+    h.append("<div class=\"from\">%ss requested%s</div>"
+             % (r.get("length_s") or 30,
+                (" &middot; %d moment%s picked" % (len(items), "" if len(items) == 1 else "s")) if items else
+                " &middot; no moments picked, the machine chose"))
+    if items:
+        h.append("<div class=\"moments\">")
+        for it in items[:8]:
+            # the request stores what the page sent: id, title, kind, file, quote
+            h.append("<div class=\"m\"><div class=\"t\">%s</div></div>"
+                     % _e(it.get("title") or it.get("quote") or it.get("id")))
+        h.append("</div>")
+    if st == "ready" or (st in ("approved", "delivered") and r.get("result_drive_id")):
+        if r.get("preview_url"):
+            h.append("<iframe class=\"player\" src=\"%s\" allow=\"autoplay; fullscreen\" "
+                     "allowfullscreen></iframe>" % _e(r["preview_url"]))
+        shots = summ.get("shots") or []
+        bits = []
+        if shots:
+            bits.append("%d shots" % len(shots))
+        if summ.get("days"):
+            bits.append("day%s %s" % ("s" if len(summ["days"]) > 1 else "",
+                                      ", ".join(str(d) for d in summ["days"])))
+        if summ.get("kinds"):
+            bits.append(", ".join(_e(k).lower() for k in summ["kinds"]))
+        if summ.get("music_title"):
+            bits.append("music: %s" % _e(summ["music_title"]))
+        if summ.get("render_seconds"):
+            bits.append("cut in %ds" % int(summ["render_seconds"] + (summ.get("fetch_seconds") or 0)))
+        if r.get("result_seconds"):
+            bits.insert(0, "%.0f s" % float(r["result_seconds"]))
+        if bits:
+            h.append("<div class=\"summ\">%s</div>" % " &middot; ".join(bits))
+        h.append("<div class=\"acts\">")
+        if r.get("download_url"):
+            h.append("<a class=\"dl\" href=\"%s\">Download</a>" % _e(r["download_url"]))
+        if st == "ready":
+            h.append("<button class=\"sec\" data-decide=\"approved\" data-id=\"%s\">Approve</button>" % rid)
+            h.append("<button class=\"quiet\" data-decide=\"redo\" data-id=\"%s\">Cut it again</button>" % rid)
+        h.append("</div>")
+    elif st == "failed":
+        h.append("<div class=\"errbox\">The machine could not make this one.\n%s</div>"
+                 % _e(r.get("error") or ""))
+        h.append("<div class=\"acts\"><button class=\"sec\" data-decide=\"redo\" data-id=\"%s\">Try again</button></div>" % rid)
+    elif st in ("asked", "rendering"):
+        h.append("<div class=\"summ\">%s</div>"
+                 % ("The machine is cutting this now. This page refreshes itself."
+                    if st == "rendering" else "Waiting for the machine. Usually under five minutes."))
+    # feedback
+    h.append("<div class=\"fb\">")
+    for f in r.get("feedback") or []:
+        h.append("<div class=\"note\">%s<small>%s &middot; %s</small></div>"
+                 % (_e(f.get("text")), _e(f.get("email")), _when(f.get("at"))))
+    if st not in ("asked", "rendering"):
+        h.append("<textarea placeholder=\"What would you change? Be specific — the editor learns from this.\" "
+                 "data-fb=\"%s\"></textarea>"
+                 "<div class=\"acts\"><button data-fbsend=\"%s\">Send feedback</button></div>" % (rid, rid))
+    h.append("</div></div>")
+    return "".join(h)
+
+
+QUEUE_JS = r"""
+<script>
+(function(){
+  function post(url, body){
+    return fetch(url,{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();});
+  }
+  document.addEventListener('click', function(e){
+    var b=e.target.closest('button[data-fbsend]');
+    if(b){
+      var id=b.getAttribute('data-fbsend'), ta=document.querySelector('textarea[data-fb="'+id+'"]');
+      if(!ta || !ta.value.trim()){ if(ta) ta.focus(); return; }
+      b.disabled=true;
+      post('/vi/feedback',{id:parseInt(id,10), text:ta.value}).then(function(d){
+        if(!d.ok){ b.disabled=false; alert(d.error||'That did not save.'); return; }
+        window.location.reload();
+      }).catch(function(){ b.disabled=false; alert('That did not save.'); });
+      return;
+    }
+    var d=e.target.closest('button[data-decide]');
+    if(d){
+      d.disabled=true;
+      post('/vi/decide',{id:parseInt(d.getAttribute('data-id'),10), decision:d.getAttribute('data-decide')})
+        .then(function(r){ if(!r.ok){ d.disabled=false; alert(r.error||'That did not save.'); return; }
+          window.location.reload(); })
+        .catch(function(){ d.disabled=false; alert('That did not save.'); });
+    }
+  });
+  // while anything is in the queue or cutting, look again every 20 s
+  if(document.querySelector('.status.asked, .status.rendering')){
+    setTimeout(function(){
+      fetch('/vi/mine',{credentials:'same-origin'}).then(function(r){return r.json();})
+        .then(function(d){ window.location.reload(); })
+        .catch(function(){ window.location.reload(); });
+    }, 20000);
+  }
+})();
+</script>
+"""
+
+
+def queue_page(email, role, rows, event_title="Convention 2026", all_people=False):
+    waiting = sum(1 for r in rows if r.get("state") in ("asked", "rendering"))
+    cards = "".join(_request_card(r, mine_only=not all_people) for r in rows)
+    if not cards:
+        cards = ("<div class=\"empty\">Nothing yet. Go to the Library, search for a moment, "
+                 "and press <strong>Make a video</strong>.</div>")
+    body = (
+        "<div class=\"wrap\">" + _head(email, event_title, tab="queue", badge=waiting) +
+        "<main>" +
+        ("<div class=\"from\" style=\"margin:0 0 16px\">Everyone's videos, newest first "
+         "(you are MWM).</div>" if all_people else "") +
+        cards +
+        "</main>"
+        "<footer>Cut by the Victory Intelligence editor &middot; MWM Creations &amp; Studios.</footer>"
+        "</div>"
+    )
+    return _shell("Victory Intelligence — my videos", body, QUEUE_JS)
