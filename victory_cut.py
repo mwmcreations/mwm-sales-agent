@@ -54,14 +54,25 @@ def font_path():
 
 
 # ── 1. what to cut ─────────────────────────────────────────────────────────
-def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False):
+def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False,
+               avoid=(), seed=0):
     """Choose n clips. Requested ids always go in, in the order given. Then
     hero > high > the rest, but never more than max_per_family of one kind of
     shot or max_per_session from one session, and the kinds and days are
     balanced as we go. Returns them in story order.
 
+    avoid: ids this person has already been given in recent cuts — they go to
+    the back of the line, so the weekend's variety is used before anything
+    repeats (Michael, 14 Sep: "the computer tries to go for the same ones").
+    seed: a per-request number; equal candidates are shuffled by it, so two
+    similar asks do not produce the same reel.
+
     cands: clip dicts with id, category, session, day, priority, weight.
     """
+    import random
+    rnd = random.Random(seed)
+    jitter = {c["id"]: rnd.random() for c in cands}
+    avoid = set(avoid or ())
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -77,13 +88,14 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     pool = [c for c in cands if c["id"] not in taken]
     while len(chosen) < n and pool:
         if by_search:      # the index already ranked these for the ask: its order leads
-            pool.sort(key=lambda c: (fam.get(c.get("category"), 0), day.get(c.get("day"), 0),
-                                     -float(c.get("weight") or 0), c["id"]))
-        else:
-            pool.sort(key=lambda c: (-PRIORITY.get(c.get("priority"), 0),
-                                     fam.get(c.get("category"), 0),
+            pool.sort(key=lambda c: (c["id"] in avoid, fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0),
-                                     -float(c.get("weight") or 0), c["id"]))
+                                     -round(float(c.get("weight") or 0), 1), jitter[c["id"]]))
+        else:              # hero and high are one class here: the weekend's variety comes first
+            pool.sort(key=lambda c: (c["id"] in avoid,
+                                     -min(2, PRIORITY.get(c.get("priority"), 0)),
+                                     fam.get(c.get("category"), 0),
+                                     day.get(c.get("day"), 0), jitter[c["id"]]))
         pick = None
         for c in pool:
             if fam.get(c.get("category"), 0) >= max_per_family:
@@ -176,11 +188,14 @@ def window_for(clip_id, reframe, t0, dur):
 
 
 # ── 3. the plan ────────────────────────────────────────────────────────────
-def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=(), by_search=False):
-    """Everything the render needs, as data. Pure."""
+def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=(), by_search=False,
+         avoid=(), seed=0, lines=(), cta=""):
+    """Everything the render needs, as data. Pure.
+    lines: the person's own sentences to put over the pictures, in order.
+    cta:   the end card ("Enroll today — victoryma.com"); blank = the sign-off."""
     length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
     n = int(round((length_s - 0.5) / SHOT_SECONDS))
-    shots = pick_shots(cands, n, requested=requested_ids, by_search=by_search)
+    shots = pick_shots(cands, n, requested=requested_ids, by_search=by_search, avoid=avoid, seed=seed)
     music = pick_music(library, ask, exclude=recent_music)
     out = []
     for c in shots:
@@ -191,12 +206,44 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
                     "priority": c.get("priority"), "in": round(t0, 2),
                     "dur": SHOT_SECONDS, "x": x, "framed_by": how,
                     "requested": c["id"] in set(requested_ids)})
+    lines = [str(x).strip()[:60] for x in (lines or ()) if str(x).strip()][:4]
     return {"ask": ask, "length_s": length_s, "shots": out, "pool": "search" if by_search else "convention",
+            "lines": lines, "cta": (cta or "").strip()[:60],
+            "cards": card_plan(length_s, ask, lines, (cta or "").strip()[:60]),
             "music_id": music["id"] if music else None,
             "music_title": music.get("title") if music else None,
             "music_file": music.get("file") if music else None,
             "days": sorted({s["day"] for s in out if s.get("day")}),
             "kinds": sorted({s["category"] for s in out if s.get("category")})}
+
+
+def card_plan(length_s, ask, lines, cta, event_title="Convention 2026"):
+    """The cards over the reel, as (big, small, t_in, t_out, y).
+
+    No words from the person: the auto title at the head, the sign-off at the
+    tail (what shipped on 14 Sep). With words: the head card is the FIRST
+    sentence, the rest are spread evenly across the middle, each held for ~3 s,
+    and the tail is the call to action if given, otherwise the sign-off.
+    """
+    end = float(length_s)
+    head, outro = titles_for(ask, event_title)
+    cards = []
+    if lines:
+        cards.append((lines[0], "", 0.3, min(3.5, end - 3.5), 0.40))
+        mids = lines[1:]
+        if mids:
+            span = (end - 3.2) - 3.7          # room between head and tail
+            gap = span / len(mids)
+            for i, text in enumerate(mids):
+                t0 = 3.7 + i * gap + max(0.0, (gap - 3.0) / 2)
+                cards.append((text, "", round(t0, 2), round(min(t0 + 3.0, end - 3.2), 2), 0.40))
+    else:
+        cards.append((head[0], head[1], 0.3, 3.2, 0.40))
+    if cta:
+        cards.append((cta, event_title, end - 3.0, end, 0.42))
+    else:
+        cards.append((outro[0], outro[1], end - 3.0, end, 0.42))
+    return cards
 
 
 def titles_for(ask, event_title="Convention 2026"):
@@ -273,16 +320,16 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
     else:
         chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[a]")
     vfilters = []
-    if cards and cards[0] and cards[1]:
-        cmd += ["-loop", "1", "-i", cards[0], "-loop", "1", "-i", cards[1]]
-        h, o = n_in, n_in + 1
-        chain.append("[%d:v]format=rgba,fade=t=in:st=0.3:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[hc]"
-                     % (h, 2.8))
-        chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[oc]"
-                     % (o, end - 3.0, end - 0.5))
-        chain.append("%s[hc]overlay=0:0:enable='between(t,0.3,3.2)'[v1]" % vin)
-        chain.append("[v1][oc]overlay=0:0:enable='between(t,%.2f,%.2f)'[v2]" % (end - 3.0, end))
-        vin = "[v2]"
+    if cards:
+        # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
+        for k, (png, t_in, t_out) in enumerate(cards):
+            idx = n_in + k
+            cmd += ["-loop", "1", "-i", png]
+            t_out = min(float(t_out), end)
+            chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
+                         % (idx, t_in, max(t_in, t_out - 0.4), k))
+            chain.append("%s[c%d]overlay=0:0:enable='between(t,%.2f,%.2f)'[v%d]" % (vin, k, t_in, t_out, k))
+            vin = "[v%d]" % k
     elif font and has_filter(ffmpeg, "drawtext"):
         vfilters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
                      _drawtext(font, head[1], 42, "h*0.40+100", 0.5, 3.2, "0xE8E8E8"),

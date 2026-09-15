@@ -82,20 +82,22 @@ def _get_bytes(path, params=None, timeout=60):
         return r.read()
 
 
-def fetch_cards(head, outro, workdir):
-    """The two title pictures, from the app. None if anything is off — the
-    cut then ships without titles, as it did before cards existed."""
+def fetch_cards(card_plan, workdir):
+    """The title pictures, from the app: one PNG per planned card. Returns a
+    list of (png_path, t_in, t_out), or None if anything is off — the cut then
+    ships without words on it rather than failing."""
     try:
-        paths = []
-        for name, (big, small), y in (("head", head, 0.40), ("outro", outro, 0.42)):
-            png = _get_bytes("/vi/card", {"big": big, "small": small, "y": "%.2f" % y})
+        out = []
+        for k, (big, small, t_in, t_out, y) in enumerate(card_plan):
+            png = _get_bytes("/vi/card", {"big": big, "small": small, "y": "%.2f" % y,
+                                          "size": "64" if len(big) > 22 else "70"})
             if not png.startswith(b"\x89PNG"):
-                raise RuntimeError("not a PNG for %s" % name)
-            p = os.path.join(workdir, name + ".png")
+                raise RuntimeError("not a PNG for card %d" % k)
+            p = os.path.join(workdir, "card%02d.png" % k)
             with open(p, "wb") as f:
                 f.write(png)
-            paths.append(p)
-        return tuple(paths)
+            out.append((p, float(t_in), float(t_out)))
+        return out
     except Exception as e:
         log("  no title cards: %r" % (e,))
         return None
@@ -182,8 +184,11 @@ def do_job(job, clips, reframe, library, search_fn):
     requested = [it.get("id", "").split(":", 1)[-1] for it in items if it.get("kind") == "clip"]
     need = int(round((int(job.get("length_s") or 30) - 0.5) / vc.SHOT_SECONDS))
     pool, by_search = vc.candidates(ask, clips, need, search_fn)
+    text = job.get("text") or {}
     plan = vc.plan(ask, pool, requested, library, reframe, job.get("length_s") or 30,
-                   recent_music=job.get("recent_music") or [], by_search=by_search)
+                   recent_music=job.get("recent_music") or [], by_search=by_search,
+                   avoid=job.get("recent_clips") or [], seed=int(rid),
+                   lines=text.get("lines") or [], cta=text.get("cta") or "")
     log("job #%s: %r -> %d shots (%s pool), music %s" % (rid, ask[:60], len(plan["shots"]),
                                                           plan["pool"], plan.get("music_title")))
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -206,17 +211,13 @@ def do_job(job, clips, reframe, library, search_fn):
     out_name = "VI_%s_req%s.mp4" % (re.sub(r"[^a-z0-9]+", "-", ask.lower())[:40].strip("-") or "cut", rid)
     out_path = os.path.join(workdir, out_name)
     t = time.time()
-    cards = None
-    if not (vc.font_path() and vc.has_filter(FFMPEG, "drawtext")):
-        head, outro = vc.titles_for(ask)
-        cards = fetch_cards(head, outro, workdir)
+    cards = fetch_cards(plan["cards"], workdir)
     vc.render(plan, paths, music_path, workdir, out_path, ffmpeg=FFMPEG, ffprobe=FFPROBE,
               encoder=ENCODER, log=log, cards=cards)
     plan["render_seconds"] = round(time.time() - t, 1)
     plan["worker"] = WORKER
     plan["encoder"] = ENCODER
-    plan["titles"] = "drawtext" if (vc.font_path() and vc.has_filter(FFMPEG, "drawtext")) \
-        else ("cards" if cards else "none")
+    plan["titles"] = "cards" if cards else "none"
     plan["bytes"] = os.path.getsize(out_path)
     seconds = sum(s["dur"] for s in plan["shots"])
     log("  rendered %s (%d bytes) in %.0fs; uploading" % (out_name, plan["bytes"], plan["render_seconds"]))
@@ -266,7 +267,7 @@ def main():
                 return 1
             if not job:
                 if done == 0:
-                    log("queue empty")
+                    print("%s queue empty" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
                 return 0
             if clips is None:
                 clips, reframe, library = load_sources()

@@ -87,6 +87,7 @@ DDL = [
     "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS result_seconds REAL",
     "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS summary JSONB",
     "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS error TEXT",
+    "ALTER TABLE vi_request ADD COLUMN IF NOT EXISTS text JSONB",
     """CREATE TABLE IF NOT EXISTS vi_feedback (
            id         BIGSERIAL PRIMARY KEY,
            request_id BIGINT NOT NULL,
@@ -318,7 +319,7 @@ def log_search(email, role, q, event_key, found, ms, ip=""):
 
 
 # ── requests ───────────────────────────────────────────────────────────────
-def create_request(email, role, school, note, items, length_s=30):
+def create_request(email, role, school, note, items, length_s=30, text=None):
     """Someone picked some moments and asked for something. Returns the id.
 
     Never raises: losing the row would be bad, but taking the page down while
@@ -332,10 +333,11 @@ def create_request(email, role, school, note, items, length_s=30):
     try:
         with pg._conn() as c, c.cursor() as cur:
             cur.execute(
-                """INSERT INTO vi_request (email, role, school, note, items, length_s)
-                        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                """INSERT INTO vi_request (email, role, school, note, items, length_s, text)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                 (email, role or "", school or "", (note or "")[:4000],
-                 _json.dumps(items or []), int(length_s or 30)))
+                 _json.dumps(items or []), int(length_s or 30),
+                 _json.dumps(text) if text else None))
             return cur.fetchone()[0]
     except Exception as e:
         print("[VI] create_request failed: %r" % (e,))
@@ -365,7 +367,7 @@ def list_requests(limit=50, state=None):
 
 REQUEST_COLS = ("id, at, email, role, school, note, items, state, handled_at, handled_by, "
                 "length_s, started_at, finished_at, result_drive_id, result_file, "
-                "result_bytes, result_seconds, summary, error")
+                "result_bytes, result_seconds, summary, error, text")
 
 
 def list_requests_for(email, limit=50):
@@ -521,6 +523,30 @@ def recent_music(email, limit=2):
             return [r[0] for r in cur.fetchall() if r[0]]
     except Exception as e:
         print("[VI] recent_music failed: %r" % (e,))
+        return []
+
+
+def recent_clips(email, cuts=6):
+    """Clip ids in this person's last few cuts, most recent first — so the
+    next cut reaches for footage they have not seen yet."""
+    pg = _pg()
+    if not pg or not email:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT summary->'shots' FROM vi_request
+                    WHERE email = %s AND summary ? 'shots'
+                    ORDER BY finished_at DESC NULLS LAST LIMIT %s""", (email, int(cuts)))
+            out = []
+            for (shots,) in cur.fetchall():
+                for sh in shots or []:
+                    cid = sh.get("id") if isinstance(sh, dict) else None
+                    if cid and cid not in out:
+                        out.append(cid)
+            return out
+    except Exception as e:
+        print("[VI] recent_clips failed: %r" % (e,))
         return []
 
 

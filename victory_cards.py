@@ -30,15 +30,41 @@ def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
         f_big = ImageFont.truetype(FONT, size_big)
         f_small = ImageFont.truetype(FONT, size_small)
         y = int(H * y_frac)
-        for text, font, col, dy in ((big or "", f_big, (255, 255, 255, 255), 0),
-                                    (small or "", f_small, (232, 232, 232, 255), size_big + 30)):
+        safe = W - 120
+
+        def width(t, f):
+            b = d.textbbox((0, 0), t, font=f)
+            return b[2] - b[0]
+
+        def wrap(text, f):
+            """Two balanced lines when one will not fit."""
+            words = text.split()
+            best, best_gap = None, 10 ** 9
+            for i in range(1, len(words)):
+                a, b = " ".join(words[:i]), " ".join(words[i:])
+                gap = abs(width(a, f) - width(b, f))
+                if width(a, f) <= safe and width(b, f) <= safe and gap < best_gap:
+                    best, best_gap = [a, b], gap
+            return best or [text]
+
+        dy = 0
+        for text, font, col in ((big or "", f_big, (255, 255, 255, 255)),
+                                (small or "", f_small, (232, 232, 232, 255))):
             if not text:
                 continue
-            bbox = d.textbbox((0, 0), text, font=font)
-            tw = bbox[2] - bbox[0]
-            x = (W - tw) // 2
-            d.text((x + 3, y + dy + 3), text, font=font, fill=(0, 0, 0, 150))
-            d.text((x, y + dy), text, font=font, fill=col)
+            # a long sentence shrinks a little, then wraps to two lines
+            size = font.size
+            while width(text, font) > safe and size > max(40, font.size - 16):
+                size -= 4
+                font = ImageFont.truetype(FONT, size)
+            lines = [text] if width(text, font) <= safe else wrap(text, font)
+            for line in lines:
+                tw = width(line, font)
+                x = (W - tw) // 2
+                d.text((x + 3, y + dy + 3), line, font=font, fill=(0, 0, 0, 150))
+                d.text((x, y + dy), line, font=font, fill=col)
+                dy += int(size * 1.25)
+            dy += 12
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         _cache[key] = buf.getvalue()

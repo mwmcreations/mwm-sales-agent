@@ -118,6 +118,11 @@ nav.sub a{color:#9aa3ac;text-decoration:none;font:600 13.5px/1 inherit;padding:1
 nav.sub a.on{color:#fff;border-bottom-color:#C8102E}
 nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:100px;font-size:11px;
  padding:2px 7px;margin-left:6px;vertical-align:1px}
+.lbl2{display:block;font-size:13.5px;font-weight:600;color:#3b4249;margin:12px 0 5px}
+.lbl2 span{font-weight:400;color:#767d85;font-size:12.5px}
+.panel textarea.short{min-height:64px}
+.panel input[type=text]{width:100%;font:16px/1.4 inherit;padding:11px 14px;border:1px solid #c9ced4;
+ border-radius:4px;margin:0 0 12px;-webkit-appearance:none}
 .len{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap;align-items:center}
 .len span{font-size:13px;color:#767d85;margin-right:4px}
 .len label{font:600 14px/1 inherit;padding:10px 14px;border:1px solid #d7dbe0;border-radius:100px;
@@ -363,7 +368,9 @@ APP_JS = r"""
     b.disabled=true; b.textContent='Sending…';
     fetch('/vi/request', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note: note.value, length: chosenLength(), items: ids.map(function(i){
+      body: JSON.stringify({note: note.value, length: chosenLength(),
+        lines: document.getElementById('lines').value, cta: document.getElementById('cta').value,
+        items: ids.map(function(i){
         return {id:i, title: picked[i].title, kind: picked[i].kind,
                 file: picked[i].file, quote: picked[i].quote}; })})})
     .then(function(r){ return r.json(); })
@@ -371,6 +378,7 @@ APP_JS = r"""
       b.disabled=false; b.textContent='Make it';
       if(!d.ok){ alert(d.error || 'That did not send. Try again in a moment.'); return; }
       panel.className='panel'; picked={}; note.value='';
+      document.getElementById('lines').value=''; document.getElementById('cta').value='';
       paint(); painBar();
       window.location.href='/vi/queue#req' + d.id;
     })
@@ -450,6 +458,12 @@ def app_page(email, role, event_title="Convention 2026", records=0):
         "</ul>"
         "<textarea id=\"note\" placeholder=\"A reel for the Lake Nona page, aimed at "
         "parents — the candlelight moments.\"></textarea>"
+        "<label class=\"lbl2\">Words on screen <span>optional &middot; one sentence per line, "
+        "up to four &middot; the first opens the video</span></label>"
+        "<textarea id=\"lines\" class=\"short\" placeholder=\"Four days. Every school. One floor.\n"
+        "Champions are made here.\"></textarea>"
+        "<label class=\"lbl2\">End card <span>optional &middot; your call to action</span></label>"
+        "<input type=\"text\" id=\"cta\" maxlength=\"60\" placeholder=\"Enroll today \u2014 victoryma.com\">"
         "<div class=\"len\"><span>How long</span>"
         "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
         "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"
@@ -513,6 +527,18 @@ def _request_card(r, mine_only):
             _e(st), "<i class=\"spin\"></i>" if st in ("asked", "rendering") else "",
             STATE_LABEL.get(st, st))]
     h.append("<div class=\"ask\">&ldquo;%s&rdquo;</div>" % _e(r.get("note") or "(no words — just the picked moments)"))
+    txt = r.get("text") or {}
+    if isinstance(txt, str):
+        try:
+            import json as _json
+            txt = _json.loads(txt)
+        except Exception:
+            txt = {}
+    if txt.get("lines") or txt.get("cta"):
+        bits = ["on screen: %s" % " / ".join(_e(x) for x in txt.get("lines") or [])] if txt.get("lines") else []
+        if txt.get("cta"):
+            bits.append("end card: %s" % _e(txt["cta"]))
+        h.append("<div class=\"from\">%s</div>" % " &middot; ".join(bits))
     h.append("<div class=\"from\">%ss requested%s</div>"
              % (r.get("length_s") or 30,
                 (" &middot; %d moment%s picked" % (len(items), "" if len(items) == 1 else "s")) if items else

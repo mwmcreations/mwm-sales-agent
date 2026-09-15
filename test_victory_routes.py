@@ -120,8 +120,8 @@ class FakeStore(object):
     def purge_links(self, older_than_seconds=86400):
         return 0
 
-    def create_request(self, email, role, school, note, items, length_s=30):
-        self.requests.append({"id": len(self.requests) + 1, "at": "2026-09-14 20:00:00",
+    def create_request(self, email, role, school, note, items, length_s=30, text=None):
+        self.requests.append({"id": len(self.requests) + 1, "at": "2026-09-14 20:00:00", "text": text,
                               "email": email, "role": role, "school": school,
                               "note": note, "items": items, "state": "asked",
                               "handled_at": None, "handled_by": None,
@@ -189,6 +189,15 @@ class FakeStore(object):
                 out.append(r["summary"]["music_id"])
         return out[:limit]
 
+    def recent_clips(self, email, cuts=6):
+        out = []
+        for r in reversed(self.requests):
+            if r["email"] == email and isinstance(r.get("summary"), dict):
+                for sh in r["summary"].get("shots") or []:
+                    if isinstance(sh, dict) and sh.get("id") and sh["id"] not in out:
+                        out.append(sh["id"])
+        return out
+
     def add_feedback(self, rid, email, text):
         self.feedback.append({"request_id": int(rid), "at": "2026-09-14 20:03:00",
                               "email": email, "text": text})
@@ -212,8 +221,8 @@ def install_fake_store(fake):
                  "log_search", "recent_searches", "purge_links",
                  "create_request", "list_requests", "list_requests_for", "get_request",
                  "claim_next_request", "finish_request", "set_request_state",
-                 "requeue_stale", "queue_counts", "recent_music", "add_feedback",
-                 "list_feedback"):
+                 "requeue_stale", "queue_counts", "recent_music", "recent_clips",
+                 "add_feedback", "list_feedback"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -714,6 +723,16 @@ class TestAskForACut(VICase):
         self.assertEqual(self._ask(items=[], note="").status_code, 400)
         self.assertEqual(self._ask().status_code, 400)
 
+    def test_words_on_screen_and_the_end_card_are_kept(self):
+        self._ask(note="x", lines="Four days.\nEvery school.\n\nOne floor.", cta="Enroll today")
+        self.assertEqual(self.store.requests[0]["text"],
+                         {"lines": ["Four days.", "Every school.", "One floor."], "cta": "Enroll today"})
+        self._ask(note="x")
+        self.assertIsNone(self.store.requests[1]["text"])
+        self._ask(note="x", lines=["a", "b", "c", "d", "e", "f"], cta="z" * 200)
+        self.assertEqual(len(self.store.requests[2]["text"]["lines"]), 4)
+        self.assertEqual(len(self.store.requests[2]["text"]["cta"]), 60)
+
     def test_length_is_kept_and_kept_sane(self):
         self._ask(note="x", length=60)
         self._ask(note="x", length=7)
@@ -864,6 +883,16 @@ class TestTheMachineEditor(VICase):
         self._next(); self._deliver(1, summary={"music_id": "05"})
         job = self._next()["job"]
         self.assertEqual(job["recent_music"], ["05"])
+
+    def test_the_clips_this_person_already_saw_travel_with_the_next_job(self):
+        self._next(); self._deliver(1, summary={"shots": [{"id": "A"}, {"id": "B"}]})
+        job = self._next()["job"]
+        self.assertEqual(job["recent_clips"], ["A", "B"])
+
+    def test_the_page_offers_words_on_screen_and_an_end_card(self):
+        page = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn("Words on screen", page)
+        self.assertIn("End card", page)
 
     def test_i_see_my_videos_and_only_mine(self):
         self._next(); self._deliver(1)

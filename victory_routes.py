@@ -348,6 +348,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                 length_s = 30
             if not isinstance(items, list):
                 items = []
+            # The person's own words on screen (up to 4 lines) and the end card.
+            raw_lines = body.get("lines")
+            if isinstance(raw_lines, str):
+                raw_lines = raw_lines.splitlines()
+            lines = [str(x).strip()[:60] for x in (raw_lines or []) if str(x).strip()][:4]
+            cta = str(body.get("cta") or "").strip()[:60]
+            text = {"lines": lines, "cta": cta} if (lines or cta) else None
             # Since 14 Sep the machine finds the footage itself: a request may
             # be words alone, moments alone, or both. Never neither.
             if not items and not note:
@@ -368,7 +375,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
 
             vs.init_schema()
             rid = vs.create_request(sess["email"], sess["role"],
-                                    sess.get("school", ""), note, clean, length_s=length_s)
+                                    sess.get("school", ""), note, clean, length_s=length_s, text=text)
             if not rid:
                 return jsonify({"ok": False, "error": "could not save the request"}), 500
 
@@ -523,6 +530,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                 return jsonify({"ok": True, "job": None}), 200
             job = _jsonable_request(job)
             job["recent_music"] = vs.recent_music(job["email"])
+            job["recent_clips"] = vs.recent_clips(job["email"])
+            if isinstance(job.get("text"), str):
+                try:
+                    import json as _json
+                    job["text"] = _json.loads(job["text"])
+                except Exception:
+                    job["text"] = None
             print("[VI] job #%s claimed by %s" % (job["id"], worker))
             return jsonify({"ok": True, "job": job}), 200
         except Exception as e:

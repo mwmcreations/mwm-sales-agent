@@ -83,6 +83,72 @@ class TestVariety(unittest.TestCase):
         self.assertEqual(len({s["id"] for s in shots}), len(shots))
 
 
+class TestRotation(unittest.TestCase):
+    """Michael, after the first live cuts: "the computer tries to go for the
+    same ones." Footage a person has already been given goes to the back."""
+
+    def test_recent_clips_are_avoided(self):
+        first = [s["id"] for s in vc.pick_shots(CLIPS, 10, seed=1)]
+        second = [s["id"] for s in vc.pick_shots(CLIPS, 10, seed=2, avoid=first)]
+        self.assertEqual(set(first) & set(second), set())
+
+    def test_two_similar_asks_do_not_make_the_same_reel(self):
+        a = [s["id"] for s in vc.pick_shots(CLIPS, 10, seed=101)]
+        b = [s["id"] for s in vc.pick_shots(CLIPS, 10, seed=102)]
+        self.assertNotEqual(a, b)
+        self.assertEqual(len(set(a)), 10)
+
+    def test_the_same_request_is_reproducible(self):
+        self.assertEqual(vc.pick_shots(CLIPS, 10, seed=7), vc.pick_shots(CLIPS, 10, seed=7))
+
+    def test_a_requested_clip_is_never_avoided(self):
+        want = ["VWC26_CROWD_01_kids-cheering_D0062"]
+        shots = vc.pick_shots(CLIPS, 5, requested=want, avoid=want, seed=3)
+        self.assertIn(want[0], [s["id"] for s in shots])
+
+    def test_avoiding_everything_still_makes_a_full_reel(self):
+        shots = vc.pick_shots(CLIPS, 10, avoid=[c["id"] for c in CLIPS], seed=1)
+        self.assertEqual(len(shots), 10)
+
+
+class TestWordsOnScreen(unittest.TestCase):
+    def test_no_words_means_title_and_signoff(self):
+        cards = vc.card_plan(30, "kids having fun", [], "")
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[0][0], "KIDS HAVING FUN")
+        self.assertEqual(cards[-1][0], "Victory Martial Arts")
+        self.assertEqual(cards[-1][2], 27.0)
+
+    def test_the_persons_sentences_are_spread_across_the_reel(self):
+        cards = vc.card_plan(30, "x", ["Four days.", "Every school.", "One floor."], "Enroll today")
+        self.assertEqual([c[0] for c in cards], ["Four days.", "Every school.", "One floor.", "Enroll today"])
+        self.assertEqual(cards[0][2], 0.3)
+        self.assertLess(cards[0][3], cards[1][2])          # head ends before the next starts
+        self.assertLess(cards[1][3], cards[2][2])
+        self.assertLessEqual(cards[2][3], cards[3][2])     # middle ends before the end card
+        self.assertEqual(cards[3][2:4], (27.0, 30.0))
+
+    def test_a_short_reel_with_many_lines_still_fits(self):
+        cards = vc.card_plan(15, "x", ["a", "b", "c", "d"], "go")
+        for c in cards:
+            self.assertLessEqual(c[3], 15.0)
+            self.assertLessEqual(c[2], c[3])
+
+    def test_the_plan_carries_the_words(self):
+        p = vc.plan("x", CLIPS, [], LIBRARY, {}, 30, lines=["Hello"], cta="Join")
+        self.assertEqual(p["lines"], ["Hello"])
+        self.assertEqual(p["cta"], "Join")
+        self.assertEqual(p["cards"][-1][0], "Join")
+
+    def test_many_cards_in_the_ffmpeg_command(self):
+        cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                           cards=[("c0.png", 0.3, 3.5), ("c1.png", 12.0, 15.0), ("c2.png", 27.0, 30.0)])
+        joined = " ".join(cmd)
+        self.assertEqual(joined.count("-loop 1 -i"), 3)
+        self.assertIn("between(t,12.00,15.00)", joined)
+        self.assertIn("[v2]", joined)
+
+
 class TestTheIndexLeads(unittest.TestCase):
     def test_a_narrow_ask_gets_its_own_footage(self):
         pool, by_search = vc.candidates("candlelight ceremony", CLIPS, 10, search)
@@ -196,10 +262,10 @@ class TestTheCommands(unittest.TestCase):
 
     def test_cards_are_overlaid_when_given(self):
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None,
-                           cards=("head.png", "outro.png"))
+                           cards=[("head.png", 0.3, 3.2), ("outro.png", 27.0, 30.0)])
         joined = " ".join(cmd)
         self.assertIn("-loop 1 -i head.png", joined)
-        self.assertIn("overlay=0:0:enable='between(t,0.3,3.2)'", joined)
+        self.assertIn("overlay=0:0:enable='between(t,0.30,3.20)'", joined)
         self.assertIn("between(t,27.00,30.00)", joined)
         self.assertNotIn("drawtext", joined)
 
