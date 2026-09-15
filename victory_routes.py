@@ -24,6 +24,7 @@ its own.
     GET  /vi/jobs/next       claim the next request    (admin; the Mac worker)
     POST /vi/jobs/<id>/deliver   the finished file     (admin; multipart)
     POST /vi/jobs/<id>/fail      why it did not render (admin)
+    POST /vi/jobs/<id>/requeue   back in the queue     (admin)
     POST /vi/drive-selftest  prove the Drive path      (admin)
 
 TWO GATES, AND THE DIFFERENCE MATTERS
@@ -587,6 +588,25 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return jsonify({"ok": True, "id": rid, "state": "failed"}), 200
         except Exception as e:
             _err("vi_jobs_fail", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/jobs/<int:rid>/requeue", methods=["POST"])
+    def vi_jobs_requeue(rid):
+        """Put a request back in the queue (admin). For DEV during the test
+        week: a cut that failed for a reason now fixed, or one worth redoing
+        after the editor changed."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            if not vs.get_request(rid):
+                return jsonify({"ok": False, "error": "no such request"}), 404
+            if not vs.set_request_state(rid, "asked", by="dev"):
+                return jsonify({"ok": False, "error": "could not requeue"}), 500
+            print("[VI] cut #%s requeued by admin" % rid)
+            return jsonify({"ok": True, "id": rid, "state": "asked"}), 200
+        except Exception as e:
+            _err("vi_jobs_requeue", e, "rid=%s" % rid)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     @app.route("/vi/drive-selftest", methods=["POST"])

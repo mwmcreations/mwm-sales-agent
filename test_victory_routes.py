@@ -852,6 +852,14 @@ class TestTheMachineEditor(VICase):
         self.assertEqual(self.store.get_request(1)["state"], "failed")
         self.assertIn("ffmpeg exploded", " ".join(self.notes))
 
+    def test_admin_can_requeue_a_failed_cut(self):
+        self._next()
+        self.c.post("/vi/jobs/1/fail?secret=" + SECRET, json={"error": "x"})
+        self.assertEqual(self.c.post("/vi/jobs/1/requeue").status_code, 401)
+        self.assertEqual(self.c.post("/vi/jobs/1/requeue?secret=" + SECRET).status_code, 200)
+        self.assertEqual(self._next()["job"]["id"], 1)
+        self.assertEqual(self.c.post("/vi/jobs/99/requeue?secret=" + SECRET).status_code, 404)
+
     def test_the_music_this_person_already_heard_travels_with_the_next_job(self):
         self._next(); self._deliver(1, summary={"music_id": "05"})
         job = self._next()["job"]
