@@ -96,6 +96,16 @@ DDL = [
            text       TEXT NOT NULL
        )""",
     "CREATE INDEX IF NOT EXISTS vi_feedback_req ON vi_feedback (request_id, at)",
+    # Our own thumbnails and previews (15 Sep): Drive's thumbnail redirect did not
+    # show on Michael's phone, and there was no way to watch a clip before picking
+    # it. The Mac worker makes a poster JPEG and a small MP4 per clip; they live
+    # here and the app serves them. ~30 KB + ~1 MB per clip.
+    """CREATE TABLE IF NOT EXISTS vi_media (
+           clip_id    TEXT PRIMARY KEY,
+           poster     BYTEA,
+           preview    BYTEA,
+           updated_at TIMESTAMPTZ DEFAULT now()
+       )""",
 ]
 
 # asked -> rendering -> ready -> approved -> delivered, or failed / declined.
@@ -600,3 +610,55 @@ def recent_searches(limit=50):
     except Exception as e:
         print("[VI-AUTH] recent_searches failed: %r" % (e,))
         return []
+
+
+# ── thumbnails and previews ────────────────────────────────────────────────
+def media_have():
+    """Clip ids that already have a poster and a preview."""
+    pg = _pg()
+    if not pg:
+        return set()
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT clip_id FROM vi_media WHERE poster IS NOT NULL AND preview IS NOT NULL")
+            return {r[0] for r in cur.fetchall()}
+    except Exception as e:
+        print("[VI] media_have failed: %r" % (e,))
+        return set()
+
+
+def media_put(clip_id, poster, preview):
+    pg = _pg()
+    if not pg or not clip_id:
+        return False
+    try:
+        import psycopg2
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO vi_media (clip_id, poster, preview, updated_at)
+                        VALUES (%s, %s, %s, now())
+                   ON CONFLICT (clip_id) DO UPDATE SET
+                        poster = COALESCE(EXCLUDED.poster, vi_media.poster),
+                        preview = COALESCE(EXCLUDED.preview, vi_media.preview),
+                        updated_at = now()""",
+                (clip_id, psycopg2.Binary(poster) if poster else None,
+                 psycopg2.Binary(preview) if preview else None))
+        return True
+    except Exception as e:
+        print("[VI] media_put failed: %r" % (e,))
+        return False
+
+
+def media_get(clip_id, kind):
+    """bytes or None. kind: 'poster' | 'preview'."""
+    pg = _pg()
+    if not pg or kind not in ("poster", "preview"):
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT %s FROM vi_media WHERE clip_id = %%s" % kind, (clip_id,))
+            row = cur.fetchone()
+            return bytes(row[0]) if row and row[0] is not None else None
+    except Exception as e:
+        print("[VI] media_get failed: %r" % (e,))
+        return None

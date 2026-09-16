@@ -26,6 +26,9 @@ its own.
     POST /vi/jobs/<id>/fail      why it did not render (admin)
     POST /vi/jobs/<id>/requeue   back in the queue     (admin)
     GET  /vi/card            a title card as a PNG     (admin; the worker)
+    GET  /vi/media/missing   clips without thumbnails  (admin; the worker)
+    POST /vi/media/<clip>    poster + preview upload   (admin; the worker)
+    GET  /vi/thumb/<clip>.jpg, /vi/preview/<clip>.mp4  (session)
     POST /vi/drive-selftest  prove the Drive path      (admin)
 
 TWO GATES, AND THE DIFFERENCE MATTERS
@@ -622,6 +625,115 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return jsonify({"ok": True, "id": rid, "state": "asked"}), 200
         except Exception as e:
             _err("vi_jobs_requeue", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    # ── thumbnails and previews ────────────────────────────────────────────
+    _media_cache = {}          # (clip_id, kind) -> bytes; posters are small, keep them warm
+
+    def _clip_ids_in_corpus():
+        try:
+            import victory_ingest as ingest
+            out = []
+            for ev in ingest.list_events():
+                _, _, records = ingest.build_rows(ev)
+                out += [r["id"].split(":", 1)[-1] for r in records if r.get("kind") == "clip"]
+            return out
+        except Exception as e:
+            _err("clip_ids_in_corpus", e)
+            return []
+
+    @app.route("/vi/media/missing", methods=["GET"])
+    def vi_media_missing():
+        """Which clips still need a poster and a preview (admin; the worker asks)."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            have = vs.media_have()
+            ids = [c for c in _clip_ids_in_corpus() if c not in have]
+            limit = max(1, min(int(request.values.get("limit", 20)), 200))
+            return jsonify({"ok": True, "missing": ids[:limit], "total_missing": len(ids)}), 200
+        except Exception as e:
+            _err("vi_media_missing", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/media/<clip_id>", methods=["POST"])
+    def vi_media_put(clip_id):
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            clip_id = clip_id[:200]
+            poster = request.files.get("poster")
+            preview = request.files.get("preview")
+            pb = poster.read() if poster else None
+            vb = preview.read() if preview else None
+            if not pb and not vb:
+                return jsonify({"ok": False, "error": "nothing in the upload"}), 400
+            if pb and (len(pb) < 1000 or not pb.startswith(b"\xff\xd8")):
+                return jsonify({"ok": False, "error": "poster is not a JPEG"}), 400
+            if vb and (len(vb) < 10_000 or len(vb) > 6_000_000):
+                return jsonify({"ok": False, "error": "preview size is off"}), 400
+            if not vs.media_put(clip_id, pb, vb):
+                return jsonify({"ok": False, "error": "could not store"}), 500
+            _media_cache.pop((clip_id, "poster"), None)
+            _media_cache.pop((clip_id, "preview"), None)
+            return jsonify({"ok": True, "clip_id": clip_id,
+                            "poster_bytes": len(pb or b""), "preview_bytes": len(vb or b"")}), 200
+        except Exception as e:
+            _err("vi_media_put", e, clip_id)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    def _serve_media(clip_id, kind, mime):
+        sess = _session()
+        if not sess or not va.can_search(sess["role"]):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        key = (clip_id, kind)
+        data = _media_cache.get(key)
+        if data is None:
+            data = vs.media_get(clip_id, kind)
+            if data is None:
+                return jsonify({"ok": False, "error": "no such media"}), 404
+            if kind == "poster" or len(_media_cache) < 60:
+                _media_cache[key] = data
+        total = len(data)
+        rng = request.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            # iOS video needs Range answered properly, or it will not play
+            try:
+                a, b = rng[6:].split("-", 1)
+                start = int(a) if a else max(0, total - int(b))
+                end = int(b) if (a and b) else total - 1
+                end = min(end, total - 1)
+                if start > end:
+                    raise ValueError
+                chunk = data[start:end + 1]
+                resp = make_response(chunk, 206)
+                resp.headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, total)
+            except ValueError:
+                resp = make_response(b"", 416)
+                resp.headers["Content-Range"] = "bytes */%d" % total
+        else:
+            resp = make_response(data, 200)
+        resp.headers["Content-Type"] = mime
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Cache-Control"] = "private, max-age=86400"
+        return resp
+
+    @app.route("/vi/thumb/<clip_id>.jpg", methods=["GET"])
+    def vi_thumb(clip_id):
+        try:
+            return _serve_media(clip_id[:200], "poster", "image/jpeg")
+        except Exception as e:
+            _err("vi_thumb", e, clip_id)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/preview/<clip_id>.mp4", methods=["GET"])
+    def vi_preview(clip_id):
+        try:
+            return _serve_media(clip_id[:200], "preview", "video/mp4")
+        except Exception as e:
+            _err("vi_preview", e, clip_id)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     @app.route("/vi/card", methods=["GET"])

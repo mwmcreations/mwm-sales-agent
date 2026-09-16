@@ -74,6 +74,7 @@ class FakeStore(object):
         self.searches = []
         self.requests = []
         self.feedback = []
+        self.media = {}
         self.secret = SIGNING
 
     def init_schema(self):
@@ -198,6 +199,18 @@ class FakeStore(object):
                         out.append(sh["id"])
         return out
 
+    def media_have(self):
+        return {k for k, v in self.media.items() if v.get("poster") and v.get("preview")}
+
+    def media_put(self, clip_id, poster, preview):
+        m = self.media.setdefault(clip_id, {})
+        if poster: m["poster"] = poster
+        if preview: m["preview"] = preview
+        return True
+
+    def media_get(self, clip_id, kind):
+        return self.media.get(clip_id, {}).get(kind)
+
     def add_feedback(self, rid, email, text):
         self.feedback.append({"request_id": int(rid), "at": "2026-09-14 20:03:00",
                               "email": email, "text": text})
@@ -222,7 +235,7 @@ def install_fake_store(fake):
                  "create_request", "list_requests", "list_requests_for", "get_request",
                  "claim_next_request", "finish_request", "set_request_state",
                  "requeue_stale", "queue_counts", "recent_music", "recent_clips",
-                 "add_feedback", "list_feedback"):
+                 "add_feedback", "list_feedback", "media_have", "media_put", "media_get"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -763,6 +776,71 @@ class TestAskForACut(VICase):
     def test_the_queue_is_admin_only_to_read(self):
         self.assertEqual(self.c.get("/vi/requests").status_code, 401)
         self.assertEqual(self.c.get("/vi/requests?secret=" + SECRET).status_code, 200)
+
+
+class TestThumbnailsAndPreviews(VICase):
+    """15 Sep: "no option to preview the footage and not even a thumbnail".
+    The worker makes them; the app keeps and serves them; the page shows them."""
+
+    JPEG = b"\xff\xd8\xff" + b"j" * 2000
+    MP4 = b"\x00\x00\x00\x1cftypisom" + b"v" * 20000
+
+    def _put(self, cid, poster=JPEG, preview=MP4):
+        import io as _io
+        data = {"secret": SECRET}
+        if poster is not None: data["poster"] = (_io.BytesIO(poster), "p.jpg")
+        if preview is not None: data["preview"] = (_io.BytesIO(preview), "p.mp4")
+        return self.c.post("/vi/media/%s" % cid, data=data, content_type="multipart/form-data")
+
+    def test_the_worker_side_is_admin_only(self):
+        self.assertEqual(self.c.get("/vi/media/missing").status_code, 401)
+        self.assertEqual(self.c.post("/vi/media/x").status_code, 401)
+
+    def test_missing_lists_every_clip_until_it_is_covered(self):
+        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=200" % SECRET))
+        self.assertEqual(m["total_missing"], 111)
+        self.assertIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
+        self.assertEqual(self._put("VWC26_CROWD_01_kids-cheering_D0062").status_code, 200)
+        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=200" % SECRET))
+        self.assertEqual(m["total_missing"], 110)
+        self.assertNotIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
+
+    def test_junk_uploads_are_refused(self):
+        self.assertEqual(self._put("x", poster=b"notajpeg" * 300).status_code, 400)
+        self.assertEqual(self._put("x", poster=None, preview=b"tiny").status_code, 400)
+        self.assertEqual(self._put("x", poster=None, preview=None).status_code, 400)
+
+    def test_signed_in_people_get_the_pictures_and_nobody_else_does(self):
+        self._put("clipA")
+        self.assertEqual(self.c.get("/vi/thumb/clipA.jpg").status_code, 401)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        r = self.c.get("/vi/thumb/clipA.jpg")
+        self.assertEqual((r.status_code, r.headers["Content-Type"]), (200, "image/jpeg"))
+        self.assertEqual(r.data, self.JPEG)
+        self.assertEqual(self.c.get("/vi/thumb/nope.jpg").status_code, 404)
+        r = self.c.get("/vi/preview/clipA.mp4")
+        self.assertEqual((r.status_code, r.headers["Content-Type"]), (200, "video/mp4"))
+        self.assertEqual(r.headers["Accept-Ranges"], "bytes")
+
+    def test_iphone_style_range_requests_are_answered(self):
+        self._put("clipA")
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        r = self.c.get("/vi/preview/clipA.mp4", headers={"Range": "bytes=0-1"})
+        self.assertEqual(r.status_code, 206)
+        self.assertEqual(r.data, self.MP4[:2])
+        self.assertEqual(r.headers["Content-Range"], "bytes 0-1/%d" % len(self.MP4))
+        r = self.c.get("/vi/preview/clipA.mp4", headers={"Range": "bytes=100-"})
+        self.assertEqual(r.status_code, 206)
+        self.assertEqual(len(r.data), len(self.MP4) - 100)
+        r = self.c.get("/vi/preview/clipA.mp4", headers={"Range": "bytes=999999-"})
+        self.assertEqual(r.status_code, 416)
+
+    def test_the_library_shows_our_thumbnail_and_a_way_to_watch(self):
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        page = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn("/vi/thumb/", page)
+        self.assertIn("/vi/preview/", page)
+        self.assertIn("Tap to watch", page)
 
 
 class TestThePageHelps(VICase):

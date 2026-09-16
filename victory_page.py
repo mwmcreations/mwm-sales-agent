@@ -72,6 +72,13 @@ button:disabled{opacity:.45;cursor:default}
 .thumb.said b{font-size:10.5px;letter-spacing:.1em;color:#8a5a00;font-weight:700}
 .thumb .dur{position:absolute;right:4px;bottom:4px;background:rgba(0,0,0,.72);color:#fff;
  font-size:10.5px;padding:1px 5px;border-radius:2px;font-variant-numeric:tabular-nums}
+.thumb.play{cursor:pointer}
+.thumb .pl{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:30px;height:30px;
+ border-radius:100px;background:rgba(0,0,0,.55);color:#fff;font-size:12px;display:flex;
+ align-items:center;justify-content:center;padding-left:2px}
+.thumb.open{width:100%;flex-basis:100%;aspect-ratio:16/9}
+.thumb video{width:100%;height:100%;display:block;background:#000}
+.row:has(.thumb.open){flex-wrap:wrap}
 .body{flex:1}
 .title{font-weight:650;font-size:15.5px;margin:0 0 3px;line-height:1.35}
 .said .title{font-weight:600;font-size:15px}
@@ -144,8 +151,10 @@ nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:10
 .ask{font-size:17px;font-weight:650;margin:10px 0 4px;line-height:1.4}
 .from{font-size:13px;color:#767d85;margin:0 0 12px}
 .moments{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 14px}
-.m .t{font-size:12.5px;font-weight:600;padding:6px 10px;border:1px solid #d7dbe0;border-radius:100px;
- color:#3b4249;background:#fff}
+.m{width:120px}
+.m .mt{aspect-ratio:16/9;border-radius:4px;overflow:hidden;background:#e6e9ec;margin:0 0 4px}
+.m .mt img{width:100%;height:100%;object-fit:cover;display:block}
+.m .t{font-size:12px;font-weight:600;line-height:1.3;color:#3b4249}
 .player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:6px;background:#14171a;
  display:block;margin:0 0 12px}
 .summ{font-size:12.5px;color:#767d85;margin:0 0 12px;line-height:1.5}
@@ -275,14 +284,29 @@ APP_JS = r"""
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
+  function clipId(r){ return String(r.id||'').split(':').slice(-1)[0]; }
   function thumb(r){
-    if(r.kind==='clip' && r.drive_id){
-      return '<div class="thumb"><img loading="lazy" alt="" src="https://drive.google.com/thumbnail?id='
-        + esc(r.drive_id) + '&sz=w400">' + (r.duration ? '<span class="dur">'+esc(r.duration)+'</span>' : '') + '</div>';
+    if(r.kind==='clip'){
+      var cid = clipId(r);
+      var fallback = r.drive_id ? 'https://drive.google.com/thumbnail?id=' + esc(r.drive_id) + '&sz=w400' : '';
+      return '<div class="thumb play" data-clip="' + esc(cid) + '" title="Tap to watch">' +
+        '<img loading="lazy" alt="" src="/vi/thumb/' + esc(cid) + '.jpg"' +
+        (fallback ? ' onerror="this.onerror=null;this.src=\'' + fallback + '\'"' : '') + '>' +
+        '<span class="pl">&#9654;</span>' +
+        (r.duration ? '<span class="dur">'+esc(r.duration)+'</span>' : '') + '</div>';
     }
-    if(r.kind==='clip') return '<div class="thumb"></div>';
     return '<div class="thumb said"><b>SAID</b></div>';
   }
+  // tap a thumbnail: play the small preview right there; tap again to stop
+  out.addEventListener('click', function(e){
+    var t=e.target.closest('.thumb.play'); if(!t) return;
+    e.preventDefault();
+    var cid=t.getAttribute('data-clip');
+    if(t.querySelector('video')){ paint(); return; }
+    document.querySelectorAll('.thumb.play video').forEach(function(v){ v.pause(); });
+    t.innerHTML = '<video playsinline autoplay controls preload="metadata" src="/vi/preview/' + esc(cid) + '.mp4"></video>';
+    t.classList.add('open');
+  });
 
   function row(r){
     var isClip = r.kind==='clip';
@@ -547,8 +571,11 @@ def _request_card(r, mine_only):
         h.append("<div class=\"moments\">")
         for it in items[:8]:
             # the request stores what the page sent: id, title, kind, file, quote
-            h.append("<div class=\"m\"><div class=\"t\">%s</div></div>"
-                     % _e(it.get("title") or it.get("quote") or it.get("id")))
+            cid = str(it.get("id") or "").split(":")[-1]
+            pic = ("<div class=\"mt\"><img loading=\"lazy\" alt=\"\" src=\"/vi/thumb/%s.jpg\" "
+                   "onerror=\"this.parentNode.style.display='none'\"></div>" % _e(cid)) if it.get("kind") == "clip" else ""
+            h.append("<div class=\"m\">%s<div class=\"t\">%s</div></div>"
+                     % (pic, _e(it.get("title") or it.get("quote") or it.get("id"))))
         h.append("</div>")
     if st == "ready" or (st in ("approved", "delivered") and r.get("result_drive_id")):
         if r.get("preview_url"):

@@ -231,6 +231,79 @@ def do_job(job, clips, reframe, library, search_fn):
     return res
 
 
+def prep_media(limit=8):
+    """After the queue is empty: give clips that have none a poster and a small
+    preview, a few per pass, so the Library fills itself in and new footage is
+    covered automatically. Nothing here can fail a cut."""
+    try:
+        missing = _get("/vi/media/missing", {"limit": limit}).get("missing") or []
+    except Exception as e:
+        log("prep: could not ask the app: %r" % (e,))
+        return 0
+    if not missing:
+        return 0
+    clips, reframe, _ = load_sources()
+    by_id = {c["id"]: c for c in clips}
+    os.makedirs(WORK_DIR, exist_ok=True)
+    done = 0
+    for cid in missing:
+        c = by_id.get(cid)
+        if not c or not c.get("drive_id"):
+            continue
+        try:
+            src = fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, cid + ".mp4"))
+            info = (reframe or {}).get(cid) or {}
+            wins = info.get("windows") or []
+            t = float(max(wins, key=lambda w: w.get("energy") or 0)["t"]) + 0.5 if wins else 1.0
+            poster = os.path.join(WORK_DIR, "poster_%s.jpg" % cid)
+            preview = os.path.join(WORK_DIR, "preview_%s.mp4" % cid)
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", "%.2f" % t, "-i", src, "-frames:v", "1",
+                            "-vf", "scale=480:-2", "-q:v", "4", poster], check=True, capture_output=True, timeout=120)
+            venc = (["-c:v", ENCODER, "-b:v", "900k", "-allow_sw", "1"] if "videotoolbox" in ENCODER
+                    else ["-c:v", "libx264", "-preset", "fast", "-crf", "28"])
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", src, "-t", "12", "-vf", "scale=480:-2,fps=24",
+                            "-an"] + venc + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", preview],
+                           check=True, capture_output=True, timeout=300)
+            res = _post_files("/vi/media/%s" % cid, {}, {"poster": poster, "preview": preview})
+            if res.get("ok"):
+                done += 1
+                log("prep: %s poster %dB preview %dB" % (cid[:40], res.get("poster_bytes", 0), res.get("preview_bytes", 0)))
+            else:
+                log("prep: %s refused: %s" % (cid[:40], res.get("error")))
+        except Exception as e:
+            log("prep: %s failed: %r" % (cid[:40], e))
+        finally:
+            for f in (os.path.join(WORK_DIR, "poster_%s.jpg" % cid), os.path.join(WORK_DIR, "preview_%s.mp4" % cid)):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+    return done
+
+
+def _post_files(path, fields, files, timeout=300):
+    """Multipart upload of several files (stdlib)."""
+    boundary = "----vi" + uuid.uuid4().hex
+    buf = io.BytesIO()
+    for k, v in dict(fields, secret=SECRET).items():
+        buf.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                   % (boundary, k, v)).encode("utf-8"))
+    for field, fpath in files.items():
+        ctype = "image/jpeg" if fpath.endswith(".jpg") else "video/mp4"
+        buf.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n"
+                   "Content-Type: %s\r\n\r\n" % (boundary, field, os.path.basename(fpath), ctype)).encode("utf-8"))
+        with open(fpath, "rb") as f:
+            shutil.copyfileobj(f, buf)
+        buf.write(b"\r\n")
+    buf.write(("--%s--\r\n" % boundary).encode("utf-8"))
+    data = buf.getvalue()
+    req = urllib.request.Request(APP + path, data=data, method="POST",
+                                 headers={"Content-Type": "multipart/form-data; boundary=" + boundary,
+                                          "Content-Length": str(len(data))})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def main():
     # launchd ends the daemon's whole process group when the daemon exits;
     # a new session keeps this worker alive after its parent is gone.
@@ -268,6 +341,7 @@ def main():
             if not job:
                 if done == 0:
                     print("%s queue empty" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+                    prep_media(limit=int(os.environ.get("VI_PREP_PER_PASS", "8")))
                 return 0
             if clips is None:
                 clips, reframe, library = load_sources()
