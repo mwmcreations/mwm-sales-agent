@@ -1356,6 +1356,24 @@ class TestTheHelper(VICase):
         self.assertEqual(len(fake.calls), 1)
         self.assertIn("THE FOOTAGE", fake.calls[0]["system"])
 
+    def test_a_plan_comes_back_with_a_length_per_video_step(self):
+        class Fake(FakeClaude):
+            answer = ('{"say": "Here is what I would do.", "ask": null, "plan": ['
+                      '{"title": "Show parents the progress", "why": "They stay when they see it.", '
+                      '"ask": "A 15-second reel for parents of belt presentations, emotional, slow pace.", '
+                      '"lines": ["Every class adds up"], "cta": "Victory Lake Nona"}, '
+                      '{"title": "Call the quiet families", "why": "Two missed weeks is the moment.", "ask": null}]}')
+        self.c.application.config["VI_HELPER_CLIENT"] = Fake()
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        d = self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "students keep quitting, what do I do"}]}).get_json()
+        self.assertIsNone(d["ask"])
+        self.assertEqual(len(d["plan"]), 2)
+        self.assertEqual(d["plan"][0]["length"], 15)
+        self.assertNotIn("length", d["plan"][1])
+        body = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn("showPlan", body)
+        self.assertIn("Make this video", body)
+
     def test_the_helper_needs_a_session_and_something_said(self):
         self._fake()
         self.assertEqual(self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "hi"}]}).status_code, 401)

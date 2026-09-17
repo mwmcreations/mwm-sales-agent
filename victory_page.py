@@ -162,6 +162,16 @@ button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .msg .lens button.on{background:#14171a;color:#fff;border-color:#14171a}
 .msg .use{display:block;width:100%;background:#C8102E;color:#fff;border:0;border-radius:8px;font-family:inherit;font-weight:700;font-size:17px;line-height:1;padding:15px 18px;white-space:normal;text-align:center}
 .msg .hint{font-size:12.5px;color:#767d85;margin:8px 0 0}
+.msg.plan{background:#fff;border:1.5px solid #14171a;max-width:100%;width:100%;white-space:normal}
+.msg .ph{font-weight:800;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:#C8102E;margin:0 0 8px}
+.msg .step{padding:10px 0;border-top:1px solid #eceef1}
+.msg .step:first-of-type{border-top:0}
+.msg .st{font-weight:700;font-size:16px;line-height:1.35}
+.msg .st .n{display:inline-block;width:24px;height:24px;border-radius:100px;background:#14171a;color:#fff;font-size:13px;line-height:24px;text-align:center;margin-right:6px}
+.msg .sw{font-size:14px;color:#3b4249;margin:4px 0 0}
+.msg .sv{font-size:13.5px;color:#14171a;margin:6px 0 0;padding:8px 10px;background:#f7f8f9;border-radius:6px}
+.msg .sx{font-size:12.5px;color:#767d85;margin:4px 0 0}
+.msg .mk{display:inline-block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;font-family:inherit;font-weight:700;font-size:14px;line-height:1;padding:11px 14px;white-space:normal}
 .msg .pkg{margin:0 0 10px;padding:10px 12px;background:#f7f8f9;border-radius:8px;font-size:14px}
 .msg .pk{margin:0 0 6px}
 .msg .pk .k{display:block;font-weight:700;color:#767d85;text-transform:uppercase;font-size:11px;letter-spacing:.08em;margin:0 0 2px}
@@ -512,10 +522,12 @@ APP_JS = r"""
       if(!d.ok){ bubble('bot', d.error || 'I did not catch that; say it again.'); return; }
       if(d.say){ bubble('bot', d.say); }
       // our own turn goes back as the object it was, so the next answer keeps the shape
-      hist.push({role:'bot', text: JSON.stringify({say: d.say || '', ask: d.ask || null, lines: d.lines || [], cta: d.cta || null})});
+      hist.push({role:'bot', text: JSON.stringify({say: d.say || '', ask: d.ask || null, lines: d.lines || [], cta: d.cta || null,
+                                                 plan: (d.plan||[]).map(function(st){ return {title: st.title, ask: st.ask || null}; })})});
       if(d.remembered){ bubble('bot note', 'Noted for next time: ' + d.remembered); }
       if(d.forgot){ bubble('bot note', 'Forgotten.'); }
       if(d.ask) offer(d);
+      if((d.plan||[]).length) showPlan(d.plan);
       if((d.ideas||[]).length){
         var m=bubble('bot'); m.textContent=d.ask?'Or one of these:':'Some ideas:';
         d.ideas.forEach(function(t){ m.appendChild(ideaButton(t,'alt')); });
@@ -523,26 +535,53 @@ APP_JS = r"""
     })
     .catch(function(){ hsend.disabled=false; w.remove(); bubble('bot', 'I am not answering just now; try again in a moment.'); });
   }
-  function makeIt(btn){
-    if(!curAsk) return;
+  function makeIt(btn, pkg, stay){
+    // pkg: {ask, len, lines, cta} — the proposal card's, or one step of a plan
+    pkg = pkg || {ask: curAsk, len: curLen, lines: curLines, cta: curCta};
+    if(!pkg.ask) return;
     var ids=(picker && !picker.hidden) ? Object.keys(picked) : [];
+    var label=btn.textContent;
     btn.disabled=true; btn.textContent='Sending…';
     fetch('/vi/request', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note: curAsk, length: curLen, lines: curLines.join('\n'), cta: curCta,
+      body: JSON.stringify({note: pkg.ask, length: pkg.len || 30, lines: (pkg.lines||[]).join('\n'), cta: pkg.cta || '',
         items: ids.map(function(i){ return {id:i, title: picked[i].title, kind: picked[i].kind,
                                              file: picked[i].file, quote: picked[i].quote}; })})})
     .then(function(r){ return r.json(); })
     .then(function(d){
-      if(!d.ok){ btn.disabled=false; btn.textContent='Make it'; bubble('bot', d.error || 'That did not send. Try again in a moment.'); return; }
+      if(!d.ok){ btn.disabled=false; btn.textContent=label; bubble('bot', d.error || 'That did not send. Try again in a moment.'); return; }
       btn.textContent='Sent ✓';
-      var m=bubble('bot', 'On it. Your video will be under My videos in a few minutes — taking you there. ');
+      var m=bubble('bot', stay ? 'On it — that one is with the editor; it will be under My videos in a few minutes. '
+                               : 'On it. Your video will be under My videos in a few minutes — taking you there. ');
       var a=document.createElement('a'); a.href='/vi/queue#req'+d.id; a.textContent='See it'; m.appendChild(a);
-      hist.push({role:'bot', text:'Sent to the editor: '+curAsk});
-      picked={}; paint(); painBar(); curAsk='';
-      setTimeout(function(){ window.location.href='/vi/queue#req'+d.id; }, 1800);
+      hist.push({role:'bot', text:'Sent to the editor: '+pkg.ask});
+      picked={}; paint(); painBar();
+      if(!stay){ curAsk=''; setTimeout(function(){ window.location.href='/vi/queue#req'+d.id; }, 1800); }
     })
-    .catch(function(){ btn.disabled=false; btn.textContent='Make it'; bubble('bot', 'That did not send. Try again in a moment.'); });
+    .catch(function(){ btn.disabled=false; btn.textContent=label; bubble('bot', 'That did not send. Try again in a moment.'); });
+  }
+  // a plan: numbered steps; the ones that are videos can be cut from right here
+  function showPlan(steps){
+    var m=bubble('bot plan');
+    var h=document.createElement('div'); h.className='ph'; h.textContent='The plan'; m.appendChild(h);
+    steps.forEach(function(st, i){
+      var row=document.createElement('div'); row.className='step';
+      var t=document.createElement('div'); t.className='st'; t.innerHTML='<span class="n">'+(i+1)+'</span> '+esc(st.title); row.appendChild(t);
+      if(st.why){ var w=document.createElement('div'); w.className='sw'; w.textContent=st.why; row.appendChild(w); }
+      if(st.ask){
+        var v=document.createElement('div'); v.className='sv'; v.textContent=st.ask; row.appendChild(v);
+        if((st.lines||[]).length || st.cta){
+          var x=document.createElement('div'); x.className='sx';
+          x.textContent=((st.lines||[]).length ? 'On screen: '+st.lines.join(' / ') : '') + (st.cta ? ((st.lines||[]).length?' · ':'')+'End card: '+st.cta : '');
+          row.appendChild(x);
+        }
+        var b=document.createElement('button'); b.type='button'; b.className='mk'; b.textContent='Make this video · '+(st.length||30)+' s';
+        b.onclick=function(){ makeIt(b, {ask: st.ask, len: st.length||30, lines: st.lines||[], cta: st.cta||''}, true); };
+        row.appendChild(b);
+      }
+      m.appendChild(row);
+    });
+    m.scrollIntoView({block:'nearest'});
   }
   if(hsend){
     hsend.onclick=helperSend;

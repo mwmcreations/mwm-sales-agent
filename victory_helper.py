@@ -148,13 +148,17 @@ HOW TO TALK — like a person, not a form
 - "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
+WHEN THEY ASK FOR ADVICE OR A PLAN (students quitting, a slow month, low turnout, parents drifting, how do I…)
+This is where you earn your name. Answer as the marketing partner, not the editor: first, in "say", what is usually behind it in a martial arts school, in two or three plain sentences a school owner will recognize (students quit at plateaus and after a few missed weeks; parents stay when they can SEE progress and feel they belong; the strongest levers are visible progress, public recognition, events that bring families together, and a personal call when someone goes quiet). Then a "plan": three to five concrete steps, each one thing they can do this week or this month — most of them videos you can cut right now (each with its own "ask", "lines" and "cta", following the playbook), the rest plain actions (call the families who missed two weeks; a bring-a-friend week; a progress note to parents after class). Order them by what to do first. End "say" with which step you'd start with and that you can cut it now. Do not fill the top-level "ask" when you give a plan — the plan's steps carry the videos. What you know about their school and their past videos shapes the plan; never invent numbers or promise results.
+- "plan": [{"title": "four to eight words", "why": "one sentence, plain", "ask": "the video sentence, or null for a plain action", "lines": [], "cta": null}]. Empty [] when they did not ask for advice.
+
 MEMORY
 - Use what you know about this person: do not ask what they already told you; suggest what fits their school, their audience and their usual length; do not propose footage or music they just had unless they ask. When a memory shapes your proposal, say so in a few words (since you usually post to Instagram…).
 - "remember": when they state something durable about themselves or their preferences (their school's name, where they post, a usual length or feel, something they never want in a cut, their role), write it as one short fact in their words, e.g. "posts to Instagram and Facebook", "school: Victory Lake Nona". Not a one-off request, not a guess. Otherwise null.
 - "forget": if they ask you to forget something, the words to drop (or "*" for everything); otherwise null. Confirm in "say".
 
 ALWAYS answer with ONE JSON object and nothing else — every turn, whatever came before:
-{"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": [], "remember": null, "forget": null}"""
+{"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": [], "plan": [], "remember": null, "forget": null}"""
 
 
 def today_text():
@@ -233,6 +237,20 @@ def parse_answer(text):
     lines = [str(x).strip()[:80] for x in (d.get("lines") or []) if str(x).strip()][:4] if isinstance(d.get("lines"), list) else []
     cta = d.get("cta")
     cta = str(cta).strip()[:60] if cta and str(cta).strip().lower() not in ("null", "none") else ""
+    plan = []
+    for st in (d.get("plan") or [])[:5] if isinstance(d.get("plan"), list) else []:
+        if not isinstance(st, dict):
+            continue
+        title = str(st.get("title") or "").strip()[:80]
+        if not title:
+            continue
+        a = st.get("ask")
+        a = str(a).strip()[:300] if a and str(a).strip().lower() not in ("null", "none") else None
+        c = st.get("cta")
+        c = str(c).strip()[:60] if c and str(c).strip().lower() not in ("null", "none") else ""
+        plan.append({"title": title, "why": str(st.get("why") or "").strip()[:240], "ask": a,
+                     "lines": [str(x).strip()[:80] for x in (st.get("lines") or []) if str(x).strip()][:4]
+                     if isinstance(st.get("lines"), list) else [], "cta": c})
     remember = d.get("remember")
     remember = str(remember).strip()[:300] if remember and str(remember).strip().lower() not in ("null", "none") else ""
     forget = d.get("forget")
@@ -240,7 +258,7 @@ def parse_answer(text):
     if not say and not ask:
         return None
     return {"say": say, "ask": ask, "ideas": ideas, "lines": lines, "cta": cta,
-            "remember": remember, "forget": forget}
+            "plan": plan, "remember": remember, "forget": forget}
 
 
 def as_answer(text):
@@ -308,7 +326,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         _note_error(repr(e))
     return {"say": "Sorry, I lost my train of thought. Tell me who the video is for and where it will "
                    "be posted, and I will propose one.", "ask": None, "ideas": [], "lines": [], "cta": "",
-            "remember": "", "forget": ""}
+            "plan": [], "remember": "", "forget": ""}
 
 
 def ideas(records, seed=None, n=IDEAS_N):

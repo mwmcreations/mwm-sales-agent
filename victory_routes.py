@@ -268,13 +268,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             if out.get("remember"):
                 if vs.add_memory(sess["email"], out["remember"]):
                     out["remembered"] = out["remember"]
+            import victory_cut as _vc
             if out.get("ask"):
                 # the card under the proposal: how the editor reads it, and
                 # the length it will cut unless the person taps another
-                import victory_cut as _vc
                 b = _vc.brief_for(out["ask"])
                 out["brief"] = b["text"]
                 out["length"] = b["length"]
+            for st in out.get("plan") or []:
+                if st.get("ask"):
+                    st["length"] = _vc.brief_for(st["ask"])["length"]
             out["ok"] = True
             return jsonify(out), 200
         except Exception as e:

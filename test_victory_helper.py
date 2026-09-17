@@ -98,7 +98,8 @@ class TestThePlaybook(unittest.TestCase):
         sysm = fake.calls[0]["system"]
         for phrase in ("WHAT SOLVES WHAT", "free or trial class", "An event", "Keep parents motivated",
                        "Sell gear", "Victory Martial Arts card", "Never invent a date",
-                       "PREPARING AN EVENT VIDEO", "in ONE friendly message", "Today is "):
+                       "PREPARING AN EVENT VIDEO", "in ONE friendly message", "Today is ",
+                       "WHEN THEY ASK FOR ADVICE OR A PLAN", '"plan": [{"title"'):
             self.assertIn(phrase, sysm)
         import re as _re
         self.assertRegex(vh.today_text(), r"^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, 20\d\d$")
@@ -175,7 +176,17 @@ class TestChat(unittest.TestCase):
         self.assertIsNone(vh.parse_answer("no json here"))
         d = vh.parse_answer('Sure! {"say": "ok", "ask": null, "ideas": ["a", "", "b", "c", "d"]}')
         self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"], "lines": [], "cta": "",
-                             "remember": "", "forget": ""})
+                             "plan": [], "remember": "", "forget": ""})
+        d = vh.parse_answer('{"say": "Here is the plan.", "ask": null, "plan": [' +
+                            '{"title": "Show parents the progress", "why": "They stay when they see it.", ' +
+                            '"ask": "A 30-second reel for parents of belt presentations, emotional, slow pace.", ' +
+                            '"lines": ["Every class adds up"], "cta": "Victory Lake Nona"}, ' +
+                            '{"title": "Call the quiet families", "why": "Two missed weeks is the moment.", "ask": null}, ' +
+                            '{"title": ""}, "junk"]}')
+        self.assertEqual(len(d["plan"]), 2)
+        self.assertEqual(d["plan"][0]["ask"], "A 30-second reel for parents of belt presentations, emotional, slow pace.")
+        self.assertEqual(d["plan"][0]["lines"], ["Every class adds up"])
+        self.assertIsNone(d["plan"][1]["ask"])
         d = vh.parse_answer('{"say": "Noted.", "ask": null, "remember": "posts to Instagram", "forget": "null"}')
         self.assertEqual((d["remember"], d["forget"]), ("posts to Instagram", ""))
         d = vh.parse_answer('{"say": "Done.", "ask": null, "forget": "*"}')
