@@ -316,6 +316,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             t0 = time.time()
             out = vi.search(q, event_key=event, limit=limit)
             out["ms"] = int((time.time() - t0) * 1000)
+            _annotate_moments(out.get("results") or [])
 
             if sess:
                 vs.log_search(sess["email"], sess["role"], q, event,
@@ -637,10 +638,54 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             for ev in ingest.list_events():
                 _, _, records = ingest.build_rows(ev)
                 out += [r["id"].split(":", 1)[-1] for r in records if r.get("kind") == "clip"]
+                # interview moments (the ~30 s pieces the transcript lines map to)
+                # want a picture and a preview too
+                for m in (_moments(ev).get("moments") or {}).values():
+                    f = m.get("file") or ""
+                    if f.endswith(".mp4"):
+                        out.append(f[:-4])
             return out
         except Exception as e:
             _err("clip_ids_in_corpus", e)
             return []
+
+    _moments_cache = {}
+
+    def _moments(event_key):
+        """victory_source/<event>/quote_moments.json, read once: which piece of
+        the recording each transcript line was said in, and where in it."""
+        if event_key not in _moments_cache:
+            try:
+                import json as _json
+                import os as _os
+                import victory_ingest as ingest
+                path = _os.path.join(ingest.SOURCE_ROOT, event_key, "quote_moments.json")
+                _moments_cache[event_key] = _json.load(open(path, encoding="utf-8")) if _os.path.exists(path) else {}
+            except Exception as e:
+                _err("moments_index", e)
+                _moments_cache[event_key] = {}
+        return _moments_cache[event_key]
+
+    def _annotate_moments(results):
+        """Give each quote result its moment id and the second the line starts
+        at inside it, so the Library can show a picture and play the line."""
+        for r in results:
+            if r.get("kind") != "quote":
+                continue
+            rid = str(r.get("id") or "")
+            ev, _, nat = rid.partition(":")
+            idx = _moments(ev or "") if ev else {}
+            q = (idx.get("quotes") or {}).get(nat)
+            if not q:
+                import re as _re
+                q = (idx.get("quotes") or {}).get(_re.sub(r"#\d+$", "", nat))
+            if not q:
+                continue
+            m = (idx.get("moments") or {}).get(q.get("moment"))
+            f = (m or {}).get("file") or ""
+            if f.endswith(".mp4"):
+                r["moment"] = f[:-4]
+                r["offset"] = q.get("offset", 0)
 
     @app.route("/vi/media/missing", methods=["GET"])
     def vi_media_missing():
@@ -651,7 +696,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         try:
             have = vs.media_have()
             ids = [c for c in _clip_ids_in_corpus() if c not in have]
-            limit = max(1, min(int(request.values.get("limit", 20)), 200))
+            limit = max(1, min(int(request.values.get("limit", 20)), 500))
             return jsonify({"ok": True, "missing": ids[:limit], "total_missing": len(ids)}), 200
         except Exception as e:
             _err("vi_media_missing", e)

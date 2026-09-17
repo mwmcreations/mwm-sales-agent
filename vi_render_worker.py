@@ -260,22 +260,37 @@ def prep_media(limit=8):
     done = 0
     for cid in missing:
         c = by_id.get(cid)
-        if not c or not c.get("drive_id"):
+        moment = os.path.join(QUOTES_DIR, cid + ".mp4") if cid.startswith("M_") else None
+        if moment and not os.path.exists(moment):
+            continue
+        if not moment and (not c or not c.get("drive_id")):
             continue
         try:
-            src = fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, cid + ".mp4"))
-            info = (reframe or {}).get(cid) or {}
-            wins = info.get("windows") or []
-            t = float(max(wins, key=lambda w: w.get("energy") or 0)["t"]) + 0.5 if wins else 1.0
             poster = os.path.join(WORK_DIR, "poster_%s.jpg" % cid)
             preview = os.path.join(WORK_DIR, "preview_%s.mp4" % cid)
-            subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", "%.2f" % t, "-i", src, "-frames:v", "1",
-                            "-vf", "scale=480:-2", "-q:v", "4", poster], check=True, capture_output=True, timeout=120)
             venc = (["-c:v", ENCODER, "-b:v", "900k", "-allow_sw", "1"] if "videotoolbox" in ENCODER
                     else ["-c:v", "libx264", "-preset", "fast", "-crf", "28"])
-            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", src, "-t", "12", "-vf", "scale=480:-2,fps=24",
-                            "-an"] + venc + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", preview],
-                           check=True, capture_output=True, timeout=300)
+            if moment:
+                # an interview piece: the picture 2 s in, the preview is the whole
+                # ~30 s piece, small, WITH its sound — the point is to hear the line
+                src = moment
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", "2.0", "-i", src, "-frames:v", "1",
+                                "-vf", "scale=480:-2", "-q:v", "4", poster], check=True, capture_output=True, timeout=120)
+                venc_m = (["-c:v", ENCODER, "-b:v", "500k", "-allow_sw", "1"] if "videotoolbox" in ENCODER
+                          else ["-c:v", "libx264", "-preset", "fast", "-crf", "30"])
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-i", src, "-vf", "scale=426:-2,fps=24"] + venc_m +
+                               ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "48k",
+                                "-movflags", "+faststart", preview], check=True, capture_output=True, timeout=300)
+            else:
+                src = fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, cid + ".mp4"))
+                info = (reframe or {}).get(cid) or {}
+                wins = info.get("windows") or []
+                t = float(max(wins, key=lambda w: w.get("energy") or 0)["t"]) + 0.5 if wins else 1.0
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", "%.2f" % t, "-i", src, "-frames:v", "1",
+                                "-vf", "scale=480:-2", "-q:v", "4", poster], check=True, capture_output=True, timeout=120)
+                subprocess.run([FFMPEG, "-v", "error", "-y", "-i", src, "-t", "12", "-vf", "scale=480:-2,fps=24",
+                                "-an"] + venc + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", preview],
+                               check=True, capture_output=True, timeout=300)
             res = _post_files("/vi/media/%s" % cid, {}, {"poster": poster, "preview": preview})
             if res.get("ok"):
                 done += 1

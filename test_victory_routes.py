@@ -796,14 +796,34 @@ class TestThumbnailsAndPreviews(VICase):
         self.assertEqual(self.c.get("/vi/media/missing").status_code, 401)
         self.assertEqual(self.c.post("/vi/media/x").status_code, 401)
 
-    def test_missing_lists_every_clip_until_it_is_covered(self):
-        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=200" % SECRET))
-        self.assertEqual(m["total_missing"], 111)
+    def test_missing_lists_every_clip_and_interview_piece_until_covered(self):
+        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
+        self.assertEqual(m["total_missing"], 111 + 191)      # clips + interview pieces
         self.assertIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
+        self.assertIn("M_ROAM_J24-2_full_0484", m["missing"])
         self.assertEqual(self._put("VWC26_CROWD_01_kids-cheering_D0062").status_code, 200)
-        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=200" % SECRET))
-        self.assertEqual(m["total_missing"], 110)
+        self.assertEqual(self._put("M_ROAM_J24-2_full_0484").status_code, 200)
+        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
+        self.assertEqual(m["total_missing"], 111 + 191 - 2)
         self.assertNotIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
+        self.assertNotIn("M_ROAM_J24-2_full_0484", m["missing"])
+
+    def test_a_line_someone_said_knows_its_picture(self):
+        """Michael, 16 Sep: "thumbnails for everything, even a phrase someone
+        said." A quote result names the piece of the recording it was said in
+        and the second the line starts, so the Library can show and play it."""
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        r = self._j(self.c.get("/vi/search?q=why parents enrolled&limit=50"))
+        quotes = [x for x in r["results"] if x["kind"] == "quote"]
+        self.assertTrue(quotes)
+        with_pic = [x for x in quotes if x.get("moment")]
+        self.assertGreaterEqual(len(with_pic), len(quotes) - 5, "nearly every line has its piece")
+        for x in with_pic:
+            self.assertTrue(x["moment"].startswith("M_"), x["moment"])
+            self.assertGreaterEqual(x["offset"], 0)
+        clips = [x for x in r["results"] if x["kind"] == "clip"]
+        for x in clips:
+            self.assertNotIn("moment", x)
 
     def test_junk_uploads_are_refused(self):
         self.assertEqual(self._put("x", poster=b"notajpeg" * 300).status_code, 400)

@@ -295,16 +295,28 @@ APP_JS = r"""
         '<span class="pl">&#9654;</span>' +
         (r.duration ? '<span class="dur">'+esc(r.duration)+'</span>' : '') + '</div>';
     }
+    if(r.moment){
+      // a line someone said: the picture is the piece of the recording it was
+      // said in, and tapping plays it from that line (Michael, 16 Sep:
+      // "thumbnails for everything, even a phrase someone said")
+      return '<div class="thumb play said" data-clip="' + esc(r.moment) + '" data-at="' + (r.offset||0) + '" title="Tap to hear">' +
+        '<img loading="lazy" alt="" src="/vi/thumb/' + esc(r.moment) + '.jpg"' +
+        ' onerror="this.onerror=null;this.parentNode.innerHTML=\'<b>SAID</b>\'">' +
+        '<span class="pl">&#9654;</span>' +
+        (r.duration ? '<span class="dur">'+esc(r.duration)+'</span>' : '') + '</div>';
+    }
     return '<div class="thumb said"><b>SAID</b></div>';
   }
   // tap a thumbnail: play the small preview right there; tap again to stop
   out.addEventListener('click', function(e){
     var t=e.target.closest('.thumb.play'); if(!t) return;
     e.preventDefault();
-    var cid=t.getAttribute('data-clip');
+    var cid=t.getAttribute('data-clip'), at=parseFloat(t.getAttribute('data-at')||'0')||0;
     if(t.querySelector('video')){ paint(); return; }
     document.querySelectorAll('.thumb.play video').forEach(function(v){ v.pause(); });
-    t.innerHTML = '<video playsinline autoplay controls preload="metadata" src="/vi/preview/' + esc(cid) + '.mp4"></video>';
+    t.innerHTML = '<video playsinline autoplay controls preload="metadata" src="/vi/preview/' + esc(cid) + '.mp4' + (at>0.5 ? '#t=' + at.toFixed(1) : '') + '"></video>';
+    var v=t.querySelector('video');
+    if(at>0.5){ v.addEventListener('loadedmetadata', function(){ try{ if(v.currentTime<at-0.5) v.currentTime=at; }catch(_){} }); }
     t.classList.add('open');
   });
 
