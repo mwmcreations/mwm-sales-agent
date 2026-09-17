@@ -636,7 +636,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             import victory_ingest as ingest
             out = []
             for ev in ingest.list_events():
-                _, _, records = ingest.build_rows(ev)
+                _, _, records = ingest.build_rows(ev, vs.extra_clips(ev))
                 out += [r["id"].split(":", 1)[-1] for r in records if r.get("kind") == "clip"]
                 # interview moments (the ~30 s pieces the transcript lines map to)
                 # want a picture and a preview too
@@ -806,6 +806,57 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return jsonify(out), 200
         except Exception as e:
             _err("vi_moments_describe", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/moments/publish", methods=["POST"])
+    def vi_moments_publish():
+        """The Mini hands over moments it cut and named on its own (admin).
+
+        Body: {"event": "VWC26", "clips": [clip dicts as in clips.json, each
+        may carry "reframe": {duration, windows}]}. They are stored, the
+        event is re-ingested so the Library sees them, and the worker's
+        /vi/moments/published?event= gives them back with their windows."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            import victory_ingest as ingest
+            body = request.get_json(force=True, silent=True) or {}
+            event = str(body.get("event") or "")
+            items = body.get("clips") or []
+            if event not in ingest.list_events():
+                return jsonify({"ok": False, "error": "no source folder for %r" % event}), 404
+            if not isinstance(items, list) or not items:
+                return jsonify({"ok": False, "error": "clips required"}), 400
+            clean = []
+            for it in items[:500]:
+                if not isinstance(it, dict) or not it.get("id") or not it.get("file"):
+                    continue
+                it = dict(it)
+                it["kind"] = "clip"
+                it["id"] = str(it["id"])[:200]
+                clean.append(it)
+            vs.init_schema()
+            stored = vs.put_extra_clips(event, clean)
+            out = ingest.ingest(event) if stored else {"ok": False, "error": "nothing stored"}
+            print("[VI] moments published: %d stored for %s -> %s" % (stored, event, out.get("ok")))
+            return jsonify({"ok": bool(out.get("ok")), "stored": stored, "ingest": out}), (200 if out.get("ok") else 500)
+        except Exception as e:
+            _err("vi_moments_publish", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/moments/published", methods=["GET"])
+    def vi_moments_published():
+        """The published moments of an event, with their windows (admin; the worker)."""
+        blocked = _admin_guard()
+        if blocked:
+            return blocked
+        try:
+            event = str(request.values.get("event") or "")
+            items = vs.extra_clips(event, with_reframe=True)
+            return jsonify({"ok": True, "event": event, "clips": items}), 200
+        except Exception as e:
+            _err("vi_moments_published", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     @app.route("/vi/card", methods=["GET"])

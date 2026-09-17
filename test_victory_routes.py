@@ -211,6 +211,25 @@ class FakeStore(object):
     def media_get(self, clip_id, kind):
         return self.media.get(clip_id, {}).get(kind)
 
+    def put_extra_clips(self, event_key, items):
+        self.extra = getattr(self, "extra", {})
+        n = 0
+        for it in items:
+            if it.get("id"):
+                self.extra[it["id"]] = (event_key, dict(it))
+                n += 1
+        return n
+
+    def extra_clips(self, event_key, with_reframe=False):
+        out = []
+        for ev, it in getattr(self, "extra", {}).values():
+            if ev == event_key:
+                it = dict(it)
+                if not with_reframe:
+                    it.pop("reframe", None)
+                out.append(it)
+        return out
+
     def add_feedback(self, rid, email, text):
         self.feedback.append({"request_id": int(rid), "at": "2026-09-14 20:03:00",
                               "email": email, "text": text})
@@ -235,7 +254,8 @@ def install_fake_store(fake):
                  "create_request", "list_requests", "list_requests_for", "get_request",
                  "claim_next_request", "finish_request", "set_request_state",
                  "requeue_stale", "queue_counts", "recent_music", "recent_clips",
-                 "add_feedback", "list_feedback", "media_have", "media_put", "media_get"):
+                 "add_feedback", "list_feedback", "media_have", "media_put", "media_get",
+                 "put_extra_clips", "extra_clips"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -1145,6 +1165,40 @@ class TestNamingMoments(VICase):
         self.assertIsNone(vd.parse_answer('{"title": ""}'))
         self.assertEqual(vd.parse_answer('{"title": "x", "category": "Belts"}')["category"],
                          "Belt & rank presentation")
+
+
+class TestPublishedMoments(VICase):
+    """The Mini cuts and names moments on its own and hands them over; the
+    Library grows without a deploy (Michael, 17 Sep: "do it")."""
+    ITEM = {"id": "VWC26_NOC_900_test-moment_TEST00001", "title": "Test moment", "category": "Winning moments",
+            "file": "long/VWC26_NOC_900_test-moment_TEST00001.mp4", "session": "Night of Champions", "day": 3,
+            "seconds": 12.0, "priority": "high", "weight": 0.85, "text": "test moment night of champions",
+            "reframe": {"duration": 12.0, "windows": [{"t": 0, "ax": 0.5, "energy": 1, "faces": 0}]}}
+
+    def test_admin_only(self):
+        self.assertEqual(self.c.post("/vi/moments/publish", json={"event": "VWC26", "clips": [self.ITEM]}).status_code, 401)
+        self.assertEqual(self.c.get("/vi/moments/published?event=VWC26").status_code, 401)
+
+    def test_published_moments_join_the_library_and_come_back_with_windows(self):
+        r = self.c.post("/vi/moments/publish?secret=%s" % SECRET, json={"event": "VWC26", "clips": [self.ITEM]})
+        self.assertIn(r.status_code, (200, 500))          # ingest needs Postgres; storing does not
+        self.assertEqual(self._j(r)["stored"], 1)
+        r = self._j(self.c.get("/vi/moments/published?secret=%s&event=VWC26" % SECRET))
+        self.assertEqual(r["clips"][0]["id"], self.ITEM["id"])
+        self.assertEqual(r["clips"][0]["reframe"]["duration"], 12.0)
+        # the media list now wants a picture for it too
+        m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
+        self.assertIn(self.ITEM["id"], m["missing"])
+        # and build_rows folds it in after the file's clips, once
+        import victory_ingest as ing
+        _, _, recs = ing.build_rows("VWC26", [self.ITEM, self.ITEM, {"id": "VWC26_BELT_01_hall-wide-flags_D0232"}])
+        ids = [x["id"] for x in recs if x["kind"] == "clip"]
+        self.assertEqual(ids.count("VWC26:" + self.ITEM["id"]), 1)
+        self.assertEqual(len(ids), 326)
+
+    def test_junk_is_refused(self):
+        self.assertEqual(self.c.post("/vi/moments/publish?secret=%s" % SECRET, json={"event": "NOPE", "clips": [self.ITEM]}).status_code, 404)
+        self.assertEqual(self.c.post("/vi/moments/publish?secret=%s" % SECRET, json={"event": "VWC26", "clips": []}).status_code, 400)
 
 
 if __name__ == "__main__":

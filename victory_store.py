@@ -106,6 +106,16 @@ DDL = [
            preview    BYTEA,
            updated_at TIMESTAMPTZ DEFAULT now()
        )""",
+    # Moments the Mac Mini cut out of the long recordings on its own (17 Sep).
+    # The 111 convention selects live in clips.json in the repo; these live
+    # here, and ingest merges them in, so new footage needs no deploy.
+    """CREATE TABLE IF NOT EXISTS vi_extra_clip (
+           clip_id    TEXT PRIMARY KEY,
+           event_key  TEXT NOT NULL,
+           record     JSONB NOT NULL,
+           reframe    JSONB,
+           added_at   TIMESTAMPTZ DEFAULT now()
+       )""",
 ]
 
 # asked -> rendering -> ready -> approved -> delivered, or failed / declined.
@@ -662,3 +672,56 @@ def media_get(clip_id, kind):
     except Exception as e:
         print("[VI] media_get failed: %r" % (e,))
         return None
+
+
+# ── moments the Mini published on its own ──────────────────────────────────
+def put_extra_clips(event_key, items):
+    """items: clip dicts as in clips.json, each optionally carrying a
+    'reframe' {duration, windows}. Upsert by id. Returns how many stored."""
+    pg = _pg()
+    if not pg or not items:
+        return 0
+    n = 0
+    try:
+        import json as _json
+        with pg._conn() as c, c.cursor() as cur:
+            for it in items:
+                cid = str(it.get("id") or "")[:200]
+                if not cid:
+                    continue
+                rec = {k: v for k, v in it.items() if k != "reframe"}
+                cur.execute(
+                    """INSERT INTO vi_extra_clip (clip_id, event_key, record, reframe, added_at)
+                            VALUES (%s, %s, %s, %s, now())
+                       ON CONFLICT (clip_id) DO UPDATE SET
+                            event_key = EXCLUDED.event_key, record = EXCLUDED.record,
+                            reframe = COALESCE(EXCLUDED.reframe, vi_extra_clip.reframe),
+                            added_at = now()""",
+                    (cid, event_key, _json.dumps(rec),
+                     _json.dumps(it["reframe"]) if it.get("reframe") else None))
+                n += 1
+        return n
+    except Exception as e:
+        print("[VI] put_extra_clips failed: %r" % (e,))
+        return 0
+
+
+def extra_clips(event_key, with_reframe=False):
+    """The published moments of an event, as clip dicts (oldest first)."""
+    pg = _pg()
+    if not pg:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT record, reframe FROM vi_extra_clip WHERE event_key = %s ORDER BY added_at, clip_id",
+                        (event_key,))
+            out = []
+            for rec, rf in cur.fetchall():
+                rec = dict(rec) if isinstance(rec, dict) else __import__("json").loads(rec)
+                if with_reframe and rf:
+                    rec["reframe"] = rf if isinstance(rf, dict) else __import__("json").loads(rf)
+                out.append(rec)
+            return out
+    except Exception as e:
+        print("[VI] extra_clips failed: %r" % (e,))
+        return []

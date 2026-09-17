@@ -67,15 +67,23 @@ def _make_id(event_key, natural, seen):
     return base if n == 1 else "%s#%d" % (base, n)
 
 
-def build_rows(event_key):
+def build_rows(event_key, extra_clips=None):
     """Source files -> (event, sessions, records). Pure; touches no database.
 
     Kept separate from the write so the shape can be tested without Postgres.
+    extra_clips: moments the Mini published on its own (victory_store
+    .extra_clips); they follow the file's clips, in the order given, and a
+    published id that is already in the file is ignored.
     """
     event = _read(event_key, "event.json")
     sessions = _read(event_key, "sessions.json")
-    clips = _read(event_key, "clips.json")
+    clips = list(_read(event_key, "clips.json"))
     quotes = _read(event_key, "quotes.json", required=False) or []
+    have = {c.get("id") for c in clips}
+    for c in (extra_clips or []):
+        if isinstance(c, dict) and c.get("id") and c["id"] not in have:
+            clips.append(c)
+            have.add(c["id"])
 
     if event.get("event_key") != event_key:
         raise ValueError("event.json says %r but the folder is %r"
@@ -189,7 +197,12 @@ def _insert_many(cur, sql, rows, chunk=INSERT_CHUNK):
 def ingest(event_key, dry_run=False):
     """Load one event. Returns a summary dict; never raises into a caller."""
     try:
-        event, sessions, records = build_rows(event_key)
+        try:
+            import victory_store as _vs
+            extra = _vs.extra_clips(event_key)
+        except Exception:
+            extra = []
+        event, sessions, records = build_rows(event_key, extra)
     except Exception as e:
         return {"ok": False, "event": event_key, "error": "source: %s" % e}
 
@@ -201,6 +214,7 @@ def ingest(event_key, dry_run=False):
         "clips": sum(1 for r in records if r["kind"] == "clip"),
         "quotes": sum(1 for r in records if r["kind"] == "quote"),
         "with_drive_id": sum(1 for r in records if r.get("drive_id")),
+        "published_by_mini": len(extra),
         "dry_run": bool(dry_run),
         "written": 0,
     }

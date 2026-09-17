@@ -162,11 +162,35 @@ def clip_path(c):
     return fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, c["id"] + ".mp4"))
 
 
+_EXTRA = {"clips": None}
+
+
+def published_clips():
+    """Moments the Mini published on its own (the app keeps them; each may
+    carry its reframe windows). Fetched once per run; empty on any trouble."""
+    if _EXTRA["clips"] is None:
+        try:
+            _EXTRA["clips"] = _get("/vi/moments/published", {"event": EVENT}).get("clips") or []
+        except Exception as e:
+            log("published moments: could not ask the app: %r" % (e,))
+            _EXTRA["clips"] = []
+    return _EXTRA["clips"]
+
+
 def load_sources():
     src = os.path.join(HERE, "victory_source", EVENT)
     clips = json.load(open(os.path.join(src, "clips.json")))
     reframe_path = os.path.join(src, "reframe.json")
     reframe = json.load(open(reframe_path)) if os.path.exists(reframe_path) else {}
+    have = {c.get("id") for c in clips}
+    for c in published_clips():
+        if c.get("id") and c["id"] not in have:
+            c = dict(c)
+            rf = c.pop("reframe", None)
+            clips.append(c)
+            have.add(c["id"])
+            if rf:
+                reframe[c["id"]] = rf
     library_path = os.path.join(MUSIC_DIR, "library.json")
     library = json.load(open(library_path)) if os.path.exists(library_path) else {"tracks": []}
     qm_path = os.path.join(src, "quote_moments.json")
@@ -179,7 +203,7 @@ def local_search():
     no database: victory_index.search_corpus is pure."""
     import victory_index as vi
     import victory_ingest as ing
-    _, _, records = ing.build_rows(EVENT)
+    _, _, records = ing.build_rows(EVENT, published_clips())
     corpus = [{"id": r["id"], "ord": r["ord"], "event": r["event_key"], "k": r["kind"],
                "t": r["title"], "cat": r["category"], "ses": r["session"],
                "s": r["blob"], "w": r["weight"], "qb": r["quotable"]} for r in records]
