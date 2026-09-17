@@ -192,6 +192,21 @@ def load_sources():
             if rf:
                 reframe[c["id"]] = rf
     library_path = os.path.join(MUSIC_DIR, "library.json")
+    # the quality pass (vi_quality.py): steady stretches per file, so every
+    # shot lands where the camera was still (Michael, 17 Sep, on #30)
+    qpath = os.environ.get("VI_QUALITY", os.path.join(os.path.dirname(CACHE_DIR), "quality.json"))
+    try:
+        quality = json.load(open(qpath)) if os.path.exists(qpath) else {}
+    except Exception:
+        quality = {}
+    if quality:
+        n = 0
+        for c in clips:
+            q = quality.get(c["id"])
+            if q and q.get("stable") is not None:
+                c["stable"] = q["stable"]
+                n += 1
+        log("quality: steady stretches for %d of %d clips" % (n, len(clips)))
     library = json.load(open(library_path)) if os.path.exists(library_path) else {"tracks": []}
     qm_path = os.path.join(src, "quote_moments.json")
     moments = json.load(open(qm_path)) if os.path.exists(qm_path) else {}

@@ -390,6 +390,36 @@ class TestMusic(unittest.TestCase):
         self.assertIsNone(p["music_id"])
 
 
+class TestSteadyShots(unittest.TestCase):
+    """Michael, 17 Sep, on #30: "camera shaky movements where the cameraman
+    is still trying to find the shot". The quality pass measures every
+    library file; the editor keeps its shots inside the steady stretches."""
+
+    def test_the_in_point_moves_into_a_steady_stretch(self):
+        stable = [[0.0, 4.0], [8.0, 5.0]]         # BBT_055: steady 0-4 s, hunting 4-8, steady 8-13
+        self.assertEqual(vc.steady_in(stable, 6.0, 4.1), (8.0, True))      # off the hunt, into the next stretch
+        self.assertEqual(vc.steady_in(stable, 1.0, 3.0), (1.0, True))      # already steady: untouched
+        self.assertEqual(vc.steady_in(stable, 9.5, 4.1)[0], 8.9)           # clamped so the whole shot fits
+        self.assertEqual(vc.steady_in(stable, 6.0, 6.0), (6.0, False))     # nothing long enough: flagged
+        self.assertEqual(vc.steady_in(None, 6.0, 4.0), (6.0, True))        # unmeasured: trusted
+        self.assertEqual(vc.steady_in([], 6.0, 4.0), (6.0, False))         # measured, nothing steady
+
+    def test_a_shot_lands_in_the_steady_stretch_and_a_shaky_clip_goes_last(self):
+        c = dict(CLIPS[0], id="X_shake", seconds=12.0, best_in=8.0, stable=[[0.0, 5.5], [8.5, 3.5]])
+        p = vc.plan("x", [c], ["X_shake"], LIBRARY, {}, 15)
+        s = p["shots"][0]
+        self.assertEqual(s["dur"], 5.0)
+        self.assertEqual(s["in"], 0.5, "the 5 s shot only fits the first steady stretch (as late as it can)")
+        self.assertNotEqual(s["framed_by"], "shaky")
+        c2 = dict(c, id="X_allshake", stable=[[3.0, 1.0]])
+        p = vc.plan("x", [c2], ["X_allshake"], LIBRARY, {}, 15)
+        self.assertEqual(p["shots"][0]["framed_by"], "shaky")
+        # the machine's own choice: steady clips before an all-shaky one of the same kind
+        a = dict(CLIPS[0], id="S1", stable=[[0.0, 10.0]], priority="standard")
+        b = dict(CLIPS[0], id="S2", stable=[[2.0, 1.5]], priority="hero")
+        self.assertEqual([x["id"] for x in vc.pick_shots([b, a], 1)], ["S1"])
+
+
 class TestTheWindow(unittest.TestCase):
     REFRAME = {"clipA": {"duration": 8.0, "windows": [
         {"t": 0, "faces": 0, "fx": None, "ax": 0.30, "energy": 1.0},

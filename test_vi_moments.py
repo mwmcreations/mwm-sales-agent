@@ -154,6 +154,16 @@ class TestPureParts(unittest.TestCase):
         self.assertFalse(vm.TALK.search("kids celebrate with trophy"))
         self.assertEqual(vm.MIN_INTEREST, 3)
 
+    def test_a_log_source_is_graded_on_the_way_in(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, "CLIP"))
+        src = os.path.join(d, "CLIP", "C0553.MP4")
+        open(src, "w").close()
+        with open(os.path.join(d, "CLIP", "C0553M01.XML"), "w") as f:
+            f.write('<x><Item name="CaptureGammaEquation" value="s-log3-cine"/></x>')
+        self.assertTrue((vm.lut_for(src) or "").endswith("slog3_to_709.cube"))
+        self.assertIsNone(vm.lut_for("/x/ATEM/VICTORY_July_25.mp4"))
+
     def test_clip_record_shape(self):
         m = {"key": "NOC_A1", "start": 100, "peak": 108, "dur": 12.0, "session": "Night of Champions", "day": 3,
              "camera": "FX6", "src": "/v/x.MP4"}

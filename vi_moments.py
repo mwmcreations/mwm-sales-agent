@@ -432,18 +432,35 @@ def step(event=EVENT):
     return "done" if not to_publish else "published %d" % len(to_publish)
 
 
+def lut_for(src):
+    """The S-Log3 -> Rec.709 LUT when the camera that shot this source was in
+    S-Log3 (its sidecar says so), else None. Michael, 17 Sep: moments cut
+    from the FX3 cards came into the Library flat and grey."""
+    try:
+        import vi_quality as vq
+        if vq.is_log(vq.sidecar_gamma(src)) and os.path.exists(vq.LUT):
+            return vq.LUT
+    except Exception:
+        pass
+    return None
+
+
 def cut(src, start, dur, dst):
     """One moment out of a source, into the library. Camera originals are
     4K: kept at 4K (the 9:16 crop of 4K needs no upscale); 1080p sources
-    stay 1080p. Hardware encoder on the Mini, x264 elsewhere. Verified after
-    writing: a file ffmpeg cannot read back is thrown away."""
+    stay 1080p. Hardware encoder on the Mini, x264 elsewhere. A source shot
+    in S-Log3 is graded to Rec.709 on the way. Verified after writing: a
+    file ffmpeg cannot read back is thrown away."""
     w, h, _, _ = probe(src)
     part = dst + ".part.mp4"
     big = w >= 3000
     venc = (["-c:v", ENCODER, "-b:v", "40M" if big else "12M", "-allow_sw", "1"] if "videotoolbox" in ENCODER
             else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
+    lut = lut_for(src)
+    grade = (["-vf", "lut3d=%s" % lut.replace(":", "\\:"), "-color_primaries", "bt709", "-color_trc", "bt709",
+              "-colorspace", "bt709"] if lut else [])
     r = run([FFMPEG, "-v", "error", "-y", "-ss", "%.2f" % float(start), "-i", src, "-t", "%.2f" % float(dur),
-             "-map", "0:v:0", "-map", "0:a:0?"] + venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+             "-map", "0:v:0", "-map", "0:a:0?"] + grade + venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
              "-ac", "2", "-movflags", "+faststart", part], timeout=100)
     ok = r.returncode == 0 and os.path.exists(part) and os.path.getsize(part) > 200_000
     if ok:

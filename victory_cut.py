@@ -90,6 +90,9 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     # unless the ask named its kind (self-test #13: a 2.2 s crowd clip as filler)
     short = {c["id"]: float(c.get("seconds") or 99) < SHOT_SECONDS + 0.5
              and c.get("category") not in uncapped for c in cands}
+    # a clip the quality pass found shaky all the way through (no steady
+    # stretch as long as a shot) goes behind every steady one
+    shaky = {c["id"]: (steady_seconds(c) is not None and steady_seconds(c) < SHOT_SECONDS) for c in cands}
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -123,13 +126,13 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # the ask's tier first (a hit, a named kind, the named evening all
             # sit near 10); inside it a fresh scene beats a finer weight
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
-                                     same_scene(c), -round(float(c.get("weight") or 0), 1),
+                                     shaky[c["id"]], same_scene(c), -round(float(c.get("weight") or 0), 1),
                                      c["id"] in avoid, short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),   # hero before standard
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
-            pool.sort(key=lambda c: (same_scene(c), c["id"] in avoid, short[c["id"]],
+            pool.sort(key=lambda c: (shaky[c["id"]], same_scene(c), c["id"] in avoid, short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
@@ -285,6 +288,36 @@ def window_for(clip_id, reframe, t0, dur, fixed_in=None):
 
 
 # ── 2b. interview moments ─────────────────────────────────────────────────
+def steady_in(stable, t0, dur, have=None):
+    """Move an in-point into a steady stretch of the clip. stable: [[start,
+    seconds], …] from the quality pass (vidstabdetect on every library file —
+    Michael, 17 Sep: "camera shaky movements where the cameraman is still
+    trying to find the shot"). Returns (in_point, steady): the in-point kept
+    if it already sits in a steady stretch, else the nearest steady stretch
+    that holds the whole shot; (t0, False) when no stretch is long enough."""
+    if stable is None:
+        return t0, True                      # nothing known: trust the clip
+    wins = [(float(a), float(b)) for a, b in stable if float(b) >= dur]
+    if not wins:
+        return t0, False
+    for a, b in wins:
+        if a - 0.05 <= t0 and t0 + dur <= a + b + 0.05:
+            return t0, True
+    a, b = min(wins, key=lambda w: abs(min(max(t0, w[0]), w[0] + w[1] - dur) - t0))
+    lo, hi = a, a + b - dur
+    if have:
+        hi = min(hi, max(0.0, have - dur - 0.05))
+    return round(max(lo, min(t0, hi)), 2), True
+
+
+def steady_seconds(c):
+    """The longest steady stretch a clip offers, or None when unknown."""
+    st = c.get("stable")
+    if st is None:
+        return None
+    return max([float(b) for a, b in st] + [0.0])
+
+
 def quote_shots(items, moments_index, have_file, max_s=SPEECH_MAX):
     """The interview lines the person picked, as "speech" shots. Pure.
 
@@ -420,6 +453,9 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             hi = max(0.0, (have or 99.0) - dur - 0.05)
             fixed = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur, fixed_in=fixed)
+        t0, steady = steady_in(c.get("stable"), t0, dur, have or None)
+        if not steady:
+            how = "shaky"
         return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
                 "title": c.get("title"), "session": c.get("session"),
                 "day": c.get("day"), "category": c.get("category"),
