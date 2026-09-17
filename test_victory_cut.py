@@ -247,7 +247,7 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertGreaterEqual(len(noc), 100, "the moments cut from the long recordings")
         pool, by_search, focus = vc.candidates("night of champions, epic", CLIPS, 20, search)
         self.assertTrue(by_search)
-        self.assertGreaterEqual(len(set(focus)), 4, "every kind of moment in that evening is uncapped")
+        self.assertEqual(focus, ("session:Night of Champions",), "the evening's cap lifts; its kinds stay balanced")
         for length in (30, 60):
             p = vc.plan("night of champions, epic", pool, [], LIBRARY, {}, length, by_search=by_search, focus=focus)
             self.assertTrue(all(s["session"] == "Night of Champions" for s in p["shots"]), [s["id"] for s in p["shots"]])
@@ -269,6 +269,13 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertEqual(s["in"], 5.5)          # 8 - 5/2
         p = vc.plan("x", [dict(c, best_in=11.5)], ["X_peak"], LIBRARY, {}, 15)
         self.assertAlmostEqual(p["shots"][0]["in"], 12.0 - 5.0 - 0.05, places=2)
+        # with a reframe entry the window follows the action but the in-point stays
+        rf = {"X_peak": {"duration": 12.0, "windows": [{"t": t, "ax": 0.8 if t >= 5 else 0.2, "energy": 1}
+                                                       for t in range(12)]}}
+        p = vc.plan("x", [c], ["X_peak"], LIBRARY, rf, 15)
+        self.assertEqual(p["shots"][0]["in"], 5.5)
+        self.assertEqual(p["shots"][0]["framed_by"], "action")
+        self.assertGreater(p["shots"][0]["x"], 0.7)
 
     def test_ceremony_alone_means_both(self):
         self.assertEqual(vc.ask_categories("the ceremony"), (list(vc.CEREMONIES), False))
@@ -428,7 +435,7 @@ class TestTheCommands(unittest.TestCase):
         for music in ("m.wav", None):
             cmd = vc.final_cmd("f", "b.mp4", music, "o.mp4", 30.0, ("A", "B"), ("C", "D"), None)
             fc = cmd[cmd.index("-filter_complex") + 1]
-            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89:level=false[a]", fc)
+            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]", fc)
 
     def test_no_music_still_normalises(self):
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)

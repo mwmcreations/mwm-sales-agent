@@ -80,7 +80,10 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     rnd = random.Random(seed)
     jitter = {c["id"]: rnd.random() for c in cands}
     avoid = set(avoid or ())
-    uncapped = set(uncapped or ())
+    # uncapped holds kinds of moment, and "session:<name>" for a whole evening
+    # the ask named (its per-session cap is lifted; its kinds stay balanced)
+    free_sessions = {u[8:] for u in (uncapped or ()) if str(u).startswith("session:")}
+    uncapped = {u for u in (uncapped or ()) if not str(u).startswith("session:")}
     # a clip shorter than a shot makes a choppy fill: it goes to the back
     # unless the ask named its kind (self-test #13: a 2.2 s crowd clip as filler)
     short = {c["id"]: float(c.get("seconds") or 99) < SHOT_SECONDS + 0.5
@@ -116,7 +119,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             if c.get("category") not in uncapped:
                 if fam.get(c.get("category"), 0) >= max_per_family:
                     continue
-                if ses.get(c.get("session"), 0) >= max_per_session:
+                if c.get("session") not in free_sessions and ses.get(c.get("session"), 0) >= max_per_session:
                     continue
             pick = c
             break
@@ -172,8 +175,10 @@ def pick_music(library, ask, exclude=()):
 
 
 # ── 2. where to look in each clip ──────────────────────────────────────────
-def window_for(clip_id, reframe, t0, dur):
+def window_for(clip_id, reframe, t0, dur, fixed_in=None):
     """The 9:16 window (x centre as a fraction of width) and how sure we are.
+    fixed_in: use this in-point (a moment cut from a long recording knows
+    where its peak is) and only choose the window for it.
 
     reframe.json holds, per clip, per one-second window: faces (count), fx
     (area-weighted face x), ax (where the motion and detail are). Faces win
@@ -183,14 +188,17 @@ def window_for(clip_id, reframe, t0, dur):
     """
     info = (reframe or {}).get(clip_id)
     if not info or not info.get("windows"):
-        return 0.5, "centre", t0
+        return 0.5, "centre", (t0 if fixed_in is None else fixed_in)
     wins = info["windows"]
     total = info.get("duration") or (len(wins) + 0.0)
     # in-point: the window with the most energy such that t0+dur fits
     last_ok = max(0, int(total - dur - 0.1))
     cands = [w for w in wins if w["t"] <= last_ok] or wins[:1]
-    start = max(cands, key=lambda w: (w.get("energy") or 0))["t"]
-    start = float(max(0.0, min(start, last_ok)))
+    if fixed_in is not None:
+        start = float(max(0.0, min(fixed_in, last_ok)))
+    else:
+        start = max(cands, key=lambda w: (w.get("energy") or 0))["t"]
+        start = float(max(0.0, min(start, last_ok)))
     seg = [w for w in wins if start <= w["t"] < start + dur] or cands[:1]
     faces = sum(w.get("faces") or 0 for w in seg)
     fxs = [(w["fx"], w["faces"]) for w in seg if w.get("fx") is not None and w.get("faces")]
@@ -301,12 +309,13 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         have = float(c.get("seconds") or 0)
         if have:
             dur = round(max(0.5, min(dur, have - 0.05)), 2)
-        x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
-        if c.get("best_in") is not None and not (reframe or {}).get(c["id"]):
+        fixed = None
+        if c.get("best_in") is not None:
             # a moment cut from a long recording knows where its peak is
             # (the applause, the break): centre the shot on it
             hi = max(0.0, (have or 99.0) - dur - 0.05)
-            t0 = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
+            fixed = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
+        x, how, t0 = window_for(c["id"], reframe, 1.0, dur, fixed_in=fixed)
         return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
                 "title": c.get("title"), "session": c.get("session"),
                 "day": c.get("day"), "category": c.get("category"),
@@ -495,10 +504,10 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         chain.append("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
                      "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
                      "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                     "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
+                     "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
         n_in = 2
     else:
-        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89:level=false[a]")
+        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]")
     vfilters = []
     if cards:
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
@@ -693,7 +702,10 @@ def candidates(ask, clips, need, search_fn=None):
         if first:
             rest = sorted([c for c in clips if c["id"] not in seen],
                           key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
-            return first + rest, True, tuple(sorted({c.get("category") for c in first if c.get("category")}))
+            # the evening's own cap is lifted; its KINDS stay balanced, so the
+            # reel moves across them (self-test #18: seven of ten were rank
+            # presentations when everything was uncapped)
+            return first + rest, True, tuple("session:" + x for x in sessions)
     cats, soft = ask_categories(ask)
     first = []
     for k, cid in enumerate(hits):
