@@ -781,6 +781,33 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             _err("vi_preview", e, clip_id)
             return jsonify({"ok": False, "error": "exception"}), 500
 
+    @app.route("/vi/moments/describe", methods=["POST"])
+    def vi_moments_describe():
+        """Name one candidate moment from its contact sheet (six frames).
+
+        Admin secret, or a signed-in MWM person: it spends a model call, so
+        Victory staff cannot drive it, and the long-recording pipeline that
+        uses it runs from our side. Multipart: sheet=<jpeg>, context=<text>."""
+        if not _is_admin():
+            sess = _session()
+            if not sess or sess.get("role") != va.ROLE_MWM:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+        try:
+            f = request.files.get("sheet")
+            data = f.read(3_000_000) if f else b""
+            if not data.startswith(b"\xff\xd8"):
+                return jsonify({"ok": False, "error": "a JPEG contact sheet is required"}), 400
+            context = str(request.values.get("context") or "")[:300]
+            import victory_describe as vd
+            out = vd.describe_sheet(data, context, client=app.config.get("VI_DESCRIBE_CLIENT"))
+            if not out:
+                return jsonify({"ok": False, "error": "no answer"}), 502
+            out["ok"] = True
+            return jsonify(out), 200
+        except Exception as e:
+            _err("vi_moments_describe", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
     @app.route("/vi/card", methods=["GET"])
     def vi_card():
         """A title card as a PNG (admin). The Mac worker fetches two per cut

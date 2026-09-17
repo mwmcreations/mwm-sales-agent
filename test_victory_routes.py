@@ -255,12 +255,36 @@ def fake_drive_upload(name, data):
             "download": "https://drive.google.com/uc?export=download&id=x"}
 
 
+class FakeClaude:
+    """Stands in for anthropic.Anthropic: answers every contact sheet the same."""
+    answer = ('{"title": "Belt handed to a kneeling student", "category": "Belt & rank presentation", '
+              '"keywords": ["belt", "kneeling", "master", "stage", "kids"], "people": "kids, masters", '
+              '"interest": 5, "why": "the belt changes hands"}')
+
+    def __init__(self):
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+
+        class _B:
+            text = FakeClaude.answer
+
+        class _M:
+            content = [_B()]
+        return _M()
+
+
 def make_client(notes=None):
     app = Flask(__name__)
     app.config["TESTING"] = True
+    app.config["VI_DESCRIBE_CLIENT"] = FakeClaude()
     vr.register(app, admin_ok, notify=(notes.append if notes is not None else None),
                 drive_upload=fake_drive_upload)
-    return app.test_client()
+    c = app.test_client()
+    c.fake_claude = app.config["VI_DESCRIBE_CLIENT"]
+    return c
 
 
 @unittest.skipUnless(HAVE_FLASK, "flask not installed on this machine")
@@ -1069,6 +1093,58 @@ class TestTimesAreEastern(unittest.TestCase):
         self.assertEqual(vp._when("2026-09-17 01:15:12.300542+00:00"), "Sep 16, 9:15 PM")
         self.assertEqual(vp._when("2026-01-17 01:15:12"), "Jan 16, 8:15 PM")
         self.assertEqual(vp._when(None), "")
+
+
+class TestNamingMoments(VICase):
+    """Michael, 16 Sep: the long recordings must become many short, named
+    moments people can pick. The naming goes through the app's Claude."""
+    JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 400
+
+    def _post(self, **kw):
+        import io as _io
+        data = {"sheet": (_io.BytesIO(self.JPEG), "s.jpg"), "context": "Night of Champions, Saturday"}
+        data.update(kw)
+        return self.c.post("/vi/moments/describe", data=data, content_type="multipart/form-data")
+
+    def test_victory_staff_cannot_spend_model_calls(self):
+        self.assertEqual(self._post().status_code, 401)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.assertEqual(self._post().status_code, 401)
+
+    def test_mwm_gets_a_name_a_category_and_a_rating(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        r = self._post()
+        self.assertEqual(r.status_code, 200, r.data)
+        d = self._j(r)
+        self.assertEqual(d["title"], "Belt handed to a kneeling student")
+        self.assertEqual(d["category"], "Belt & rank presentation")
+        self.assertEqual(d["interest"], 5)
+        self.assertIn("belt", d["keywords"])
+        call = self.c.fake_claude.calls[-1]
+        self.assertIn("Night of Champions", call["messages"][0]["content"][1]["text"])
+        self.assertEqual(call["messages"][0]["content"][0]["type"], "image")
+
+    def test_the_secret_works_too_and_junk_is_refused(self):
+        import io as _io
+        r = self.c.post("/vi/moments/describe?secret=%s" % SECRET,
+                        data={"sheet": (_io.BytesIO(self.JPEG), "s.jpg")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        r = self.c.post("/vi/moments/describe?secret=%s" % SECRET,
+                        data={"sheet": (_io.BytesIO(b"notajpeg"), "s.jpg")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+
+    def test_answers_are_normalised(self):
+        import victory_describe as vd
+        d = vd.parse_answer('Sure! {"title": "Kids   cheering.", "category": "crowd & parent reactions", '
+                            '"keywords": "kids cheering mat medals", "interest": "4.6"} thanks')
+        self.assertEqual(d["title"], "Kids cheering")
+        self.assertEqual(d["category"], "Crowd & parent reactions")
+        self.assertEqual(d["keywords"], ["kids", "cheering", "mat", "medals"])
+        self.assertEqual(d["interest"], 5)
+        self.assertIsNone(vd.parse_answer("no json here"))
+        self.assertIsNone(vd.parse_answer('{"title": ""}'))
+        self.assertEqual(vd.parse_answer('{"title": "x", "category": "Belts"}')["category"],
+                         "Belt & rank presentation")
 
 
 if __name__ == "__main__":
