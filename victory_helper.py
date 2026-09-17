@@ -224,7 +224,10 @@ def parse_answer(text):
         for key in ("say", "ask"):
             mm = re.search(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % key, m.group(0), re.S)
             if mm:
-                d[key] = mm.group(1).replace('\\"', '"').replace("\\n", " ")
+                try:
+                    d[key] = json.loads('"' + mm.group(1) + '"', strict=False)     # decodes \u2014 and \"
+                except Exception:
+                    d[key] = mm.group(1).replace('\\"', '"').replace("\\n", " ")
         mi = re.search(r'"ideas"\s*:\s*\[(.*?)\]', m.group(0), re.S)
         if mi:
             d["ideas"] = re.findall(r'"((?:[^"\\]|\\.)*)"', mi.group(1))
@@ -312,7 +315,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
             client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         model = model or os.environ.get("MODEL_MAIN", "claude-sonnet-4-6")
         msg = client.messages.create(
-            model=model, max_tokens=800,
+            model=model, max_tokens=2000,     # a five-step plan with words and end cards is long
             system=PROMPT % (briefing(records, event_title), person_block(person), today_text()),
             messages=hist)
         text = "".join(getattr(b, "text", "") for b in msg.content)
