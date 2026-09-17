@@ -346,7 +346,11 @@ def step(event=EVENT):
     n_named = 0
     for key in cands:
         for m in cands[key]:
-            if m["id"] in named:
+            prev = named.get(m["id"])
+            # a failed try (a 502 while the app was deploying) is tried again,
+            # up to three times; before this it waited forever (17 Sep: three
+            # Sunday moments held the whole batch)
+            if prev and (prev.get("ok") or prev.get("tries", 0) >= 3):
                 continue
             sheet = os.path.join(root, "sheets", m["id"] + ".jpg")
             if not os.path.exists(sheet):

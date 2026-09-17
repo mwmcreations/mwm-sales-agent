@@ -100,6 +100,35 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(len(self.published), n)
 
 
+class TestAFailedNameIsTriedAgain(unittest.TestCase):
+    def test_three_tries_then_skipped(self):
+        root = os.path.join(TMP, "moments", "RETRY")
+        os.makedirs(os.path.join(root, "sheets"), exist_ok=True)
+        m = {"id": "K1", "key": "K", "start": 0, "peak": 5, "dur": 10.0, "session": "S", "day": 1,
+             "camera": "C", "src": "/x", "group": "TST"}
+        json.dump({"sources": []}, open(os.path.join(root, "todo.json"), "w"))
+        json.dump({"K": [m]}, open(os.path.join(root, "cands.json"), "w"))
+        json.dump({"K1": {"ok": False, "error": "502", "tries": 1}}, open(os.path.join(root, "named.json"), "w"))
+        json.dump({"counters": {}, "recut": {}, "src": {}, "scanned": ["K"]}, open(os.path.join(root, "state.json"), "w"))
+        open(os.path.join(root, "sheets", "K1.jpg"), "wb").write(b"\xff\xd8")
+        calls = []
+
+        def fail(path, fields, file_field, file_path):
+            calls.append(path)
+            return {"ok": False, "error": "502"}
+        old = vm._post_file
+        vm._post_file = fail
+        try:
+            for _ in range(4):
+                vm.T0 = __import__("time").time()
+                vm.step("RETRY")
+        finally:
+            vm._post_file = old
+        named = json.load(open(os.path.join(root, "named.json")))
+        self.assertEqual(named["K1"]["tries"], 3)
+        self.assertEqual(len(calls), 2, "tries 2 and 3, then it is left alone")
+
+
 class TestPureParts(unittest.TestCase):
     def test_original_of_finds_the_camera_file(self):
         d = tempfile.mkdtemp()
