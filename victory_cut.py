@@ -37,6 +37,7 @@ STORY = ["Training & seminar", "Instructor training", "Competition", "Board brea
 LENGTHS = (15, 30, 60)
 SHOT_SECONDS = 3.0      # a shot the machine chose
 PICK_SECONDS = 5.0      # a shot the person picked
+SCENE_GAP = 300.0       # two moments this close in one long recording are one scene
 SPEECH_MAX = 12.0       # an interview moment, at most (ends on a line boundary)
 SPEECH_MIN = 4.0        # never a sound bite shorter than this
 SPEECH_MUSIC = 0.12     # music under someone talking
@@ -91,11 +92,24 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
+    scenes = []          # (recording, second) of every shot chosen so far
+
+    def same_scene(c):
+        """Cut from the same long recording within SCENE_GAP of a shot already
+        in: the same people on the same stage — near enough the same picture
+        (self-test #26: three "students in red line up on stage" moments from
+        four minutes of the Night of Champions, back to back)."""
+        src, t = c.get("long_src"), c.get("long_start")
+        if not src or t is None:
+            return False
+        return any(s == src and abs(float(t) - float(t0)) < SCENE_GAP for s, t0 in scenes)
 
     def bump(c):
         fam[c.get("category")] = fam.get(c.get("category"), 0) + 1
         ses[c.get("session")] = ses.get(c.get("session"), 0) + 1
         day[c.get("day")] = day.get(c.get("day"), 0) + 1
+        if c.get("long_src") and c.get("long_start") is not None:
+            scenes.append((c["long_src"], c["long_start"]))
 
     for c in chosen:
         bump(c)
@@ -105,13 +119,16 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         if by_search:      # the ask's own footage leads (weight 10 = a hit or a named
             # kind) — before rotation: someone who asked for candlelight would
             # rather see a candle clip again than board breaks (self-test #11)
-            pool.sort(key=lambda c: (-round(float(c.get("weight") or 0), 1),
+            # the ask's tier first (a hit, a named kind, the named evening all
+            # sit near 10); inside it a fresh scene beats a finer weight
+            pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
+                                     same_scene(c), -round(float(c.get("weight") or 0), 1),
                                      c["id"] in avoid, short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),   # hero before standard
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
-            pool.sort(key=lambda c: (c["id"] in avoid, short[c["id"]],
+            pool.sort(key=lambda c: (same_scene(c), c["id"] in avoid, short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))

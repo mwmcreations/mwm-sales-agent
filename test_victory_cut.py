@@ -650,6 +650,25 @@ class TestWhatTheEditorUnderstood(unittest.TestCase):
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
         self.assertIn("aresample=48000,alimiter", cmd[cmd.index("-filter_complex") + 1])
 
+    def test_one_scene_is_one_shot(self):
+        """#26's cut had three "students in red line up on stage" moments from
+        four minutes of the same recording, back to back. Two moments from one
+        long recording within SCENE_GAP are one scene: only one goes in while
+        anything else is left."""
+        import itertools
+        by = {c["id"]: c for c in CLIPS}
+        for ask in (self.ASK, "night of champions, epic", "black belt testing"):
+            for length in (15, 30):
+                for seed in range(1, 5):
+                    pool, by_search, focus = vc.candidates(ask, CLIPS, 20, search)
+                    p = vc.plan(ask, pool, [], LIBRARY, {}, length, by_search=by_search, focus=focus,
+                                all_clips=CLIPS, seed=seed)
+                    shots = [by[s["id"]] for s in p["shots"]]
+                    for a, b in itertools.combinations(shots, 2):
+                        if a.get("long_src") and a["long_src"] == b.get("long_src"):
+                            self.assertGreaterEqual(abs(a["long_start"] - b["long_start"]), vc.SCENE_GAP,
+                                                    (ask[:30], length, seed, a["id"], b["id"]))
+
     def test_the_sentence_cuts_the_evening_and_the_boards(self):
         pool, by_search, focus = vc.candidates(self.ASK, CLIPS, 10, search)
         self.assertEqual(focus, ("session:Night of Champions",))
