@@ -387,6 +387,14 @@ class TestTheCommands(unittest.TestCase):
         self.assertNotIn("drawtext", " ".join(cmd))
         self.assertIn("fade=t=out", " ".join(cmd))
 
+    def test_a_limiter_guards_the_peaks(self):
+        """Self-tests #9 and #14 came back at +0.1 and +0.4 dBTP after the AAC
+        encode; a limiter after loudnorm keeps 1 dB of headroom."""
+        for music in ("m.wav", None):
+            cmd = vc.final_cmd("f", "b.mp4", music, "o.mp4", 30.0, ("A", "B"), ("C", "D"), None)
+            fc = cmd[cmd.index("-filter_complex") + 1]
+            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.89:level=false[a]", fc)
+
     def test_no_music_still_normalises(self):
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
         self.assertNotIn("amix", " ".join(cmd))
