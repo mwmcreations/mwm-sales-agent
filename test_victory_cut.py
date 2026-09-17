@@ -198,6 +198,22 @@ class TestTheIndexLeads(unittest.TestCase):
             kinds = {s["category"] for s in p["shots"]}
             self.assertEqual(kinds, {"Candlelight ceremony"}, (ask, kinds))
 
+    def test_the_ask_beats_rotation(self):
+        """Self-test #11: every candle clip had been used recently, so the
+        rotation rule swapped in board breaks. Asked-for footage repeats
+        before other footage takes its place."""
+        pool, by_search, focus = vc.candidates("candlelight ceremony", CLIPS, 10, search)
+        used = [c["id"] for c in CLIPS if c["category"] == "Candlelight ceremony"]
+        p = vc.plan("candlelight ceremony", pool, [], LIBRARY, {}, 30, by_search=by_search,
+                    focus=focus, avoid=used, seed=2)
+        self.assertEqual({s["category"] for s in p["shots"]}, {"Candlelight ceremony"})
+
+    def test_short_clips_are_not_filler(self):
+        for seed in range(1, 8):
+            p = vc.plan("proud parents", CLIPS, [], LIBRARY, {}, 30, seed=seed)
+            for sh in p["shots"]:
+                self.assertGreaterEqual(sh["dur"], 3.0, (seed, sh["id"], sh["dur"]))
+
     def test_a_named_kind_is_not_capped(self):
         """"board breaks", 60 s: all nine board clips, then the rest — not two
         board clips and eighteen of something else."""

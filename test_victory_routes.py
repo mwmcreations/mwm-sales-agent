@@ -875,7 +875,7 @@ class TestThePageHelps(VICase):
         self.assertIn("format-detection", self.page)
 
     def test_it_asks_for_the_things_that_make_a_cut_possible(self):
-        for hint in ("where it is going", "How long", "who it is for"):
+        for hint in ("Name the moments", "How long", "who it is for"):
             self.assertIn(hint, self.page)
 
 
@@ -1041,6 +1041,14 @@ class TestTheMachineEditor(VICase):
         self.c.get("/vi/logout")
         self.assertEqual(self.c.get("/vi/mine").status_code, 401)
         self.assertIn("Sign in", self.c.get("/vi/queue").data.decode("utf-8"))
+
+
+class TestTimesAreEastern(unittest.TestCase):
+    def test_a_utc_timestamp_reads_in_victory_time(self):
+        import victory_page as vp
+        self.assertEqual(vp._when("2026-09-17 01:15:12.300542+00:00"), "Sep 16, 9:15 PM")
+        self.assertEqual(vp._when("2026-01-17 01:15:12"), "Jan 16, 8:15 PM")
+        self.assertEqual(vp._when(None), "")
 
 
 if __name__ == "__main__":

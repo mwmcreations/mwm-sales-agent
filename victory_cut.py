@@ -81,6 +81,10 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     jitter = {c["id"]: rnd.random() for c in cands}
     avoid = set(avoid or ())
     uncapped = set(uncapped or ())
+    # a clip shorter than a shot makes a choppy fill: it goes to the back
+    # unless the ask named its kind (self-test #13: a 2.2 s crowd clip as filler)
+    short = {c["id"]: float(c.get("seconds") or 99) < SHOT_SECONDS + 0.5
+             and c.get("category") not in uncapped for c in cands}
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -96,12 +100,14 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     pool = [c for c in cands if c["id"] not in taken]
     while len(chosen) < n and pool:
         if by_search:      # the ask's own footage leads (weight 10 = a hit or a named
-            pool.sort(key=lambda c: (c["id"] in avoid,          # kind); balance inside it
-                                     -round(float(c.get("weight") or 0), 1),
+            # kind) — before rotation: someone who asked for candlelight would
+            # rather see a candle clip again than board breaks (self-test #11)
+            pool.sort(key=lambda c: (-round(float(c.get("weight") or 0), 1),
+                                     c["id"] in avoid, short[c["id"]],
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
-            pool.sort(key=lambda c: (c["id"] in avoid,
+            pool.sort(key=lambda c: (c["id"] in avoid, short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
@@ -324,7 +330,7 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         else:
             fill.pop()
     hole = budget - sum(x["dur"] for x in lead + fill)
-    if hole > 0.2 and fill:                   # short clips left a hole: the fills breathe a little
+    if hole > 0.1 and fill:                   # short clips left a hole: the fills breathe a little
         per = hole / len(fill)
         for f in fill:
             have = float(by_id.get(f["id"], {}).get("seconds") or 0)

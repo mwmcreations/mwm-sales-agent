@@ -476,9 +476,10 @@ def app_page(email, role, event_title="Convention 2026", records=0):
         "the machine finds the rest, cuts it, and it appears under "
         "<strong>My videos</strong> in a few minutes.</p>"
         "<ul>"
-        "<li>Say where it is going — Instagram, a screen in the lobby, an email.</li>"
+        "<li>Name the moments — candlelight, belts, board breaks, sparring, the crowd, "
+        "instructors. That is what the editor listens to most.</li>"
         "<li>Say who it is for — parents, students, a specific school.</li>"
-        "<li>Say the feel, if you have one — proud, fun, epic, quiet.</li>"
+        "<li>Say the feel, if you have one — proud, fun, epic, quiet. It picks the music.</li>"
         "</ul>"
         "<textarea id=\"note\" placeholder=\"A reel for the Lake Nona page, aimed at "
         "parents — the candlelight moments.\"></textarea>"
@@ -516,11 +517,24 @@ def _e(s):
 
 
 def _when(ts):
-    """'Sep 14, 11:44 PM' from a datetime or its string form. Never raises."""
+    """'Sep 14, 11:44 PM' in Victory's time (Eastern) from a datetime or its
+    string form. The database keeps UTC; a request made at 9:15 PM in Orlando
+    was showing as "1:15 AM" (16 Sep self-test). Never raises."""
     try:
         import datetime as _dt
         if isinstance(ts, str):
             ts = _dt.datetime.fromisoformat(ts.replace(" ", "T", 1)[:19])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        try:
+            import pytz                       # already a dependency of the app
+            ts = ts.astimezone(pytz.timezone("America/New_York"))
+        except Exception:
+            try:
+                from zoneinfo import ZoneInfo
+                ts = ts.astimezone(ZoneInfo("America/New_York"))
+            except Exception:
+                pass
         return ts.strftime("%b %-d, %-I:%M %p")
     except Exception:
         return _e(str(ts or ""))[:16]
