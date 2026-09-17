@@ -592,6 +592,10 @@ def _request_card(r, mine_only):
             bits.append(", ".join(_e(k).lower() for k in summ["kinds"]))
         if summ.get("music_title"):
             bits.append("music: %s" % _e(summ["music_title"]))
+        if summ.get("skipped"):
+            h.append("<div class=\"errbox\" style=\"background:#fdf6e7;border-left-color:#8a5a00;color:#5c4a1e\">"
+                     "Not in this cut yet \u2014 interview moments are the next thing the editor learns:\n%s</div>"
+                     % "\n".join("\u2022 " + _e(x) for x in summ["skipped"]))
         if summ.get("render_seconds"):
             bits.append("cut in %ds" % int(summ["render_seconds"] + (summ.get("fetch_seconds") or 0)))
         if r.get("result_seconds"):

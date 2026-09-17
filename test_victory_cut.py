@@ -83,6 +83,33 @@ class TestVariety(unittest.TestCase):
         self.assertEqual(len({s["id"] for s in shots}), len(shots))
 
 
+class TestPicksLead(unittest.TestCase):
+    """16 Sep: "the final result did not include what I asked" — the picks were
+    in, but 3 s each, buried in story order. Now they open the reel."""
+    WANT = ["VWC26_BREAK_04_break-stance_D0141", "VWC26_BREAK_07_break-partner_D0144",
+            "VWC26_CROWD_01_kids-cheering_D0062", "VWC26_COMP_14_sparring-kids-headgear_C0622_REC709"]
+
+    def test_picks_come_first_in_the_order_picked_and_longer(self):
+        p = vc.plan("parents proud", CLIPS, self.WANT, LIBRARY, {}, 30)
+        ids = [s["id"] for s in p["shots"]]
+        self.assertEqual(ids[:4], self.WANT)
+        self.assertTrue(all(s["dur"] == vc.PICK_SECONDS and s["requested"] for s in p["shots"][:4]))
+        self.assertTrue(all(s["dur"] == vc.SHOT_SECONDS and not s["requested"] for s in p["shots"][4:]))
+        total = sum(s["dur"] for s in p["shots"])
+        self.assertTrue(28 <= total <= 31, total)
+        self.assertEqual(len(set(ids)), len(ids))
+
+    def test_a_short_reel_keeps_as_many_picks_as_fit(self):
+        p = vc.plan("x", CLIPS, self.WANT, LIBRARY, {}, 15)
+        self.assertEqual([s["id"] for s in p["shots"]][:2], self.WANT[:2])
+        self.assertLessEqual(sum(s["dur"] for s in p["shots"]), 16)
+
+    def test_no_picks_means_the_old_behaviour(self):
+        p = vc.plan("x", CLIPS, [], LIBRARY, {}, 30)
+        self.assertEqual(len(p["shots"]), 10)
+        self.assertTrue(all(s["dur"] == vc.SHOT_SECONDS for s in p["shots"]))
+
+
 class TestRotation(unittest.TestCase):
     """Michael, after the first live cuts: "the computer tries to go for the
     same ones." Footage a person has already been given goes to the back."""

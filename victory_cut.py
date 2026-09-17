@@ -35,7 +35,8 @@ STORY = ["Training & seminar", "Instructor training", "Competition", "Board brea
          "Winning moments", "Crowd & parent reactions", "Belt & rank presentation",
          "Candlelight ceremony"]
 LENGTHS = (15, 30, 60)
-SHOT_SECONDS = 3.0
+SHOT_SECONDS = 3.0      # a shot the machine chose
+PICK_SECONDS = 5.0      # a shot the person picked
 
 FONT_CANDIDATES = [
     os.environ.get("VI_FONT", ""),
@@ -194,18 +195,29 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
     lines: the person's own sentences to put over the pictures, in order.
     cta:   the end card ("Enroll today — victoryma.com"); blank = the sign-off."""
     length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
-    n = int(round((length_s - 0.5) / SHOT_SECONDS))
-    shots = pick_shots(cands, n, requested=requested_ids, by_search=by_search, avoid=avoid, seed=seed)
+    # THE PERSON'S PICKS LEAD (Michael, 16 Sep: his picks were "buried and
+    # short"). Picked clips come first, in the order picked, at PICK_SECONDS
+    # each; the machine fills whatever time is left at SHOT_SECONDS, in story
+    # order, never repeating a pick.
+    by_id = {c["id"]: c for c in cands}
+    picks = [by_id[r] for r in requested_ids if r in by_id]
+    if len(picks) * PICK_SECONDS > length_s - 0.5:          # too many picks for the length
+        picks = picks[:max(1, int((length_s - 0.5) // PICK_SECONDS))]
+    remaining = length_s - 0.5 - len(picks) * PICK_SECONDS
+    n_fill = max(0, int(round(remaining / SHOT_SECONDS)))
+    fill = []
+    if n_fill:
+        pool = [c for c in cands if c["id"] not in {p["id"] for p in picks}]
+        fill = pick_shots(pool, n_fill, by_search=by_search, avoid=avoid, seed=seed)
     music = pick_music(library, ask, exclude=recent_music)
     out = []
-    for c in shots:
-        x, how, t0 = window_for(c["id"], reframe, 1.0, SHOT_SECONDS)
+    for c, dur, req in [(p, PICK_SECONDS, True) for p in picks] + [(f, SHOT_SECONDS, False) for f in fill]:
+        x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
         out.append({"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
                     "title": c.get("title"), "session": c.get("session"),
                     "day": c.get("day"), "category": c.get("category"),
                     "priority": c.get("priority"), "in": round(t0, 2),
-                    "dur": SHOT_SECONDS, "x": x, "framed_by": how,
-                    "requested": c["id"] in set(requested_ids)})
+                    "dur": dur, "x": x, "framed_by": how, "requested": req})
     lines = [str(x).strip()[:60] for x in (lines or ()) if str(x).strip()][:4]
     return {"ask": ask, "length_s": length_s, "shots": out, "pool": "search" if by_search else "convention",
             "lines": lines, "cta": (cta or "").strip()[:60],

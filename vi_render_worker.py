@@ -182,6 +182,9 @@ def do_job(job, clips, reframe, library, search_fn):
     ask = (job.get("note") or "").strip()
     items = job.get("items") or []
     requested = [it.get("id", "").split(":", 1)[-1] for it in items if it.get("kind") == "clip"]
+    # interview moments are not cut yet: say so on the card instead of dropping them silently
+    skipped = [(it.get("title") or it.get("quote") or it.get("id") or "")[:120]
+               for it in items if it.get("kind") != "clip"]
     need = int(round((int(job.get("length_s") or 30) - 0.5) / vc.SHOT_SECONDS))
     pool, by_search = vc.candidates(ask, clips, need, search_fn)
     text = job.get("text") or {}
@@ -215,6 +218,7 @@ def do_job(job, clips, reframe, library, search_fn):
     vc.render(plan, paths, music_path, workdir, out_path, ffmpeg=FFMPEG, ffprobe=FFPROBE,
               encoder=ENCODER, log=log, cards=cards)
     plan["render_seconds"] = round(time.time() - t, 1)
+    plan["skipped"] = skipped
     plan["worker"] = WORKER
     plan["encoder"] = ENCODER
     plan["titles"] = "cards" if cards else "none"
