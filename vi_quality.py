@@ -152,6 +152,20 @@ def stable_windows(per, duration=None):
     return out
 
 
+_have_vidstab = None
+
+
+def have_vidstab():
+    """This ffmpeg can measure steadiness. The Mini's Homebrew build cannot
+    (no libvidstab), so there the measuring is done from the bridge VM with
+    steady_vm.py and this pass only grades."""
+    global _have_vidstab
+    if _have_vidstab is None:
+        r = run([FFMPEG, "-hide_banner", "-filters"], timeout=30)
+        _have_vidstab = "vidstabdetect" in (r.stdout or "")
+    return _have_vidstab
+
+
 def measure(path):
     w, h, fps, dur = probe(path)
     if not dur:
@@ -299,14 +313,13 @@ def step():
                 jsave(OUT, q)
                 return "paused before grading %s" % cid
             if grade(path):
-                entry["graded"] = True
-                entry.pop("stable", None)          # measure the graded file
+                entry["graded"] = True             # steadiness is unchanged by the grade
                 done_grade += 1
                 log("graded %s" % cid)
             else:
                 entry["graded"] = False
                 entry["grade_failed"] = entry.get("grade_failed", 0) + 1
-        if "stable" not in entry and entry.get("grade_failed", 0) < 3:
+        if "stable" not in entry and entry.get("grade_failed", 0) < 3 and have_vidstab():
             m = measure(path)
             if m:
                 entry.update(m)

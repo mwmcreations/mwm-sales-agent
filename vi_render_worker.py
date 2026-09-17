@@ -194,11 +194,17 @@ def load_sources():
     library_path = os.path.join(MUSIC_DIR, "library.json")
     # the quality pass (vi_quality.py): steady stretches per file, so every
     # shot lands where the camera was still (Michael, 17 Sep, on #30)
-    qpath = os.environ.get("VI_QUALITY", os.path.join(os.path.dirname(CACHE_DIR), "quality.json"))
-    try:
-        quality = json.load(open(qpath)) if os.path.exists(qpath) else {}
-    except Exception:
-        quality = {}
+    qdir = os.path.dirname(CACHE_DIR)
+    quality = {}
+    for name in ("quality.json", "quality_steady.json"):      # the Mini's pass, then the VM's measurements
+        qpath = os.path.join(qdir, name)
+        try:
+            if os.path.exists(qpath):
+                for k, v in json.load(open(qpath)).items():
+                    if v and v.get("stable") is not None:
+                        quality[k] = v
+        except Exception as e:
+            log("quality: could not read %s: %r" % (name, e))
     if quality:
         n = 0
         for c in clips:
