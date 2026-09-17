@@ -18,8 +18,46 @@ W, H = 1080, 1920
 _cache = {}
 
 
+LOGO = os.path.join(HERE, "victory_assets", "victory-logo-white.png")   # white wordmark, red "Martial Arts"
+LOGO_CARD = "[victory-logo]"     # what card_plan puts where a title would go
+
+
+def render_logo_card(y_frac=0.42, width=820):
+    """The closing card: the Victory Martial Arts logo on a soft dark band,
+    the same band the words use, so it reads over any footage. Transparent
+    1080x1920 PNG; None if the logo file is missing (the caller falls back
+    to the words)."""
+    key = ("logo", y_frac, width)
+    if key in _cache:
+        return _cache[key]
+    try:
+        from PIL import Image, ImageDraw
+        logo = Image.open(LOGO).convert("RGBA")
+        scale = float(width) / logo.width
+        logo = logo.resize((int(logo.width * scale), int(logo.height * scale)), Image.LANCZOS)
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        x = (W - logo.width) // 2
+        y = int(H * y_frac) - logo.height // 2
+        pad_x, pad_y = 56, 44
+        ImageDraw.Draw(img).rounded_rectangle((x - pad_x, y - pad_y, x + logo.width + pad_x, y + logo.height + pad_y),
+                                              radius=34, fill=(0, 0, 0, 150))
+        img.alpha_composite(logo, (x, y))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        _cache[key] = buf.getvalue()
+        return _cache[key]
+    except Exception as e:
+        print("[VI-CARDS] logo card failed: %r" % (e,))
+        return None
+
+
 def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
     """A transparent 1080x1920 PNG with two centred lines and a soft shadow."""
+    if big == LOGO_CARD:
+        png = render_logo_card(y_frac)
+        if png:
+            return png
+        big, small = "Victory Martial Arts", small     # no logo file: the words
     key = (big, small, y_frac, size_big, size_small)
     if key in _cache:
         return _cache[key]

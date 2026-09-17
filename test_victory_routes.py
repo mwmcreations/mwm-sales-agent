@@ -1297,6 +1297,19 @@ class TestTheFrontDoorIsTheChat(VICase):
         self.assertIn("Night of Champions", body)
 
 
+class TestTheClosingCard(VICase):
+    """Michael, 17 Sep: "finish with a Victory logo." The worker asks the app
+    for the card by its token and gets the logo, on the words' dark band."""
+
+    def test_the_logo_card_is_a_png_for_the_worker(self):
+        import victory_cut as vc
+        r = self.c.get("/vi/card?big=%s&secret=%s" % (vc.LOGO_CARD, SECRET))
+        self.assertEqual(r.status_code, 200, r.data[:100])
+        self.assertTrue(r.data.startswith(b"\x89PNG"))
+        self.assertGreater(len(r.data), 20000, "a logo, not an empty band")
+        self.assertEqual(self.c.get("/vi/card?big=%s" % vc.LOGO_CARD).status_code, 401)
+
+
 class TestTheHelper(VICase):
     """Michael, 17 Sep: "a lot of people don't know how to ask for a video …
     'Give me a nice video', and that's it." Ready ideas on the page, and a

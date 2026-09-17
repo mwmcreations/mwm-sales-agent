@@ -35,6 +35,7 @@ STORY = ["Training & seminar", "Instructor training", "Competition", "Board brea
          "Winning moments", "Crowd & parent reactions", "Belt & rank presentation",
          "Candlelight ceremony"]
 LENGTHS = (15, 30, 60)
+LOGO_CARD = "[victory-logo]"    # a card that is the Victory Martial Arts logo (victory_cards renders it)
 SHOT_SECONDS = 3.0      # a shot the machine chose
 PICK_SECONDS = 5.0      # a shot the person picked
 SCENE_GAP = 300.0       # two moments this close in one long recording are one scene
@@ -454,7 +455,7 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026", top=Fals
         cards.append((head[0], head[1], 0.3, 3.2, y_head))
     if cta:
         cards.append((cta, "", end - 6.0, end - 3.0, 0.42))       # the school's words, alone
-    cards.append((outro[0], outro[1], end - 3.0, end, 0.42))
+    cards.append((LOGO_CARD, "", end - 3.0, end, 0.42))        # the Victory logo, always last
     return cards
 
 
