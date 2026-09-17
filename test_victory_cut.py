@@ -439,6 +439,15 @@ class TestTheCommands(unittest.TestCase):
             fc = cmd[cmd.index("-filter_complex") + 1]
             self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]", fc)
 
+    def test_probe_reads_ffmpegs_own_banner(self):
+        banner = ("Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:00:12.01, start: 0.000000, bitrate: 6183 kb/s\n"
+                  "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), "
+                  "1920x1080 [SAR 1:1 DAR 16:9], 5698 kb/s, 24 fps, 24 tbr, 12288 tbn (default)\n"
+                  "  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6D703461), 48000 Hz, stereo, fltp, 317 kb/s (default)\n"
+                  "  Stream #0:2[0x3](und): Data: none (tmcd / 0x64636D74)\n")
+        self.assertEqual(vc.parse_ffmpeg_info(banner), (1920, 1080, 12.01))
+        self.assertIsNone(vc.parse_ffmpeg_info("nothing here"))
+
     def test_no_music_still_normalises(self):
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
         self.assertNotIn("amix", " ".join(cmd))

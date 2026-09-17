@@ -555,11 +555,34 @@ def reanchor_cards(cards, planned, actual):
 
 
 def probe(ffprobe, path):
+    """(width, height, seconds) of a video. Asks ffmpeg itself, not ffprobe:
+    on the Mini only ffmpeg was granted Full Disk Access, and ffprobe hung
+    for two minutes on the first file it touched on the external drive
+    (17 Sep, self-test #22). ffprobe is the fallback for any other build."""
+    ffmpeg = ffprobe[:-5] + "mpeg" if ffprobe.endswith("ffprobe") else None
+    if ffmpeg:
+        try:
+            r = subprocess.run([ffmpeg, "-hide_banner", "-i", path], capture_output=True, text=True, timeout=120)
+            got = parse_ffmpeg_info(r.stderr)
+            if got:
+                return got
+        except Exception:
+            pass
     r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
                         "stream=width,height,duration", "-of", "json", path],
                        capture_output=True, text=True, timeout=120)
     s = json.loads(r.stdout)["streams"][0]
     return int(s["width"]), int(s["height"]), float(s.get("duration") or 0)
+
+
+def parse_ffmpeg_info(text):
+    """Width, height and duration out of ffmpeg's own banner for an input."""
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text or "")
+    dur = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else 0.0
+    v = re.search(r"Stream #\d+:\d+.*?: Video:.*?(\d{2,5})x(\d{2,5})", text or "")
+    if not v:
+        return None
+    return int(v.group(1)), int(v.group(2)), dur
 
 
 def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
