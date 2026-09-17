@@ -25,8 +25,8 @@ import os
 import re
 import time
 
-MAX_TURNS = 8          # messages of history sent to the model
-MAX_CHARS = 600        # per message
+MAX_TURNS = 14         # messages of history sent to the model
+MAX_CHARS = 1200       # per message
 IDEAS_N = 4
 
 KIND_ASKS = {
@@ -134,13 +134,15 @@ PREPARING AN EVENT VIDEO (when they say they have an event coming, or ask for he
 You need, before you propose: what the event is; the day as a full date and the time; the place (the school's name, if you know it, or ask); what you want people to do (come, bring friends, sign up, RSVP) and any deadline or price they want shown. Ask for everything still missing in ONE friendly message, naming the items plainly, so they can answer all at once — at most two rounds, then propose with what you have and say what is still missing. Today is %s. A relative day (next Friday, this Saturday) becomes a full date on screen (Friday, September 25) — say the date you worked out in "say" so they can correct it. When the event is complete, put it in "remember" as one line (event: Parents Night, Friday September 25, 6pm, Victory Lake Nona, winter camp sign-ups) so the next video about it needs no questions.
 Every video ends on the Victory Martial Arts card; the person does not need to ask for it. The editor cannot add photos, prices or anything that is not footage: everything else is carried by the words on screen and the end card, so write those yourself when the need calls for them — short, plain, no exclamation marks, in the school's own terms (use their school's name if you know it).
 
-HOW TO TALK
-- Plain, warm, short. At most 45 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text. Talk like a good editor, not a form.
-- If the message already says enough (who or where, and some idea of the footage or the feel), do not ask — propose right away: "ask" filled, "say" a short line of what you chose and why.
-- Otherwise ask at most ONE question, and only what you still need: who will watch it, where it goes (that sets the length), and which part of the weekend or kind of moment. Skip anything they already said. Never more than two questions in a row — then propose something strong and say why.
+HOW TO TALK — like a person, not a form
+- This is a conversation between two people who both want the school to do well. Talk the way a sharp, friendly editor talks to a school owner they like: natural sentences, contractions, a reaction to what they just said before you move on, an opinion when you have one (if it were my school, I'd…), a reason behind every choice. Use their name now and then if you know it. Warm, never gushing; no exclamation marks, no emojis, no headings, no bullet lists, no double quotes inside your text.
+- Length follows the moment: a quick reply when they said something quick, a fuller one (three or four sentences, line breaks are fine) when they're thinking something through or asked why. Never a wall of text.
+- They can talk about anything around the school's videos and marketing — what works on Instagram, how often to post, what parents respond to, why one cut is better than another — and you answer as a knowledgeable colleague. What you never do is claim footage that is not in the list, or invent facts about their school; on anything unrelated to schools and video, say kindly it's not your area and come back to what you can do.
+- If the message already says enough (who or where, and some idea of the footage or the feel), don't ask — propose right away: "ask" filled, "say" a short line of what you chose and why.
+- Otherwise ask for what you still need the way a person would: one natural question, or a couple grouped in one message when they belong together; never a form, never a numbered list. Skip anything they already said. Never more than two rounds of questions — then propose something strong and say why.
 - If they say "you choose", choose something strong and say why in a few words.
-- If they ask what footage there is, answer from the list in one or two sentences, then offer to make something from it.
-- If they change something after a proposal (longer, slower, for parents instead, add the candles), propose again with the change made.
+- If they ask what footage there is, answer from the list conversationally, then offer to make something from it.
+- After a proposal, keep talking: if they change something (longer, slower, for parents instead, add the candles), propose again with the change made and say what changed; if they ask why, explain; if they just chat, chat back and keep the proposal standing.
 - If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
 - "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
 - "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
@@ -224,7 +226,7 @@ def parse_answer(text):
             d["ideas"] = re.findall(r'"((?:[^"\\]|\\.)*)"', mi.group(1))
     if not isinstance(d, dict):
         return None
-    say = str(d.get("say") or "").strip()[:600]
+    say = str(d.get("say") or "").strip()[:1500]
     ask = d.get("ask")
     ask = str(ask).strip()[:300] if ask and str(ask).strip().lower() not in ("null", "none") else None
     ideas = [str(x).strip()[:200] for x in (d.get("ideas") or []) if str(x).strip()][:3]
@@ -345,12 +347,14 @@ def greeting(name, person=None):
         if what:
             state = last.get("state") or ""
             tail = {"approved": " and you approved it", "delivered": " and it went out",
-                    "declined": " and you declined it", "ready": " — it is ready under My videos",
-                    "asked": " — it is in the queue", "rendering": " — cutting it now"}.get(state, "")
-            return ("%s Last time I made you: %s%s. Want something like it, something new, "
-                    "or just say what you need." % (hi, what[:140], tail))
+                    "declined": " and you declined it", "ready": " \u2014 it is ready under My videos",
+                    "asked": " \u2014 it is in the queue", "rendering": " \u2014 cutting it now"}.get(state, "")
+            return ("%s Last time I made you: %s%s. Want another one like it, something new, or just "
+                    "tell me what's going on at the school?" % (hi, what[:140], tail))
     if notes:
-        return ("%s I remember a few things about you (%s). Tell me what video you want, or just say "
-                "\"you choose\"." % (hi, "; ".join(str(n) for n in notes[:2])[:120]))
-    return ("%s Tell me what video you want \u2014 who it is for, where it will be posted, which part of "
-            "the weekend \u2014 or just say \"you choose\". I will write it up and cut it." % hi)
+        return ("%s Good to see you again \u2014 I remember a few things (%s). What's going on at the "
+                "school? An event coming up, new students you want, parents to fire up? Tell me and I'll "
+                "put a video together." % (hi, "; ".join(str(n) for n in notes[:2])[:120]))
+    return ("%s What are we making today? Tell me what's going on at the school \u2014 an event coming "
+            "up, new students you want, parents to fire up, who it is for and where it will be posted "
+            "\u2014 and I'll put a video together. Or just say \"you choose\"." % hi)

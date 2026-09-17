@@ -85,9 +85,9 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(g.startswith("Hi, Michael. Last time I made you: A 30-second video for parents"), g)
         self.assertIn("you approved it", g)
         g = vh.greeting("Michael", {"notes": ["posts to Instagram"], "history": []})
-        self.assertIn("I remember a few things about you (posts to Instagram)", g)
+        self.assertIn("I remember a few things (posts to Instagram)", g)
         g = vh.greeting("Michael", None)
-        self.assertIn("Tell me what video you want", g)
+        self.assertIn("What are we making today?", g)
         self.assertTrue(vh.greeting("", None).startswith("Hi. "))
 
 

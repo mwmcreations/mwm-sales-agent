@@ -151,7 +151,7 @@ button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .vichat{margin:0 0 6px}
 .vichat .log{max-height:min(62vh,640px);overflow:auto;padding:4px 2px 2px;-webkit-overflow-scrolling:touch}
 .msg{font-size:15.5px;line-height:1.5;padding:11px 14px;border-radius:12px;margin:0 0 10px;max-width:92%;width:fit-content}
-.msg.bot{background:#f2f3f5;color:#14171a;border-bottom-left-radius:4px}
+.msg.bot{background:#f2f3f5;color:#14171a;border-bottom-left-radius:4px;white-space:pre-line}
 .msg.me{background:#14171a;color:#fff;margin-left:auto;border-bottom-right-radius:4px}
 .msg.wait{color:#767d85;font-style:italic;background:#fafbfc;border:1px dashed #d7dbe0}
 .msg.offer{background:#fff;border:1.5px solid #14171a;max-width:100%;width:100%}
@@ -505,7 +505,7 @@ APP_JS = r"""
     bubble('me', t); hist.push({role:'user', text:t});
     var w=bubble('bot wait', 'thinking…'); hsend.disabled=true;
     fetch('/vi/helper', {method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({messages: hist.slice(-8)})})
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({messages: hist.slice(-14)})})
     .then(function(r){ return r.json(); })
     .then(function(d){
       hsend.disabled=false; w.remove();
@@ -661,9 +661,10 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make",
     else:
         first = email.split("@")[0].split(".")[0].capitalize() if email else ""
         if not greeting:
-            greeting = ("Hi%s. Tell me what video you want \u2014 who it is for, where it will be posted, "
-                        "which part of the weekend \u2014 or just say \"you choose\". I will write it up and "
-                        "cut it." % (", " + first if first else ""))
+            greeting = ("Hi%s. What are we making today? Tell me what's going on at the school \u2014 an event "
+                        "coming up, new students you want, parents to fire up, who it is for and where it will "
+                        "be posted \u2014 and I'll put a video together. Or just say \"you choose\"."
+                        % (", " + first if first else ""))
         main = (
             "<section class=\"vichat\" id=\"chat\">"
             "<div class=\"log\" id=\"hlog\">"

@@ -964,7 +964,7 @@ class TestThePageHelps(VICase):
         self.assertIn("format-detection", self.page)
 
     def test_it_asks_for_the_things_that_make_a_cut_possible(self):
-        for hint in ("who it is for", "where it will be posted", "which part of the weekend"):
+        for hint in ("who it is for", "where it will be posted", "an event coming up"):
             self.assertIn(hint, self.page)
 
 
@@ -1368,7 +1368,7 @@ class TestTheHelper(VICase):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
         # a first visit
         body = self.c.get("/vi/").data.decode("utf-8")
-        self.assertIn("Hi, Jim. Tell me what video you want", body)
+        self.assertIn("Hi, Jim. What are we making today?", body)
         self.assertIn("What I remember about you", body)
         d = self.c.get("/vi/memory").get_json()
         self.assertEqual((d["notes"], d["videos"]), ([], []))
