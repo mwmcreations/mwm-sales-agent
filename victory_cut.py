@@ -153,7 +153,13 @@ SYN = {"best": "highlights", "moments": "recap", "highlights": "highlights",
        "epic": "epic", "emotional": "emotional", "energy": "energetic",
        "energetic": "energetic", "hype": "hype", "training": "corporate",
        "seminar": "corporate", "board": "board", "boards": "board", "breaks": "board",
-       "break": "board", "celebration": "celebration", "crowd": "crowd", "cheering": "crowd"}
+       "break": "board", "celebration": "celebration", "crowd": "crowd", "cheering": "crowd",
+       # pace and feel words reach the music's tags ("Fast pace. Motivational." — #25)
+       "fast": "energetic", "quick": "energetic", "pace": "energetic", "action": "action",
+       "intense": "powerful", "powerful": "powerful", "motivational": "motivational",
+       "motivation": "motivational", "inspiring": "inspiring", "inspirational": "inspiring",
+       "quiet": "piano", "calm": "piano", "slow": "piano", "happy": "happy", "playful": "playful",
+       "upbeat": "upbeat", "rock": "rock", "trailer": "trailer", "students": "highlights"}
 
 
 def ask_words(ask):
@@ -281,15 +287,36 @@ def quote_shots(items, moments_index, have_file, max_s=SPEECH_MAX):
 
 
 # ── 3. the plan ────────────────────────────────────────────────────────────
+PACE_FAST = {"fast", "quick", "rapid", "hype", "energetic", "energy", "punchy", "dynamic", "action",
+             "intense", "explosive", "high-energy", "upbeat"}
+PACE_SLOW = {"slow", "quiet", "calm", "emotional", "gentle", "soft", "cinematic", "moody", "tender",
+             "reflective", "peaceful"}
+PICK_MIN = 2.0          # a picked clip never shorter than this
+
+
+def pace_seconds(ask):
+    """How long a machine-chosen shot runs: 3 s, or 2 s when the ask says
+    fast, 4 s when it says slow (Michael on #25: "Fast pace" gave 3 s shots)."""
+    words = set(re.findall(r"[a-z\-]+", (ask or "").lower()))
+    if words & PACE_FAST:
+        return 2.0
+    if words & PACE_SLOW:
+        return 4.0
+    return SHOT_SECONDS
+
+
 def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=(), by_search=False,
-         avoid=(), seed=0, lines=(), cta="", speech=(), focus=()):
+         avoid=(), seed=0, lines=(), cta="", speech=(), focus=(), all_clips=None):
     """Everything the render needs, as data. Pure.
-    lines:  the person's own sentences to put over the pictures, in order.
-    cta:    the end card ("Enroll today — victoryma.com"); blank = the sign-off.
-    speech: interview moments from quote_shots(); they open the reel.
-    focus:  kinds of moment the ask named (from candidates()); uncapped."""
+    lines:     the person's own sentences to put over the pictures, in order.
+    cta:       the end card ("Enroll today — victoryma.com"); blank = the sign-off.
+    speech:    interview moments from quote_shots(); they open the reel.
+    focus:     kinds of moment the ask named (from candidates()); uncapped.
+    all_clips: the whole library, so a PICK is always found even when the
+               ask narrowed the pool (#25: nine picks, none in the cut)."""
     length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
     budget = length_s - 0.5
+    shot_s = pace_seconds(ask)
     # THE PERSON'S PICKS LEAD (Michael, 16 Sep: his picks were "buried and
     # short"). Interview moments come first, then picked clips in the order
     # picked at PICK_SECONDS each; the machine fills whatever time is left at
@@ -303,10 +330,20 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         s["dur"] = round(min(float(s["dur"]), room), 2)
         speech_out.append(s)
     room = budget - sum(x["dur"] for x in speech_out)
-    by_id = {c["id"]: c for c in cands}
+    by_id = {c["id"]: c for c in (all_clips or ())}
+    by_id.update({c["id"]: c for c in cands})
     picks = [by_id[r] for r in requested_ids if r in by_id]
-    if len(picks) * PICK_SECONDS > room:                    # too many picks for the length
-        picks = picks[:max(0 if speech_out else 1, int(room // PICK_SECONDS))]
+    # Every pick that fits goes in, in the order picked. With many picks for a
+    # short reel each gets less time, down to PICK_MIN; what still does not
+    # fit is named on the card (no_room) rather than dropped in silence.
+    pick_s = PICK_SECONDS
+    if picks and len(picks) * pick_s > room:
+        pick_s = max(PICK_MIN, min(PICK_SECONDS, room / len(picks)))
+    no_room = []
+    if picks and len(picks) * pick_s > room:
+        keep = max(0 if speech_out else 1, int(room // pick_s))
+        no_room = [p.get("title") or p["id"] for p in picks[keep:]]
+        picks = picks[:keep]
     def shot(c, dur, req):
         # a clip shorter than the shot gives what it has (two convention clips
         # are 2 s long; 16 Sep self-test #5 came out 1 s short because of one)
@@ -326,9 +363,9 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
                 "priority": c.get("priority"), "in": round(t0, 2),
                 "dur": dur, "x": x, "framed_by": how, "requested": req}
 
-    lead = list(speech_out) + [shot(p, PICK_SECONDS, True) for p in picks]
+    lead = list(speech_out) + [shot(p, round(pick_s, 2), True) for p in picks]
     remaining = budget - sum(x["dur"] for x in lead)
-    n_fill = max(0, int(round(remaining / SHOT_SECONDS)))
+    n_fill = max(0, int(round(remaining / shot_s)))
     fill = []
     pool = [c for c in cands if c["id"] not in {p["id"] for p in picks}]
     for extra in range(0, 6):                 # top up while short clips leave a hole
@@ -338,7 +375,7 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         chosen = pick_shots(pool, n_fill + extra, by_search=by_search, avoid=avoid, seed=seed,
                             max_per_family=max(2, (n_fill + extra) // 3) if by_search else 2,
                             uncapped=focus)
-        fill = [shot(f, SHOT_SECONDS, False) for f in chosen]
+        fill = [shot(f, shot_s, False) for f in chosen]
         if remaining - sum(x["dur"] for x in fill) < 1.5 or len(chosen) < n_fill + extra:
             break
     over = sum(x["dur"] for x in lead + fill) - budget
@@ -353,12 +390,13 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         for f in fill:
             have = float(by_id.get(f["id"], {}).get("seconds") or 0)
             cap = (have - f["in"] - 0.05) if have else f["dur"] + per
-            f["dur"] = round(max(f["dur"], min(f["dur"] + per, cap, 4.5)), 2)
+            f["dur"] = round(max(f["dur"], min(f["dur"] + per, cap, shot_s + 1.5)), 2)
     music = pick_music(library, ask, exclude=recent_music)
     out = lead + fill
     lines = [str(x).strip()[:60] for x in (lines or ()) if str(x).strip()][:4]
     return {"ask": ask, "length_s": length_s, "shots": out, "pool": "search" if by_search else "convention",
             "speech_seconds": round(sum(s["dur"] for s in speech_out), 2),
+            "no_room": no_room, "pace": shot_s,
             "lines": lines, "cta": (cta or "").strip()[:60],
             "cards": card_plan(length_s, ask, lines, (cta or "").strip()[:60], top=bool(speech_out)),
             "music_id": music["id"] if music else None,

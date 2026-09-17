@@ -100,6 +100,31 @@ class TestPicksLead(unittest.TestCase):
         self.assertTrue(28 <= total <= 31, total)
         self.assertEqual(len(set(ids)), len(ids))
 
+    def test_picks_survive_a_narrow_pool(self):
+        """Michael's #25 (17 Sep): "For students. Fast pace. Motivational."
+        with nine Night of Champions picks — the ask narrowed the pool to
+        index hits and none of the picks were in it, so the cut had none."""
+        pool, by_search, focus = vc.candidates("For students. Fast pace. Motivational.", CLIPS, 5, search)
+        picks = [c["id"] for c in CLIPS if c["session"] == "Night of Champions"][:9]
+        p = vc.plan("For students. Fast pace. Motivational.", pool, picks, LIBRARY, {}, 15,
+                    by_search=by_search, focus=focus, all_clips=CLIPS)
+        got = [s["id"] for s in p["shots"] if s.get("requested")]
+        self.assertGreaterEqual(len(got), 6, got)
+        self.assertEqual(got, picks[:len(got)])                 # in the order picked
+        self.assertTrue(all(s["dur"] >= vc.PICK_MIN for s in p["shots"] if s.get("requested")))
+        self.assertEqual(len(p["no_room"]), 9 - len(got))
+        self.assertLessEqual(sum(s["dur"] for s in p["shots"]), 15.0)
+        self.assertEqual(p["pace"], 2.0)
+
+    def test_pace_follows_the_ask(self):
+        self.assertEqual(vc.pace_seconds("fast pace, motivational"), 2.0)
+        self.assertEqual(vc.pace_seconds("a quiet, emotional reel"), 4.0)
+        self.assertEqual(vc.pace_seconds("candlelight for parents"), 3.0)
+        p = vc.plan("fast and hype", CLIPS, [], LIBRARY, {}, 30, seed=1)
+        self.assertGreaterEqual(len(p["shots"]), 13)
+        p = vc.plan("slow and quiet", CLIPS, [], LIBRARY, {}, 30, seed=1)
+        self.assertLessEqual(len(p["shots"]), 8)
+
     def test_a_short_reel_keeps_as_many_picks_as_fit(self):
         p = vc.plan("x", CLIPS, self.WANT, LIBRARY, {}, 15)
         self.assertEqual([s["id"] for s in p["shots"]][:2], self.WANT[:2])

@@ -628,8 +628,14 @@ def _request_card(r, mine_only):
             h.append("<div class=\"errbox\" style=\"background:#fdf6e7;border-left-color:#8a5a00;color:#5c4a1e\">"
                      "Could not find the recording for these picks, so they are not in this cut:\n%s</div>"
                      % "\n".join("\u2022 " + _e(x) for x in summ["skipped"]))
+        if summ.get("no_room"):
+            h.append("<div class=\"errbox\" style=\"background:#fdf6e7;border-left-color:#8a5a00;color:#5c4a1e\">"
+                     "Picked, but no room in a %s-second video (ask for a longer one to fit them):\n%s</div>"
+                     % (_e(str(r.get("length_s") or "")), "\n".join("\u2022 " + _e(x) for x in summ["no_room"])))
         if summ.get("speech_seconds"):
             bits.append("%ds of interview" % int(round(summ["speech_seconds"])))
+        if summ.get("pace") and float(summ["pace"]) != 3.0:
+            bits.append("%s pace" % ("fast" if float(summ["pace"]) < 3 else "slow"))
         if summ.get("render_seconds"):
             bits.append("cut in %ds" % int(summ["render_seconds"] + (summ.get("fetch_seconds") or 0)))
         if r.get("result_seconds"):
