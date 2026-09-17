@@ -45,20 +45,20 @@ header.cv .who a{color:#c9d0d6}
 header.cv .who span.e{color:#8b949d}
 main{background:#fff;border:1px solid #e2e5e9;border-top:none;padding:22px 24px 30px}
 .searchbar{display:flex;gap:9px;margin:0 0 12px}
-input[type=text],input[type=email]{flex:1;font:17px/1.4 inherit;padding:13px 15px;
+input[type=text],input[type=email]{flex:1;font-family:inherit;font-size:17px;line-height:1.4;padding:13px 15px;
  border:1px solid #c9ced4;border-radius:4px;background:#fff;color:#14171a;min-width:0;
  -webkit-appearance:none}
 input:focus{outline:2px solid #14171a;outline-offset:-1px;border-color:#14171a}
-button{font:600 15px/1 inherit;padding:13px 20px;border:0;border-radius:4px;
+button{font-weight:600;font-family:inherit;font-size:15px;line-height:1;padding:13px 20px;border:0;border-radius:4px;
  background:#14171a;color:#fff;cursor:pointer;white-space:nowrap}
 button:disabled{opacity:.45;cursor:default}
 .chips{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 16px}
-.chip{font:500 13.5px/1 inherit;padding:9px 13px;border:1px solid #d7dbe0;border-radius:100px;
+.chip{font-weight:500;font-family:inherit;font-size:13.5px;line-height:1;padding:9px 13px;border:1px solid #d7dbe0;border-radius:100px;
  background:#fff;color:#3b4249;cursor:pointer}
 .chip:active{background:#eef0f3}
 .chips .lbl{font-size:12.5px;color:#767d85;align-self:center;margin-right:2px}
 .tabs{display:flex;gap:0;border-bottom:1px solid #e2e5e9;margin:0 0 4px}
-.tab{font:600 14px/1 inherit;padding:11px 15px;background:none;color:#767d85;border:0;
+.tab{font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:11px 15px;background:none;color:#767d85;border:0;
  border-bottom:2px solid transparent;border-radius:0;cursor:pointer}
 .tab.on{color:#14171a;border-bottom-color:#C8102E}
 .tab .c{font-weight:400;color:#98a0a8;margin-left:5px;font-size:12.5px}
@@ -89,7 +89,7 @@ button:disabled{opacity:.45;cursor:default}
  font-weight:700;padding:2px 6px;border-radius:2px;margin-right:6px;vertical-align:2px}
 .tag.hero{background:#fdf0f2;color:#C8102E}
 .pick{flex:0 0 auto;width:34px;height:34px;border:1px solid #d7dbe0;background:#fff;color:#3b4249;
- border-radius:100px;font:400 20px/1 inherit;padding:0;cursor:pointer;align-self:center}
+ border-radius:100px;font-weight:400;font-family:inherit;font-size:20px;line-height:1;padding:0;cursor:pointer;align-self:center}
 .pick.on{background:#14171a;border-color:#14171a;color:#fff}
 .empty{padding:30px 0;color:#767d85}
 .more{margin:16px 0 0}
@@ -111,7 +111,7 @@ button:disabled{opacity:.45;cursor:default}
 .panel p.h{font-size:14px;color:#767d85;margin:0 0 16px}
 .panel ul{margin:0 0 18px;padding-left:18px;font-size:13.5px;color:#4a5158}
 .panel li{margin:0 0 5px}
-.panel textarea{width:100%;font:16px/1.5 inherit;padding:13px 14px;border:1px solid #c9ced4;
+.panel textarea{width:100%;font-family:inherit;font-size:16px;line-height:1.5;padding:13px 14px;border:1px solid #c9ced4;
  border-radius:4px;min-height:92px;resize:vertical;-webkit-appearance:none}
 .panel .acts{display:flex;gap:10px;margin-top:16px}
 .panel .acts button{flex:1}
@@ -120,7 +120,7 @@ button:disabled{opacity:.45;cursor:default}
  font-size:14.5px;color:#14532e}
 footer{padding:18px 24px 24px;background:#14171a;color:#767d85;font-size:12px}
 nav.sub{background:#1f2429;padding:0 24px;display:flex;gap:4px}
-nav.sub a{color:#9aa3ac;text-decoration:none;font:600 13.5px/1 inherit;padding:13px 12px;
+nav.sub a{color:#9aa3ac;text-decoration:none;font-weight:600;font-family:inherit;font-size:13.5px;line-height:1;padding:13px 12px;
  border-bottom:2px solid transparent}
 nav.sub a.on{color:#fff;border-bottom-color:#C8102E}
 nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:100px;font-size:11px;
@@ -128,16 +128,16 @@ nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:10
 .lbl2{display:block;font-size:13.5px;font-weight:600;color:#3b4249;margin:12px 0 5px}
 .lbl2 span{font-weight:400;color:#767d85;font-size:12.5px}
 .panel textarea.short{min-height:64px}
-.panel input[type=text]{width:100%;font:16px/1.4 inherit;padding:11px 14px;border:1px solid #c9ced4;
+.panel input[type=text]{width:100%;font-family:inherit;font-size:16px;line-height:1.4;padding:11px 14px;border:1px solid #c9ced4;
  border-radius:4px;margin:0 0 12px;-webkit-appearance:none}
 .len{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap;align-items:center}
 .len span{font-size:13px;color:#767d85;margin-right:4px}
-.len label{font:600 14px/1 inherit;padding:10px 14px;border:1px solid #d7dbe0;border-radius:100px;
+.len label{font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:10px 14px;border:1px solid #d7dbe0;border-radius:100px;
  cursor:pointer;color:#3b4249;background:#fff}
 .len input{display:none}
 .len input:checked+label{background:#14171a;color:#fff;border-color:#14171a}
 .askbox h2{font-size:22px;margin:4px 0 12px;letter-spacing:-.01em}
-.askbox textarea{width:100%;font:17px/1.5 inherit;padding:14px 15px;border:1px solid #c9ced4;border-radius:6px;
+.askbox textarea{width:100%;font-family:inherit;font-size:17px;line-height:1.5;padding:14px 15px;border:1px solid #c9ced4;border-radius:6px;
  min-height:110px;resize:vertical;-webkit-appearance:none}
 .brief{min-height:22px;font-size:13.5px;color:#3b4249;margin:8px 0 12px;line-height:1.5}
 .brief .k{font-weight:700;color:#767d85;text-transform:uppercase;font-size:11px;letter-spacing:.08em;margin-right:6px}
@@ -149,19 +149,19 @@ button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .askbox p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
 .ideas{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px;align-items:center}
 .ideas .lbl{font-size:12.5px;color:#767d85;margin-right:2px}
-.ideas button{background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:100px;font:600 13px/1.2 inherit;
- padding:8px 12px;text-align:left}
+.ideas button{background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:14px;font-weight:600;font-family:inherit;font-size:13px;line-height:1.25;
+ padding:8px 12px;text-align:left;white-space:normal;max-width:100%}
 details.chat{margin:0 0 16px;border:1px solid #e2e5e9;border-radius:8px;background:#fafbfc}
 details.chat summary{cursor:pointer;color:#12507e;font-weight:600;font-size:14px;padding:11px 14px}
 details.chat .log{padding:0 12px 6px;max-height:320px;overflow:auto}
-.chat .m{font-size:14.5px;line-height:1.45;padding:9px 12px;border-radius:10px;margin:0 0 8px;max-width:92%}
-.chat .m.bot{background:#fff;border:1px solid #e2e5e9;color:#14171a}
-.chat .m.me{background:#14171a;color:#fff;margin-left:auto}
-.chat .m.wait{color:#767d85;font-style:italic;border-style:dashed}
-.chat .m .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;font:600 14px/1 inherit;padding:10px 14px}
-.chat .m .alt{display:block;margin:6px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:6px;font:600 13px/1.3 inherit;padding:8px 10px;text-align:left}
+.chat .msg{font-size:14.5px;line-height:1.45;padding:9px 12px;border-radius:10px;margin:0 0 8px;max-width:92%;width:fit-content}
+.chat .msg.bot{background:#fff;border:1px solid #e2e5e9;color:#14171a}
+.chat .msg.me{background:#14171a;color:#fff;margin-left:auto}
+.chat .msg.wait{color:#767d85;font-style:italic;border-style:dashed}
+.chat .msg .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:10px 14px}
+.chat .msg .alt{display:block;margin:6px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:6px;font-weight:600;font-family:inherit;font-size:13px;line-height:1.3;padding:8px 10px;text-align:left}
 .chat .hin{display:flex;gap:8px;padding:6px 12px 12px}
-.chat .hin input{flex:1;font:16px/1.3 inherit;padding:11px 12px;border:1px solid #c9ced4;border-radius:6px;-webkit-appearance:none;min-width:0}
+.chat .hin input{flex:1;font-family:inherit;font-size:16px;line-height:1.3;padding:11px 12px;border:1px solid #c9ced4;border-radius:6px;-webkit-appearance:none;min-width:0}
 .chat .hin button{white-space:nowrap}
 .picker{margin-top:26px;padding-top:18px;border-top:1px solid #e2e5e9}
 .picker p.h{font-size:14px;color:#3b4249;margin:0 0 12px}
@@ -186,7 +186,7 @@ main.browse .pick{display:none}
 .m .mt img{width:100%;height:100%;object-fit:cover;display:block}
 .m .t{font-size:12px;font-weight:600;line-height:1.3;color:#3b4249}
 .player.pl{display:flex;align-items:center;justify-content:center;cursor:pointer}
-.player .pb{color:#fff;font:600 16px/1 inherit;background:rgba(255,255,255,.14);padding:14px 22px;border-radius:100px}
+.player .pb{color:#fff;font-weight:600;font-family:inherit;font-size:16px;line-height:1;background:rgba(255,255,255,.14);padding:14px 22px;border-radius:100px}
 .player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:6px;background:#14171a;
  display:block;margin:0 0 12px}
 .summ{font-size:12.5px;color:#767d85;margin:0 0 12px;line-height:1.5}
@@ -194,7 +194,7 @@ main.browse .pick{display:none}
 .fb .note{background:#f7f8fa;border-left:3px solid #c9ced4;padding:8px 12px;font-size:14px;color:#3b4249;
  margin:0 0 8px;white-space:pre-wrap}
 .fb .note small{display:block;color:#98a0a8;font-size:11.5px;margin-top:2px}
-.fb textarea{width:100%;font:15px/1.5 inherit;padding:11px 13px;border:1px solid #c9ced4;border-radius:4px;
+.fb textarea{width:100%;font-family:inherit;font-size:15px;line-height:1.5;padding:11px 13px;border:1px solid #c9ced4;border-radius:4px;
  min-height:70px;resize:vertical;-webkit-appearance:none;margin:0 0 8px}
 .acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .acts button.sec{background:#fff;color:#14171a;border:1px solid #d7dbe0}
@@ -487,7 +487,7 @@ APP_JS = r"""
       }).catch(function(){});
   }
   function bubble(cls, text){
-    var m=document.createElement('div'); m.className='m '+cls; m.textContent=text; hlog.appendChild(m);
+    var m=document.createElement('div'); m.className='msg '+cls; m.textContent=text; hlog.appendChild(m);
     hlog.scrollTop=hlog.scrollHeight; return m;
   }
   function helperSend(){
@@ -612,7 +612,7 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make")
             "<div class=\"ideas\" id=\"ideas\"></div>"
             "<details class=\"chat\" id=\"chat\"><summary>Not sure what to ask? Let the helper write it "
             "for you</summary>"
-            "<div class=\"log\" id=\"hlog\"><div class=\"m bot\">Tell me who the video is for and where "
+            "<div class=\"log\" id=\"hlog\"><div class=\"msg bot\">Tell me who the video is for and where "
             "it will be posted, and I will write the sentence. Or just say \"you choose\".</div></div>"
             "<div class=\"hin\"><input type=\"text\" id=\"hq\" autocomplete=\"off\" "
             "placeholder=\"e.g. something for the parents of my school\">"
