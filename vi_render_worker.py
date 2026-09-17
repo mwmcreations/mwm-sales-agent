@@ -37,6 +37,7 @@ WORKER = os.environ.get("VI_WORKER", "mac-mini")
 EVENT = os.environ.get("VI_EVENT", "VWC26")
 MUSIC_DIR = os.environ.get("VI_MUSIC_DIR", os.path.join(HERE, ".deploy", "vi_music"))
 CACHE_DIR = os.environ.get("VI_CACHE_DIR", os.path.join(HERE, ".deploy", "vi_cache"))
+QUOTES_DIR = os.environ.get("VI_QUOTES_DIR", os.path.join(CACHE_DIR, "quotes"))
 WORK_DIR = os.environ.get("VI_WORK_DIR", os.path.join(HERE, ".deploy", "vi_work"))
 LOG_FILE = os.environ.get("VI_WORKER_LOG", "")
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
@@ -155,7 +156,9 @@ def load_sources():
     reframe = json.load(open(reframe_path)) if os.path.exists(reframe_path) else {}
     library_path = os.path.join(MUSIC_DIR, "library.json")
     library = json.load(open(library_path)) if os.path.exists(library_path) else {"tracks": []}
-    return clips, reframe, library
+    qm_path = os.path.join(src, "quote_moments.json")
+    moments = json.load(open(qm_path)) if os.path.exists(qm_path) else {}
+    return clips, reframe, library, moments
 
 
 def local_search():
@@ -176,28 +179,32 @@ def local_search():
 
 
 # ── one job ────────────────────────────────────────────────────────────────
-def do_job(job, clips, reframe, library, search_fn):
+def do_job(job, clips, reframe, library, search_fn, moments=None):
     import victory_cut as vc
     rid = job["id"]
     ask = (job.get("note") or "").strip()
     items = job.get("items") or []
     requested = [it.get("id", "").split(":", 1)[-1] for it in items if it.get("kind") == "clip"]
-    # interview moments are not cut yet: say so on the card instead of dropping them silently
-    skipped = [(it.get("title") or it.get("quote") or it.get("id") or "")[:120]
-               for it in items if it.get("kind") != "clip"]
+    # interview moments the person picked: the ~30 s piece of the recording each
+    # line was said in lives in CACHE_DIR/quotes (from the ATEM files on MWM_4T)
+    speech, skipped = vc.quote_shots(items, moments or {},
+                                     lambda f: os.path.exists(os.path.join(QUOTES_DIR, f)))
     need = int(round((int(job.get("length_s") or 30) - 0.5) / vc.SHOT_SECONDS))
     pool, by_search = vc.candidates(ask, clips, need, search_fn)
     text = job.get("text") or {}
     plan = vc.plan(ask, pool, requested, library, reframe, job.get("length_s") or 30,
                    recent_music=job.get("recent_music") or [], by_search=by_search,
                    avoid=job.get("recent_clips") or [], seed=int(rid),
-                   lines=text.get("lines") or [], cta=text.get("cta") or "")
-    log("job #%s: %r -> %d shots (%s pool), music %s" % (rid, ask[:60], len(plan["shots"]),
-                                                          plan["pool"], plan.get("music_title")))
+                   lines=text.get("lines") or [], cta=text.get("cta") or "", speech=speech)
+    log("job #%s: %r -> %d shots (%s pool, %d speech, %d picks missing), music %s"
+        % (rid, ask[:60], len(plan["shots"]), plan["pool"], len(speech), len(skipped), plan.get("music_title")))
     os.makedirs(CACHE_DIR, exist_ok=True)
     paths = {}
     t = time.time()
     for s in plan["shots"]:
+        if s.get("kind") == "speech":
+            paths[s["id"]] = os.path.join(QUOTES_DIR, s["file"])
+            continue
         if not s.get("drive_id"):
             raise RuntimeError("clip %s has no Drive id" % s["id"])
         paths[s["id"]] = fetch_drive(s["drive_id"], os.path.join(CACHE_DIR, s["id"] + ".mp4"))
@@ -246,7 +253,7 @@ def prep_media(limit=8):
         return 0
     if not missing:
         return 0
-    clips, reframe, _ = load_sources()
+    clips, reframe, _, _ = load_sources()
     by_id = {c["id"]: c for c in clips}
     os.makedirs(WORK_DIR, exist_ok=True)
     done = 0
@@ -334,7 +341,7 @@ def main():
     with open(lock, "w") as f:
         f.write(str(os.getpid()))
     try:
-        clips = reframe = library = search_fn = None
+        clips = reframe = library = search_fn = moments = None
         done = 0
         while done < MAX_JOBS:
             try:
@@ -348,12 +355,12 @@ def main():
                     prep_media(limit=int(os.environ.get("VI_PREP_PER_PASS", "8")))
                 return 0
             if clips is None:
-                clips, reframe, library = load_sources()
+                clips, reframe, library, moments = load_sources()
                 search_fn = local_search()
                 log("sources: %d clips, reframe for %d, %d tracks" % (len(clips), len(reframe),
                                                                       len(library.get("tracks", []))))
             try:
-                do_job(job, clips, reframe, library, search_fn)
+                do_job(job, clips, reframe, library, search_fn, moments)
             except subprocess.CalledProcessError as e:
                 err = "ffmpeg failed: %s" % ((e.stderr or str(e))[-500:],)
                 log("  job #%s FAILED: %s" % (job["id"], err))

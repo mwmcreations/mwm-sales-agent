@@ -331,6 +331,98 @@ class TestThePlan(unittest.TestCase):
                 self.assertIn(k, s)
 
 
+MOMENTS = json.load(open(os.path.join(HERE, "victory_source", "VWC26", "quote_moments.json"), encoding="utf-8"))
+MOM_Q = {"kind": "quote", "id": "VWC26:ROAM_J24-2_full@498",
+         "quote": "And for you mom, what was really a true reason why you put these girls into Victory Martial Arts?"}
+
+
+class TestInterviewMoments(unittest.TestCase):
+    """Michael, 16 Sep, on Video #4: he picked the mom's line and previewed it;
+    the result did not include it. Now a picked line is a shot, it opens the
+    reel, and a picked QUESTION plays the answer."""
+
+    def test_the_index_covers_the_transcripts(self):
+        self.assertGreater(len(MOMENTS["moments"]), 150)
+        self.assertGreater(len(MOMENTS["quotes"]), 1400)
+        for q in MOMENTS["quotes"].values():
+            self.assertIn(q["moment"], MOMENTS["moments"])
+            m = MOMENTS["moments"][q["moment"]]
+            self.assertLess(q["offset"], m["end"] - m["start"])
+
+    def test_a_picked_question_plays_the_answer(self):
+        shots, missing = vc.quote_shots([MOM_Q], MOMENTS, lambda f: True)
+        self.assertEqual(missing, [])
+        self.assertEqual(len(shots), 1)
+        s = shots[0]
+        self.assertEqual(s["kind"], "speech")
+        self.assertEqual(s["file"], "M_ROAM_J24-2_full_0484.mp4")
+        self.assertEqual(s["in"], 21.0)              # the answer, not the question
+        self.assertGreaterEqual(s["dur"], vc.SPEECH_MIN)
+        self.assertLessEqual(s["dur"], vc.SPEECH_MAX)
+        self.assertLessEqual(s["in"] + s["dur"], 29.0 + 0.01)   # inside the 29 s piece
+        self.assertTrue(s["requested"])
+        self.assertIn("mom", s["title"])
+
+    def test_a_statement_starts_where_it_is_said(self):
+        shots, _ = vc.quote_shots([{"kind": "quote", "id": "VWC26:POD_J24-02_37min@14", "quote": "x"}],
+                                  MOMENTS, lambda f: True)
+        self.assertEqual(shots[0]["in"], 8.0)
+        self.assertGreaterEqual(shots[0]["dur"], vc.SPEECH_MIN)
+
+    def test_a_colliding_id_still_finds_its_line(self):
+        shots, missing = vc.quote_shots([{"kind": "quote", "id": "VWC26:ROAM_J24-2_full@498#2", "quote": "x"}],
+                                        MOMENTS, lambda f: True)
+        self.assertEqual(len(shots), 1)
+
+    def test_missing_recording_is_named_not_dropped_silently(self):
+        shots, missing = vc.quote_shots([MOM_Q, {"kind": "quote", "id": "VWC26:NOPE@1", "quote": "gone"}],
+                                        MOMENTS, lambda f: False)
+        self.assertEqual(shots, [])
+        self.assertEqual(len(missing), 2)
+        self.assertIn("mom", missing[0])
+        self.assertEqual(missing[1], "gone")
+
+    def test_clips_are_not_quotes(self):
+        shots, missing = vc.quote_shots([{"kind": "clip", "id": "VWC26:x"}], MOMENTS, lambda f: True)
+        self.assertEqual((shots, missing), ([], []))
+
+    def test_the_interview_opens_the_reel_and_the_picks_follow(self):
+        speech, _ = vc.quote_shots([MOM_Q], MOMENTS, lambda f: True)
+        p = vc.plan("parents", CLIPS, [CLIPS[3]["id"]], LIBRARY, {}, 30, speech=speech)
+        self.assertEqual(p["shots"][0]["kind"], "speech")
+        self.assertEqual(p["shots"][1]["id"], CLIPS[3]["id"])
+        self.assertEqual(p["shots"][1]["dur"], vc.PICK_SECONDS)
+        total = sum(s["dur"] for s in p["shots"])
+        self.assertLessEqual(total, 30.5)
+        self.assertGreaterEqual(total, 26.0)
+        self.assertEqual(p["speech_seconds"], speech[0]["dur"])
+        json.dumps(p)
+
+    def test_a_long_interview_is_trimmed_to_the_length(self):
+        speech = [{"id": "a", "file": "a.mp4", "kind": "speech", "dur": 12.0, "in": 0, "x": 0.5,
+                   "framed_by": "centre", "requested": True}] * 3
+        p = vc.plan("x", CLIPS, [], LIBRARY, {}, 15, speech=speech)
+        talk = [s for s in p["shots"] if s.get("kind") == "speech"]
+        self.assertEqual(len(talk), 1)
+        self.assertEqual(talk[0]["dur"], 12.0)
+        self.assertLessEqual(sum(s["dur"] for s in p["shots"]), 15.5)
+
+    def test_music_ducks_under_the_talking(self):
+        spans = vc.speech_spans([{"kind": "speech", "dur": 8.0}, {"kind": "speech", "dur": 4.0},
+                                 {"kind": None, "dur": 3.0}, {"kind": "speech", "dur": 5.0}])
+        self.assertEqual(spans, [(0.0, 12.0), (15.0, 20.0)])
+        cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                           speech=spans)
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("[0:a]volume='if(between(t,0.00,12.00),1.00,", fc)
+        self.assertIn("volume='if(between(t,0.00,12.00),%.2f," % vc.SPEECH_MUSIC, fc)
+        self.assertIn(":eval=frame[mus]", fc)
+        self.assertIn("loudnorm", fc)
+        # without speech the mix is what shipped before
+        cmd0 = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None)
+        self.assertIn("[0:a]volume=0.25:eval=frame[nat]", cmd0[cmd0.index("-filter_complex") + 1])
+
+
 if __name__ == "__main__":
     res = unittest.main(verbosity=2, exit=False).result
     print("PATCH142_GATE_RESULT: %s" % ("PASS" if res.wasSuccessful() else "FAIL"))

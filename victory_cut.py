@@ -37,6 +37,10 @@ STORY = ["Training & seminar", "Instructor training", "Competition", "Board brea
 LENGTHS = (15, 30, 60)
 SHOT_SECONDS = 3.0      # a shot the machine chose
 PICK_SECONDS = 5.0      # a shot the person picked
+SPEECH_MAX = 12.0       # an interview moment, at most (ends on a line boundary)
+SPEECH_MIN = 4.0        # never a sound bite shorter than this
+SPEECH_MUSIC = 0.12     # music under someone talking
+BROLL_NAT = 0.25        # natural sound under music elsewhere
 
 FONT_CANDIDATES = [
     os.environ.get("VI_FONT", ""),
@@ -188,29 +192,105 @@ def window_for(clip_id, reframe, t0, dur):
     return 0.5, "centre", start
 
 
+# ── 2b. interview moments ─────────────────────────────────────────────────
+def quote_shots(items, moments_index, have_file, max_s=SPEECH_MAX):
+    """The interview lines the person picked, as "speech" shots. Pure.
+
+    items:          the request's picks (dicts with kind, id, quote/title).
+    moments_index:  victory_source/<event>/quote_moments.json — every transcript
+                    line mapped to a ~30 s piece of the ATEM recording it was
+                    said in (offset inside that piece, its length, whether it
+                    is the interviewer's question, and where the next line
+                    starts).
+    have_file:      moment file name -> True when the worker has that piece.
+
+    A picked QUESTION ("And for you mom, why Victory?") plays the ANSWER: the
+    person picked it because of what came next, so the shot starts at the next
+    line. The shot then runs to a line boundary, at least SPEECH_MIN, at most
+    max_s. Returns (shots, missing): missing are the picks nothing could be
+    found for, in the person's words, for the card.
+    """
+    quotes = (moments_index or {}).get("quotes") or {}
+    moments = (moments_index or {}).get("moments") or {}
+    by_moment = {}
+    for qid, q in quotes.items():
+        by_moment.setdefault(q["moment"], []).append(q)
+    for v in by_moment.values():
+        v.sort(key=lambda q: q["offset"])
+    shots, missing = [], []
+    for it in items or ():
+        if it.get("kind") == "clip":
+            continue
+        label = (it.get("quote") or it.get("title") or it.get("id") or "")[:120]
+        nat = (it.get("id") or "").split(":", 1)[-1]
+        q = quotes.get(nat) or quotes.get(re.sub(r"#\d+$", "", nat))
+        m = moments.get(q["moment"]) if q else None
+        if not q or not m or not have_file(m["file"]):
+            missing.append(label)
+            continue
+        m_len = float(m["end"]) - float(m["start"])
+        start = float(q["next_offset"] if q.get("question") else q["offset"])
+        if start >= m_len - 1.0:                     # the answer is off the end of this piece
+            start = float(q["offset"])
+        end = start
+        for ln in by_moment.get(q["moment"], []):    # run to a line boundary
+            if ln["offset"] < start:
+                continue
+            e = ln["offset"] + float(ln.get("line_dur") or 0)
+            if e - start > max_s:
+                break
+            end = max(end, e)
+            if end - start >= 7.0:
+                break
+        end = max(end, start + SPEECH_MIN)
+        end = min(end, start + max_s, m_len)
+        dur = round(end - start, 2)
+        if dur < 2.0:
+            missing.append(label)
+            continue
+        shots.append({"id": m["file"][:-4] if m["file"].endswith(".mp4") else m["file"],
+                      "file": m["file"], "drive_id": None, "kind": "speech",
+                      "title": label, "quote_id": nat, "session": it.get("session"),
+                      "day": None, "category": "Interview", "priority": "hero",
+                      "in": round(start, 2), "dur": dur, "x": 0.5, "framed_by": "centre",
+                      "requested": True})
+    return shots, missing
+
+
 # ── 3. the plan ────────────────────────────────────────────────────────────
 def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=(), by_search=False,
-         avoid=(), seed=0, lines=(), cta=""):
+         avoid=(), seed=0, lines=(), cta="", speech=()):
     """Everything the render needs, as data. Pure.
-    lines: the person's own sentences to put over the pictures, in order.
-    cta:   the end card ("Enroll today — victoryma.com"); blank = the sign-off."""
+    lines:  the person's own sentences to put over the pictures, in order.
+    cta:    the end card ("Enroll today — victoryma.com"); blank = the sign-off.
+    speech: interview moments from quote_shots(); they open the reel."""
     length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
+    budget = length_s - 0.5
     # THE PERSON'S PICKS LEAD (Michael, 16 Sep: his picks were "buried and
-    # short"). Picked clips come first, in the order picked, at PICK_SECONDS
-    # each; the machine fills whatever time is left at SHOT_SECONDS, in story
-    # order, never repeating a pick.
+    # short"). Interview moments come first, then picked clips in the order
+    # picked at PICK_SECONDS each; the machine fills whatever time is left at
+    # SHOT_SECONDS, in story order, never repeating a pick.
+    speech_out = []
+    for s in speech or ():
+        s = dict(s)
+        room = budget - sum(x["dur"] for x in speech_out)
+        if room < SPEECH_MIN:
+            break
+        s["dur"] = round(min(float(s["dur"]), room), 2)
+        speech_out.append(s)
+    budget -= sum(x["dur"] for x in speech_out)
     by_id = {c["id"]: c for c in cands}
     picks = [by_id[r] for r in requested_ids if r in by_id]
-    if len(picks) * PICK_SECONDS > length_s - 0.5:          # too many picks for the length
-        picks = picks[:max(1, int((length_s - 0.5) // PICK_SECONDS))]
-    remaining = length_s - 0.5 - len(picks) * PICK_SECONDS
+    if len(picks) * PICK_SECONDS > budget:                  # too many picks for the length
+        picks = picks[:max(0 if speech_out else 1, int(budget // PICK_SECONDS))]
+    remaining = budget - len(picks) * PICK_SECONDS
     n_fill = max(0, int(round(remaining / SHOT_SECONDS)))
     fill = []
     if n_fill:
         pool = [c for c in cands if c["id"] not in {p["id"] for p in picks}]
         fill = pick_shots(pool, n_fill, by_search=by_search, avoid=avoid, seed=seed)
     music = pick_music(library, ask, exclude=recent_music)
-    out = []
+    out = list(speech_out)
     for c, dur, req in [(p, PICK_SECONDS, True) for p in picks] + [(f, SHOT_SECONDS, False) for f in fill]:
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
         out.append({"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
@@ -220,8 +300,9 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
                     "dur": dur, "x": x, "framed_by": how, "requested": req})
     lines = [str(x).strip()[:60] for x in (lines or ()) if str(x).strip()][:4]
     return {"ask": ask, "length_s": length_s, "shots": out, "pool": "search" if by_search else "convention",
+            "speech_seconds": round(sum(s["dur"] for s in speech_out), 2),
             "lines": lines, "cta": (cta or "").strip()[:60],
-            "cards": card_plan(length_s, ask, lines, (cta or "").strip()[:60]),
+            "cards": card_plan(length_s, ask, lines, (cta or "").strip()[:60], top=bool(speech_out)),
             "music_id": music["id"] if music else None,
             "music_title": music.get("title") if music else None,
             "music_file": music.get("file") if music else None,
@@ -229,8 +310,11 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             "kinds": sorted({s["category"] for s in out if s.get("category")})}
 
 
-def card_plan(length_s, ask, lines, cta, event_title="Convention 2026"):
+def card_plan(length_s, ask, lines, cta, event_title="Convention 2026", top=False):
     """The cards over the reel, as (big, small, t_in, t_out, y).
+
+    top: the reel opens on someone talking — the head card sits high in the
+    frame (y 0.14) instead of across their face.
 
     No words from the person: the auto title at the head, the sign-off at the
     tail (what shipped on 14 Sep). With words: the head card is the FIRST
@@ -240,8 +324,9 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026"):
     end = float(length_s)
     head, outro = titles_for(ask, event_title)
     cards = []
+    y_head = 0.14 if top else 0.40
     if lines:
-        cards.append((lines[0], "", 0.3, min(3.5, end - 3.5), 0.40))
+        cards.append((lines[0], "", 0.3, min(3.5, end - 3.5), y_head))
         mids = lines[1:]
         if mids:
             span = (end - 3.2) - 3.7          # room between head and tail
@@ -250,7 +335,7 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026"):
                 t0 = 3.7 + i * gap + max(0.0, (gap - 3.0) / 2)
                 cards.append((text, "", round(t0, 2), round(min(t0 + 3.0, end - 3.2), 2), 0.40))
     else:
-        cards.append((head[0], head[1], 0.3, 3.2, 0.40))
+        cards.append((head[0], head[1], 0.3, 3.2, y_head))
     if cta:
         cards.append((cta, event_title, end - 3.0, end, 0.42))
     else:
@@ -312,9 +397,44 @@ def has_filter(ffmpeg, name):
     return _filters_cache[key]
 
 
-def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None):
+def speech_spans(shots):
+    """Where in the finished reel someone is talking: [(t0, t1), ...], from
+    the shots' durations in order (the actual segment lengths, once known)."""
+    spans, t = [], 0.0
+    for s in shots:
+        d = float(s.get("dur") or 0)
+        if s.get("kind") == "speech" and d > 0:
+            if spans and abs(spans[-1][1] - t) < 0.01:
+                spans[-1] = (spans[-1][0], t + d)
+            else:
+                spans.append((t, t + d))
+        t += d
+    return spans
+
+
+def _duck(spans, inside, outside, ramp=0.4):
+    """A volume expression: `inside` while someone is talking, `outside`
+    elsewhere, a short ramp between so the music breathes rather than jumps."""
+    if not spans:
+        return "%.2f" % outside
+    expr = "%.2f" % outside
+    for t0, t1 in reversed(spans):
+        # ramp down to `inside` over [t0-ramp, t0], back up over [t1, t1+ramp]
+        expr = ("if(between(t,%.2f,%.2f),%.2f,"
+                "if(between(t,%.2f,%.2f),%.2f+(%.2f-%.2f)*(t-%.2f)/%.2f,"
+                "if(between(t,%.2f,%.2f),%.2f+(%.2f-%.2f)*(1-(t-%.2f)/%.2f),%s)))"
+                % (t0, t1, inside,
+                   t1, t1 + ramp, inside, outside, inside, t1, ramp,
+                   max(0.0, t0 - ramp), t0, inside, outside, inside, max(0.0, t0 - ramp), ramp, expr))
+    return "'" + expr + "'"
+
+
+def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None,
+              speech=None):
     """cards: optional (head_png, outro_png) paths — transparent 1080x1920
-    pictures of the titles, used when this ffmpeg cannot draw text itself."""
+    pictures of the titles, used when this ffmpeg cannot draw text itself.
+    speech: [(t0, t1)] where an interview moment plays — its own sound is
+    full there and the music ducks under it."""
     end = float(total)
     venc = ["-c:v", encoder] + (["-b:v", "10M", "-allow_sw", "1"] if "videotoolbox" in encoder
                                  else ["-preset", "medium", "-crf", "21"])
@@ -322,12 +442,15 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
     chain = []          # filter_complex parts
     vin = "[0:v]"
     n_in = 1
+    spans = list(speech or ())
+    nat_vol = _duck(spans, 1.0, BROLL_NAT)
     if music:
         cmd += ["-i", music]
-        chain.append("[0:a]volume=0.25[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
-                     "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5[mus];"
+        mus_vol = _duck(spans, SPEECH_MUSIC, 1.0)
+        chain.append("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
+                     "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
                      "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                     "loudnorm=I=-14:TP=-1.5:LRA=11[a]" % (end, end - 1.5))
+                     "loudnorm=I=-14:TP=-1.5:LRA=11[a]" % (nat_vol, end, end - 1.5, mus_vol))
         n_in = 2
     else:
         chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[a]")
@@ -367,7 +490,7 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
            ffprobe="ffprobe", encoder="libx264", event_title="Convention 2026", log=print, cards=None):
     """Run the plan. clip_paths: id -> local file. Returns (out_path, seconds)."""
     os.makedirs(workdir, exist_ok=True)
-    segs, total = [], 0.0
+    segs, total, cut = [], 0.0, []
     for i, s in enumerate(plan_["shots"], 1):
         src = clip_paths[s["id"]]
         width, height, length = probe(ffprobe, src)
@@ -377,7 +500,9 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
                        check=True, capture_output=True, text=True, timeout=600)
         segs.append(dst)
         total += dur
-        log("  seg %02d %-48s in %.1f dur %.1f x %.2f (%s)" % (i, s["id"][:48], s["in"], dur, s["x"], s["framed_by"]))
+        cut.append({"kind": s.get("kind"), "dur": dur})
+        log("  seg %02d %-48s in %.1f dur %.1f x %.2f (%s%s)" % (i, s["id"][:48], s["in"], dur, s["x"],
+                                                                 s["framed_by"], ", speech" if s.get("kind") == "speech" else ""))
     lst = os.path.join(workdir, "list.txt")
     with open(lst, "w") as f:
         for sgm in segs:
@@ -386,7 +511,7 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
     subprocess.run(concat_cmd(ffmpeg, lst, body), check=True, capture_output=True, text=True, timeout=300)
     head, outro = titles_for(plan_["ask"], event_title)
     subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
-                             cards=cards),
+                             cards=cards, speech=speech_spans(cut)),
                    check=True, capture_output=True, text=True, timeout=900)
     return out_path, round(total, 2)
 
