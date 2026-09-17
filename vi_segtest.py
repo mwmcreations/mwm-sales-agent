@@ -49,11 +49,28 @@ def main(paths):
     body = os.path.join(work, "body.mp4")
     r = subprocess.run(vc.concat_cmd(FFMPEG, lp, body), capture_output=True, text=True, timeout=300)
     out.append("concat rc=%d frames=%s" % (r.returncode, frames(body)))
-    # the final pass without cards or music: the same filter chain shape
-    final = os.path.join(work, "final.mp4")
-    cmd = vc.final_cmd(FFMPEG, body, None, final, 4.0 * len(paths), ("A", "B"), ("C", "D"), None, ENCODER)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    out.append("final rc=%d frames=%s err=%s" % (r.returncode, frames(final), (r.stderr or "")[-160:].replace("\n", " ")))
+    # the final pass four ways: bare, with cards, with music, with both —
+    # the worker's real cut has cards and music
+    total = 4.0 * len(paths)
+    pngs = []
+    for k in range(3):
+        png = os.path.join(work, "card%d.png" % k)
+        subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.5:s=1080x1920:d=1,format=rgba",
+                        "-frames:v", "1", png], capture_output=True, text=True, timeout=60)
+        pngs.append(png)
+    cards = [(pngs[0], 0.3, 3.2), (pngs[1], 3.5, 6.0), (pngs[2], total - 3.0, total)]
+    music = None
+    mdir = os.environ.get("VI_MUSIC_DIR", os.path.join(HERE, ".deploy", "vi_music"))
+    if os.path.isdir(mdir):
+        wavs = sorted(f for f in os.listdir(mdir) if f.lower().endswith((".wav", ".mp3", ".m4a")))
+        if wavs:
+            music = os.path.join(mdir, wavs[0])
+    for name, cds, mus in (("bare", None, None), ("cards", cards, None), ("music", None, music), ("cards+music", cards, music)):
+        final = os.path.join(work, "final_%s.mp4" % name.replace("+", "_"))
+        cmd = vc.final_cmd(FFMPEG, body, mus, final, total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cds)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        out.append("final[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-160:].replace("\n", " ")))
+    out.append("music=%s" % (music,))
     out.append("encoder=%s ffmpeg=%s" % (ENCODER, FFMPEG))
     text = "\n".join(out)
     print(text)
