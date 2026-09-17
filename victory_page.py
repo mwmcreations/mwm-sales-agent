@@ -162,6 +162,11 @@ button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .msg .lens button.on{background:#14171a;color:#fff;border-color:#14171a}
 .msg .use{display:block;width:100%;background:#C8102E;color:#fff;border:0;border-radius:8px;font-family:inherit;font-weight:700;font-size:17px;line-height:1;padding:15px 18px;white-space:normal;text-align:center}
 .msg .hint{font-size:12.5px;color:#767d85;margin:8px 0 0}
+.msg .pkg{margin:0 0 10px;padding:10px 12px;background:#f7f8f9;border-radius:8px;font-size:14px}
+.msg .pk{margin:0 0 6px}
+.msg .pk .k{display:block;font-weight:700;color:#767d85;text-transform:uppercase;font-size:11px;letter-spacing:.08em;margin:0 0 2px}
+.msg .pk .ln{font-weight:600;line-height:1.35}
+.msg .pk .then{color:#767d85;font-size:12.5px}
 .msg .alt{display:block;margin:7px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:8px;font-family:inherit;font-weight:600;font-size:13.5px;line-height:1.3;padding:9px 11px;text-align:left;white-space:normal;max-width:100%}
 .msg .ideas .lbl{display:block;font-size:12.5px;color:#767d85;margin:10px 0 2px}
 .msg a{color:#12507e;font-weight:600}
@@ -473,8 +478,13 @@ APP_JS = r"""
     var q=document.createElement('div'); q.className='ask'; q.textContent=d.ask; m.appendChild(q);
     if(d.brief){ var b=document.createElement('div'); b.className='brief'; b.innerHTML='<span class="k">Understood as</span> '+esc(d.brief); m.appendChild(b); }
     if(curLines.length || curCta){
-      var x=document.createElement('div'); x.className='brief';
-      x.textContent=(curLines.length?'Words on screen: '+curLines.join(' / '):'')+(curCta?(curLines.length?' · ':'')+'End card: '+curCta:'');
+      var x=document.createElement('div'); x.className='pkg';
+      if(curLines.length){
+        var w=document.createElement('div'); w.className='pk'; w.innerHTML='<span class="k">Words on screen</span>';
+        curLines.forEach(function(t){ var li=document.createElement('div'); li.className='ln'; li.textContent=t; w.appendChild(li); });
+        x.appendChild(w);
+      }
+      if(curCta){ var c=document.createElement('div'); c.className='pk'; c.innerHTML='<span class="k">End card</span> '+esc(curCta)+' <span class="then">then the Victory Martial Arts card</span>'; x.appendChild(c); }
       m.appendChild(x);
     }
     var len=document.createElement('div'); len.className='lens';
@@ -500,7 +510,9 @@ APP_JS = r"""
     .then(function(d){
       hsend.disabled=false; w.remove();
       if(!d.ok){ bubble('bot', d.error || 'I did not catch that; say it again.'); return; }
-      if(d.say){ bubble('bot', d.say); hist.push({role:'bot', text: d.say + (d.ask ? ' [proposed: '+d.ask+']' : '')}); }
+      if(d.say){ bubble('bot', d.say); }
+      // our own turn goes back as the object it was, so the next answer keeps the shape
+      hist.push({role:'bot', text: JSON.stringify({say: d.say || '', ask: d.ask || null, lines: d.lines || [], cta: d.cta || null})});
       if(d.remembered){ bubble('bot note', 'Noted for next time: ' + d.remembered); }
       if(d.forgot){ bubble('bot note', 'Forgotten.'); }
       if(d.ask) offer(d);

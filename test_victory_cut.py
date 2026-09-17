@@ -174,12 +174,14 @@ class TestWordsOnScreen(unittest.TestCase):
 
     def test_the_persons_sentences_are_spread_across_the_reel(self):
         cards = vc.card_plan(30, "x", ["Four days.", "Every school.", "One floor."], "Enroll today")
-        self.assertEqual([c[0] for c in cards], ["Four days.", "Every school.", "One floor.", "Enroll today"])
+        self.assertEqual([c[0] for c in cards],
+                         ["Four days.", "Every school.", "One floor.", "Enroll today", "Victory Martial Arts"])
         self.assertEqual(cards[0][2], 0.3)
         self.assertLess(cards[0][3], cards[1][2])          # head ends before the next starts
         self.assertLess(cards[1][3], cards[2][2])
         self.assertLessEqual(cards[2][3], cards[3][2])     # middle ends before the end card
-        self.assertEqual(cards[3][2:4], (27.0, 30.0))
+        self.assertEqual(cards[3][2:4], (24.0, 27.0))      # the call to action…
+        self.assertEqual(cards[4][2:4], (27.0, 30.0))      # …then, always, the Victory card
 
     def test_a_short_reel_with_many_lines_still_fits(self):
         cards = vc.card_plan(15, "x", ["a", "b", "c", "d"], "go")
@@ -191,7 +193,8 @@ class TestWordsOnScreen(unittest.TestCase):
         p = vc.plan("x", CLIPS, [], LIBRARY, {}, 30, lines=["Hello"], cta="Join")
         self.assertEqual(p["lines"], ["Hello"])
         self.assertEqual(p["cta"], "Join")
-        self.assertEqual(p["cards"][-1][0], "Join")
+        self.assertEqual(p["cards"][-2][0], "Join")
+        self.assertEqual(p["cards"][-1][0], "Victory Martial Arts")
 
     def test_many_cards_in_the_ffmpeg_command(self):
         cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,

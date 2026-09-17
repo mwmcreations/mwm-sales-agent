@@ -438,21 +438,23 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026", top=Fals
     head, outro = titles_for(ask, event_title)
     cards = []
     y_head = 0.14 if top else 0.40
+    # the tail: the call to action (if any) and then, always, the Victory card
+    # (Michael, 17 Sep: "finish with a Victory logo")
+    tail_start = end - 6.0 if cta else end - 3.0
     if lines:
-        cards.append((lines[0], "", 0.3, min(3.5, end - 3.5), y_head))
+        cards.append((lines[0], "", 0.3, min(3.5, tail_start - 0.5), y_head))
         mids = lines[1:]
         if mids:
-            span = (end - 3.2) - 3.7          # room between head and tail
+            span = (tail_start - 0.2) - 3.7          # room between head and tail
             gap = span / len(mids)
             for i, text in enumerate(mids):
                 t0 = 3.7 + i * gap + max(0.0, (gap - 3.0) / 2)
-                cards.append((text, "", round(t0, 2), round(min(t0 + 3.0, end - 3.2), 2), 0.40))
+                cards.append((text, "", round(t0, 2), round(min(t0 + 3.0, tail_start - 0.2), 2), 0.40))
     else:
         cards.append((head[0], head[1], 0.3, 3.2, y_head))
     if cta:
-        cards.append((cta, event_title, end - 3.0, end, 0.42))
-    else:
-        cards.append((outro[0], outro[1], end - 3.0, end, 0.42))
+        cards.append((cta, event_title, end - 6.0, end - 3.0, 0.42))
+    cards.append((outro[0], outro[1], end - 3.0, end, 0.42))
     return cards
 
 

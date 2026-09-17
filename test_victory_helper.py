@@ -91,6 +91,47 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(vh.greeting("", None).startswith("Hi. "))
 
 
+class TestThePlaybook(unittest.TestCase):
+    def test_the_model_is_briefed_on_needs_not_shot_lists(self):
+        fake = FakeClaude()
+        vh.chat([{"role": "user", "text": "help me bring people to a free class"}], CLIPS, client=fake)
+        sysm = fake.calls[0]["system"]
+        for phrase in ("WHAT SOLVES WHAT", "free or trial class", "An event", "Keep parents motivated",
+                       "Sell gear", "Victory Martial Arts card", "Never invent a date"):
+            self.assertIn(phrase, sysm)
+
+    def test_our_earlier_turns_go_back_as_answers(self):
+        """A prose turn of ours in the history taught the model to answer in
+        prose: every turn after the first failed (Michael's phone, 17 Sep)."""
+        fake = FakeClaude()
+        vh.chat([{"role": "user", "text": "you choose"},
+                 {"role": "bot", "text": "Training moments, fast. [proposed: A 15-second reel of training, fast.]"},
+                 {"role": "user", "text": "a video for a free class"}], CLIPS, client=fake)
+        m = fake.calls[0]["messages"]
+        self.assertEqual(m[1]["role"], "assistant")
+        d = json.loads(m[1]["content"])
+        self.assertEqual(d, {"say": "Training moments, fast.", "ask": "A 15-second reel of training, fast."})
+        self.assertEqual(vh.as_answer('{"say": "kept"}'), '{"say": "kept"}')
+        self.assertIn("ALWAYS answer with ONE JSON object", fake.calls[0]["system"])
+
+    def test_failures_are_kept_for_mwm_to_read(self):
+        class Prose:
+            def __init__(self):
+                self.messages = self
+
+            def create(self, **kw):
+                class _B:
+                    text = "Sure! Who is it for?"
+
+                class _M:
+                    content = [_B()]
+                return _M()
+        del vh.LAST_ERRORS[:]
+        vh.chat([{"role": "user", "text": "hi"}], CLIPS, client=Prose())
+        self.assertEqual(len(vh.LAST_ERRORS), 1)
+        self.assertIn("unusable answer", vh.LAST_ERRORS[0][1])
+
+
 class TestChat(unittest.TestCase):
     def test_the_model_gets_the_briefing_and_the_history_and_answers_with_a_sentence(self):
         fake = FakeClaude()

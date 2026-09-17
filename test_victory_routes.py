@@ -1393,6 +1393,15 @@ class TestTheHelper(VICase):
         self.assertEqual(self.c.post("/vi/memory/forget", json={"text": "*"}).get_json()["forgot"], 1)
         self.assertEqual(self.c.get("/vi/memory").get_json()["notes"], [])
 
+    def test_mwm_can_read_the_chats_failures(self):
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.assertEqual(self.c.get("/vi/helper/errors").status_code, 401)
+        self.c.get("/vi/logout")
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        d = self.c.get("/vi/helper/errors").get_json()
+        self.assertTrue(d["ok"])
+        self.assertIsInstance(d["errors"], list)
+
     def test_memory_is_mine_alone(self):
         self.store.add_memory("ana@victoryma.com", "school: Victory Winter Garden")
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)

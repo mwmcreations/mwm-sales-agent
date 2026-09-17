@@ -281,6 +281,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             _err("vi_helper", e)
             return jsonify({"ok": False, "error": "the helper is not answering; try again"}), 500
 
+    @app.route("/vi/helper/errors", methods=["GET"])
+    def vi_helper_errors():
+        """The chat's last failures, for MWM: what the model answered when
+        the page had to say 'I lost my train of thought'."""
+        sess = _session()
+        if not _is_admin() and not _is_mwm(sess):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        import victory_helper as vh
+        return jsonify({"ok": True, "errors": [{"at": a, "what": w} for a, w in vh.LAST_ERRORS]})
+
     @app.route("/vi/memory", methods=["GET"])
     def vi_memory():
         """What Victory Intelligence remembers about me — always visible."""

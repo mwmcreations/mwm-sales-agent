@@ -114,13 +114,22 @@ def briefing(records, event_title="Victory World Convention 2026"):
     return "\n".join(lines)
 
 
-PROMPT = """You ARE Victory Intelligence: Victory Martial Arts' own video editor, talking in a chat on its front page. People come here to get a short video made from the convention footage. Your job in the chat: understand what they want, propose the video in one sentence the editor can cut, and answer their questions about the footage. Many will only write "give me a nice video" — that is fine; ask one thing, then propose.
+PROMPT = """You ARE Victory Intelligence: Victory Martial Arts' own video editor and marketing partner, talking in a chat on its front page with school owners and staff. They come with NEEDS, not shot lists: bring in new students, fill a free class, get sign-ups for an event, keep parents motivated so they keep bringing their kids, sell gear, celebrate their champions. Your job: understand the need, decide what video solves it, propose it as a complete package the editor can cut (the footage, the words on screen, the end card), and answer their questions about the footage. Many will only write "give me a nice video" — that is fine; ask one thing, then propose.
 
 You know ONLY what is below. Never promise footage that is not listed. If asked about anything else (other events, other topics, how the software works inside), say kindly that you only know the convention footage and making videos from it.
 
 %s
 
 %s
+
+WHAT SOLVES WHAT (the playbook — choose from it, do not ask the person to)
+- New students / a free or trial class / open house: energetic training, board breaks, kids in action, the crowd; 15 or 30 s, fast. Words on screen: a hook (what a child gets out of it), the offer (free class), how to come. End card: the offer and how to sign up.
+- An event (a tournament, a testing, a seminar, a party): energetic highlights of the same kind of event from the convention; 30 s. Words on screen: the event name, the day and time, the place, bring your friends. End card: the event, the date. If they have not given the day, time or place, ask for them in ONE question before proposing — never invent them.
+- Keep parents motivated / retention / why it is worth it: the candlelight ceremony, belts handed over, parents reacting, a line someone said on camera about perseverance; 30 or 60 s, slow, emotional. Words on screen: one or two lines that speak to a parent. End card: the school's name and a warm line.
+- Sell gear or equipment: competition and training with the gear in use; 15 s, fast. Words on screen: the offer. End card: where to buy.
+- Celebrate results, champions, a promotion: winning moments, belt presentations, the crowd; 15 or 30 s. Words on screen: the names or the achievement, if given.
+- Recruiting instructors / staff pride: instructor training, masters teaching, the team; 30 s, powerful.
+Every video ends on the Victory Martial Arts card; the person does not need to ask for it. The editor cannot add photos, prices or anything that is not footage: everything else is carried by the words on screen and the end card, so write those yourself when the need calls for them — short, plain, no exclamation marks, in the school's own terms (use their school's name if you know it).
 
 HOW TO TALK
 - Plain, warm, short. At most 45 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text. Talk like a good editor, not a form.
@@ -131,7 +140,7 @@ HOW TO TALK
 - If they change something after a proposal (longer, slower, for parents instead, add the candles), propose again with the change made.
 - If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
 - "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
-- "lines": words to show on screen, only if they gave them (up to four short lines); else []. "cta": an end card line, only if they gave one; else null. Never invent these.
+- "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
 MEMORY
@@ -139,7 +148,7 @@ MEMORY
 - "remember": when they state something durable about themselves or their preferences (their school's name, where they post, a usual length or feel, something they never want in a cut, their role), write it as one short fact in their words, e.g. "posts to Instagram and Facebook", "school: Victory Lake Nona". Not a one-off request, not a guess. Otherwise null.
 - "forget": if they ask you to forget something, the words to drop (or "*" for everything); otherwise null. Confirm in "say".
 
-Answer with ONE JSON object and nothing else:
+ALWAYS answer with ONE JSON object and nothing else — every turn, whatever came before:
 {"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": [], "remember": null, "forget": null}"""
 
 
@@ -214,15 +223,43 @@ def parse_answer(text):
             "remember": remember, "forget": forget}
 
 
+def as_answer(text):
+    """An earlier answer of ours, as the JSON it was. A prose turn in the
+    history taught the model to answer in prose — and prose is not an answer
+    the page can use (Michael's phone, 17 Sep 14:56: every turn after the
+    first came back 'I lost my train of thought'). So every assistant turn
+    goes back as an object, even one the page kept as plain words."""
+    t = (text or "").strip()
+    if t.startswith("{"):
+        return t
+    ask = None
+    m = re.search(r"\[proposed:\s*(.+?)\]\s*$", t, re.S)
+    if m:
+        ask = m.group(1).strip()
+        t = t[:m.start()].strip()
+    return json.dumps({"say": t, "ask": ask}, ensure_ascii=False)
+
+
+LAST_ERRORS = []      # (when, what) — the last few failures, for /vi/helper/errors
+ERRORS_KEEP = 12
+
+
+def _note_error(what):
+    LAST_ERRORS.append((time.strftime("%Y-%m-%d %H:%M:%S"), str(what)[:400]))
+    del LAST_ERRORS[:-ERRORS_KEEP]
+
+
 def chat(messages, records, client=None, model=None, event_title="Victory World Convention 2026", person=None):
     """messages: [{"role": "user"|"bot", "text": …}] oldest first, the last one
     from the person. -> {"say", "ask", "ideas"}; never raises."""
     hist = []
     for m in (messages or [])[-MAX_TURNS:]:
         role = "assistant" if (m.get("role") in ("bot", "assistant")) else "user"
-        text = str(m.get("text") or "").strip()[:MAX_CHARS]
+        text = str(m.get("text") or "").strip()[:MAX_CHARS * (2 if role == "assistant" else 1)]
         if not text:
             continue
+        if role == "assistant":
+            text = as_answer(text)
         if hist and hist[-1]["role"] == role:
             hist[-1]["content"] += "\n" + text
         else:
@@ -245,8 +282,10 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         if out:
             return out
         print("[VI] helper: unusable answer: %r" % (text[:300],))
+        _note_error("unusable answer: " + text[:300])
     except Exception as e:
         print("[VI] helper: %r" % (e,))
+        _note_error(repr(e))
     return {"say": "Sorry, I lost my train of thought. Tell me who the video is for and where it will "
                    "be posted, and I will propose one.", "ask": None, "ideas": [], "lines": [], "cta": "",
             "remember": "", "forget": ""}
