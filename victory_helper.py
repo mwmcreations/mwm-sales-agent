@@ -120,6 +120,8 @@ You know ONLY what is below. Never promise footage that is not listed. If asked 
 
 %s
 
+%s
+
 HOW TO TALK
 - Plain, warm, short. At most 45 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text. Talk like a good editor, not a form.
 - If the message already says enough (who or where, and some idea of the footage or the feel), do not ask — propose right away: "ask" filled, "say" a short line of what you chose and why.
@@ -132,8 +134,43 @@ HOW TO TALK
 - "lines": words to show on screen, only if they gave them (up to four short lines); else []. "cta": an end card line, only if they gave one; else null. Never invent these.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
+MEMORY
+- Use what you know about this person: do not ask what they already told you; suggest what fits their school, their audience and their usual length; do not propose footage or music they just had unless they ask. When a memory shapes your proposal, say so in a few words (since you usually post to Instagram…).
+- "remember": when they state something durable about themselves or their preferences (their school's name, where they post, a usual length or feel, something they never want in a cut, their role), write it as one short fact in their words, e.g. "posts to Instagram and Facebook", "school: Victory Lake Nona". Not a one-off request, not a guess. Otherwise null.
+- "forget": if they ask you to forget something, the words to drop (or "*" for everything); otherwise null. Confirm in "say".
+
 Answer with ONE JSON object and nothing else:
-{"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": []}"""
+{"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": [], "remember": null, "forget": null}"""
+
+
+def person_block(person):
+    """ABOUT THIS PERSON — what the chat remembers: who they are, what it has
+    made for them, what they said. Empty for a first visit."""
+    if not person:
+        return "ABOUT THIS PERSON: first visit; nothing remembered yet."
+    lines = ["ABOUT THIS PERSON (%s%s):" % (person.get("name") or "the person",
+                                             ", " + person["school"] if person.get("school") else "")]
+    notes = person.get("notes") or []
+    if notes:
+        lines.append("What they told you before: " + "; ".join(str(n)[:200] for n in notes[:40]) + ".")
+    hist = person.get("history") or []
+    if hist:
+        lines.append("Videos you made for them, newest first:")
+        for h in hist[:10]:
+            bits = [h.get("when") or "", "%ss" % h.get("length") if h.get("length") else "",
+                    h.get("state") or ""]
+            if h.get("music"):
+                bits.append("music: " + h["music"])
+            if h.get("kinds"):
+                bits.append("footage: " + ", ".join(h["kinds"][:4]))
+            line = '- "%s" (%s)' % (str(h.get("ask") or "")[:160], " · ".join(b for b in bits if b))
+            if h.get("feedback"):
+                line += ' — they said: "%s"' % str(h["feedback"])[:160]
+            lines.append(line)
+    else:
+        lines.append("No videos made yet.")
+    return "\n".join(lines)
+
 
 
 def parse_answer(text):
@@ -167,12 +204,17 @@ def parse_answer(text):
     lines = [str(x).strip()[:80] for x in (d.get("lines") or []) if str(x).strip()][:4] if isinstance(d.get("lines"), list) else []
     cta = d.get("cta")
     cta = str(cta).strip()[:60] if cta and str(cta).strip().lower() not in ("null", "none") else ""
+    remember = d.get("remember")
+    remember = str(remember).strip()[:300] if remember and str(remember).strip().lower() not in ("null", "none") else ""
+    forget = d.get("forget")
+    forget = str(forget).strip()[:200] if forget and str(forget).strip().lower() not in ("null", "none") else ""
     if not say and not ask:
         return None
-    return {"say": say, "ask": ask, "ideas": ideas, "lines": lines, "cta": cta}
+    return {"say": say, "ask": ask, "ideas": ideas, "lines": lines, "cta": cta,
+            "remember": remember, "forget": forget}
 
 
-def chat(messages, records, client=None, model=None, event_title="Victory World Convention 2026"):
+def chat(messages, records, client=None, model=None, event_title="Victory World Convention 2026", person=None):
     """messages: [{"role": "user"|"bot", "text": …}] oldest first, the last one
     from the person. -> {"say", "ask", "ideas"}; never raises."""
     hist = []
@@ -196,7 +238,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         model = model or os.environ.get("MODEL_MAIN", "claude-sonnet-4-6")
         msg = client.messages.create(
             model=model, max_tokens=400,
-            system=PROMPT % briefing(records, event_title),
+            system=PROMPT % (briefing(records, event_title), person_block(person)),
             messages=hist)
         text = "".join(getattr(b, "text", "") for b in msg.content)
         out = parse_answer(text)
@@ -206,7 +248,8 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
     except Exception as e:
         print("[VI] helper: %r" % (e,))
     return {"say": "Sorry, I lost my train of thought. Tell me who the video is for and where it will "
-                   "be posted, and I will propose one.", "ask": None, "ideas": [], "lines": [], "cta": ""}
+                   "be posted, and I will propose one.", "ask": None, "ideas": [], "lines": [], "cta": "",
+            "remember": "", "forget": ""}
 
 
 def ideas(records, seed=None, n=IDEAS_N):
@@ -231,3 +274,26 @@ def ideas(records, seed=None, n=IDEAS_N):
         seed = int(time.time() // 3600)
     k = seed % len(pool)
     return (pool[k:] + pool[:k])[:n]
+
+
+def greeting(name, person=None):
+    """The first bubble, before any model call: a returning person is greeted
+    as one. Plain text; the page escapes it."""
+    hi = "Hi%s." % (", " + name if name else "")
+    hist = (person or {}).get("history") or []
+    notes = (person or {}).get("notes") or []
+    if hist:
+        last = hist[0]
+        what = str(last.get("ask") or "").strip().rstrip(".")
+        if what:
+            state = last.get("state") or ""
+            tail = {"approved": " and you approved it", "delivered": " and it went out",
+                    "declined": " and you declined it", "ready": " — it is ready under My videos",
+                    "asked": " — it is in the queue", "rendering": " — cutting it now"}.get(state, "")
+            return ("%s Last time I made you: %s%s. Want something like it, something new, "
+                    "or just say what you need." % (hi, what[:140], tail))
+    if notes:
+        return ("%s I remember a few things about you (%s). Tell me what video you want, or just say "
+                "\"you choose\"." % (hi, "; ".join(str(n) for n in notes[:2])[:120]))
+    return ("%s Tell me what video you want \u2014 who it is for, where it will be posted, which part of "
+            "the weekend \u2014 or just say \"you choose\". I will write it up and cut it." % hi)

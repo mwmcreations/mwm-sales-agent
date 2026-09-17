@@ -116,6 +116,18 @@ DDL = [
            reframe    JSONB,
            added_at   TIMESTAMPTZ DEFAULT now()
        )""",
+    # What Victory Intelligence remembers about a person, in their words
+    # (Michael, 17 Sep: "make sure Victory Intelligence is for real intelligent
+    # and has memory" — persistent). One line per fact; a forgotten line is
+    # marked gone, never rewritten, so a person can always see what was kept.
+    """CREATE TABLE IF NOT EXISTS vi_memory (
+           id      SERIAL PRIMARY KEY,
+           email   TEXT NOT NULL,
+           note    TEXT NOT NULL,
+           at      TIMESTAMPTZ DEFAULT now(),
+           gone    BOOLEAN DEFAULT FALSE
+       )""",
+    "CREATE INDEX IF NOT EXISTS vi_memory_email ON vi_memory (email, gone)",
 ]
 
 # asked -> rendering -> ready -> approved -> delivered, or failed / declined.
@@ -725,3 +737,63 @@ def extra_clips(event_key, with_reframe=False):
     except Exception as e:
         print("[VI] extra_clips failed: %r" % (e,))
         return []
+
+
+# ── memory: what the chat keeps about a person ─────────────────────────────
+MEMORY_MAX = 40
+
+
+def memory_notes(email, limit=MEMORY_MAX):
+    """This person's remembered facts, oldest first, in their words."""
+    pg = _pg()
+    if not pg or not email:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT id, note, at FROM vi_memory WHERE email = %s AND NOT gone
+                    ORDER BY at LIMIT %s""", (email, int(limit)))
+            return [{"id": i, "note": n, "at": at} for i, n, at in cur.fetchall()]
+    except Exception as e:
+        print("[VI] memory_notes failed: %r" % (e,))
+        return []
+
+
+def add_memory(email, note):
+    """Keep one fact. The same fact twice is kept once. Returns the id or None."""
+    pg = _pg()
+    note = (note or "").strip()[:300]
+    if not pg or not email or not note:
+        return None
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT id FROM vi_memory WHERE email = %s AND NOT gone AND lower(note) = lower(%s)",
+                        (email, note))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            cur.execute("INSERT INTO vi_memory (email, note) VALUES (%s, %s) RETURNING id", (email, note))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print("[VI] add_memory failed: %r" % (e,))
+        return None
+
+
+def forget_memory(email, text=None):
+    """Drop what matches text (a word or a phrase, case-insensitive); with no
+    text, everything about this person. Returns how many lines went."""
+    pg = _pg()
+    if not pg or not email:
+        return 0
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            if text and text.strip() and text.strip() != "*":
+                cur.execute("""UPDATE vi_memory SET gone = TRUE
+                                WHERE email = %s AND NOT gone AND note ILIKE %s""",
+                            (email, "%" + text.strip()[:200] + "%"))
+            else:
+                cur.execute("UPDATE vi_memory SET gone = TRUE WHERE email = %s AND NOT gone", (email,))
+            return cur.rowcount or 0
+    except Exception as e:
+        print("[VI] forget_memory failed: %r" % (e,))
+        return 0

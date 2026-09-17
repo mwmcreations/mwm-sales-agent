@@ -56,6 +56,41 @@ class TestBriefing(unittest.TestCase):
         self.assertEqual(vh.ideas([], seed=0), ["A 30-second highlights reel of the whole convention"])
 
 
+class TestMemory(unittest.TestCase):
+    """Michael, 17 Sep: "make sure Victory Intelligence is for real intelligent
+    and has memory" — persistent, per person, in their words."""
+    PERSON = {"name": "Michael", "school": "Lake Nona",
+              "notes": ["posts to Instagram and Facebook", "school: Victory Lake Nona"],
+              "history": [{"id": 27, "ask": "A 30-second video for parents of the candlelight ceremony, emotional.",
+                           "length": 30, "state": "approved", "when": "Sep 17, 12:40 PM",
+                           "music": "The Sports", "kinds": ["Candlelight ceremony"], "feedback": "loved it"}]}
+
+    def test_the_model_is_told_who_it_is_talking_to(self):
+        fake = FakeClaude()
+        vh.chat([{"role": "user", "text": "something new"}], CLIPS, client=fake, person=self.PERSON)
+        sysm = fake.calls[0]["system"]
+        self.assertIn("ABOUT THIS PERSON (Michael, Lake Nona)", sysm)
+        self.assertIn("posts to Instagram and Facebook", sysm)
+        self.assertIn("candlelight ceremony", sysm)
+        self.assertIn("music: The Sports", sysm)
+        self.assertIn('they said: "loved it"', sysm)
+        self.assertIn('"remember"', sysm)
+        # and a first visit says so, rather than pretending
+        fake = FakeClaude()
+        vh.chat([{"role": "user", "text": "hi"}], CLIPS, client=fake, person=None)
+        self.assertIn("first visit; nothing remembered yet", fake.calls[0]["system"])
+
+    def test_the_greeting_knows_a_returning_person(self):
+        g = vh.greeting("Michael", self.PERSON)
+        self.assertTrue(g.startswith("Hi, Michael. Last time I made you: A 30-second video for parents"), g)
+        self.assertIn("you approved it", g)
+        g = vh.greeting("Michael", {"notes": ["posts to Instagram"], "history": []})
+        self.assertIn("I remember a few things about you (posts to Instagram)", g)
+        g = vh.greeting("Michael", None)
+        self.assertIn("Tell me what video you want", g)
+        self.assertTrue(vh.greeting("", None).startswith("Hi. "))
+
+
 class TestChat(unittest.TestCase):
     def test_the_model_gets_the_briefing_and_the_history_and_answers_with_a_sentence(self):
         fake = FakeClaude()
@@ -95,7 +130,12 @@ class TestChat(unittest.TestCase):
     def test_answers_are_normalised(self):
         self.assertIsNone(vh.parse_answer("no json here"))
         d = vh.parse_answer('Sure! {"say": "ok", "ask": null, "ideas": ["a", "", "b", "c", "d"]}')
-        self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"], "lines": [], "cta": ""})
+        self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"], "lines": [], "cta": "",
+                             "remember": "", "forget": ""})
+        d = vh.parse_answer('{"say": "Noted.", "ask": null, "remember": "posts to Instagram", "forget": "null"}')
+        self.assertEqual((d["remember"], d["forget"]), ("posts to Instagram", ""))
+        d = vh.parse_answer('{"say": "Done.", "ask": null, "forget": "*"}')
+        self.assertEqual(d["forget"], "*")
         d = vh.parse_answer('{"say": "ok", "ask": "x", "lines": ["One", " ", "Two", "Three", "Four", "Five"], "cta": "Enroll today"}')
         self.assertEqual((d["lines"], d["cta"]), (["One", "Two", "Three", "Four"], "Enroll today"))
         d = vh.parse_answer('{"say": "ok", "ask": "None"}')

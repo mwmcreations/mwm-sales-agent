@@ -170,6 +170,12 @@ button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .vichat .hin button{border-radius:10px;padding:15px 18px}
 .vichat p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
 .vichat p.h a{font-weight:600}
+.msg.note{background:#fdf6e7;color:#5c4a1e;font-size:13.5px}
+.mem{margin:12px 0 0;padding:12px 14px;border:1px solid #e2e5e9;border-radius:8px;background:#fafbfc;font-size:14px}
+.mem .mh{font-weight:700;margin:0 0 6px}
+.mem .ml{margin:0 0 4px;color:#3b4249}
+.mem .forget{background:none;color:#12507e;border:0;padding:2px 6px;font-size:12.5px;font-weight:600}
+.mem .forget.all{display:block;margin-top:8px;color:#C8102E;padding:4px 0}
 .picker{margin-top:26px;padding-top:18px;border-top:1px solid #e2e5e9}
 .picker p.h{font-size:14px;color:#3b4249;margin:0 0 12px}
 main.browse .pick{display:none}
@@ -495,6 +501,8 @@ APP_JS = r"""
       hsend.disabled=false; w.remove();
       if(!d.ok){ bubble('bot', d.error || 'I did not catch that; say it again.'); return; }
       if(d.say){ bubble('bot', d.say); hist.push({role:'bot', text: d.say + (d.ask ? ' [proposed: '+d.ask+']' : '')}); }
+      if(d.remembered){ bubble('bot note', 'Noted for next time: ' + d.remembered); }
+      if(d.forgot){ bubble('bot note', 'Forgotten.'); }
       if(d.ask) offer(d);
       if((d.ideas||[]).length){
         var m=bubble('bot'); m.textContent=d.ask?'Or one of these:':'Some ideas:';
@@ -529,6 +537,36 @@ APP_JS = r"""
     hq.addEventListener('keydown', function(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); helperSend(); }});
     hq.addEventListener('input', function(){ hq.style.height=''; hq.style.height=Math.min(140, hq.scrollHeight)+'px'; });
   }
+  // what it remembers about you — always one tap away, always yours to clear
+  var memlink=document.getElementById('memlink'), mem=document.getElementById('mem');
+  function showMem(){
+    fetch('/vi/memory', {credentials:'same-origin'}).then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok) return;
+        mem.innerHTML='';
+        var h=document.createElement('div'); h.className='mh'; h.textContent='What Victory Intelligence remembers about you'; mem.appendChild(h);
+        if(!(d.notes||[]).length && !(d.videos||[]).length){
+          var e=document.createElement('div'); e.className='ml'; e.textContent='Nothing yet. Tell me about your school and where you post, and I will keep it.'; mem.appendChild(e);
+        }
+        (d.notes||[]).forEach(function(n){
+          var l=document.createElement('div'); l.className='ml'; l.textContent='\u2022 '+n;
+          var x=document.createElement('button'); x.type='button'; x.className='forget'; x.textContent='forget';
+          x.onclick=function(){ fetch('/vi/memory/forget', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:n})}).then(showMem); };
+          l.appendChild(x); mem.appendChild(l);
+        });
+        if((d.videos||[]).length){
+          var v=document.createElement('div'); v.className='ml'; v.textContent='Videos: '+d.videos.slice(0,5).map(function(x){ return x.ask; }).join(' · '); mem.appendChild(v);
+        }
+        if((d.notes||[]).length){
+          var all=document.createElement('button'); all.type='button'; all.className='forget all'; all.textContent='Forget everything about me';
+          all.onclick=function(){ fetch('/vi/memory/forget', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:'*'})}).then(showMem); };
+          mem.appendChild(all);
+        }
+        mem.hidden=false;
+      }).catch(function(){});
+  }
+  if(memlink){ memlink.addEventListener('click', function(e){ e.preventDefault(); if(mem.hidden) showMem(); else mem.hidden=true; }); }
+
   // the few who want to choose clips: the picker opens under the chat; the
   // chat still writes the sentence and the picks ride along with it
   if(pickmode){
@@ -588,7 +626,7 @@ APP_JS = r"""
 """
 
 
-def app_page(email, role, event_title="Convention 2026", records=0, mode="make"):
+def app_page(email, role, event_title="Convention 2026", records=0, mode="make", greeting=None):
     """The front door (mode="make"): one box — say what you want — and a
     switch for the few who want to choose clips themselves (Michael, 17 Sep:
     "the majority of the requests are just people requesting with no need to
@@ -609,24 +647,29 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make")
                 "To make a video, go to <a href=\"/vi/\">Make a video</a>.</p>" + picker)
         bar = ""
     else:
-        first = _e(email.split("@")[0].split(".")[0].capitalize()) if email else ""
+        first = email.split("@")[0].split(".")[0].capitalize() if email else ""
+        if not greeting:
+            greeting = ("Hi%s. Tell me what video you want \u2014 who it is for, where it will be posted, "
+                        "which part of the weekend \u2014 or just say \"you choose\". I will write it up and "
+                        "cut it." % (", " + first if first else ""))
         main = (
             "<section class=\"vichat\" id=\"chat\">"
             "<div class=\"log\" id=\"hlog\">"
-            "<div class=\"msg bot\" id=\"hello\">Hi%s. Tell me what video you want &mdash; who it is for, "
-            "where it will be posted, which part of the weekend &mdash; or just say \"you choose\". "
-            "I will write it up and cut it.<div class=\"ideas\" id=\"ideas\"></div></div>"
+            "<div class=\"msg bot\" id=\"hello\">" + _e(greeting) +
+            "<div class=\"ideas\" id=\"ideas\"></div></div>"
             "</div>"
             "<div class=\"hin\"><textarea id=\"hq\" rows=\"1\" autocomplete=\"off\" "
             "placeholder=\"Say what you want\u2026\"></textarea>"
             "<button id=\"hsend\">Send</button></div>"
             "<p class=\"h\">Your videos appear under <strong>My videos</strong> in a few minutes. "
-            "Prefer to pick the clips yourself? <a href=\"#\" id=\"pickmode\">Choose my own clips</a></p>"
+            "Prefer to pick the clips yourself? <a href=\"#\" id=\"pickmode\">Choose my own clips</a> "
+            "&middot; <a href=\"#\" id=\"memlink\">What I remember about you</a></p>"
+            "<div class=\"mem\" id=\"mem\" hidden></div>"
             "</section>"
             "<section id=\"picker\" class=\"picker\" hidden>"
             "<p class=\"h\">Tap <b>+</b> on the clips you want in &mdash; your picks always go in, in your "
             "order. Search for something else, then tell the chat what to make of them.</p>"
-            + picker + "</section>") % (", " + first if first else "")
+            + picker + "</section>")
         bar = ("<div class=\"bar\" id=\"bar\"><div class=\"in\">"
                "<span class=\"n\" id=\"barn\"></span>"
                "<button class=\"clr\" id=\"clr\">Clear</button>"

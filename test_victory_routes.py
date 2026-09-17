@@ -74,6 +74,7 @@ class FakeStore(object):
         self.searches = []
         self.requests = []
         self.feedback = []
+        self.memory = []
         self.media = {}
         self.secret = SIGNING
 
@@ -242,6 +243,29 @@ class FakeStore(object):
                 out.setdefault(f["request_id"], []).append(dict(f))
         return out
 
+    def memory_notes(self, email, limit=40):
+        return [dict(m) for m in self.memory if m["email"] == email and not m["gone"]][:limit]
+
+    def add_memory(self, email, note):
+        note = (note or "").strip()[:300]
+        if not email or not note:
+            return None
+        for m in self.memory:
+            if m["email"] == email and not m["gone"] and m["note"].lower() == note.lower():
+                return m["id"]
+        self.memory.append({"id": len(self.memory) + 1, "email": email, "note": note,
+                            "at": "2026-09-17 13:00:00", "gone": False})
+        return len(self.memory)
+
+    def forget_memory(self, email, text=None):
+        n = 0
+        for m in self.memory:
+            if m["email"] == email and not m["gone"] and (
+                    not text or text.strip() == "*" or text.strip().lower() in m["note"].lower()):
+                m["gone"] = True
+                n += 1
+        return n
+
 
 _REAL = {}
 
@@ -255,7 +279,7 @@ def install_fake_store(fake):
                  "claim_next_request", "finish_request", "set_request_state",
                  "requeue_stale", "queue_counts", "recent_music", "recent_clips",
                  "add_feedback", "list_feedback", "media_have", "media_put", "media_get",
-                 "put_extra_clips", "extra_clips"):
+                 "put_extra_clips", "extra_clips", "memory_notes", "add_memory", "forget_memory"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -1326,6 +1350,58 @@ class TestTheHelper(VICase):
         self.assertEqual(self.c.post("/vi/helper", json={"messages": []}).status_code, 400)
         self.assertEqual(self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "  "}]}).status_code, 400)
         self.assertEqual(self.c.post("/vi/helper", data="junk", content_type="text/plain").status_code, 400)
+
+    def test_it_remembers_and_forgets_and_greets_a_returning_person(self):
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        # a first visit
+        body = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn("Hi, Jim. Tell me what video you want", body)
+        self.assertIn("What I remember about you", body)
+        d = self.c.get("/vi/memory").get_json()
+        self.assertEqual((d["notes"], d["videos"]), ([], []))
+        # the chat learns something durable
+        class Fake(FakeClaude):
+            answer = '{"say": "Noted, Lake Nona on Instagram.", "ask": null, "remember": "school: Victory Lake Nona; posts to Instagram"}'
+        self.c.application.config["VI_HELPER_CLIENT"] = Fake()
+        d = self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "we are Victory Lake Nona, we post on Instagram"}]}).get_json()
+        self.assertEqual(d["remembered"], "school: Victory Lake Nona; posts to Instagram")
+        self.assertEqual(self.c.get("/vi/memory").get_json()["notes"], ["school: Victory Lake Nona; posts to Instagram"])
+        # a video is made; next visit the greeting and the model both know
+        rid = self.store.create_request("jim@victoryma.com", "hq", "", "A 15-second reel of board breaks, fast", [], 15)
+        self.store.set_request_state(rid, "rendering", "w")
+        self.store.finish_request(rid, "ready", drive_id="d", file_name="x.mp4", size=10, seconds=15,
+                                  summary={"shots": [], "music_title": "Sport Hip-Hop", "kinds": ["Board breaks"]})
+        self.store.add_feedback(rid, "jim@victoryma.com", "great, but slower next time")
+        body = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn("Last time I made you: A 15-second reel of board breaks, fast", body)
+        fake = Fake()
+        self.c.application.config["VI_HELPER_CLIENT"] = fake
+        self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "another one"}]})
+        sysm = fake.calls[0]["system"]
+        self.assertIn("ABOUT THIS PERSON (Jim", sysm)
+        self.assertIn("posts to Instagram", sysm)
+        self.assertIn("music: Sport Hip-Hop", sysm)
+        self.assertIn("slower next time", sysm)
+        # forgetting, from the chat and from the panel
+        class Forget(FakeClaude):
+            answer = '{"say": "Forgotten.", "ask": null, "forget": "Instagram"}'
+        self.c.application.config["VI_HELPER_CLIENT"] = Forget()
+        d = self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "forget the instagram thing"}]}).get_json()
+        self.assertEqual(d["forgot"], 1)
+        self.assertEqual(self.c.get("/vi/memory").get_json()["notes"], [])
+        self.store.add_memory("jim@victoryma.com", "likes 60 seconds")
+        self.assertEqual(self.c.post("/vi/memory/forget", json={"text": "*"}).get_json()["forgot"], 1)
+        self.assertEqual(self.c.get("/vi/memory").get_json()["notes"], [])
+
+    def test_memory_is_mine_alone(self):
+        self.store.add_memory("ana@victoryma.com", "school: Victory Winter Garden")
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.assertEqual(self.c.get("/vi/memory").get_json()["notes"], [])
+        self.assertEqual(self.c.get("/vi/memory").status_code, 200)
+        self.c.get("/vi/logout")
+        self.assertEqual(self.c.get("/vi/memory").status_code, 401)
+        self.assertEqual(self.c.post("/vi/memory/forget", json={"text": "*"}).status_code, 401)
+        self.assertEqual(self.store.memory_notes("ana@victoryma.com")[0]["note"], "school: Victory Winter Garden")
 
     def test_too_many_messages_at_once_are_slowed_not_served(self):
         fake = self._fake()

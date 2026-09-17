@@ -141,6 +141,40 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         return va.verify_session(request.cookies.get(COOKIE, ""),
                                  vs.session_secret(create=False))
 
+    def _person(sess, history_n=10):
+        """What the chat remembers about this signed-in person: their notes,
+        their last videos and what they said about them. Persistent (Postgres),
+        per email; MWM sees only its own here too."""
+        email = (sess or {}).get("email") or ""
+        out = {"email": email, "name": _first_name(email), "school": (sess or {}).get("school") or "",
+               "notes": [], "history": []}
+        if not email:
+            return out
+        try:
+            out["notes"] = [m["note"] for m in vs.memory_notes(email)]
+        except Exception as e:
+            _err("person.notes", e)
+        try:
+            rows = vs.list_requests_for(email, limit=history_n)
+            fb = vs.list_feedback([r["id"] for r in rows]) if rows else {}
+            for r in rows:
+                r = _jsonable_request(r)
+                summ = r.get("summary") if isinstance(r.get("summary"), dict) else {}
+                out["history"].append({
+                    "id": r["id"], "ask": r.get("note") or "", "length": r.get("length_s"),
+                    "state": r.get("state"), "when": vp._when(r.get("at")),
+                    "music": (summ or {}).get("music_title"), "kinds": (summ or {}).get("kinds") or [],
+                    "feedback": " / ".join(f["text"] for f in fb.get(r["id"], []))[:300]})
+        except Exception as e:
+            _err("person.history", e)
+        return out
+
+    def _first_name(email):
+        try:
+            return (email or "").split("@")[0].split(".")[0].capitalize()
+        except Exception:
+            return ""
+
     def _base_url():
         # Railway terminates TLS in front of us, so request.url_root can say
         # http:// even though the world reached us over https. A sign-in link
@@ -163,7 +197,10 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             import victory_index as vi
             if vi.corpus_size() == 0:
                 vi.load_corpus()
-            return vp.app_page(sess["email"], sess["role"], records=vi.corpus_size())
+            import victory_helper as vh
+            person = _person(sess)
+            return vp.app_page(sess["email"], sess["role"], records=vi.corpus_size(),
+                               greeting=vh.greeting(person["name"], person))
         except Exception as e:
             _err("vi_home", e)
             return vp.signin_page(message="Something went wrong. Try again.")
@@ -224,7 +261,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             if vi.corpus_size() == 0:
                 vi.load_corpus()
             client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
-            out = vh.chat(msgs[-vh.MAX_TURNS:], vi.snapshot(), client=client)
+            person = _person(sess)
+            out = vh.chat(msgs[-vh.MAX_TURNS:], vi.snapshot(), client=client, person=person)
+            if out.get("forget"):
+                out["forgot"] = vs.forget_memory(sess["email"], out["forget"])
+            if out.get("remember"):
+                if vs.add_memory(sess["email"], out["remember"]):
+                    out["remembered"] = out["remember"]
             if out.get("ask"):
                 # the card under the proposal: how the editor reads it, and
                 # the length it will cut unless the person taps another
@@ -237,6 +280,35 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         except Exception as e:
             _err("vi_helper", e)
             return jsonify({"ok": False, "error": "the helper is not answering; try again"}), 500
+
+    @app.route("/vi/memory", methods=["GET"])
+    def vi_memory():
+        """What Victory Intelligence remembers about me — always visible."""
+        try:
+            sess = _session()
+            if not sess or not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            p = _person(sess)
+            return jsonify({"ok": True, "notes": p["notes"],
+                            "videos": [{"id": h["id"], "ask": h["ask"], "state": h["state"], "when": h["when"]}
+                                       for h in p["history"]]})
+        except Exception as e:
+            _err("vi_memory", e)
+            return jsonify({"ok": False, "error": "could not read"}), 500
+
+    @app.route("/vi/memory/forget", methods=["POST"])
+    def vi_memory_forget():
+        """Drop a remembered fact (text) or all of them (text "*")."""
+        try:
+            sess = _session()
+            if not sess or not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            body = request.get_json(force=True, silent=True) or {}
+            n = vs.forget_memory(sess["email"], str(body.get("text") or "*"))
+            return jsonify({"ok": True, "forgot": n})
+        except Exception as e:
+            _err("vi_memory_forget", e)
+            return jsonify({"ok": False, "error": "could not forget"}), 500
 
     @app.route("/vi/brief", methods=["GET"])
     def vi_brief():
