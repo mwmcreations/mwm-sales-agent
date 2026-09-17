@@ -155,6 +155,8 @@ nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:10
 .m .mt{aspect-ratio:16/9;border-radius:4px;overflow:hidden;background:#e6e9ec;margin:0 0 4px}
 .m .mt img{width:100%;height:100%;object-fit:cover;display:block}
 .m .t{font-size:12px;font-weight:600;line-height:1.3;color:#3b4249}
+.player.pl{display:flex;align-items:center;justify-content:center;cursor:pointer}
+.player .pb{color:#fff;font:600 16px/1 inherit;background:rgba(255,255,255,.14);padding:14px 22px;border-radius:100px}
 .player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:6px;background:#14171a;
  display:block;margin:0 0 12px}
 .summ{font-size:12.5px;color:#767d85;margin:0 0 12px;line-height:1.5}
@@ -605,8 +607,12 @@ def _request_card(r, mine_only):
         h.append("</div>")
     if st == "ready" or (st in ("approved", "delivered") and r.get("result_drive_id")):
         if r.get("preview_url"):
-            h.append("<iframe class=\"player\" src=\"%s\" allow=\"autoplay; fullscreen\" "
-                     "allowfullscreen></iframe>" % _e(r["preview_url"]))
+            # a placeholder, not a live player: twenty Drive players on one
+            # page crashed Safari on Michael's phone (17 Sep, "a problem
+            # repeatedly occurred"). The page opens the one you came for
+            # (#reqN) or the newest; the rest load when tapped.
+            h.append("<div class=\"player pl\" data-src=\"%s\" role=\"button\" tabindex=\"0\">"
+                     "<span class=\"pb\">&#9654;&nbsp; Watch</span></div>" % _e(r["preview_url"]))
         shots = summ.get("shots") or []
         bits = []
         if shots:
@@ -687,6 +693,25 @@ QUEUE_JS = r"""
         .catch(function(){ d.disabled=false; alert('That did not save.'); });
     }
   });
+  // Drive players load one at a time: the card you came for (or the newest
+  // finished one) opens by itself, the others on a tap
+  function openPlayer(el){
+    if(!el || el.querySelector('iframe')) return;
+    var f=document.createElement('iframe');
+    f.className='player'; f.src=el.getAttribute('data-src');
+    f.setAttribute('allow','autoplay; fullscreen'); f.setAttribute('allowfullscreen','');
+    el.parentNode.replaceChild(f, el);
+  }
+  document.addEventListener('click', function(e){
+    var el=e.target.closest('.player.pl'); if(el){ e.preventDefault(); openPlayer(el); }
+  });
+  (function(){
+    var want = (location.hash||'').replace('#','');
+    var card = want ? document.getElementById(want) : null;
+    var el = card ? card.querySelector('.player.pl') : null;
+    if(!el) el = document.querySelector('.player.pl');
+    openPlayer(el);
+  })();
   // while anything is in the queue or cutting, look again every 20 s
   if(document.querySelector('.status.asked, .status.rendering')){
     setTimeout(function(){

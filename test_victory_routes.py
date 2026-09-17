@@ -1201,5 +1201,22 @@ class TestPublishedMoments(VICase):
         self.assertEqual(self.c.post("/vi/moments/publish?secret=%s" % SECRET, json={"event": "VWC26", "clips": []}).status_code, 400)
 
 
+class TestQueuePageIsLightOnAPhone(VICase):
+    """Twenty Drive players on one page crashed Safari on Michael's phone
+    (17 Sep). Finished cuts show a Watch button; the player loads on a tap."""
+
+    def test_finished_cuts_are_placeholders_not_players(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        for i in range(3):
+            rid = self.store.create_request("dev@mwmcreations.com", "mwm", "", "test %d" % i, [], 30)
+            self.store.set_request_state(rid, "rendering", "w")
+            self.store.finish_request(rid, "ready", drive_id="drive%d" % i, file_name="x.mp4", size=10,
+                                      seconds=30, summary={"shots": []})
+        body = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertNotIn("<iframe", body)
+        self.assertEqual(body.count('class="player pl"'), 3)
+        self.assertIn("openPlayer", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
