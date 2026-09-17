@@ -67,6 +67,7 @@ class TestChat(unittest.TestCase):
         call = fake.calls[0]
         self.assertIn("Night of Champions:", call["system"])
         self.assertIn("Never promise footage that is not listed", call["system"])
+        self.assertIn("You ARE Victory Intelligence", call["system"])
         self.assertEqual([m["role"] for m in call["messages"]], ["user", "assistant", "user"])
         self.assertEqual(call["messages"][-1]["content"], "parents, the candles")
 
@@ -94,7 +95,9 @@ class TestChat(unittest.TestCase):
     def test_answers_are_normalised(self):
         self.assertIsNone(vh.parse_answer("no json here"))
         d = vh.parse_answer('Sure! {"say": "ok", "ask": null, "ideas": ["a", "", "b", "c", "d"]}')
-        self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"]})
+        self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"], "lines": [], "cta": ""})
+        d = vh.parse_answer('{"say": "ok", "ask": "x", "lines": ["One", " ", "Two", "Three", "Four", "Five"], "cta": "Enroll today"}')
+        self.assertEqual((d["lines"], d["cta"]), (["One", "Two", "Three", "Four"], "Enroll today"))
         d = vh.parse_answer('{"say": "ok", "ask": "None"}')
         self.assertIsNone(d["ask"])
         # a real line break inside a string, and a stray quote: still an answer

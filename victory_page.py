@@ -148,22 +148,28 @@ details.opts summary{cursor:pointer;color:#12507e;font-weight:600;padding:6px 0}
 .toggle input{width:22px;height:22px;accent-color:#C8102E}
 button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .askbox p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
-.ideas{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px;align-items:center}
-.ideas .lbl{font-size:12.5px;color:#767d85;margin-right:2px}
-.ideas button{background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:14px;font-weight:600;font-family:inherit;font-size:13px;line-height:1.25;
- padding:8px 12px;text-align:left;white-space:normal;max-width:100%}
-details.chat{margin:0 0 16px;border:1px solid #e2e5e9;border-radius:8px;background:#fafbfc}
-details.chat summary{cursor:pointer;color:#12507e;font-weight:600;font-size:14px;padding:11px 14px}
-details.chat .log{padding:0 12px 6px;max-height:320px;overflow:auto}
-.chat .msg{font-size:14.5px;line-height:1.45;padding:9px 12px;border-radius:10px;margin:0 0 8px;max-width:92%;width:fit-content}
-.chat .msg.bot{background:#fff;border:1px solid #e2e5e9;color:#14171a}
-.chat .msg.me{background:#14171a;color:#fff;margin-left:auto}
-.chat .msg.wait{color:#767d85;font-style:italic;border-style:dashed}
-.chat .msg .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;white-space:normal;text-align:left;max-width:100%;font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:10px 14px}
-.chat .msg .alt{display:block;margin:6px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:6px;font-weight:600;font-family:inherit;font-size:13px;line-height:1.3;padding:8px 10px;text-align:left}
-.chat .hin{display:flex;gap:8px;padding:6px 12px 12px}
-.chat .hin input{flex:1;font-family:inherit;font-size:16px;line-height:1.3;padding:11px 12px;border:1px solid #c9ced4;border-radius:6px;-webkit-appearance:none;min-width:0}
-.chat .hin button{white-space:nowrap}
+.vichat{margin:0 0 6px}
+.vichat .log{max-height:min(62vh,640px);overflow:auto;padding:4px 2px 2px;-webkit-overflow-scrolling:touch}
+.msg{font-size:15.5px;line-height:1.5;padding:11px 14px;border-radius:12px;margin:0 0 10px;max-width:92%;width:fit-content}
+.msg.bot{background:#f2f3f5;color:#14171a;border-bottom-left-radius:4px}
+.msg.me{background:#14171a;color:#fff;margin-left:auto;border-bottom-right-radius:4px}
+.msg.wait{color:#767d85;font-style:italic;background:#fafbfc;border:1px dashed #d7dbe0}
+.msg.offer{background:#fff;border:1.5px solid #14171a;max-width:100%;width:100%}
+.msg .ask{font-size:17px;font-weight:650;line-height:1.4;margin:0 0 8px}
+.msg .brief{margin:0 0 8px;font-size:13px}
+.msg .lens{display:flex;gap:8px;margin:4px 0 12px}
+.msg .lens button{background:#fff;color:#3b4249;border:1px solid #d7dbe0;border-radius:100px;font-size:14px;padding:9px 14px}
+.msg .lens button.on{background:#14171a;color:#fff;border-color:#14171a}
+.msg .use{display:block;width:100%;background:#C8102E;color:#fff;border:0;border-radius:8px;font-family:inherit;font-weight:700;font-size:17px;line-height:1;padding:15px 18px;white-space:normal;text-align:center}
+.msg .hint{font-size:12.5px;color:#767d85;margin:8px 0 0}
+.msg .alt{display:block;margin:7px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:8px;font-family:inherit;font-weight:600;font-size:13.5px;line-height:1.3;padding:9px 11px;text-align:left;white-space:normal;max-width:100%}
+.msg .ideas .lbl{display:block;font-size:12.5px;color:#767d85;margin:10px 0 2px}
+.msg a{color:#12507e;font-weight:600}
+.vichat .hin{display:flex;gap:8px;align-items:flex-end;padding:6px 0 0}
+.vichat .hin textarea{flex:1;font-family:inherit;font-size:17px;line-height:1.4;padding:12px 14px;border:1px solid #c9ced4;border-radius:10px;-webkit-appearance:none;min-width:0;resize:none;min-height:48px;max-height:140px}
+.vichat .hin button{border-radius:10px;padding:15px 18px}
+.vichat p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
+.vichat p.h a{font-weight:600}
 .picker{margin-top:26px;padding-top:18px;border-top:1px solid #e2e5e9}
 .picker p.h{font-size:14px;color:#3b4249;margin:0 0 12px}
 main.browse .pick{display:none}
@@ -313,8 +319,7 @@ APP_JS = r"""
       out=document.getElementById('out'), meta=document.getElementById('meta'),
       tabs=document.getElementById('tabs'), more=document.getElementById('more'),
       bar=document.getElementById('bar'), barn=document.getElementById('barn'),
-      note=document.getElementById('note'), pickmode=document.getElementById('pickmode'),
-      picker=document.getElementById('picker'), brief=document.getElementById('brief'),
+      pickmode=document.getElementById('pickmode'), picker=document.getElementById('picker'),
       picked={}, rows=[], shown=0, kind='clip', timer=null, seq=0, PAGE=12, btimer=null;
 
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){
@@ -432,121 +437,121 @@ APP_JS = r"""
     document.getElementById('ask').onclick=function(){ send(); };
   }
 
-  // what the editor understood, as you type — so a misreading shows before
-  // the cut, not after. "15 seconds" in the sentence also sets the length.
-  function showBrief(){
-    if(!note || !brief) return;
-    var text=note.value.trim();
-    if(!text){ brief.textContent=''; return; }
-    fetch('/vi/brief?q=' + encodeURIComponent(text) + '&length=' + chosenLength(), {credentials:'same-origin'})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if(!d.ok || note.value.trim()!==text) return;
-        brief.innerHTML = '<span class="k">Understood as</span> ' + esc(d.text);
-        if(d.length_said){ var r=document.getElementById('l'+d.length); if(r){ r.checked=true; } }
-      }).catch(function(){});
-  }
-  if(note){
-    note.addEventListener('input', function(){ clearTimeout(btimer); btimer=setTimeout(showBrief, 350); });
-    document.querySelectorAll('input[name=len]').forEach(function(r){ r.addEventListener('change', showBrief); });
-  }
-
-  // the switch: only the few who want to choose clips ever see clips
-  if(pickmode){
-    pickmode.addEventListener('change', function(){
-      if(pickmode.checked){
-        picker.hidden=false;
-        if(!q.value.trim() && note.value.trim()) q.value=note.value.trim().slice(0,120);
-        if(q.value.trim()) run();
-        picker.scrollIntoView({behavior:'smooth', block:'start'});
-      } else {
-        picker.hidden=true; picked={}; paint(); painBar();
-      }
-    });
-  }
-
-  // the helper: ready ideas on the page, and a short exchange that ends
-  // with a sentence for the box (Michael, 17 Sep: "a lot of people don't
-  // know how to ask for a video")
+  // ── the chat: Victory Intelligence itself (Michael, 17 Sep: "people nowadays
+  // are used to go to AI and chat with AI … make this 100% interactive")
   var ideas=document.getElementById('ideas'), hlog=document.getElementById('hlog'),
-      hq=document.getElementById('hq'), hsend=document.getElementById('hsend'), hist=[];
-  function useAsk(t){
-    if(!note) return;
-    note.value=t; showBrief();
-    note.scrollIntoView({behavior:'smooth', block:'center'}); note.focus();
+      hq=document.getElementById('hq'), hsend=document.getElementById('hsend'),
+      hist=[], curAsk='', curLen=30, curLines=[], curCta='';
+
+  function bubble(cls, text){
+    var m=document.createElement('div'); m.className='msg '+cls; if(text) m.textContent=text;
+    hlog.appendChild(m); m.scrollIntoView({block:'nearest'}); return m;
   }
-  function ideaButton(t){
-    var b=document.createElement('button'); b.type='button'; b.textContent=t;
-    b.onclick=function(){ useAsk(t); }; return b;
+  function ideaButton(t, cls){
+    var b=document.createElement('button'); b.type='button'; b.className=cls||'alt'; b.textContent=t;
+    b.onclick=function(){ hq.value=t; helperSend(); }; return b;
   }
   if(ideas){
     fetch('/vi/ideas', {credentials:'same-origin'}).then(function(r){ return r.json(); })
       .then(function(d){
         if(!d.ok || !(d.ideas||[]).length) return;
-        var l=document.createElement('span'); l.className='lbl'; l.textContent='Try one:'; ideas.appendChild(l);
-        d.ideas.forEach(function(t){ ideas.appendChild(ideaButton(t)); });
+        var l=document.createElement('div'); l.className='lbl'; l.textContent='Or try one of these:'; ideas.appendChild(l);
+        d.ideas.forEach(function(t){ ideas.appendChild(ideaButton(t, 'alt')); });
       }).catch(function(){});
   }
-  function bubble(cls, text){
-    var m=document.createElement('div'); m.className='msg '+cls; m.textContent=text; hlog.appendChild(m);
-    hlog.scrollTop=hlog.scrollHeight; return m;
+  // the card that offers the cut: the sentence, how the editor reads it,
+  // the length, and the one button that matters
+  function offer(d){
+    curAsk=d.ask; curLen=d.length||30; curLines=d.lines||[]; curCta=d.cta||'';
+    var m=bubble('bot offer');
+    var q=document.createElement('div'); q.className='ask'; q.textContent=d.ask; m.appendChild(q);
+    if(d.brief){ var b=document.createElement('div'); b.className='brief'; b.innerHTML='<span class="k">Understood as</span> '+esc(d.brief); m.appendChild(b); }
+    if(curLines.length || curCta){
+      var x=document.createElement('div'); x.className='brief';
+      x.textContent=(curLines.length?'Words on screen: '+curLines.join(' / '):'')+(curCta?(curLines.length?' · ':'')+'End card: '+curCta:'');
+      m.appendChild(x);
+    }
+    var len=document.createElement('div'); len.className='lens';
+    [15,30,60].forEach(function(n){
+      var c=document.createElement('button'); c.type='button'; c.textContent=n+' s'; c.className=(n===curLen?'on':'');
+      c.onclick=function(){ curLen=n; len.querySelectorAll('button').forEach(function(o){ o.className=''; }); c.className='on'; };
+      len.appendChild(c);
+    });
+    m.appendChild(len);
+    var go=document.createElement('button'); go.type='button'; go.className='use'; go.textContent='Make it';
+    go.onclick=function(){ makeIt(go); }; m.appendChild(go);
+    var ch=document.createElement('div'); ch.className='hint'; ch.textContent='Want something different? Just say so below.'; m.appendChild(ch);
+    m.scrollIntoView({block:'nearest'});
   }
   function helperSend(){
     var t=(hq.value||'').trim(); if(!t) return;
-    hq.value=''; bubble('me', t); hist.push({role:'user', text:t});
+    hq.value=''; hq.style.height='';
+    bubble('me', t); hist.push({role:'user', text:t});
     var w=bubble('bot wait', 'thinking…'); hsend.disabled=true;
     fetch('/vi/helper', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({messages: hist.slice(-8)})})
     .then(function(r){ return r.json(); })
     .then(function(d){
       hsend.disabled=false; w.remove();
-      if(!d.ok){ bubble('bot', d.error || 'The helper is not answering; try again.'); return; }
-      var m=bubble('bot', d.say || ''); hist.push({role:'bot', text: d.say || ''});
-      if(d.ask){
-        var u=document.createElement('button'); u.type='button'; u.className='use';
-        u.textContent='Use this: ' + d.ask; u.onclick=function(){ useAsk(d.ask); }; m.appendChild(u);
+      if(!d.ok){ bubble('bot', d.error || 'I did not catch that; say it again.'); return; }
+      if(d.say){ bubble('bot', d.say); hist.push({role:'bot', text: d.say + (d.ask ? ' [proposed: '+d.ask+']' : '')}); }
+      if(d.ask) offer(d);
+      if((d.ideas||[]).length){
+        var m=bubble('bot'); m.textContent=d.ask?'Or one of these:':'Some ideas:';
+        d.ideas.forEach(function(t){ m.appendChild(ideaButton(t,'alt')); });
       }
-      (d.ideas||[]).forEach(function(t){
-        var a=document.createElement('button'); a.type='button'; a.className='alt'; a.textContent=t;
-        a.onclick=function(){ useAsk(t); }; m.appendChild(a);
-      });
-      hlog.scrollTop=hlog.scrollHeight;
     })
-    .catch(function(){ hsend.disabled=false; w.remove(); bubble('bot', 'The helper is not answering; try again.'); });
+    .catch(function(){ hsend.disabled=false; w.remove(); bubble('bot', 'I am not answering just now; try again in a moment.'); });
+  }
+  function makeIt(btn){
+    if(!curAsk) return;
+    var ids=(picker && !picker.hidden) ? Object.keys(picked) : [];
+    btn.disabled=true; btn.textContent='Sending…';
+    fetch('/vi/request', {method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({note: curAsk, length: curLen, lines: curLines.join('\n'), cta: curCta,
+        items: ids.map(function(i){ return {id:i, title: picked[i].title, kind: picked[i].kind,
+                                             file: picked[i].file, quote: picked[i].quote}; })})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(!d.ok){ btn.disabled=false; btn.textContent='Make it'; bubble('bot', d.error || 'That did not send. Try again in a moment.'); return; }
+      btn.textContent='Sent ✓';
+      var m=bubble('bot', 'On it. Your video will be under My videos in a few minutes — taking you there. ');
+      var a=document.createElement('a'); a.href='/vi/queue#req'+d.id; a.textContent='See it'; m.appendChild(a);
+      hist.push({role:'bot', text:'Sent to the editor: '+curAsk});
+      picked={}; paint(); painBar(); curAsk='';
+      setTimeout(function(){ window.location.href='/vi/queue#req'+d.id; }, 1800);
+    })
+    .catch(function(){ btn.disabled=false; btn.textContent='Make it'; bubble('bot', 'That did not send. Try again in a moment.'); });
   }
   if(hsend){
     hsend.onclick=helperSend;
-    hq.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); helperSend(); }});
+    hq.addEventListener('keydown', function(e){ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); helperSend(); }});
+    hq.addEventListener('input', function(){ hq.style.height=''; hq.style.height=Math.min(140, hq.scrollHeight)+'px'; });
   }
-
-  function chosenLength(){
-    var r=document.querySelector('input[name=len]:checked'); return r ? parseInt(r.value,10) : 30;
+  // the few who want to choose clips: the picker opens under the chat; the
+  // chat still writes the sentence and the picks ride along with it
+  if(pickmode){
+    pickmode.addEventListener('click', function(e){
+      e.preventDefault();
+      picker.hidden=!picker.hidden;
+      pickmode.textContent = picker.hidden ? 'Choose my own clips' : 'Hide the clips';
+      if(!picker.hidden){
+        if(!q.value.trim() && curAsk) q.value=curAsk.slice(0,120);
+        if(q.value.trim()) run();
+        picker.scrollIntoView({behavior:'smooth', block:'start'});
+      } else { picked={}; paint(); painBar(); }
+    });
   }
   function send(){
-    var b=document.getElementById('send');
-    var ids=(pickmode && pickmode.checked) ? Object.keys(picked) : [];
-    if(!ids.length && !note.value.trim()){ note.focus(); return; }
-    b.disabled=true; b.textContent='Sending…';
-    fetch('/vi/request', {method:'POST', credentials:'same-origin',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note: note.value, length: chosenLength(),
-        lines: document.getElementById('lines').value, cta: document.getElementById('cta').value,
-        items: ids.map(function(i){
-        return {id:i, title: picked[i].title, kind: picked[i].kind,
-                file: picked[i].file, quote: picked[i].quote}; })})})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      b.disabled=false; b.textContent='Make it';
-      if(!d.ok){ alert(d.error || 'That did not send. Try again in a moment.'); return; }
-      picked={}; note.value='';
-      document.getElementById('lines').value=''; document.getElementById('cta').value='';
-      paint(); painBar();
-      window.location.href='/vi/queue#req' + d.id;
-    })
-    .catch(function(){ b.disabled=false; b.textContent='Make it';
-      alert('That did not send. Try again in a moment.'); });
+    // the bottom bar's "Make it with these": picks without a sentence yet —
+    // the chat asks what to make of them
+    var n=Object.keys(picked).length;
+    if(curAsk){ var b=document.querySelector('.offer .use:not(:disabled)'); if(b){ makeIt(b); return; } }
+    hq.value='Make a video with the '+n+' clip'+(n===1?'':'s')+' I picked';
+    document.getElementById('chat').scrollIntoView({behavior:'smooth', block:'start'});
+    helperSend();
   }
-  if(document.getElementById('send')) document.getElementById('send').onclick=send;
 
   function run(){
     var term=q.value, mine=++seq;
@@ -604,44 +609,24 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make")
                 "To make a video, go to <a href=\"/vi/\">Make a video</a>.</p>" + picker)
         bar = ""
     else:
+        first = _e(email.split("@")[0].split(".")[0].capitalize()) if email else ""
         main = (
-            "<section class=\"askbox\">"
-            "<h2>What video do you want?</h2>"
-            "<textarea id=\"note\" placeholder=\"A 15-second reel for students, fast pace, from the "
-            "Night of Champions with some board breaks.\"></textarea>"
-            "<div class=\"brief\" id=\"brief\"></div>"
-            "<div class=\"ideas\" id=\"ideas\"></div>"
-            "<details class=\"chat\" id=\"chat\"><summary>Not sure what to ask? Let the helper write it "
-            "for you</summary>"
-            "<div class=\"log\" id=\"hlog\"><div class=\"msg bot\">Tell me who the video is for and where "
-            "it will be posted, and I will write the sentence. Or just say \"you choose\".</div></div>"
-            "<div class=\"hin\"><input type=\"text\" id=\"hq\" autocomplete=\"off\" "
-            "placeholder=\"e.g. something for the parents of my school\">"
-            "<button id=\"hsend\" class=\"sec\">Send</button></div></details>"
-            "<div class=\"len\"><span>How long</span>"
-            "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
-            "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"
-            "<input type=\"radio\" name=\"len\" id=\"l60\" value=\"60\"><label for=\"l60\">60 s</label>"
+            "<section class=\"vichat\" id=\"chat\">"
+            "<div class=\"log\" id=\"hlog\">"
+            "<div class=\"msg bot\" id=\"hello\">Hi%s. Tell me what video you want &mdash; who it is for, "
+            "where it will be posted, which part of the weekend &mdash; or just say \"you choose\". "
+            "I will write it up and cut it.<div class=\"ideas\" id=\"ideas\"></div></div>"
             "</div>"
-            "<details class=\"opts\"><summary>More options &mdash; words on screen, end card</summary>"
-            "<label class=\"lbl2\">Words on screen <span>optional &middot; one sentence per line, "
-            "up to four &middot; the first opens the video</span></label>"
-            "<textarea id=\"lines\" class=\"short\" placeholder=\"Four days. Every school. One floor.\n"
-            "Champions are made here.\"></textarea>"
-            "<label class=\"lbl2\">End card <span>optional &middot; your call to action</span></label>"
-            "<input type=\"text\" id=\"cta\" maxlength=\"60\" placeholder=\"Enroll today \u2014 victoryma.com\">"
-            "</details>"
-            "<label class=\"toggle\"><input type=\"checkbox\" id=\"pickmode\"> "
-            "<span>I want to choose my own clips</span></label>"
-            "<button id=\"send\" class=\"big\">Make it</button>"
-            "<p class=\"h\">The editor finds the footage, cuts it, and it appears under "
-            "<strong>My videos</strong> in a few minutes. Name the moments (candlelight, belts, board "
-            "breaks, the Night of Champions), who it is for, how long, and the feel.</p>"
+            "<div class=\"hin\"><textarea id=\"hq\" rows=\"1\" autocomplete=\"off\" "
+            "placeholder=\"Say what you want\u2026\"></textarea>"
+            "<button id=\"hsend\">Send</button></div>"
+            "<p class=\"h\">Your videos appear under <strong>My videos</strong> in a few minutes. "
+            "Prefer to pick the clips yourself? <a href=\"#\" id=\"pickmode\">Choose my own clips</a></p>"
             "</section>"
             "<section id=\"picker\" class=\"picker\" hidden>"
-            "<p class=\"h\">Clips that match what you wrote. Tap <b>+</b> to include one &mdash; "
-            "your picks always go in, in your order. Change the search to look for something else.</p>"
-            + picker + "</section>")
+            "<p class=\"h\">Tap <b>+</b> on the clips you want in &mdash; your picks always go in, in your "
+            "order. Search for something else, then tell the chat what to make of them.</p>"
+            + picker + "</section>") % (", " + first if first else "")
         bar = ("<div class=\"bar\" id=\"bar\"><div class=\"in\">"
                "<span class=\"n\" id=\"barn\"></span>"
                "<button class=\"clr\" id=\"clr\">Clear</button>"

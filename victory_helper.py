@@ -1,4 +1,4 @@
-"""victory_helper.py — the helper that turns "give me a nice video" into an ask.
+"""victory_helper.py — the chat: Victory Intelligence talking on its own front page.
 
 Michael, 17 Sep: "A lot of people don't know how to ask for a video. They
 would just do something like, Give me a nice video … So what about we have,
@@ -114,22 +114,26 @@ def briefing(records, event_title="Victory World Convention 2026"):
     return "\n".join(lines)
 
 
-PROMPT = """You are the helper inside Victory Intelligence, Victory Martial Arts' video tool. Your one job: help a person say what video they want, in one sentence the editor can use. Many people will only write "give me a nice video" — that is fine; you ask, briefly, and then you write the sentence for them.
+PROMPT = """You ARE Victory Intelligence: Victory Martial Arts' own video editor, talking in a chat on its front page. People come here to get a short video made from the convention footage. Your job in the chat: understand what they want, propose the video in one sentence the editor can cut, and answer their questions about the footage. Many will only write "give me a nice video" — that is fine; ask one thing, then propose.
 
-You know ONLY what is below. Never promise footage that is not listed. If asked about anything else (other events, other topics, how the software works inside), say kindly that you only know the convention footage and this tool.
+You know ONLY what is below. Never promise footage that is not listed. If asked about anything else (other events, other topics, how the software works inside), say kindly that you only know the convention footage and making videos from it.
 
 %s
 
 HOW TO TALK
-- Plain, warm, short. At most 50 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text.
-- Ask at most ONE question at a time, and only what you still need: who will watch it, where it goes (that sets the length), and which part of the weekend or kind of moment. Skip anything they already said.
-- After two exchanges at most, write the sentence. If they say "you choose", choose something strong and say why in a few words.
-- The sentence goes in "ask": one line, ready for the box, in the person's own terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above.
-- The sentence says the footage, the length, the pace, who it is for and the feel — nothing else. Words on screen and an end card are separate boxes under "More options" on the page: suggest them in "say" if they would help, never inside "ask".
-- "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise an empty list.
+- Plain, warm, short. At most 45 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text. Talk like a good editor, not a form.
+- If the message already says enough (who or where, and some idea of the footage or the feel), do not ask — propose right away: "ask" filled, "say" a short line of what you chose and why.
+- Otherwise ask at most ONE question, and only what you still need: who will watch it, where it goes (that sets the length), and which part of the weekend or kind of moment. Skip anything they already said. Never more than two questions in a row — then propose something strong and say why.
+- If they say "you choose", choose something strong and say why in a few words.
+- If they ask what footage there is, answer from the list in one or two sentences, then offer to make something from it.
+- If they change something after a proposal (longer, slower, for parents instead, add the candles), propose again with the change made.
+- If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
+- "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
+- "lines": words to show on screen, only if they gave them (up to four short lines); else []. "cta": an end card line, only if they gave one; else null. Never invent these.
+- "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
 Answer with ONE JSON object and nothing else:
-{"say": "what you say to the person", "ask": "the finished sentence, or null if you still need something", "ideas": []}"""
+{"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": []}"""
 
 
 def parse_answer(text):
@@ -160,9 +164,12 @@ def parse_answer(text):
     ask = d.get("ask")
     ask = str(ask).strip()[:300] if ask and str(ask).strip().lower() not in ("null", "none") else None
     ideas = [str(x).strip()[:200] for x in (d.get("ideas") or []) if str(x).strip()][:3]
+    lines = [str(x).strip()[:80] for x in (d.get("lines") or []) if str(x).strip()][:4] if isinstance(d.get("lines"), list) else []
+    cta = d.get("cta")
+    cta = str(cta).strip()[:60] if cta and str(cta).strip().lower() not in ("null", "none") else ""
     if not say and not ask:
         return None
-    return {"say": say, "ask": ask, "ideas": ideas}
+    return {"say": say, "ask": ask, "ideas": ideas, "lines": lines, "cta": cta}
 
 
 def chat(messages, records, client=None, model=None, event_title="Victory World Convention 2026"):
@@ -198,8 +205,8 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         print("[VI] helper: unusable answer: %r" % (text[:300],))
     except Exception as e:
         print("[VI] helper: %r" % (e,))
-    return {"say": "Sorry, I could not think just now. Tell me who the video is for and where it will "
-                   "be posted, and I will write the sentence for you.", "ask": None, "ideas": []}
+    return {"say": "Sorry, I lost my train of thought. Tell me who the video is for and where it will "
+                   "be posted, and I will propose one.", "ask": None, "ideas": [], "lines": [], "cta": ""}
 
 
 def ideas(records, seed=None, n=IDEAS_N):

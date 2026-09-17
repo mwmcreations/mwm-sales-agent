@@ -225,6 +225,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                 vi.load_corpus()
             client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
             out = vh.chat(msgs[-vh.MAX_TURNS:], vi.snapshot(), client=client)
+            if out.get("ask"):
+                # the card under the proposal: how the editor reads it, and
+                # the length it will cut unless the person taps another
+                import victory_cut as _vc
+                b = _vc.brief_for(out["ask"])
+                out["brief"] = b["text"]
+                out["length"] = b["length"]
             out["ok"] = True
             return jsonify(out), 200
         except Exception as e:

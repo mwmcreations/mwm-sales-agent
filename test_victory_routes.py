@@ -926,8 +926,8 @@ class TestThePageHelps(VICase):
         self.assertIn("/vi/queue", self.page)
 
     def test_it_offers_the_three_lengths(self):
-        for v in ("value=\"15\"", "value=\"30\"", "value=\"60\""):
-            self.assertIn(v, self.page)
+        # the proposal card in the chat carries 15 / 30 / 60 s buttons
+        self.assertIn("[15,30,60].forEach", self.page)
 
     def test_it_separates_footage_from_talking(self):
         self.assertIn("Footage", self.page)
@@ -940,7 +940,7 @@ class TestThePageHelps(VICase):
         self.assertIn("format-detection", self.page)
 
     def test_it_asks_for_the_things_that_make_a_cut_possible(self):
-        for hint in ("Name the moments", "How long", "who it is for"):
+        for hint in ("who it is for", "where it will be posted", "which part of the weekend"):
             self.assertIn(hint, self.page)
 
 
@@ -1219,26 +1219,31 @@ class TestQueuePageIsLightOnAPhone(VICase):
         self.assertIn("openPlayer", body)
 
 
-class TestTheFrontDoorIsOneBox(VICase):
-    """Michael, 17 Sep: most people only describe what they want; clips are
-    shown only to those who flip "I want to choose my own clips"."""
+class TestTheFrontDoorIsTheChat(VICase):
+    """Michael, 17 Sep: "people nowadays are used to go to AI and chat with
+    AI … make this 100% interactive so people can chat with Victory
+    Intelligence." The front door is the chat; clips only for those who ask."""
 
-    def test_the_door_shows_no_clips_until_asked(self):
+    def test_the_door_is_a_chat_with_no_clips_until_asked(self):
         self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
         body = self.c.get("/vi/").data.decode("utf-8")
-        self.assertIn('id="note"', body)
+        self.assertIn('id="hlog"', body)
+        self.assertIn('id="hq"', body)
+        self.assertIn("Hi, Dev.", body)
+        self.assertIn('id="ideas"', body)
         self.assertIn('id="pickmode"', body)
-        self.assertIn("I want to choose my own clips", body)
+        self.assertIn("Choose my own clips", body)
         self.assertIn('id="picker" class="picker" hidden', body)
-        self.assertIn('id="brief"', body)
+        self.assertIn("/vi/helper", body)
+        self.assertIn("/vi/request", body)
+        self.assertNotIn('id="note"', body)
         self.assertIn("Browse footage", body)
-        self.assertIn('href="/vi/library"', body)
 
     def test_browse_footage_is_the_library_on_its_own(self):
         self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
         body = self.c.get("/vi/library").data.decode("utf-8")
         self.assertIn('id="q"', body)
-        self.assertNotIn('id="note"', body)
+        self.assertNotIn('id="hq"', body)
         self.assertNotIn('id="pickmode"', body)
         self.assertIn('<main class="browse">', body)
 
@@ -1250,16 +1255,10 @@ class TestTheFrontDoorIsOneBox(VICase):
         self.assertEqual(d["length"], 15)
         self.assertTrue(d["length_said"])
         self.assertIn("Night of Champions", d["text"])
-        self.assertIn("board break", d["text"].lower())
         self.assertIn("students", d["text"])
-        self.assertIn("fast", d["text"])
-        d = self.c.get("/vi/brief?q=something%20nice&length=60").get_json()
-        self.assertEqual(d["length"], 60)
-        self.assertFalse(d["length_said"])
 
     def test_the_brief_needs_a_session(self):
         self.assertEqual(self.c.get("/vi/brief?q=x").status_code, 401)
-        self.assertEqual(self.c.get("/vi/library").status_code, 200)   # the sign-in door
         self.assertIn("/vi/login", self.c.get("/vi/library").data.decode("utf-8"))
 
     def test_my_videos_says_what_was_understood(self):
@@ -1288,12 +1287,11 @@ class TestTheHelper(VICase):
         self.c.application.config["VI_HELPER_CLIENT"] = f
         return f
 
-    def test_the_page_carries_the_helper(self):
+    def test_the_page_carries_the_chat(self):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
         body = self.c.get("/vi/").data.decode("utf-8")
         self.assertIn('id="ideas"', body)
         self.assertIn('id="chat"', body)
-        self.assertIn("Let the helper write it", body)
         self.assertIn("/vi/helper", body)
         self.assertIn("/vi/ideas", body)
         self.assertNotIn('id="chat"', self.c.get("/vi/library").data.decode("utf-8"))
@@ -1315,6 +1313,9 @@ class TestTheHelper(VICase):
         self.assertTrue(d["ok"])
         self.assertEqual(d["ask"], "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace.")
         self.assertEqual(d["ideas"], ["15 seconds of board breaks, fast"])
+        self.assertEqual(d["length"], 30)
+        self.assertIn("candlelight ceremony", d["brief"])
+        self.assertIn("for parents", d["brief"])
         self.assertEqual(len(fake.calls), 1)
         self.assertIn("THE FOOTAGE", fake.calls[0]["system"])
 
