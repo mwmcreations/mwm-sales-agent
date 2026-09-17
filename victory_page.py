@@ -119,8 +119,9 @@ button:disabled{opacity:.45;cursor:default}
 .done{background:#eef7f2;border-left:3px solid #0f7a4d;padding:16px 18px;margin:0 0 18px;
  font-size:14.5px;color:#14532e}
 footer{padding:18px 24px 24px;background:#14171a;color:#767d85;font-size:12px}
-nav.sub{background:#1f2429;padding:0 24px;display:flex;gap:4px}
-nav.sub a{color:#9aa3ac;text-decoration:none;font-weight:600;font-family:inherit;font-size:13.5px;line-height:1;padding:13px 12px;
+nav.sub{background:#1f2429;padding:0 24px;display:flex;gap:4px;overflow-x:auto}
+@media (max-width:420px){nav.sub{padding:0 8px;gap:0}nav.sub a{padding:13px 9px;font-size:13px}}
+nav.sub a{white-space:nowrap;color:#9aa3ac;text-decoration:none;font-weight:600;font-family:inherit;font-size:13.5px;line-height:1;padding:13px 12px;
  border-bottom:2px solid transparent}
 nav.sub a.on{color:#fff;border-bottom-color:#C8102E}
 nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:100px;font-size:11px;
@@ -158,7 +159,7 @@ details.chat .log{padding:0 12px 6px;max-height:320px;overflow:auto}
 .chat .msg.bot{background:#fff;border:1px solid #e2e5e9;color:#14171a}
 .chat .msg.me{background:#14171a;color:#fff;margin-left:auto}
 .chat .msg.wait{color:#767d85;font-style:italic;border-style:dashed}
-.chat .msg .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:10px 14px}
+.chat .msg .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;white-space:normal;text-align:left;max-width:100%;font-weight:600;font-family:inherit;font-size:14px;line-height:1;padding:10px 14px}
 .chat .msg .alt{display:block;margin:6px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:6px;font-weight:600;font-family:inherit;font-size:13px;line-height:1.3;padding:8px 10px;text-align:left}
 .chat .hin{display:flex;gap:8px;padding:6px 12px 12px}
 .chat .hin input{flex:1;font-family:inherit;font-size:16px;line-height:1.3;padding:11px 12px;border:1px solid #c9ced4;border-radius:6px;-webkit-appearance:none;min-width:0}
