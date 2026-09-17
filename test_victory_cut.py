@@ -59,9 +59,31 @@ class TestVariety(unittest.TestCase):
 
     def test_story_order_opens_on_training_and_closes_on_the_candles(self):
         shots = vc.pick_shots(CLIPS, 10)
-        order = [vc.STORY.index(s["category"]) for s in shots]
+        acts = [s for s in shots if s["category"] != vc.REACTION]
+        order = [vc.STORY.index(s["category"]) for s in acts]
         self.assertEqual(order, sorted(order))
         self.assertEqual(shots[-1]["category"], "Candlelight ceremony")
+        self.assertNotEqual(shots[0]["category"], vc.REACTION)
+
+    def test_reactions_follow_the_moments_they_react_to(self):
+        """Michael's #30 (17 Sep): a 60 s parents reel opened on four seated
+        crowds in a row before any belt. A reaction shot never opens, never
+        closes, and never sits in a block."""
+        pool, by_search, focus = vc.candidates(
+            "A 60-second reel for parents of belt presentations and parent reactions, slow pace, emotional.",
+            CLIPS, 20, search)
+        p = vc.plan("belt presentations and parent reactions, slow, emotional", pool, [], LIBRARY, {}, 60,
+                    by_search=by_search, focus=focus, all_clips=CLIPS, seed=4)
+        kinds = [s["category"] for s in p["shots"]]
+        self.assertIn(vc.REACTION, kinds)
+        self.assertNotEqual(kinds[0], vc.REACTION)
+        self.assertNotEqual(kinds[-1], vc.REACTION)
+        for a, b in zip(kinds, kinds[1:]):
+            self.assertFalse(a == vc.REACTION and b == vc.REACTION, kinds)
+        # the opener is the strongest belt moment on offer
+        belts = [s for s in p["shots"] if s["category"] == "Belt & rank presentation"]
+        best = max(vc.PRIORITY.get(s.get("priority"), 0) for s in belts)
+        self.assertEqual(vc.PRIORITY.get(p["shots"][0].get("priority"), 0), best)
 
     def test_picked_moments_always_go_in(self):
         want = ["VWC26_CROWD_01_kids-cheering_D0062", "VWC26_CROWD_02_kids-arms-raised_D0064",

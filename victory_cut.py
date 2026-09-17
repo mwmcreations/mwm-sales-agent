@@ -150,9 +150,43 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         chosen.append(pick)
         bump(pick)
         pool.remove(pick)
-    chosen.sort(key=lambda c: (STORY.index(c.get("category")) if c.get("category") in STORY else 99,
-                               c.get("day") or 0, c["id"]))
-    return chosen
+    return story_order(chosen)
+
+
+REACTION = "Crowd & parent reactions"
+
+
+def story_order(shots):
+    """The reel's order. Kinds follow STORY (training first, candles last);
+    within the first kind the strongest moment opens the reel. Reactions are
+    woven in AFTER the moments they react to — one every few shots, never
+    first, never last — instead of sitting in a block: Michael's #30 (17 Sep)
+    opened on sixteen seconds of seated parents before a single belt."""
+    def key(c):
+        return (STORY.index(c.get("category")) if c.get("category") in STORY else 99,
+                c.get("day") or 0, c["id"])
+    acts = sorted([c for c in shots if c.get("category") != REACTION], key=key)
+    reacts = sorted([c for c in shots if c.get("category") == REACTION], key=key)
+    if not acts:
+        return reacts
+    first_kind = acts[0].get("category")
+    group = [c for c in acts if c.get("category") == first_kind]
+    opener = max(group, key=lambda c: (PRIORITY.get(c.get("priority"), 0), float(c.get("weight") or 0)))
+    acts.remove(opener)
+    acts.insert(0, opener)
+    if not reacts:
+        return acts
+    out, ri = [], 0
+    slots = max(1, len(acts) - 1)                 # a reaction may follow any action but the last
+    step = max(1, slots // len(reacts))
+    for i, a in enumerate(acts):
+        out.append(a)
+        if ri < len(reacts) and i < len(acts) - 1 and (i + 1) % step == 0:
+            out.append(reacts[ri])
+            ri += 1
+    if ri < len(reacts):                          # more reactions than slots: before the closer
+        out[-1:-1] = reacts[ri:]
+    return out
 
 
 STOP = {"a", "an", "the", "of", "for", "and", "to", "in", "on", "at", "with", "from",
