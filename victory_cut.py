@@ -118,9 +118,12 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         pick = None
         for c in pool:
             if c.get("category") not in uncapped:
-                if fam.get(c.get("category"), 0) >= max_per_family:
+                in_named = c.get("session") in free_sessions
+                # a named evening may repeat a kind twice as often before the
+                # reel leaves that evening for the rest of the convention
+                if fam.get(c.get("category"), 0) >= (max_per_family * 2 if in_named else max_per_family):
                     continue
-                if c.get("session") not in free_sessions and ses.get(c.get("session"), 0) >= max_per_session:
+                if not in_named and ses.get(c.get("session"), 0) >= max_per_session:
                     continue
             pick = c
             break
