@@ -50,7 +50,7 @@ TEMPLATES = [
     ("Crowd & parent reactions", "for families", 30, "happy"),
     ("Victory Dinner", "for the staff", 30, "warm"),
     ("Victory for Life Reception", "for our masters", 30, "emotional"),
-    ("Instructor training", "for instructors", 30, "powerful"),
+    ("Instructor training", "for the team", 30, "powerful"),
     ("Training & seminar", "for new students", 15, "fast"),
     ("interviews", "with words on screen", 30, "inspiring"),
 ]
@@ -121,7 +121,7 @@ You know ONLY what is below. Never promise footage that is not listed. If asked 
 %s
 
 HOW TO TALK
-- Plain, warm, short. At most 50 words per answer. No bullet lists, no headings, no emojis.
+- Plain, warm, short. At most 50 words per answer, on one line. No bullet lists, no headings, no emojis, no double quotes inside your text.
 - Ask at most ONE question at a time, and only what you still need: who will watch it, where it goes (that sets the length), and which part of the weekend or kind of moment. Skip anything they already said.
 - After two exchanges at most, write the sentence. If they say "you choose", choose something strong and say why in a few words.
 - The sentence goes in "ask": one line, ready for the box, in the person's own terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above.
@@ -138,10 +138,21 @@ def parse_answer(text):
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return None
+    d = None
     try:
-        d = json.loads(m.group(0))
+        # strict=False: a real line break inside "say" is not a reason to
+        # throw the whole answer away
+        d = json.loads(m.group(0), strict=False)
     except Exception:
-        return None
+        # the fields one by one, for an answer with a stray quote in it
+        d = {}
+        for key in ("say", "ask"):
+            mm = re.search(r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"' % key, m.group(0), re.S)
+            if mm:
+                d[key] = mm.group(1).replace('\\"', '"').replace("\\n", " ")
+        mi = re.search(r'"ideas"\s*:\s*\[(.*?)\]', m.group(0), re.S)
+        if mi:
+            d["ideas"] = re.findall(r'"((?:[^"\\]|\\.)*)"', mi.group(1))
     if not isinstance(d, dict):
         return None
     say = str(d.get("say") or "").strip()[:600]
@@ -183,6 +194,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         out = parse_answer(text)
         if out:
             return out
+        print("[VI] helper: unusable answer: %r" % (text[:300],))
     except Exception as e:
         print("[VI] helper: %r" % (e,))
     return {"say": "Sorry, I could not think just now. Tell me who the video is for and where it will "

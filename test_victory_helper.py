@@ -97,6 +97,11 @@ class TestChat(unittest.TestCase):
         self.assertEqual(d, {"say": "ok", "ask": None, "ideas": ["a", "b", "c"]})
         d = vh.parse_answer('{"say": "ok", "ask": "None"}')
         self.assertIsNone(d["ask"])
+        # a real line break inside a string, and a stray quote: still an answer
+        d = vh.parse_answer('{"say": "Great.\nHere it is.", "ask": "A 15-second reel, fast", "ideas": []}')
+        self.assertEqual(d["ask"], "A 15-second reel, fast")
+        d = vh.parse_answer('{"say": "Here is "the" one", "ask": "A 15-second reel, fast", "ideas": ["a", "b"]}')
+        self.assertEqual((d["ask"], d["ideas"]), ("A 15-second reel, fast", ["a", "b"]))
 
 
 if __name__ == "__main__":
