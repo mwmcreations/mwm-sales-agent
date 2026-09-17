@@ -340,7 +340,7 @@ class TestAdminGate(VICase):
     def test_search_still_accepts_the_admin_secret(self):
         r = self.c.get("/vi/search?q=candlelight&secret=" + SECRET)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self._j(r)["found"], 34)
+        self.assertEqual(self._j(r)["found"], 50)
 
 
 class TestSignInForm(VICase):
@@ -475,13 +475,13 @@ class TestSigningInIsNotAccess(VICase):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
         r = self.c.get("/vi/search?q=candlelight")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self._j(r)["found"], 34)
+        self.assertEqual(self._j(r)["found"], 50)
 
     def test_a_granted_person_sees_the_app(self):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
         body = self.c.get("/vi/").data.decode("utf-8")
         self.assertIn("Search", body)
-        self.assertIn("2,044", body)
+        self.assertIn("2,087", body)
 
     def test_a_search_is_logged_against_the_person(self):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
@@ -507,7 +507,7 @@ class TestSearchResults(VICase):
         return self._j(self.c.get("/vi/search?" + qs))
 
     def test_matches_the_demo_count(self):
-        self.assertEqual(self._s("candlelight")["found"], 34)
+        self.assertEqual(self._s("candlelight")["found"], 50)
 
     def test_results_carry_their_provenance(self):
         r = self._s("candlelight")["results"][0]
@@ -650,7 +650,7 @@ class TestExternalGrants(VICase):
         self._sign_in_as("victoryhvs@aol.com", va.ROLE_HQ)
         r = self.c.get("/vi/search?q=candlelight")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self._j(r)["found"], 34)
+        self.assertEqual(self._j(r)["found"], 50)
 
     def test_a_stranger_at_the_same_domain_still_gets_nothing(self):
         os.environ[va.CLIENT_EMAIL_ENV] = "1"   # this test is about the door, not the lock
@@ -822,13 +822,13 @@ class TestThumbnailsAndPreviews(VICase):
 
     def test_missing_lists_every_clip_and_interview_piece_until_covered(self):
         m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
-        self.assertEqual(m["total_missing"], 282 + 191)      # clips (111 selects + 171 long-recording moments) + interview pieces
+        self.assertEqual(m["total_missing"], 325 + 191)      # clips (111 selects + 214 long-recording moments) + interview pieces
         self.assertIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
         self.assertIn("M_ROAM_J24-2_full_0484", m["missing"])
         self.assertEqual(self._put("VWC26_CROWD_01_kids-cheering_D0062").status_code, 200)
         self.assertEqual(self._put("M_ROAM_J24-2_full_0484").status_code, 200)
         m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
-        self.assertEqual(m["total_missing"], 282 + 191 - 2)
+        self.assertEqual(m["total_missing"], 325 + 191 - 2)
         self.assertNotIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
         self.assertNotIn("M_ROAM_J24-2_full_0484", m["missing"])
 

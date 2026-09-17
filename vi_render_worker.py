@@ -394,8 +394,8 @@ def main():
             if clips is None:
                 clips, reframe, library, moments = load_sources()
                 search_fn = local_search()
-                log("sources: %d clips, reframe for %d, %d tracks" % (len(clips), len(reframe),
-                                                                      len(library.get("tracks", []))))
+                log("sources: %d clips, reframe for %d, %d tracks; library at %s" % (
+                    len(clips), len(reframe), len(library.get("tracks", [])), CACHE_DIR))
             try:
                 do_job(job, clips, reframe, library, search_fn, moments)
             except subprocess.CalledProcessError as e:

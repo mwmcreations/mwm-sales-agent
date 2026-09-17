@@ -636,7 +636,10 @@ SESSION_PHRASES = {
     "Night of Champions": ("night of champions", "champions night", "saturday night", "awards night",
                            "awards ceremony", "night of champion"),
     "Black Belt Testing": ("black belt testing", "belt testing", "black belt test",
-                                         "high rank testing", "the testing"),
+                           "high rank testing", "the testing"),
+    "Victory Dinner": ("victory dinner", "the dinner", "dinner night", "thursday dinner"),
+    "Victory for Life Reception": ("victory for life", "the reception", "reception night",
+                                   "friday reception"),
 }
 
 

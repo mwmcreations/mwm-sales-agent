@@ -243,6 +243,8 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertEqual(vc.ask_sessions("black belt testing, proud parents"),
                          ["Black Belt Testing"])
         self.assertEqual(vc.ask_sessions("candlelight for parents"), [])
+        self.assertEqual(vc.ask_sessions("highlights of the Victory Dinner"), ["Victory Dinner"])
+        self.assertEqual(vc.ask_sessions("victory for life, emotional"), ["Victory for Life Reception"])
         noc = [c for c in CLIPS if c["session"] == "Night of Champions"]
         self.assertGreaterEqual(len(noc), 100, "the moments cut from the long recordings")
         pool, by_search, focus = vc.candidates("night of champions, epic", CLIPS, 20, search)
