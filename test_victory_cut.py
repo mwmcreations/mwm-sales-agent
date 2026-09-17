@@ -403,6 +403,11 @@ class TestSteadyShots(unittest.TestCase):
         self.assertEqual(vc.steady_in(stable, 6.0, 6.0), (6.0, False))     # nothing long enough: flagged
         self.assertEqual(vc.steady_in(None, 6.0, 4.0), (6.0, True))        # unmeasured: trusted
         self.assertEqual(vc.steady_in([], 6.0, 4.0), (6.0, False))         # measured, nothing steady
+        # a smooth follow (passable) is used when nothing is perfectly still
+        self.assertEqual(vc.steady_in([], 6.0, 4.0, passable=[[2.0, 6.0]]), (4.0, True))
+        shake = [[0.1, 0.2], [0.2, 0.1], [2.0, 5.0], [2.2, 6.0], [9.0, 9.0], [0.3, 0.3], [0.2, 0.2]]
+        self.assertEqual(vc.windows_from_shake(shake, 7.0), [[0.0, 2.0], [5.0, 2.0]])
+        self.assertEqual(vc.windows_from_shake(shake, 7.0, vc.PASSABLE), [[0.0, 4.0], [5.0, 2.0]])
 
     def test_a_shot_lands_in_the_steady_stretch_and_a_shaky_clip_goes_last(self):
         c = dict(CLIPS[0], id="X_shake", seconds=12.0, best_in=8.0, stable=[[0.0, 5.5], [8.5, 3.5]])

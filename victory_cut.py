@@ -288,7 +288,29 @@ def window_for(clip_id, reframe, t0, dur, fixed_in=None):
 
 
 # ── 2b. interview moments ─────────────────────────────────────────────────
-def steady_in(stable, t0, dur, have=None):
+STEADY = (1.5, 4.0)      # jitter, pan (px/frame at 480 px, 25 fps): a still hand
+PASSABLE = (2.5, 8.0)    # a gimbal follow, a walking camera: fine for a shot, not for opening one
+
+
+def windows_from_shake(shake, seconds, limits=STEADY, min_run=2):
+    """Runs of seconds under the limits, from the quality pass's per-second
+    [jitter, pan]: [[start, seconds], …]."""
+    out, start, n = [], None, len(shake or [])
+    jmax, pmax = limits
+    for i, jp in enumerate(list(shake or []) + [[99, 99]]):
+        j, p = jp[0], jp[1]
+        ok = j <= jmax and p <= pmax and i < n
+        if ok and start is None:
+            start = i
+        if not ok and start is not None:
+            if i - start >= min_run:
+                end = float(seconds) if (seconds and i == n) else float(i)
+                out.append([float(start), round(end - start, 2)])
+            start = None
+    return out
+
+
+def steady_in(stable, t0, dur, have=None, passable=None):
     """Move an in-point into a steady stretch of the clip. stable: [[start,
     seconds], …] from the quality pass (vidstabdetect on every library file —
     Michael, 17 Sep: "camera shaky movements where the cameraman is still
@@ -298,6 +320,9 @@ def steady_in(stable, t0, dur, have=None):
     if stable is None:
         return t0, True                      # nothing known: trust the clip
     wins = [(float(a), float(b)) for a, b in stable if float(b) >= dur]
+    if not wins and passable:
+        # no still stretch long enough: a smooth follow will do
+        wins = [(float(a), float(b)) for a, b in passable if float(b) >= dur]
     if not wins:
         return t0, False
     for a, b in wins:
@@ -311,11 +336,12 @@ def steady_in(stable, t0, dur, have=None):
 
 
 def steady_seconds(c):
-    """The longest steady stretch a clip offers, or None when unknown."""
+    """The longest usable stretch a clip offers (still or a smooth follow),
+    or None when unknown."""
     st = c.get("stable")
     if st is None:
         return None
-    return max([float(b) for a, b in st] + [0.0])
+    return max([float(b) for a, b in list(st) + list(c.get("stable_ok") or [])] + [0.0])
 
 
 def quote_shots(items, moments_index, have_file, max_s=SPEECH_MAX):
@@ -453,7 +479,7 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             hi = max(0.0, (have or 99.0) - dur - 0.05)
             fixed = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur, fixed_in=fixed)
-        t0, steady = steady_in(c.get("stable"), t0, dur, have or None)
+        t0, steady = steady_in(c.get("stable"), t0, dur, have or None, passable=c.get("stable_ok"))
         if not steady:
             how = "shaky"
         return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),

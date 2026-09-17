@@ -206,11 +206,16 @@ def load_sources():
         except Exception as e:
             log("quality: could not read %s: %r" % (name, e))
     if quality:
+        import victory_cut as vc
         n = 0
         for c in clips:
             q = quality.get(c["id"])
             if q and q.get("stable") is not None:
-                c["stable"] = q["stable"]
+                if q.get("shake"):
+                    c["stable"] = vc.windows_from_shake(q["shake"], q.get("seconds"), vc.STEADY)
+                    c["stable_ok"] = vc.windows_from_shake(q["shake"], q.get("seconds"), vc.PASSABLE)
+                else:
+                    c["stable"] = q["stable"]
                 n += 1
         log("quality: steady stretches for %d of %d clips" % (n, len(clips)))
     library = json.load(open(library_path)) if os.path.exists(library_path) else {"tracks": []}
