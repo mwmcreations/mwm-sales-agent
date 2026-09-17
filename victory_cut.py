@@ -60,7 +60,7 @@ def font_path():
 
 # ── 1. what to cut ─────────────────────────────────────────────────────────
 def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False,
-               avoid=(), seed=0):
+               avoid=(), seed=0, uncapped=()):
     """Choose n clips. Requested ids always go in, in the order given. Then
     hero > high > the rest, but never more than max_per_family of one kind of
     shot or max_per_session from one session, and the kinds and days are
@@ -71,6 +71,8 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     repeats (Michael, 14 Sep: "the computer tries to go for the same ones").
     seed: a per-request number; equal candidates are shuffled by it, so two
     similar asks do not produce the same reel.
+    uncapped: kinds of moment the ask NAMED ("board breaks") — the caps do not
+    apply to them; an ask for board breaks gets board breaks.
 
     cands: clip dicts with id, category, session, day, priority, weight.
     """
@@ -78,6 +80,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     rnd = random.Random(seed)
     jitter = {c["id"]: rnd.random() for c in cands}
     avoid = set(avoid or ())
+    uncapped = set(uncapped or ())
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -92,10 +95,11 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     taken = set(x["id"] for x in chosen)
     pool = [c for c in cands if c["id"] not in taken]
     while len(chosen) < n and pool:
-        if by_search:      # the index already ranked these for the ask: its order leads
-            pool.sort(key=lambda c: (c["id"] in avoid, fam.get(c.get("category"), 0),
-                                     day.get(c.get("day"), 0),
-                                     -round(float(c.get("weight") or 0), 1), jitter[c["id"]]))
+        if by_search:      # the ask's own footage leads (weight 10 = a hit or a named
+            pool.sort(key=lambda c: (c["id"] in avoid,          # kind); balance inside it
+                                     -round(float(c.get("weight") or 0), 1),
+                                     fam.get(c.get("category"), 0),
+                                     day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
             pool.sort(key=lambda c: (c["id"] in avoid,
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
@@ -103,10 +107,11 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         pick = None
         for c in pool:
-            if fam.get(c.get("category"), 0) >= max_per_family:
-                continue
-            if ses.get(c.get("session"), 0) >= max_per_session:
-                continue
+            if c.get("category") not in uncapped:
+                if fam.get(c.get("category"), 0) >= max_per_family:
+                    continue
+                if ses.get(c.get("session"), 0) >= max_per_session:
+                    continue
             pick = c
             break
         if pick is None:                  # quotas exhausted: take the best left
@@ -259,11 +264,12 @@ def quote_shots(items, moments_index, have_file, max_s=SPEECH_MAX):
 
 # ── 3. the plan ────────────────────────────────────────────────────────────
 def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=(), by_search=False,
-         avoid=(), seed=0, lines=(), cta="", speech=()):
+         avoid=(), seed=0, lines=(), cta="", speech=(), focus=()):
     """Everything the render needs, as data. Pure.
     lines:  the person's own sentences to put over the pictures, in order.
     cta:    the end card ("Enroll today — victoryma.com"); blank = the sign-off.
-    speech: interview moments from quote_shots(); they open the reel."""
+    speech: interview moments from quote_shots(); they open the reel.
+    focus:  kinds of moment the ask named (from candidates()); uncapped."""
     length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
     budget = length_s - 0.5
     # THE PERSON'S PICKS LEAD (Michael, 16 Sep: his picks were "buried and
@@ -278,26 +284,54 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             break
         s["dur"] = round(min(float(s["dur"]), room), 2)
         speech_out.append(s)
-    budget -= sum(x["dur"] for x in speech_out)
+    room = budget - sum(x["dur"] for x in speech_out)
     by_id = {c["id"]: c for c in cands}
     picks = [by_id[r] for r in requested_ids if r in by_id]
-    if len(picks) * PICK_SECONDS > budget:                  # too many picks for the length
-        picks = picks[:max(0 if speech_out else 1, int(budget // PICK_SECONDS))]
-    remaining = budget - len(picks) * PICK_SECONDS
+    if len(picks) * PICK_SECONDS > room:                    # too many picks for the length
+        picks = picks[:max(0 if speech_out else 1, int(room // PICK_SECONDS))]
+    def shot(c, dur, req):
+        # a clip shorter than the shot gives what it has (two convention clips
+        # are 2 s long; 16 Sep self-test #5 came out 1 s short because of one)
+        have = float(c.get("seconds") or 0)
+        if have:
+            dur = round(max(0.5, min(dur, have - 0.05)), 2)
+        x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
+        return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
+                "title": c.get("title"), "session": c.get("session"),
+                "day": c.get("day"), "category": c.get("category"),
+                "priority": c.get("priority"), "in": round(t0, 2),
+                "dur": dur, "x": x, "framed_by": how, "requested": req}
+
+    lead = list(speech_out) + [shot(p, PICK_SECONDS, True) for p in picks]
+    remaining = budget - sum(x["dur"] for x in lead)
     n_fill = max(0, int(round(remaining / SHOT_SECONDS)))
     fill = []
-    if n_fill:
-        pool = [c for c in cands if c["id"] not in {p["id"] for p in picks}]
-        fill = pick_shots(pool, n_fill, by_search=by_search, avoid=avoid, seed=seed)
+    pool = [c for c in cands if c["id"] not in {p["id"] for p in picks}]
+    for extra in range(0, 6):                 # top up while short clips leave a hole
+        if not n_fill + extra or not pool:
+            break
+        # a narrow ask is narrow on purpose: the kind-of-moment cap loosens with the length
+        chosen = pick_shots(pool, n_fill + extra, by_search=by_search, avoid=avoid, seed=seed,
+                            max_per_family=max(2, (n_fill + extra) // 3) if by_search else 2,
+                            uncapped=focus)
+        fill = [shot(f, SHOT_SECONDS, False) for f in chosen]
+        if remaining - sum(x["dur"] for x in fill) < 1.5 or len(chosen) < n_fill + extra:
+            break
+    over = sum(x["dur"] for x in lead + fill) - budget
+    if over > 0.5 and fill:                   # never past the length asked for
+        if fill[-1]["dur"] - over >= 2.0:
+            fill[-1]["dur"] = round(fill[-1]["dur"] - over, 2)
+        else:
+            fill.pop()
+    hole = budget - sum(x["dur"] for x in lead + fill)
+    if hole > 0.2 and fill:                   # short clips left a hole: the fills breathe a little
+        per = hole / len(fill)
+        for f in fill:
+            have = float(by_id.get(f["id"], {}).get("seconds") or 0)
+            cap = (have - f["in"] - 0.05) if have else f["dur"] + per
+            f["dur"] = round(max(f["dur"], min(f["dur"] + per, cap, 4.5)), 2)
     music = pick_music(library, ask, exclude=recent_music)
-    out = list(speech_out)
-    for c, dur, req in [(p, PICK_SECONDS, True) for p in picks] + [(f, SHOT_SECONDS, False) for f in fill]:
-        x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
-        out.append({"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
-                    "title": c.get("title"), "session": c.get("session"),
-                    "day": c.get("day"), "category": c.get("category"),
-                    "priority": c.get("priority"), "in": round(t0, 2),
-                    "dur": dur, "x": x, "framed_by": how, "requested": req})
+    out = lead + fill
     lines = [str(x).strip()[:60] for x in (lines or ()) if str(x).strip()][:4]
     return {"ask": ask, "length_s": length_s, "shots": out, "pool": "search" if by_search else "convention",
             "speech_seconds": round(sum(s["dur"] for s in speech_out), 2),
@@ -478,6 +512,24 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
     return cmd
 
 
+def reanchor_cards(cards, planned, actual):
+    """Cards are timed against the planned length. If the body came out a
+    different length, cards that touch the planned end move with the end;
+    the rest stay, clipped to the new end."""
+    if not cards:
+        return cards
+    shift = actual - planned
+    out = []
+    for png, t_in, t_out in cards:
+        if t_out >= planned - 0.05:
+            t_in, t_out = t_in + shift, t_out + shift
+        t_in = max(0.0, min(t_in, actual))
+        t_out = max(t_in, min(t_out, actual))
+        if t_out - t_in >= 0.5:
+            out.append((png, round(t_in, 2), round(t_out, 2)))
+    return out
+
+
 def probe(ffprobe, path):
     r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
                         "stream=width,height,duration", "-of", "json", path],
@@ -509,6 +561,16 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
             f.write("file '%s'\n" % sgm)
     body = os.path.join(workdir, "body.mp4")
     subprocess.run(concat_cmd(ffmpeg, lst, body), check=True, capture_output=True, text=True, timeout=300)
+    # the body as it really is, not as planned: the sign-off is anchored to
+    # the true end so it always gets its three seconds and its fade
+    try:
+        _, _, actual = probe(ffprobe, body)
+    except Exception:
+        actual = 0.0
+    if actual and abs(actual - total) > 0.05:
+        log("  body is %.2fs, planned %.2fs — cards re-anchored" % (actual, total))
+        cards = reanchor_cards(cards, total, actual)
+        total = actual
     head, outro = titles_for(plan_["ask"], event_title)
     subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
                              cards=cards, speech=speech_spans(cut)),
@@ -517,13 +579,62 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
 
 
 # ── 5. the candidate pool ──────────────────────────────────────────────────
-def candidates(ask, clips, need, search_fn=None):
-    """Which clips the machine may choose from, and whether the index led.
+# The kinds of moment people name, in their words (16 Sep, from the first
+# self-tests: "a reel about the candlelight ceremony for our parents please"
+# came back as belt presentations, because the Library's ranking scores a
+# sentence, not an ask). Firm words name the footage; soft words name the
+# audience and only steer when nothing firmer is said.
+CATEGORY_WORDS = {
+    "Candlelight ceremony": ("candlelight", "candle", "candles"),
+    "Belt & rank presentation": ("belt", "belts", "rank", "ranks", "promotion", "promotions",
+                                 "graduation", "presentation"),
+    "Board breaks": ("board", "boards", "break", "breaks", "breaking"),
+    "Competition": ("competition", "competitions", "compete", "competing", "competitor",
+                    "competitors", "tournament", "sparring", "spar", "fight", "fights",
+                    "fighting", "forms", "weapons", "match", "matches", "kata"),
+    "Winning moments": ("winning", "winners", "winner", "win", "wins", "medal", "medals",
+                        "trophy", "trophies", "champion", "champions", "podium"),
+    "Instructor training": ("instructor", "instructors", "master", "masters", "teaching",
+                            "teach", "teachers"),
+    "Training & seminar": ("training", "seminar", "seminars", "class", "classes", "drill",
+                           "drills", "workout", "practice", "technique", "techniques"),
+    "Crowd & parent reactions": ("crowd", "crowds", "cheering", "cheer", "reactions", "reaction",
+                                 "audience", "celebration", "celebrating", "celebrate",
+                                 "parents", "parent", "mom", "moms", "mother", "mothers",
+                                 "dad", "dads", "father", "fathers", "family", "families"),
+}
+SOFT_WORDS = {"parents", "parent", "mom", "moms", "mother", "mothers", "dad", "dads", "father",
+              "fathers", "family", "families"}
+CEREMONIES = ("Candlelight ceremony", "Belt & rank presentation")
 
-    A narrow ask ("candlelight for the parents") that the index answers with
-    enough footage gets ONLY that footage, in the index's order. A broad ask
-    ("best moments"), a fallback, or a thin answer gets the whole convention,
-    with any hits first. Returns (pool, by_search).
+
+def ask_categories(ask):
+    """The kinds of moment an ask names, as (categories, soft).
+    soft is True when only audience words ("parents") pointed anywhere."""
+    words = set(re.findall(r"[a-z]+", (ask or "").lower()))
+    firm, soft = [], []
+    for cat, ws in CATEGORY_WORDS.items():
+        hit = words.intersection(ws)
+        if not hit:
+            continue
+        (soft if hit <= SOFT_WORDS else firm).append(cat)
+    if not firm and ("ceremony" in words or "ceremonies" in words):
+        firm = list(CEREMONIES)                  # "the ceremony" alone: both of them
+    if firm:
+        return firm, False
+    return soft, bool(soft)
+
+
+def candidates(ask, clips, need, search_fn=None):
+    """Which clips the machine may choose from, and whether the ask led.
+
+    An ask that NAMES a kind of moment ("board breaks", "the candlelight
+    ceremony") gets that footage first, all of it, with the index's hits in
+    front. A narrow ask the index answers with enough footage gets ONLY that
+    footage, in the index's order. A broad ask ("best moments"), a fallback,
+    or a thin answer gets the whole convention, with any hits first.
+    Returns (pool, by_search, focus): focus = the named kinds, which the
+    variety caps leave alone.
     """
     hits, found, fallback, res = [], 0, True, {}
     if search_fn and ask:
@@ -535,19 +646,31 @@ def candidates(ask, clips, need, search_fn=None):
         except Exception as e:
             print("[VI-CUT] search failed, using the whole convention: %r" % (e,))
     by_id = {c["id"]: c for c in clips}
+    cats, soft = ask_categories(ask)
     first = []
     for k, cid in enumerate(hits):
-        if cid in by_id:
+        if cid in by_id and (not cats or by_id[cid].get("category") in cats):
             c = dict(by_id[cid])
             c["weight"] = 10.0 - k * 0.01
             first.append(c)
+    seen = set(c["id"] for c in first)
+    if cats:
+        named = sorted([c for c in clips if c["id"] not in seen and c.get("category") in cats],
+                       key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
+        for c in named:
+            c = dict(c)
+            c["weight"] = 9.5
+            first.append(c)
+            seen.add(c["id"])
+        rest = sorted([c for c in clips if c["id"] not in seen],
+                      key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
+        return first + rest, True, () if soft else tuple(cats)
     # A PEAK ask ("best moments", "iconic") is the index picking highlights for
     # us — a curated slice, but a slice. The variety rule wants the whole
     # convention behind it, so peak asks stay broad with the hits leading.
     peak = bool(res.get("peak"))
     if first and not fallback and not peak and len(first) >= need:
-        return first, True
-    seen = set(c["id"] for c in first)
+        return first, True, ()
     rest = sorted([c for c in clips if c["id"] not in seen],
                   key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
-    return first + rest, False
+    return first + rest, False, ()

@@ -47,7 +47,10 @@ def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
                     best, best_gap = [a, b], gap
             return best or [text]
 
-        dy = 0
+        # lay the lines out first, so a soft dark band can sit behind them:
+        # white words over a white gi and a bright hall were hard to read
+        # (16 Sep self-test #8, "Learn to stand up" over the crowd)
+        layout, dy, widest = [], 0, 0
         for text, font, col in ((big or "", f_big, (255, 255, 255, 255)),
                                 (small or "", f_small, (232, 232, 232, 255))):
             if not text:
@@ -60,11 +63,23 @@ def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
             lines = [text] if width(text, font) <= safe else wrap(text, font)
             for line in lines:
                 tw = width(line, font)
-                x = (W - tw) // 2
-                d.text((x + 3, y + dy + 3), line, font=font, fill=(0, 0, 0, 150))
-                d.text((x, y + dy), line, font=font, fill=col)
+                layout.append((line, font, col, (W - tw) // 2, y + dy, size))
+                widest = max(widest, tw)
                 dy += int(size * 1.25)
             dy += 12
+        if layout:
+            pad_x, pad_y = 44, 28
+            top = layout[0][4] - pad_y
+            bottom = layout[-1][4] + int(layout[-1][5] * 1.2) + pad_y
+            left = max(24, (W - widest) // 2 - pad_x)
+            band = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(band).rounded_rectangle((left, top, W - left, bottom), radius=28,
+                                                   fill=(0, 0, 0, 118))
+            img.alpha_composite(band)
+            d = ImageDraw.Draw(img)
+        for line, font, col, x, yy, size in layout:
+            d.text((x + 3, yy + 3), line, font=font, fill=(0, 0, 0, 150))
+            d.text((x, yy), line, font=font, fill=col)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         _cache[key] = buf.getvalue()

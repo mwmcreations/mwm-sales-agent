@@ -47,7 +47,7 @@ def search(q):
 
 class TestVariety(unittest.TestCase):
     def test_a_broad_ask_moves_across_days_and_kinds(self):
-        pool, by_search = vc.candidates("best moments of the convention", CLIPS, 10, search)
+        pool, by_search, _ = vc.candidates("best moments of the convention", CLIPS, 10, search)
         shots = vc.pick_shots(pool, 10, by_search=by_search)
         days = {s.get("day") for s in shots}
         kinds = {s["category"] for s in shots}
@@ -93,8 +93,9 @@ class TestPicksLead(unittest.TestCase):
         p = vc.plan("parents proud", CLIPS, self.WANT, LIBRARY, {}, 30)
         ids = [s["id"] for s in p["shots"]]
         self.assertEqual(ids[:4], self.WANT)
-        self.assertTrue(all(s["dur"] == vc.PICK_SECONDS and s["requested"] for s in p["shots"][:4]))
-        self.assertTrue(all(s["dur"] == vc.SHOT_SECONDS and not s["requested"] for s in p["shots"][4:]))
+        # (the first pick is a 4.2 s clip: it gives what it has)
+        self.assertTrue(all(s["dur"] >= 4.0 and s["requested"] for s in p["shots"][:4]))
+        self.assertTrue(all(vc.SHOT_SECONDS <= s["dur"] <= 4.5 and not s["requested"] for s in p["shots"][4:]))
         total = sum(s["dur"] for s in p["shots"])
         self.assertTrue(28 <= total <= 31, total)
         self.assertEqual(len(set(ids)), len(ids))
@@ -178,26 +179,66 @@ class TestWordsOnScreen(unittest.TestCase):
 
 class TestTheIndexLeads(unittest.TestCase):
     def test_a_narrow_ask_gets_its_own_footage(self):
-        pool, by_search = vc.candidates("candlelight ceremony", CLIPS, 10, search)
+        pool, by_search, focus = vc.candidates("candlelight ceremony", CLIPS, 10, search)
         self.assertTrue(by_search)
-        shots = vc.pick_shots(pool, 10, by_search=True)
+        self.assertEqual(focus, ("Candlelight ceremony",))
+        shots = vc.pick_shots(pool, 10, by_search=True, uncapped=focus)
         self.assertTrue(all("Candlelight" in s["session"] or "candle" in s["id"].lower()
                             for s in shots), [s["id"] for s in shots])
 
+    def test_a_sentence_still_names_its_footage(self):
+        """16 Sep self-test #5: "a reel about the candlelight ceremony for our
+        parents please" came back as belt presentations. The words that name
+        the footage win over the words around them."""
+        for ask in ("a reel about the candlelight ceremony for our parents please",
+                    "[DEV test] candlelight ceremony for the parents",
+                    "Instagram reel, candlelight, emotional"):
+            pool, by_search, focus = vc.candidates(ask, CLIPS, 10, search)
+            p = vc.plan(ask, pool, [], LIBRARY, {}, 30, by_search=by_search, focus=focus)
+            kinds = {s["category"] for s in p["shots"]}
+            self.assertEqual(kinds, {"Candlelight ceremony"}, (ask, kinds))
+
+    def test_a_named_kind_is_not_capped(self):
+        """"board breaks", 60 s: all nine board clips, then the rest — not two
+        board clips and eighteen of something else."""
+        pool, by_search, focus = vc.candidates("board breaks", CLIPS, 20, search)
+        self.assertEqual(focus, ("Board breaks",))
+        p = vc.plan("board breaks", pool, [], LIBRARY, {}, 60, by_search=by_search, focus=focus)
+        self.assertEqual(sum(1 for s in p["shots"] if s["category"] == "Board breaks"), 9)
+        self.assertEqual(len(p["shots"]), 20)
+        p = vc.plan("board breaks", pool, [], LIBRARY, {}, 15, by_search=by_search, focus=focus)
+        self.assertTrue(all(s["category"] == "Board breaks" for s in p["shots"]))
+
+    def test_audience_words_steer_softly(self):
+        """"parents" alone is who the reel is FOR: crowd and parent reactions
+        lead, but the whole convention still shows."""
+        pool, by_search, focus = vc.candidates("Instagram reels. Parents. Proud.", CLIPS, 10, search)
+        self.assertEqual(focus, ())
+        p = vc.plan("Instagram reels. Parents. Proud.", pool, [], LIBRARY, {}, 30, by_search=by_search, focus=focus)
+        kinds = [s["category"] for s in p["shots"]]
+        self.assertGreaterEqual(kinds.count("Crowd & parent reactions"), 3)
+        self.assertGreaterEqual(len(set(kinds)), 4)
+
+    def test_ceremony_alone_means_both(self):
+        self.assertEqual(vc.ask_categories("the ceremony"), (list(vc.CEREMONIES), False))
+        self.assertEqual(vc.ask_categories("belt ceremony"), (["Belt & rank presentation"], False))
+        self.assertEqual(vc.ask_categories("best moments"), ([], False))
+        self.assertEqual(vc.ask_categories("for the moms"), (["Crowd & parent reactions"], True))
+
     def test_a_broad_ask_gets_the_whole_convention(self):
-        pool, by_search = vc.candidates("best moments", CLIPS, 10, search)
+        pool, by_search, _ = vc.candidates("best moments", CLIPS, 10, search)
         self.assertFalse(by_search)
         self.assertEqual(len(pool), len(CLIPS))
 
     def test_no_index_is_not_an_error(self):
-        pool, by_search = vc.candidates("anything", CLIPS, 10, None)
+        pool, by_search, _ = vc.candidates("anything", CLIPS, 10, None)
         self.assertFalse(by_search)
         self.assertEqual(pool[0]["priority"], "hero")
 
     def test_a_broken_index_falls_back_quietly(self):
         def boom(q):
             raise RuntimeError("no")
-        pool, by_search = vc.candidates("kids", CLIPS, 10, boom)
+        pool, by_search, _ = vc.candidates("kids", CLIPS, 10, boom)
         self.assertFalse(by_search)
         self.assertEqual(len(pool), len(CLIPS))
 
@@ -267,6 +308,29 @@ class TestTheCommands(unittest.TestCase):
         self.assertIn("scale=1080:1920", vf)
         cmd = vc.segment_cmd("ffmpeg", "in.mp4", "out.mp4", 3840, 2160, 0.5, 1.0, 3.0)
         self.assertIn("crop=1215:2160:1313:0", cmd[cmd.index("-vf") + 1])
+
+    def test_short_clips_are_topped_up(self):
+        """A 2 s clip gives 2 s; the reel still reaches its length."""
+        short = [dict(c) for c in CLIPS]
+        p = vc.plan("candlelight", short, ["VWC26_BELT_09_judging-panel_D0155"], LIBRARY, {}, 30)
+        pick = p["shots"][0]
+        self.assertEqual(pick["id"], "VWC26_BELT_09_judging-panel_D0155")
+        self.assertLess(pick["dur"], 2.0)
+        total = sum(s["dur"] for s in p["shots"])
+        self.assertGreaterEqual(total, 28.5)
+        self.assertLessEqual(total, 30.0)
+        for length in (15, 30, 60):
+            p = vc.plan("best moments", CLIPS, [], LIBRARY, {}, length, seed=5)
+            total = sum(s["dur"] for s in p["shots"])
+            self.assertGreaterEqual(total, length - 1.5, (length, total))
+            self.assertLessEqual(total, length, (length, total))
+
+    def test_cards_follow_a_short_body(self):
+        cards = [("head.png", 0.3, 3.2), ("mid.png", 12.0, 15.0), ("outro.png", 27.0, 30.0)]
+        self.assertEqual(vc.reanchor_cards(cards, 30.0, 28.9),
+                         [("head.png", 0.3, 3.2), ("mid.png", 12.0, 15.0), ("outro.png", 25.9, 28.9)])
+        self.assertEqual(vc.reanchor_cards(cards, 30.0, 30.0)[2], ("outro.png", 27.0, 30.0))
+        self.assertEqual(vc.reanchor_cards(None, 30.0, 28.9), None)
 
     def test_videotoolbox_on_the_mac_x264_elsewhere(self):
         mac = vc.segment_cmd("f", "i", "o", 1920, 1080, 0.5, 0, 3, encoder="h264_videotoolbox")

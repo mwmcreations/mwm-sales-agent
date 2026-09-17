@@ -190,12 +190,13 @@ def do_job(job, clips, reframe, library, search_fn, moments=None):
     speech, skipped = vc.quote_shots(items, moments or {},
                                      lambda f: os.path.exists(os.path.join(QUOTES_DIR, f)))
     need = int(round((int(job.get("length_s") or 30) - 0.5) / vc.SHOT_SECONDS))
-    pool, by_search = vc.candidates(ask, clips, need, search_fn)
+    pool, by_search, focus = vc.candidates(ask, clips, need, search_fn)
     text = job.get("text") or {}
     plan = vc.plan(ask, pool, requested, library, reframe, job.get("length_s") or 30,
                    recent_music=job.get("recent_music") or [], by_search=by_search,
                    avoid=job.get("recent_clips") or [], seed=int(rid),
-                   lines=text.get("lines") or [], cta=text.get("cta") or "", speech=speech)
+                   lines=text.get("lines") or [], cta=text.get("cta") or "", speech=speech,
+                   focus=focus)
     log("job #%s: %r -> %d shots (%s pool, %d speech, %d picks missing), music %s"
         % (rid, ask[:60], len(plan["shots"]), plan["pool"], len(speech), len(skipped), plan.get("music_title")))
     os.makedirs(CACHE_DIR, exist_ok=True)
