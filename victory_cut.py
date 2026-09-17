@@ -207,7 +207,7 @@ SYN = {"best": "highlights", "moments": "recap", "highlights": "highlights",
        "seminar": "corporate", "board": "board", "boards": "board", "breaks": "board",
        "break": "board", "celebration": "celebration", "crowd": "crowd", "cheering": "crowd",
        # pace and feel words reach the music's tags ("Fast pace. Motivational." — #25)
-       "fast": "energetic", "quick": "energetic", "pace": "energetic", "action": "action",
+       "fast": "energetic", "quick": "energetic", "action": "action",
        "intense": "powerful", "powerful": "powerful", "motivational": "motivational",
        "motivation": "motivational", "inspiring": "inspiring", "inspirational": "inspiring",
        "quiet": "piano", "calm": "piano", "slow": "piano", "happy": "happy", "playful": "playful",
@@ -222,18 +222,29 @@ def pick_music(library, ask, exclude=()):
     """Match the ask's words to track tags. Unknown asks get the uplifting
     default. exclude = ids this person received recently, so the music rotates."""
     words = ask_words(ask)
-    tracks = [t for t in library.get("tracks", []) if t["id"] not in exclude]
-    if not tracks:
-        tracks = list(library.get("tracks", []))
-    best, score = None, 0
-    for t in tracks:
-        s = sum(1 for tag in t.get("tags", []) for w in tag.split() if w in words)
-        if s > score:
-            best, score = t, s
-    if best is None:
-        pool = [t for t in tracks if "uplifting" in t.get("tags", [])] or tracks
-        best = pool[0] if pool else None
-    return best
+    every = list(library.get("tracks", []))
+    fresh = [t for t in every if t["id"] not in exclude] or every
+
+    def fit(t):
+        return sum(1 for tag in t.get("tags", []) for w in tag.split() if w in words)
+
+    best = max(fresh, key=fit, default=None)
+    if best is not None and fit(best) > 0:
+        return best
+    # nothing fresh fits. For a slow or emotional ask a track that fits beats
+    # one that merely rotates — Michael's #30 re-cut (17 Sep) put "The Sports"
+    # under a slow, emotional parents reel because the one piano track had
+    # just been used. Anything else rotates to the uplifting default as before.
+    calm_words = {"piano", "emotional", "inspiring", "cinematic", "hopeful"}
+    if words & calm_words:
+        heard = max(every, key=fit, default=None)
+        if heard is not None and fit(heard) > 0:
+            return heard
+        calm = [t for t in fresh if calm_words & set(w for tag in t.get("tags", []) for w in tag.split())]
+        if calm:
+            return calm[0]
+    pool = [t for t in fresh if "uplifting" in t.get("tags", [])] or fresh
+    return pool[0] if pool else None
 
 
 # ── 2. where to look in each clip ──────────────────────────────────────────

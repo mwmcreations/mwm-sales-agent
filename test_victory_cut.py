@@ -374,6 +374,16 @@ class TestMusic(unittest.TestCase):
     def test_rotates_away_from_what_they_just_heard(self):
         self.assertEqual(vc.pick_music(LIBRARY, "kids having fun", exclude=["05"])["id"], "04")
 
+    def test_a_track_that_fits_beats_one_that_merely_rotates(self):
+        """Michael's #30 re-cut: "The Sports" under a slow, emotional parents
+        reel, because the one piano track had just been used."""
+        ask = "A 60-second reel for parents of belt presentations and parent reactions, slow pace, emotional."
+        self.assertEqual(vc.pick_music(LIBRARY, ask)["id"], "08")
+        self.assertEqual(vc.pick_music(LIBRARY, ask, exclude=["08"])["id"], "08", "better the same piano again than sports")
+        # and an ask with no matching words at all still never gets sports when it says slow
+        lib = {"tracks": [t for t in LIBRARY["tracks"] if t["id"] in ("01", "04")]}
+        self.assertEqual(vc.pick_music(lib, "something slow and quiet")["id"], "04")
+
     def test_an_empty_library_is_no_music_not_a_crash(self):
         self.assertIsNone(vc.pick_music({"tracks": []}, "kids"))
         p = vc.plan("kids", CLIPS, [], {"tracks": []}, {}, 15)
