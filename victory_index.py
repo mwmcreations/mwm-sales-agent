@@ -417,6 +417,24 @@ def resident_count():
         return len(_records)
 
 
+def snapshot(event_key=None):
+    """Every record, as the page would show it (the resident row when there
+    is one, the compact one otherwise). For the helper's briefing and the
+    ready-made ideas; never touches the database."""
+    with _corpus_lock:
+        rows = list(_corpus)
+    with _records_lock:
+        res = dict(_records)
+    out = []
+    for r in rows:
+        if event_key and r.get("event") != event_key:
+            continue
+        out.append(res.get(r["id"]) or {"id": r["id"], "kind": r["k"], "title": r["t"],
+                                        "category": r["cat"], "session": r["ses"],
+                                        "weight": r["w"], "quotable": r["qb"]})
+    return out
+
+
 def hydrate(ids):
     """Fetch full rows for the handful of results actually being shown.
 

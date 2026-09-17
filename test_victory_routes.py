@@ -287,9 +287,10 @@ class FakeClaude:
 
     def create(self, **kw):
         self.calls.append(kw)
+        ans = self.answer
 
         class _B:
-            text = FakeClaude.answer
+            text = ans
 
         class _M:
             content = [_B()]
@@ -1271,6 +1272,68 @@ class TestTheFrontDoorIsOneBox(VICase):
         body = self.c.get("/vi/queue").data.decode("utf-8")
         self.assertIn("Understood as", body)
         self.assertIn("Night of Champions", body)
+
+
+class TestTheHelper(VICase):
+    """Michael, 17 Sep: "a lot of people don't know how to ask for a video …
+    'Give me a nice video', and that's it." Ready ideas on the page, and a
+    helper that turns a vague ask into a sentence for the box."""
+    ANSWER = ('{"say": "Here you go.", "ask": "A 30-second reel for parents of the candlelight ceremony, '
+              'emotional, slow pace.", "ideas": ["15 seconds of board breaks, fast"]}')
+
+    def _fake(self):
+        class Fake(FakeClaude):
+            answer = self.ANSWER
+        f = Fake()
+        self.c.application.config["VI_HELPER_CLIENT"] = f
+        return f
+
+    def test_the_page_carries_the_helper(self):
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        body = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn('id="ideas"', body)
+        self.assertIn('id="chat"', body)
+        self.assertIn("Let the helper write it", body)
+        self.assertIn("/vi/helper", body)
+        self.assertIn("/vi/ideas", body)
+        self.assertNotIn('id="chat"', self.c.get("/vi/library").data.decode("utf-8"))
+
+    def test_ideas_come_from_the_library(self):
+        self.assertEqual(self.c.get("/vi/ideas").status_code, 401)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        d = self.c.get("/vi/ideas").get_json()
+        self.assertTrue(d["ok"])
+        self.assertTrue(d["ideas"])
+        self.assertTrue(all("second" in i for i in d["ideas"]), d["ideas"])
+
+    def test_victory_staff_can_use_the_helper_and_get_a_sentence(self):
+        fake = self._fake()
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        r = self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "give me a nice video"}]})
+        self.assertEqual(r.status_code, 200, r.data)
+        d = r.get_json()
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["ask"], "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace.")
+        self.assertEqual(d["ideas"], ["15 seconds of board breaks, fast"])
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn("THE FOOTAGE", fake.calls[0]["system"])
+
+    def test_the_helper_needs_a_session_and_something_said(self):
+        self._fake()
+        self.assertEqual(self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "hi"}]}).status_code, 401)
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        self.assertEqual(self.c.post("/vi/helper", json={"messages": []}).status_code, 400)
+        self.assertEqual(self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "  "}]}).status_code, 400)
+        self.assertEqual(self.c.post("/vi/helper", data="junk", content_type="text/plain").status_code, 400)
+
+    def test_too_many_messages_at_once_are_slowed_not_served(self):
+        fake = self._fake()
+        self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
+        codes = [self.c.post("/vi/helper", json={"messages": [{"role": "user", "text": "x"}]}).status_code
+                 for _ in range(vr.HELPER_MAX_PER_WINDOW + 3)]
+        self.assertEqual(codes.count(200), vr.HELPER_MAX_PER_WINDOW)
+        self.assertEqual(codes[-1], 429)
+        self.assertEqual(len(fake.calls), vr.HELPER_MAX_PER_WINDOW)
 
 
 if __name__ == "__main__":

@@ -147,6 +147,22 @@ details.opts summary{cursor:pointer;color:#12507e;font-weight:600;padding:6px 0}
 .toggle input{width:22px;height:22px;accent-color:#C8102E}
 button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
 .askbox p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
+.ideas{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 12px;align-items:center}
+.ideas .lbl{font-size:12.5px;color:#767d85;margin-right:2px}
+.ideas button{background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:100px;font:600 13px/1.2 inherit;
+ padding:8px 12px;text-align:left}
+details.chat{margin:0 0 16px;border:1px solid #e2e5e9;border-radius:8px;background:#fafbfc}
+details.chat summary{cursor:pointer;color:#12507e;font-weight:600;font-size:14px;padding:11px 14px}
+details.chat .log{padding:0 12px 6px;max-height:320px;overflow:auto}
+.chat .m{font-size:14.5px;line-height:1.45;padding:9px 12px;border-radius:10px;margin:0 0 8px;max-width:92%}
+.chat .m.bot{background:#fff;border:1px solid #e2e5e9;color:#14171a}
+.chat .m.me{background:#14171a;color:#fff;margin-left:auto}
+.chat .m.wait{color:#767d85;font-style:italic;border-style:dashed}
+.chat .m .use{display:block;margin:8px 0 0;background:#C8102E;color:#fff;border:0;border-radius:6px;font:600 14px/1 inherit;padding:10px 14px}
+.chat .m .alt{display:block;margin:6px 0 0;background:#fff;color:#12507e;border:1px solid #cfd6de;border-radius:6px;font:600 13px/1.3 inherit;padding:8px 10px;text-align:left}
+.chat .hin{display:flex;gap:8px;padding:6px 12px 12px}
+.chat .hin input{flex:1;font:16px/1.3 inherit;padding:11px 12px;border:1px solid #c9ced4;border-radius:6px;-webkit-appearance:none;min-width:0}
+.chat .hin button{white-space:nowrap}
 .picker{margin-top:26px;padding-top:18px;border-top:1px solid #e2e5e9}
 .picker p.h{font-size:14px;color:#3b4249;margin:0 0 12px}
 main.browse .pick{display:none}
@@ -448,6 +464,60 @@ APP_JS = r"""
     });
   }
 
+  // the helper: ready ideas on the page, and a short exchange that ends
+  // with a sentence for the box (Michael, 17 Sep: "a lot of people don't
+  // know how to ask for a video")
+  var ideas=document.getElementById('ideas'), hlog=document.getElementById('hlog'),
+      hq=document.getElementById('hq'), hsend=document.getElementById('hsend'), hist=[];
+  function useAsk(t){
+    if(!note) return;
+    note.value=t; showBrief();
+    note.scrollIntoView({behavior:'smooth', block:'center'}); note.focus();
+  }
+  function ideaButton(t){
+    var b=document.createElement('button'); b.type='button'; b.textContent=t;
+    b.onclick=function(){ useAsk(t); }; return b;
+  }
+  if(ideas){
+    fetch('/vi/ideas', {credentials:'same-origin'}).then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok || !(d.ideas||[]).length) return;
+        var l=document.createElement('span'); l.className='lbl'; l.textContent='Try one:'; ideas.appendChild(l);
+        d.ideas.forEach(function(t){ ideas.appendChild(ideaButton(t)); });
+      }).catch(function(){});
+  }
+  function bubble(cls, text){
+    var m=document.createElement('div'); m.className='m '+cls; m.textContent=text; hlog.appendChild(m);
+    hlog.scrollTop=hlog.scrollHeight; return m;
+  }
+  function helperSend(){
+    var t=(hq.value||'').trim(); if(!t) return;
+    hq.value=''; bubble('me', t); hist.push({role:'user', text:t});
+    var w=bubble('bot wait', 'thinking…'); hsend.disabled=true;
+    fetch('/vi/helper', {method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({messages: hist.slice(-8)})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      hsend.disabled=false; w.remove();
+      if(!d.ok){ bubble('bot', d.error || 'The helper is not answering; try again.'); return; }
+      var m=bubble('bot', d.say || ''); hist.push({role:'bot', text: d.say || ''});
+      if(d.ask){
+        var u=document.createElement('button'); u.type='button'; u.className='use';
+        u.textContent='Use this: ' + d.ask; u.onclick=function(){ useAsk(d.ask); }; m.appendChild(u);
+      }
+      (d.ideas||[]).forEach(function(t){
+        var a=document.createElement('button'); a.type='button'; a.className='alt'; a.textContent=t;
+        a.onclick=function(){ useAsk(t); }; m.appendChild(a);
+      });
+      hlog.scrollTop=hlog.scrollHeight;
+    })
+    .catch(function(){ hsend.disabled=false; w.remove(); bubble('bot', 'The helper is not answering; try again.'); });
+  }
+  if(hsend){
+    hsend.onclick=helperSend;
+    hq.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); helperSend(); }});
+  }
+
   function chosenLength(){
     var r=document.querySelector('input[name=len]:checked'); return r ? parseInt(r.value,10) : 30;
   }
@@ -539,6 +609,14 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make")
             "<textarea id=\"note\" placeholder=\"A 15-second reel for students, fast pace, from the "
             "Night of Champions with some board breaks.\"></textarea>"
             "<div class=\"brief\" id=\"brief\"></div>"
+            "<div class=\"ideas\" id=\"ideas\"></div>"
+            "<details class=\"chat\" id=\"chat\"><summary>Not sure what to ask? Let the helper write it "
+            "for you</summary>"
+            "<div class=\"log\" id=\"hlog\"><div class=\"m bot\">Tell me who the video is for and where "
+            "it will be posted, and I will write the sentence. Or just say \"you choose\".</div></div>"
+            "<div class=\"hin\"><input type=\"text\" id=\"hq\" autocomplete=\"off\" "
+            "placeholder=\"e.g. something for the parents of my school\">"
+            "<button id=\"hsend\" class=\"sec\">Send</button></div></details>"
             "<div class=\"len\"><span>How long</span>"
             "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
             "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"

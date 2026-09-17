@@ -51,6 +51,7 @@ WHY /vi/issue-link EXISTS
 import time
 
 COOKIE = "vi_session"
+HELPER_MAX_PER_WINDOW = 40     # helper messages per person per rate window
 
 
 def _client_ip(request):
@@ -184,6 +185,51 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         except Exception as e:
             _err("vi_library", e)
             return vp.signin_page(message="Something went wrong. Try again.")
+
+    @app.route("/vi/ideas", methods=["GET"])
+    def vi_ideas():
+        """Ready-made asks from what the Library holds — for the person who
+        would only ever write "give me a nice video" (Michael, 17 Sep)."""
+        try:
+            sess = _session()
+            if not sess or not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            import victory_index as vi
+            import victory_helper as vh
+            if vi.corpus_size() == 0:
+                vi.load_corpus()
+            return jsonify({"ok": True, "ideas": vh.ideas(vi.snapshot())})
+        except Exception as e:
+            _err("vi_ideas", e)
+            return jsonify({"ok": False, "error": "no ideas just now"}), 500
+
+    @app.route("/vi/helper", methods=["POST"])
+    def vi_helper():
+        """The helper: a short exchange that ends with a sentence for the box.
+        Session only; one model call per message, so it is rate-limited per
+        person like the sign-in link is per address."""
+        try:
+            sess = _session()
+            if not sess or not va.can_search(sess["role"]):
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            if not limiter.allow("help:" + sess["email"], HELPER_MAX_PER_WINDOW):
+                return jsonify({"ok": False, "error": "Give me a minute — too many messages at once."}), 429
+            body = request.get_json(force=True, silent=True) or {}
+            msgs = body.get("messages") or []
+            if not isinstance(msgs, list) or not msgs or not any(
+                    isinstance(m, dict) and str(m.get("text") or "").strip() for m in msgs):
+                return jsonify({"ok": False, "error": "say something first"}), 400
+            import victory_index as vi
+            import victory_helper as vh
+            if vi.corpus_size() == 0:
+                vi.load_corpus()
+            client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
+            out = vh.chat(msgs[-vh.MAX_TURNS:], vi.snapshot(), client=client)
+            out["ok"] = True
+            return jsonify(out), 200
+        except Exception as e:
+            _err("vi_helper", e)
+            return jsonify({"ok": False, "error": "the helper is not answering; try again"}), 500
 
     @app.route("/vi/brief", methods=["GET"])
     def vi_brief():
