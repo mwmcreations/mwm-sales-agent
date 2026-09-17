@@ -513,7 +513,11 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
         for k, (png, t_in, t_out) in enumerate(cards):
             idx = n_in + k
-            cmd += ["-loop", "1", "-i", png]
+            # a looped PNG is decoded again for EVERY frame; at 10 fps a
+            # 60 s reel with four cards costs 2,400 decodes instead of 7,200
+            # (self-test #21: the final pass ran past the daemon's two-minute
+            # window and was killed)
+            cmd += ["-loop", "1", "-framerate", "10", "-i", png]
             t_out = min(float(t_out), end)
             chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
                          % (idx, t_in, max(t_in, t_out - 0.4), k))
