@@ -107,6 +107,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # rather see a candle clip again than board breaks (self-test #11)
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0), 1),
                                      c["id"] in avoid, short[c["id"]],
+                                     -min(2, PRIORITY.get(c.get("priority"), 0)),   # hero before standard
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first

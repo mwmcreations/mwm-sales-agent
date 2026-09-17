@@ -279,6 +279,14 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertEqual(p["shots"][0]["framed_by"], "action")
         self.assertGreater(p["shots"][0]["x"], 0.7)
 
+    def test_hero_footage_leads_inside_a_named_kind(self):
+        """The Sunday live-set candle moments are dark and 'standard'; the
+        roaming camera's are 'hero'. Asked for candlelight, hero comes first."""
+        pool, by_search, focus = vc.candidates("candlelight", CLIPS, 10, search)
+        p = vc.plan("candlelight", pool, [], LIBRARY, {}, 30, by_search=by_search, focus=focus, seed=4)
+        heroes = [s for s in p["shots"] if s["priority"] == "hero"]
+        self.assertGreaterEqual(len(heroes), 8, [(s["id"][:30], s["priority"]) for s in p["shots"]])
+
     def test_ceremony_alone_means_both(self):
         self.assertEqual(vc.ask_categories("the ceremony"), (list(vc.CEREMONIES), False))
         self.assertEqual(vc.ask_categories("belt ceremony"), (["Belt & rank presentation"], False))
