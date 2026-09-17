@@ -215,11 +215,21 @@ def do_job(job, clips, reframe, library, search_fn, moments=None):
     os.makedirs(CACHE_DIR, exist_ok=True)
     paths = {}
     t = time.time()
-    for s in plan["shots"]:
-        if s.get("kind") == "speech":
-            paths[s["id"]] = os.path.join(QUOTES_DIR, s["file"])
-            continue
-        paths[s["id"]] = clip_path(s)
+    dropped = []
+    for s in list(plan["shots"]):
+        try:
+            if s.get("kind") == "speech":
+                paths[s["id"]] = os.path.join(QUOTES_DIR, s["file"])
+                continue
+            paths[s["id"]] = clip_path(s)
+        except Exception as e:
+            # one missing file must not sink the cut: drop that shot, say so
+            log("  dropping %s: %r" % (s["id"][:48], e))
+            dropped.append(s["id"])
+            plan["shots"].remove(s)
+    if len(plan["shots"]) < 2:
+        raise RuntimeError("footage missing for this cut: %s" % ", ".join(dropped)[:300])
+    plan["dropped"] = dropped
     plan["fetch_seconds"] = round(time.time() - t, 1)
     music_path = os.path.join(MUSIC_DIR, plan["music_file"]) if plan.get("music_file") else None
     if music_path and not os.path.exists(music_path):
