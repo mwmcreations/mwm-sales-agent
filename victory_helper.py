@@ -177,7 +177,7 @@ def parse_answer(text):
     """The JSON object out of the model's text. None if unusable."""
     if not text:
         return None
-    m = re.search(r"\{.*\}", text, re.S)
+    m = re.search(r"\{.*\}", text, re.S) or re.search(r"\{.*", text, re.S)   # cut off mid-answer: still read what is there
     if not m:
         return None
     d = None
@@ -237,7 +237,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
             client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         model = model or os.environ.get("MODEL_MAIN", "claude-sonnet-4-6")
         msg = client.messages.create(
-            model=model, max_tokens=400,
+            model=model, max_tokens=800,
             system=PROMPT % (briefing(records, event_title), person_block(person)),
             messages=hist)
         text = "".join(getattr(b, "text", "") for b in msg.content)

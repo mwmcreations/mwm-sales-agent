@@ -136,6 +136,9 @@ class TestChat(unittest.TestCase):
         self.assertEqual((d["remember"], d["forget"]), ("posts to Instagram", ""))
         d = vh.parse_answer('{"say": "Done.", "ask": null, "forget": "*"}')
         self.assertEqual(d["forget"], "*")
+        # cut off by the token limit: what is there is still an answer
+        d = vh.parse_answer('{"say": "Since you post to Instagram, 15 seconds.", "ask": "A 15-second reel for parents, fast", "ideas": ["A 30-second')
+        self.assertEqual((d["say"], d["ask"]), ("Since you post to Instagram, 15 seconds.", "A 15-second reel for parents, fast"))
         d = vh.parse_answer('{"say": "ok", "ask": "x", "lines": ["One", " ", "Two", "Three", "Four", "Five"], "cta": "Enroll today"}')
         self.assertEqual((d["lines"], d["cta"]), (["One", "Two", "Three", "Four"], "Enroll today"))
         d = vh.parse_answer('{"say": "ok", "ask": "None"}')
