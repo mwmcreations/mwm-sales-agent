@@ -439,11 +439,52 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026", top=Fals
     return cards
 
 
+KIND_TITLES = {"Board breaks": "BOARD BREAKS", "Candlelight ceremony": "CANDLELIGHT",
+               "Belt & rank presentation": "BELT PRESENTATION", "Competition": "COMPETITION",
+               "Winning moments": "CHAMPIONS", "Instructor training": "INSTRUCTORS",
+               "Training & seminar": "TRAINING", "Crowd & parent reactions": "THE CROWD"}
+# words of the asking, not of the video: "I want a video for students. This is
+# gonna be an Instagram reel, 15 seconds, very fast pace…" opened on a card
+# reading "I STUDENTS THIS" (self-test #26, 17 Sep)
+CHATTER = {"i", "we", "you", "it", "this", "that", "is", "are", "be", "gonna", "going", "can",
+           "could", "would", "should", "like", "use", "using", "some", "any", "very", "really",
+           "just", "then", "also", "instagram", "facebook", "tiktok", "youtube", "story", "stories",
+           "post", "reels", "shots", "shot", "footage", "clips", "clip", "moments", "pace", "paced",
+           "fast", "slow", "quick", "long", "short", "minute", "minutes", "min", "with", "get",
+           "give", "me", "us", "one", "something", "nice", "good", "great", "kind", "sort", "so",
+           "them", "they", "their", "have", "has", "do", "does", "what", "which", "who", "how"}
+
+
 def titles_for(ask, event_title="Convention 2026"):
-    """A head card and a sign-off from the ask. Short, uppercase, no cleverness."""
-    words = [w for w in re.findall(r"[A-Za-z0-9']+", ask or "")
-             if w.lower() not in STOP and not w.isdigit()]
-    head = " ".join(words[:3]).upper() if words else event_title.upper()
+    """A head card and a sign-off from the ask. Short, uppercase, no cleverness.
+
+    First choice is what the editor understood — the evening, the kind of
+    moment, who it is for — so a long sentence opens on NIGHT OF CHAMPIONS,
+    not on its own first three words. Only an ask that names none of those
+    falls back to its words (with the chatter of asking stripped)."""
+    head = ""
+    text = ask or ""
+    try:
+        b = brief_for(text)
+    except Exception:
+        b = {"sessions": [], "kinds": [], "audience": []}
+    # a name the person wrote with capitals ("the Lake Nona page") is theirs
+    # to keep on the card; a word that merely starts a sentence is not
+    names = [m.group(1) for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z']+)\b", text)
+             if m.group(1).lower() not in STOP | CHATTER | set(AUDIENCE_WORDS)
+             and m.group(1).lower() not in {w for ws in CATEGORY_WORDS.values() for w in ws}]
+    if b["sessions"]:
+        head = b["sessions"][0].upper()
+    elif b["kinds"]:
+        head = KIND_TITLES.get(b["kinds"][0], b["kinds"][0].upper())
+    elif names:
+        head = " ".join(names[:3]).upper()
+    elif b["audience"]:
+        head = "FOR " + b["audience"][0].upper()
+    if not head:
+        words = [w for w in re.findall(r"[A-Za-z0-9']+", text)
+                 if w.lower() not in STOP and w.lower() not in CHATTER and not w.isdigit()]
+        head = " ".join(words[:3]).upper() if words else event_title.upper()
     if len(head) > 22:
         head = head[:22].rsplit(" ", 1)[0]
     return (head or event_title.upper(), event_title), ("Victory Martial Arts", event_title)
@@ -546,10 +587,10 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         chain.append("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
                      "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
                      "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                     "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
+                     "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
         n_in = 2
     else:
-        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]")
+        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]")
     vfilters = []
     if cards:
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
@@ -573,7 +614,7 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
     vfilters.append("fade=t=out:st=%.2f:d=0.5" % (end - 0.5))
     chain.append("%s%s[v]" % (vin, ",".join(vfilters)))
     cmd += ["-filter_complex", ";".join(chain), "-map", "[v]", "-map", "[a]"]
-    cmd += venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+    cmd += venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-b:a", "192k",
                    "-movflags", "+faststart", "-t", "%.3f" % end, dst]
     return cmd
 

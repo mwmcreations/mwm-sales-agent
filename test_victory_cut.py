@@ -168,7 +168,7 @@ class TestWordsOnScreen(unittest.TestCase):
     def test_no_words_means_title_and_signoff(self):
         cards = vc.card_plan(30, "kids having fun", [], "")
         self.assertEqual(len(cards), 2)
-        self.assertEqual(cards[0][0], "KIDS HAVING FUN")
+        self.assertEqual(cards[0][0], "FOR KIDS")
         self.assertEqual(cards[-1][0], "Victory Martial Arts")
         self.assertEqual(cards[-1][2], 27.0)
 
@@ -436,7 +436,7 @@ class TestTheCommands(unittest.TestCase):
     def test_user_text_cannot_break_the_filter(self):
         # titles_for keeps only words; and even raw text is escaped by _esc
         head, outro = vc.titles_for("kids' night: 100% fun; the best")
-        self.assertEqual(head[0], "KIDS' NIGHT FUN")     # numbers dropped; the apostrophe is escaped later, by _esc
+        self.assertEqual(head[0], "FOR KIDS")            # who it is for; numbers never reach a card
         self.assertEqual(vc._esc("a:b 'c' 100%"), "a\\:b \u2019c\u2019 100%%")
         vc._filters_cache[("f", "drawtext")] = True        # pretend this ffmpeg can draw
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 29.0, ("x:y", "z"), outro, "/f.ttf")
@@ -455,7 +455,7 @@ class TestTheCommands(unittest.TestCase):
 
     def test_titles_drop_numbers_and_stay_short(self):
         head, _ = vc.titles_for("A 30-second reel for the Lake Nona page, aimed at parents.")
-        self.assertEqual(head[0], "LAKE NONA PARENTS")
+        self.assertEqual(head[0], "LAKE NONA")            # the name they wrote with capitals
 
     def test_an_ffmpeg_without_drawtext_still_cuts_just_without_titles(self):
         # Homebrew's ffmpeg 8 on the Mini: "No such filter: 'drawtext'" — 14 Sep
@@ -470,7 +470,7 @@ class TestTheCommands(unittest.TestCase):
         for music in ("m.wav", None):
             cmd = vc.final_cmd("f", "b.mp4", music, "o.mp4", 30.0, ("A", "B"), ("C", "D"), None)
             fc = cmd[cmd.index("-filter_complex") + 1]
-            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.8:level=false[a]", fc)
+            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]", fc)
 
     def test_probe_reads_ffmpegs_own_banner(self):
         banner = ("Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:00:12.01, start: 0.000000, bitrate: 6183 kb/s\n"
@@ -631,6 +631,24 @@ class TestWhatTheEditorUnderstood(unittest.TestCase):
         self.assertIn("for schools", b["text"])
         b = vc.brief_for("", None)
         self.assertEqual(b["length"], 30)
+
+    def test_the_card_says_what_was_understood_not_the_first_three_words(self):
+        """#26 opened on "I STUDENTS THIS"."""
+        self.assertEqual(vc.titles_for(self.ASK)[0][0], "NIGHT OF CHAMPIONS")
+        self.assertEqual(vc.titles_for("For students. Fast pace. Motivational.")[0][0], "FOR STUDENTS")
+        self.assertEqual(vc.titles_for("some board breaking, quick")[0][0], "BOARD BREAKS")
+        self.assertEqual(vc.titles_for("Reel for Victory Winter Garden. Kids. Fun.")[0][0], "VICTORY WINTER GARDEN")
+        self.assertEqual(vc.titles_for("something nice and quick")[0][0], "CONVENTION 2026")
+
+    def test_the_sound_is_48k_and_limited_after_the_resample(self):
+        """#26 came back at 96 kHz with a true peak of +0.4 dBTP: loudnorm
+        works at 192 kHz and the AAC encoder overshot the limiter."""
+        cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8", fc)
+        self.assertEqual(cmd[cmd.index("-ar") + 1], "48000")
+        cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
+        self.assertIn("aresample=48000,alimiter", cmd[cmd.index("-filter_complex") + 1])
 
     def test_the_sentence_cuts_the_evening_and_the_boards(self):
         pool, by_search, focus = vc.candidates(self.ASK, CLIPS, 10, search)
