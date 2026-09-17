@@ -1045,8 +1045,10 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return blocked
         try:
             import victory_cards as vc_
-            big = (request.values.get("big") or "")[:40]
-            small = (request.values.get("small") or "")[:40]
+            # an end card carries an event, a date and a place (#28: "Special
+            # Testing · Oct 3, 10am · Victory Lake Nona" lost its last words at 40)
+            big = (request.values.get("big") or "")[:90]
+            small = (request.values.get("small") or "")[:60]
             try:
                 y = float(request.values.get("y") or 0.40)
             except ValueError:

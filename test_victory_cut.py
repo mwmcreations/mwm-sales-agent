@@ -473,7 +473,7 @@ class TestTheCommands(unittest.TestCase):
         for music in ("m.wav", None):
             cmd = vc.final_cmd("f", "b.mp4", music, "o.mp4", 30.0, ("A", "B"), ("C", "D"), None)
             fc = cmd[cmd.index("-filter_complex") + 1]
-            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]", fc)
+            self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]", fc)
 
     def test_probe_reads_ffmpegs_own_banner(self):
         banner = ("Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:00:12.01, start: 0.000000, bitrate: 6183 kb/s\n"
@@ -648,7 +648,7 @@ class TestWhatTheEditorUnderstood(unittest.TestCase):
         works at 192 kHz and the AAC encoder overshot the limiter."""
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
         fc = cmd[cmd.index("-filter_complex") + 1]
-        self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8", fc)
+        self.assertIn("loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7", fc)
         self.assertEqual(cmd[cmd.index("-ar") + 1], "48000")
         cmd = vc.final_cmd("f", "body.mp4", None, "out.mp4", 15.0, ("A", "B"), ("C", "D"), None)
         self.assertIn("aresample=48000,alimiter", cmd[cmd.index("-filter_complex") + 1])

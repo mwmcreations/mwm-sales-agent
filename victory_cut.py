@@ -453,7 +453,7 @@ def card_plan(length_s, ask, lines, cta, event_title="Convention 2026", top=Fals
     else:
         cards.append((head[0], head[1], 0.3, 3.2, y_head))
     if cta:
-        cards.append((cta, event_title, end - 6.0, end - 3.0, 0.42))
+        cards.append((cta, "", end - 6.0, end - 3.0, 0.42))       # the school's words, alone
     cards.append((outro[0], outro[1], end - 3.0, end, 0.42))
     return cards
 
@@ -606,10 +606,10 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         chain.append("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
                      "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
                      "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                     "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
+                     "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
         n_in = 2
     else:
-        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.8:level=false[a]")
+        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]")
     vfilters = []
     if cards:
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s

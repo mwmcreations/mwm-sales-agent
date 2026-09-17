@@ -37,14 +37,26 @@ def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
             return b[2] - b[0]
 
         def wrap(text, f):
-            """Two balanced lines when one will not fit."""
+            """Two balanced lines when one will not fit; three when two will
+            not either (an end card with an event, a date and a place)."""
             words = text.split()
             best, best_gap = None, 10 ** 9
             for i in range(1, len(words)):
                 a, b = " ".join(words[:i]), " ".join(words[i:])
                 gap = abs(width(a, f) - width(b, f))
+                if words[i - 1] in ("\u00b7", "-", "\u2014", "|"):      # break at a separator, and drop it
+                    a, gap = " ".join(words[:i - 1]), gap - 400
                 if width(a, f) <= safe and width(b, f) <= safe and gap < best_gap:
                     best, best_gap = [a, b], gap
+            if best:
+                return best
+            for i in range(1, len(words) - 1):
+                for j in range(i + 1, len(words)):
+                    parts = [" ".join(words[:i]), " ".join(words[i:j]), " ".join(words[j:])]
+                    if all(width(x, f) <= safe for x in parts):
+                        gap = max(width(x, f) for x in parts) - min(width(x, f) for x in parts)
+                        if gap < best_gap:
+                            best, best_gap = parts, gap
             return best or [text]
 
         # lay the lines out first, so a soft dark band can sit behind them:
@@ -57,7 +69,7 @@ def render_card(big, small, y_frac=0.40, size_big=70, size_small=42):
                 continue
             # a long sentence shrinks a little, then wraps to two lines
             size = font.size
-            while width(text, font) > safe and size > max(40, font.size - 16):
+            while width(text, font) > safe * 1.6 and size > max(40, font.size - 24):
                 size -= 4
                 font = ImageFont.truetype(FONT, size)
             lines = [text] if width(text, font) <= safe else wrap(text, font)
