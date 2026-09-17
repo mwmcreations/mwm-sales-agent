@@ -481,7 +481,7 @@ class TestSigningInIsNotAccess(VICase):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
         body = self.c.get("/vi/").data.decode("utf-8")
         self.assertIn("Search", body)
-        self.assertIn("1,873", body)
+        self.assertIn("2,073", body)
 
     def test_a_search_is_logged_against_the_person(self):
         self._sign_in_as("jim@victoryma.com", va.ROLE_HQ)
@@ -822,13 +822,13 @@ class TestThumbnailsAndPreviews(VICase):
 
     def test_missing_lists_every_clip_and_interview_piece_until_covered(self):
         m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
-        self.assertEqual(m["total_missing"], 111 + 191)      # clips + interview pieces
+        self.assertEqual(m["total_missing"], 311 + 191)      # clips (111 selects + 200 long-recording moments) + interview pieces
         self.assertIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
         self.assertIn("M_ROAM_J24-2_full_0484", m["missing"])
         self.assertEqual(self._put("VWC26_CROWD_01_kids-cheering_D0062").status_code, 200)
         self.assertEqual(self._put("M_ROAM_J24-2_full_0484").status_code, 200)
         m = self._j(self.c.get("/vi/media/missing?secret=%s&limit=500" % SECRET))
-        self.assertEqual(m["total_missing"], 111 + 191 - 2)
+        self.assertEqual(m["total_missing"], 311 + 191 - 2)
         self.assertNotIn("VWC26_CROWD_01_kids-cheering_D0062", m["missing"])
         self.assertNotIn("M_ROAM_J24-2_full_0484", m["missing"])
 

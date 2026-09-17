@@ -220,7 +220,8 @@ class TestTheIndexLeads(unittest.TestCase):
         pool, by_search, focus = vc.candidates("board breaks", CLIPS, 20, search)
         self.assertEqual(focus, ("Board breaks",))
         p = vc.plan("board breaks", pool, [], LIBRARY, {}, 60, by_search=by_search, focus=focus)
-        self.assertEqual(sum(1 for s in p["shots"] if s["category"] == "Board breaks"), 9)
+        boards = sum(1 for c in CLIPS if c["category"] == "Board breaks")
+        self.assertEqual(sum(1 for s in p["shots"] if s["category"] == "Board breaks"), boards)
         self.assertEqual(len(p["shots"]), 20)
         p = vc.plan("board breaks", pool, [], LIBRARY, {}, 15, by_search=by_search, focus=focus)
         self.assertTrue(all(s["category"] == "Board breaks" for s in p["shots"]))
@@ -234,6 +235,40 @@ class TestTheIndexLeads(unittest.TestCase):
         kinds = [s["category"] for s in p["shots"]]
         self.assertGreaterEqual(kinds.count("Crowd & parent reactions"), 3)
         self.assertGreaterEqual(len(set(kinds)), 4)
+
+    def test_a_named_evening_gets_that_evening(self):
+        """Michael, 16 Sep: Night of Champions is one long recording; once it
+        is cut into moments, asking for it must bring those moments."""
+        self.assertEqual(vc.ask_sessions("a reel from the Night of Champions"), ["Night of Champions"])
+        self.assertEqual(vc.ask_sessions("black belt testing, proud parents"),
+                         ["Black Belt Testing"])
+        self.assertEqual(vc.ask_sessions("candlelight for parents"), [])
+        noc = [c for c in CLIPS if c["session"] == "Night of Champions"]
+        self.assertGreaterEqual(len(noc), 100, "the moments cut from the long recordings")
+        pool, by_search, focus = vc.candidates("night of champions, epic", CLIPS, 20, search)
+        self.assertTrue(by_search)
+        self.assertGreaterEqual(len(set(focus)), 4, "every kind of moment in that evening is uncapped")
+        for length in (30, 60):
+            p = vc.plan("night of champions, epic", pool, [], LIBRARY, {}, length, by_search=by_search, focus=focus)
+            self.assertTrue(all(s["session"] == "Night of Champions" for s in p["shots"]), [s["id"] for s in p["shots"]])
+            self.assertGreaterEqual(len({s["category"] for s in p["shots"]}), 3)
+        # the other long evening
+        pool, by_search, focus = vc.candidates("black belt testing", CLIPS, 10, search)
+        p = vc.plan("black belt testing", pool, [], LIBRARY, {}, 30, by_search=by_search, focus=focus)
+        self.assertTrue(all(s["session"] == "Black Belt Testing" for s in p["shots"]))
+        # a library without those sessions still cuts something
+        old = [c for c in CLIPS if c["session"] not in ("Night of Champions", "Black Belt Testing")]
+        pool, by_search, focus = vc.candidates("night of champions", old, 10, search)
+        self.assertEqual(len(pool), len(old))
+
+    def test_a_long_recording_moment_is_cut_around_its_peak(self):
+        c = dict(CLIPS[0], id="X_peak", seconds=12.0, best_in=8.0)
+        p = vc.plan("x", [c], ["X_peak"], LIBRARY, {}, 15)
+        s = p["shots"][0]
+        self.assertEqual(s["dur"], 5.0)
+        self.assertEqual(s["in"], 5.5)          # 8 - 5/2
+        p = vc.plan("x", [dict(c, best_in=11.5)], ["X_peak"], LIBRARY, {}, 15)
+        self.assertAlmostEqual(p["shots"][0]["in"], 12.0 - 5.0 - 0.05, places=2)
 
     def test_ceremony_alone_means_both(self):
         self.assertEqual(vc.ask_categories("the ceremony"), (list(vc.CEREMONIES), False))

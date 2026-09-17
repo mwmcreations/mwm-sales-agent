@@ -149,6 +149,19 @@ def fetch_drive(drive_id, dst):
     return dst
 
 
+def clip_path(c):
+    """Where a clip's file is. Moments cut from the long recordings live only
+    in the cache (file 'long/<id>.mp4', no Drive id); the 111 convention
+    selects are fetched from Drive once and cached."""
+    f = c.get("file") or ""
+    local = os.path.join(CACHE_DIR, f) if f else ""
+    if f and os.path.exists(local) and os.path.getsize(local) > 100_000:
+        return local
+    if not c.get("drive_id"):
+        raise RuntimeError("clip %s: no file in the cache and no Drive id" % c["id"])
+    return fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, c["id"] + ".mp4"))
+
+
 def load_sources():
     src = os.path.join(HERE, "victory_source", EVENT)
     clips = json.load(open(os.path.join(src, "clips.json")))
@@ -206,9 +219,7 @@ def do_job(job, clips, reframe, library, search_fn, moments=None):
         if s.get("kind") == "speech":
             paths[s["id"]] = os.path.join(QUOTES_DIR, s["file"])
             continue
-        if not s.get("drive_id"):
-            raise RuntimeError("clip %s has no Drive id" % s["id"])
-        paths[s["id"]] = fetch_drive(s["drive_id"], os.path.join(CACHE_DIR, s["id"] + ".mp4"))
+        paths[s["id"]] = clip_path(s)
     plan["fetch_seconds"] = round(time.time() - t, 1)
     music_path = os.path.join(MUSIC_DIR, plan["music_file"]) if plan.get("music_file") else None
     if music_path and not os.path.exists(music_path):
@@ -263,7 +274,7 @@ def prep_media(limit=8):
         moment = os.path.join(QUOTES_DIR, cid + ".mp4") if cid.startswith("M_") else None
         if moment and not os.path.exists(moment):
             continue
-        if not moment and (not c or not c.get("drive_id")):
+        if not moment and not c:
             continue
         try:
             poster = os.path.join(WORK_DIR, "poster_%s.jpg" % cid)
@@ -282,7 +293,7 @@ def prep_media(limit=8):
                                ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "48k",
                                 "-movflags", "+faststart", preview], check=True, capture_output=True, timeout=300)
             else:
-                src = fetch_drive(c["drive_id"], os.path.join(CACHE_DIR, cid + ".mp4"))
+                src = clip_path(c)
                 info = (reframe or {}).get(cid) or {}
                 wins = info.get("windows") or []
                 t = float(max(wins, key=lambda w: w.get("energy") or 0)["t"]) + 0.5 if wins else 1.0

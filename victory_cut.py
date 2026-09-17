@@ -302,6 +302,11 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         if have:
             dur = round(max(0.5, min(dur, have - 0.05)), 2)
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur)
+        if c.get("best_in") is not None and not (reframe or {}).get(c["id"]):
+            # a moment cut from a long recording knows where its peak is
+            # (the applause, the break): centre the shot on it
+            hi = max(0.0, (have or 99.0) - dur - 0.05)
+            t0 = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
         return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
                 "title": c.get("title"), "session": c.get("session"),
                 "day": c.get("day"), "category": c.get("category"),
@@ -612,6 +617,21 @@ CATEGORY_WORDS = {
 SOFT_WORDS = {"parents", "parent", "mom", "moms", "mother", "mothers", "dad", "dads", "father",
               "fathers", "family", "families"}
 CEREMONIES = ("Candlelight ceremony", "Belt & rank presentation")
+# whole evenings people name as one thing (the moments cut from the long
+# recordings carry these as their session; every kind of moment is in them)
+SESSION_PHRASES = {
+    "Night of Champions": ("night of champions", "champions night", "saturday night", "awards night",
+                           "awards ceremony", "night of champion"),
+    "Black Belt Testing": ("black belt testing", "belt testing", "black belt test",
+                                         "high rank testing", "the testing"),
+}
+
+
+def ask_sessions(ask):
+    """Sessions the ask names by phrase, e.g. 'night of champions'."""
+    low = re.sub(r"[^a-z0-9 ]+", " ", (ask or "").lower())
+    low = re.sub(r"\s+", " ", low)
+    return [name for name, phrases in SESSION_PHRASES.items() if any(p in low for p in phrases)]
 
 
 def ask_categories(ask):
@@ -652,6 +672,28 @@ def candidates(ask, clips, need, search_fn=None):
         except Exception as e:
             print("[VI-CUT] search failed, using the whole convention: %r" % (e,))
     by_id = {c["id"]: c for c in clips}
+    sessions = ask_sessions(ask)
+    if sessions:
+        # "night of champions": that evening's footage, every kind of moment in
+        # it, the index's hits first; the caps leave all of its kinds alone
+        first, seen = [], set()
+        for k, cid in enumerate(hits):
+            if cid in by_id and by_id[cid].get("session") in sessions:
+                c = dict(by_id[cid])
+                c["weight"] = 10.0 - k * 0.01
+                first.append(c)
+                seen.add(cid)
+        named = sorted([c for c in clips if c["id"] not in seen and c.get("session") in sessions],
+                       key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
+        for c in named:
+            c = dict(c)
+            c["weight"] = 9.5
+            first.append(c)
+            seen.add(c["id"])
+        if first:
+            rest = sorted([c for c in clips if c["id"] not in seen],
+                          key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
+            return first + rest, True, tuple(sorted({c.get("category") for c in first if c.get("category")}))
     cats, soft = ask_categories(ask)
     first = []
     for k, cid in enumerate(hits):
