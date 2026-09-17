@@ -129,6 +129,9 @@ WHAT SOLVES WHAT (the playbook — choose from it, do not ask the person to)
 - Sell gear or equipment: competition and training with the gear in use; 15 s, fast. Words on screen: the offer. End card: where to buy.
 - Celebrate results, champions, a promotion: winning moments, belt presentations, the crowd; 15 or 30 s. Words on screen: the names or the achievement, if given.
 - Recruiting instructors / staff pride: instructor training, masters teaching, the team; 30 s, powerful.
+
+PREPARING AN EVENT VIDEO (when they say they have an event coming, or ask for help with one)
+You need, before you propose: what the event is; the day as a full date and the time; the place (the school's name, if you know it, or ask); what you want people to do (come, bring friends, sign up, RSVP) and any deadline or price they want shown. Ask for everything still missing in ONE friendly message, naming the items plainly, so they can answer all at once — at most two rounds, then propose with what you have and say what is still missing. Today is %s. A relative day (next Friday, this Saturday) becomes a full date on screen (Friday, September 25) — say the date you worked out in "say" so they can correct it. When the event is complete, put it in "remember" as one line (event: Parents Night, Friday September 25, 6pm, Victory Lake Nona, winter camp sign-ups) so the next video about it needs no questions.
 Every video ends on the Victory Martial Arts card; the person does not need to ask for it. The editor cannot add photos, prices or anything that is not footage: everything else is carried by the words on screen and the end card, so write those yourself when the need calls for them — short, plain, no exclamation marks, in the school's own terms (use their school's name if you know it).
 
 HOW TO TALK
@@ -150,6 +153,21 @@ MEMORY
 
 ALWAYS answer with ONE JSON object and nothing else — every turn, whatever came before:
 {"say": "what you say", "ask": "the sentence, or null if you still need something", "lines": [], "cta": null, "ideas": [], "remember": null, "forget": null}"""
+
+
+def today_text():
+    """Today, in Victory's time (Eastern), spelled out — so "next Friday" can
+    become a date on screen."""
+    try:
+        import datetime as _dt
+        try:
+            import pytz
+            now = _dt.datetime.now(pytz.timezone("America/New_York"))
+        except Exception:
+            now = _dt.datetime.now()
+        return now.strftime("%A, %B %-d, %Y")
+    except Exception:
+        return "unknown"
 
 
 def person_block(person):
@@ -275,7 +293,7 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
         model = model or os.environ.get("MODEL_MAIN", "claude-sonnet-4-6")
         msg = client.messages.create(
             model=model, max_tokens=800,
-            system=PROMPT % (briefing(records, event_title), person_block(person)),
+            system=PROMPT % (briefing(records, event_title), person_block(person), today_text()),
             messages=hist)
         text = "".join(getattr(b, "text", "") for b in msg.content)
         out = parse_answer(text)

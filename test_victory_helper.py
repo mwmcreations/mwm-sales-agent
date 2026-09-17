@@ -97,8 +97,11 @@ class TestThePlaybook(unittest.TestCase):
         vh.chat([{"role": "user", "text": "help me bring people to a free class"}], CLIPS, client=fake)
         sysm = fake.calls[0]["system"]
         for phrase in ("WHAT SOLVES WHAT", "free or trial class", "An event", "Keep parents motivated",
-                       "Sell gear", "Victory Martial Arts card", "Never invent a date"):
+                       "Sell gear", "Victory Martial Arts card", "Never invent a date",
+                       "PREPARING AN EVENT VIDEO", "in ONE friendly message", "Today is "):
             self.assertIn(phrase, sysm)
+        import re as _re
+        self.assertRegex(vh.today_text(), r"^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, 20\d\d$")
 
     def test_our_earlier_turns_go_back_as_answers(self):
         """A prose turn of ours in the history taught the model to answer in
