@@ -99,7 +99,8 @@ class TestThePlaybook(unittest.TestCase):
         for phrase in ("WHAT SOLVES WHAT", "free or trial class", "An event", "Keep parents motivated",
                        "Sell gear", "Victory Martial Arts card", "Never invent a date",
                        "PREPARING AN EVENT VIDEO", "in ONE friendly message", "Today is ",
-                       "WHEN THEY ASK FOR ADVICE OR A PLAN", '"plan": [{"title"'):
+                       "WHEN THEY ASK FOR ADVICE OR A PLAN", '"plan": [{"title"',
+                       "A plain request for a video", "Never a plan without videos in it"):
             self.assertIn(phrase, sysm)
         import re as _re
         self.assertRegex(vh.today_text(), r"^[A-Z][a-z]+day, [A-Z][a-z]+ \d{1,2}, 20\d\d$")
