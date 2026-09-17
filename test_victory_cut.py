@@ -222,7 +222,7 @@ class TestWordsOnScreen(unittest.TestCase):
         cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
                            cards=[("c0.png", 0.3, 3.5), ("c1.png", 12.0, 15.0), ("c2.png", 27.0, 30.0)])
         joined = " ".join(cmd)
-        self.assertEqual(joined.count("-loop 1 -framerate 10 -i"), 3)
+        self.assertEqual(joined.count("-loop 1 -framerate 30 -itsoffset"), 3)
         self.assertIn("between(t,12.00,15.00)", joined)
         self.assertIn("[v2]", joined)
 
@@ -518,8 +518,9 @@ class TestTheCommands(unittest.TestCase):
         cmd = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None,
                            cards=[("head.png", 0.3, 3.2), ("outro.png", 27.0, 30.0)])
         joined = " ".join(cmd)
-        self.assertIn("-loop 1 -framerate 10 -i head.png", joined)
-        self.assertIn("overlay=0:0:enable='between(t,0.30,3.20)'", joined)
+        self.assertIn("-loop 1 -framerate 30 -itsoffset 0.30 -t 3.10 -i head.png", joined)
+        self.assertIn("eof_action=pass", joined)
+        self.assertIn("overlay=0:0:eof_action=pass:enable='between(t,0.30,3.20)'", joined)
         self.assertIn("between(t,27.00,30.00)", joined)
         self.assertNotIn("drawtext", joined)
 

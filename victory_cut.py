@@ -723,15 +723,19 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
         for k, (png, t_in, t_out) in enumerate(cards):
             idx = n_in + k
-            # a looped PNG is decoded again for EVERY frame; at 10 fps a
-            # 60 s reel with four cards costs 2,400 decodes instead of 7,200
-            # (self-test #21: the final pass ran past the daemon's two-minute
-            # window and was killed)
-            cmd += ["-loop", "1", "-framerate", "10", "-i", png]
             t_out = min(float(t_out), end)
+            # The card is a looped PNG at the reel's own frame rate, but only
+            # for the seconds it is on screen (-t after -itsoffset), so a 60 s
+            # reel with four cards decodes ~360 card frames, not 7,200 (the
+            # 10 fps loop that replaced them in #162 made the Mini's ffmpeg
+            # drop a third of the picture frames at the overlay — video #30
+            # "getting stuck", 17 Sep: 1,105 frames where 1,800 belonged).
+            cmd += ["-loop", "1", "-framerate", str(FPS), "-itsoffset", "%.2f" % t_in,
+                    "-t", "%.2f" % max(0.1, t_out - t_in + 0.2), "-i", png]
             chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
                          % (idx, t_in, max(t_in, t_out - 0.4), k))
-            chain.append("%s[c%d]overlay=0:0:enable='between(t,%.2f,%.2f)'[v%d]" % (vin, k, t_in, t_out, k))
+            chain.append("%s[c%d]overlay=0:0:eof_action=pass:enable='between(t,%.2f,%.2f)'[v%d]"
+                         % (vin, k, t_in, t_out, k))
             vin = "[v%d]" % k
     elif font and has_filter(ffmpeg, "drawtext"):
         vfilters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
