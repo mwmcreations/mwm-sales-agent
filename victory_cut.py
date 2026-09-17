@@ -667,6 +667,70 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
     return out_path, round(total, 2)
 
 
+# ── 4b. what the editor understood ────────────────────────────────────────
+AUDIENCE_WORDS = {"students": "students", "student": "students", "kids": "kids", "children": "kids",
+                  "parents": "parents", "parent": "parents", "moms": "parents", "dads": "parents",
+                  "families": "families", "family": "families", "instructors": "instructors",
+                  "instructor": "instructors", "masters": "masters", "schools": "schools",
+                  "school": "schools", "teens": "teens", "adults": "adults"}
+NUMBER_WORDS = {"fifteen": 15, "thirty": 30, "sixty": 60, "one": 60, "a": 60, "half": 30}
+
+
+def length_from(ask):
+    """A length the sentence names — "15 seconds", "30s", "one minute",
+    "half a minute" — snapped to 15 / 30 / 60. None when it says nothing."""
+    low = (ask or "").lower()
+    m = re.search(r"\b(\d{1,3})\s*(?:-|\s)?(s|sec|secs|second|seconds)\b", low)
+    n = None
+    if m:
+        n = int(m.group(1))
+    elif re.search(r"\b(half\s+a|half)\s+minute", low):
+        n = 30
+    elif re.search(r"\b(one|a|1)\s+minute", low):
+        n = 60
+    else:
+        m = re.search(r"\b(fifteen|thirty|sixty)\s*(s|sec|secs|second|seconds)?\b", low)
+        if m:
+            n = NUMBER_WORDS[m.group(1)]
+    if n is None:
+        return None
+    return min(LENGTHS, key=lambda L: abs(L - n))
+
+
+def brief_for(ask, length_s=None):
+    """What the editor understood from a sentence, as data and as one plain
+    line for the card — so a person sees a misreading before the cut, not
+    after (Michael, 17 Sep: most people will only ever type a sentence)."""
+    length = length_from(ask) or (int(length_s) if length_s in LENGTHS else 30)
+    pace = pace_seconds(ask)
+    sessions = ask_sessions(ask)
+    cats, soft = ask_categories(ask)
+    words = re.findall(r"[a-z]+", (ask or "").lower())
+    audience = []
+    for w in words:
+        a = AUDIENCE_WORDS.get(w)
+        if a and a not in audience:
+            audience.append(a)
+    kinds = [] if soft else [c for c in cats]
+    feel = [w for w in words if SYN.get(w) in ("energetic", "epic", "emotional", "hype", "piano",
+                                                "powerful", "motivational", "inspiring", "happy",
+                                                "playful", "upbeat", "fun", "celebration") or w in PACE_FAST | PACE_SLOW]
+    feel = [w for w in dict.fromkeys(feel) if w not in ("pace",)]
+    bits = ["%d s" % length]
+    if pace < SHOT_SECONDS:
+        bits.append("fast pace")
+    elif pace > SHOT_SECONDS:
+        bits.append("slow pace")
+    what = sessions + [k.lower().replace(" & ", " and ") for k in kinds]
+    bits.append(", ".join(what) if what else "the whole convention")
+    if audience:
+        bits.append("for " + " and ".join(audience))
+    if feel:
+        bits.append("feel: " + ", ".join(feel[:3]))
+    return {"length": length, "pace": pace, "sessions": sessions, "kinds": kinds, "audience": audience,
+            "feel": feel[:3], "text": " \u00b7 ".join(bits)}
+
+
 # ── 5. the candidate pool ──────────────────────────────────────────────────
 # The kinds of moment people name, in their words (16 Sep, from the first
 # self-tests: "a reel about the candlelight ceremony for our parents please"
@@ -715,10 +779,21 @@ def ask_sessions(ask):
     return [name for name, phrases in SESSION_PHRASES.items() if any(p in low for p in phrases)]
 
 
+def strip_sessions(ask):
+    """The ask without the evening phrases, so "night of champions" does not
+    also read as "champions" (a winning-moments word)."""
+    low = re.sub(r"[^a-z0-9 ]+", " ", (ask or "").lower())
+    low = re.sub(r"\s+", " ", low)
+    for phrases in SESSION_PHRASES.values():
+        for p in phrases:
+            low = low.replace(p, " ")
+    return low
+
+
 def ask_categories(ask):
     """The kinds of moment an ask names, as (categories, soft).
     soft is True when only audience words ("parents") pointed anywhere."""
-    words = set(re.findall(r"[a-z]+", (ask or "").lower()))
+    words = set(re.findall(r"[a-z]+", strip_sessions(ask)))
     firm, soft = [], []
     for cat, ws in CATEGORY_WORDS.items():
         hit = words.intersection(ws)
@@ -754,17 +829,31 @@ def candidates(ask, clips, need, search_fn=None):
             print("[VI-CUT] search failed, using the whole convention: %r" % (e,))
     by_id = {c["id"]: c for c in clips}
     sessions = ask_sessions(ask)
+    cats, soft = ask_categories(ask)
     if sessions:
         # "night of champions": that evening's footage, every kind of moment in
-        # it, the index's hits first; the caps leave all of its kinds alone
+        # it, the index's hits first; "… and some board breaks" adds that kind
+        # from the whole weekend too (Michael's example, 17 Sep)
+        firm = [] if soft else list(cats)
+
+        def wanted(c):
+            return c.get("session") in sessions or c.get("category") in firm
         first, seen = [], set()
+        # the named KIND leads (a few, capped by the usual per-kind rule), then
+        # the index's hits from the evening, then the rest of the evening
+        for c in sorted([c for c in clips if c.get("category") in firm],
+                        key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"])):
+            c = dict(c)
+            c["weight"] = 9.95
+            first.append(c)
+            seen.add(c["id"])
         for k, cid in enumerate(hits):
-            if cid in by_id and by_id[cid].get("session") in sessions:
+            if cid in by_id and cid not in seen and wanted(by_id[cid]):
                 c = dict(by_id[cid])
-                c["weight"] = 10.0 - k * 0.01
+                c["weight"] = 9.9 - k * 0.01
                 first.append(c)
                 seen.add(cid)
-        named = sorted([c for c in clips if c["id"] not in seen and c.get("session") in sessions],
+        named = sorted([c for c in clips if c["id"] not in seen and wanted(c)],
                        key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
         for c in named:
             c = dict(c)
@@ -778,7 +867,6 @@ def candidates(ask, clips, need, search_fn=None):
             # reel moves across them (self-test #18: seven of ten were rank
             # presentations when everything was uncapped)
             return first + rest, True, tuple("session:" + x for x in sessions)
-    cats, soft = ask_categories(ask)
     first = []
     for k, cid in enumerate(hits):
         if cid in by_id and (not cats or by_id[cid].get("category") in cats):

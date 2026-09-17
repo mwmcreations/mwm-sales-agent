@@ -597,6 +597,55 @@ class TestInterviewMoments(unittest.TestCase):
         self.assertIn("[0:a]volume=0.25:eval=frame[nat]", cmd0[cmd0.index("-filter_complex") + 1])
 
 
+class TestWhatTheEditorUnderstood(unittest.TestCase):
+    """Michael, 17 Sep: "I want a video for students. This is gonna be an
+    Instagram reel, 15 seconds, very fast pace. You can use footage from the
+    Night of Champions and some board breaking shots." — one sentence, no
+    clips picked. The editor must read all of it, and say what it read."""
+    ASK = ("I want a video for students. This is gonna be an Instagram reel, 15 seconds, "
+           "very fast pace. You can use footage from the Night of Champions and some board breaking shots.")
+
+    def test_a_length_in_the_sentence(self):
+        self.assertEqual(vc.length_from("15 seconds, fast"), 15)
+        self.assertEqual(vc.length_from("a 30s reel"), 30)
+        self.assertEqual(vc.length_from("about one minute"), 60)
+        self.assertEqual(vc.length_from("half a minute"), 30)
+        self.assertEqual(vc.length_from("twenty seconds"), None)     # not a word we snap
+        self.assertEqual(vc.length_from("20 seconds"), 15)
+        self.assertEqual(vc.length_from("45 sec"), 30)
+        self.assertEqual(vc.length_from("proud parents"), None)
+        self.assertEqual(vc.length_from(""), None)
+
+    def test_the_brief_line(self):
+        b = vc.brief_for(self.ASK, 30)
+        self.assertEqual(b["length"], 15, "the sentence beats the radio button")
+        self.assertLess(b["pace"], 3.0)
+        self.assertEqual(b["sessions"], ["Night of Champions"])
+        self.assertEqual(b["kinds"], ["Board breaks"])
+        self.assertEqual(b["audience"], ["students"])
+        self.assertIn("fast", b["feel"])
+        self.assertEqual(b["text"], "15 s \u00b7 fast pace \u00b7 Night of Champions, board breaks \u00b7 for students \u00b7 feel: fast")
+        b = vc.brief_for("something nice for the schools", 60)
+        self.assertEqual(b["length"], 60)
+        self.assertIn("the whole convention", b["text"])
+        self.assertIn("for schools", b["text"])
+        b = vc.brief_for("", None)
+        self.assertEqual(b["length"], 30)
+
+    def test_the_sentence_cuts_the_evening_and_the_boards(self):
+        pool, by_search, focus = vc.candidates(self.ASK, CLIPS, 10, search)
+        self.assertEqual(focus, ("session:Night of Champions",))
+        p = vc.plan(self.ASK, pool, [], LIBRARY, {}, 15, by_search=by_search, focus=focus,
+                    all_clips=CLIPS, seed=3)
+        kinds = [s["category"] for s in p["shots"]]
+        sessions = {s["session"] for s in p["shots"]}
+        self.assertIn("Board breaks", kinds, kinds)
+        self.assertIn("Night of Champions", sessions, sessions)
+        self.assertTrue(all(s["session"] == "Night of Champions" or s["category"] == "Board breaks"
+                            for s in p["shots"]), [(s["session"], s["category"]) for s in p["shots"]])
+        self.assertLessEqual(max(s["dur"] for s in p["shots"]), 2.5, "fast pace")
+
+
 if __name__ == "__main__":
     res = unittest.main(verbosity=2, exit=False).result
     print("PATCH142_GATE_RESULT: %s" % ("PASS" if res.wasSuccessful() else "FAIL"))

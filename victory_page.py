@@ -136,6 +136,20 @@ nav.sub a .n{display:inline-block;background:#C8102E;color:#fff;border-radius:10
  cursor:pointer;color:#3b4249;background:#fff}
 .len input{display:none}
 .len input:checked+label{background:#14171a;color:#fff;border-color:#14171a}
+.askbox h2{font-size:22px;margin:4px 0 12px;letter-spacing:-.01em}
+.askbox textarea{width:100%;font:17px/1.5 inherit;padding:14px 15px;border:1px solid #c9ced4;border-radius:6px;
+ min-height:110px;resize:vertical;-webkit-appearance:none}
+.brief{min-height:22px;font-size:13.5px;color:#3b4249;margin:8px 0 12px;line-height:1.5}
+.brief .k{font-weight:700;color:#767d85;text-transform:uppercase;font-size:11px;letter-spacing:.08em;margin-right:6px}
+details.opts{margin:0 0 14px;font-size:14px}
+details.opts summary{cursor:pointer;color:#12507e;font-weight:600;padding:6px 0}
+.toggle{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600;color:#3b4249;margin:6px 0 14px;cursor:pointer}
+.toggle input{width:22px;height:22px;accent-color:#C8102E}
+button.big{width:100%;background:#C8102E;font-size:17px;padding:16px 20px}
+.askbox p.h{font-size:13.5px;color:#767d85;margin:12px 0 0}
+.picker{margin-top:26px;padding-top:18px;border-top:1px solid #e2e5e9}
+.picker p.h{font-size:14px;color:#3b4249;margin:0 0 12px}
+main.browse .pick{display:none}
 .mk{margin:0 0 16px}
 .mk button{width:100%;background:#C8102E}
 .req{border:1px solid #e2e5e9;border-radius:8px;padding:18px 20px;margin:0 0 18px}
@@ -208,11 +222,13 @@ def _head(email, event_title="Convention 2026", tab="library", badge=0):
             "<h1>Victory Intelligence</h1><span class=\"ev\">%s</span></div>"
             "<div class=\"who\"><span class=\"e\">%s</span> &middot; "
             "<a href=\"/vi/logout\">sign out</a></div></header>"
-            "<nav class=\"sub\"><a href=\"/vi/\"%s>Library</a>"
-            "<a href=\"/vi/queue\"%s>My videos%s</a></nav>"
+            "<nav class=\"sub\"><a href=\"/vi/\"%s>Make a video</a>"
+            "<a href=\"/vi/queue\"%s>My videos%s</a>"
+            "<a href=\"/vi/library\"%s>Browse footage</a></nav>"
             % (event_title, email,
-               " class=\"on\"" if tab == "library" else "",
-               " class=\"on\"" if tab == "queue" else "", b))
+               " class=\"on\"" if tab == "make" else "",
+               " class=\"on\"" if tab == "queue" else "", b,
+               " class=\"on\"" if tab == "library" else ""))
 
 
 def signin_page(sent=False, message=""):
@@ -280,8 +296,9 @@ APP_JS = r"""
       out=document.getElementById('out'), meta=document.getElementById('meta'),
       tabs=document.getElementById('tabs'), more=document.getElementById('more'),
       bar=document.getElementById('bar'), barn=document.getElementById('barn'),
-      panel=document.getElementById('panel'), note=document.getElementById('note'),
-      picked={}, rows=[], shown=0, kind='clip', timer=null, seq=0, PAGE=12;
+      note=document.getElementById('note'), pickmode=document.getElementById('pickmode'),
+      picker=document.getElementById('picker'), brief=document.getElementById('brief'),
+      picked={}, rows=[], shown=0, kind='clip', timer=null, seq=0, PAGE=12, btimer=null;
 
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
@@ -387,21 +404,56 @@ APP_JS = r"""
   });
 
   function painBar(){
+    if(!bar) return;
     var n=Object.keys(picked).length;
     bar.className = n ? 'bar on' : 'bar';
     barn.innerHTML = '<b>' + n + '</b> moment' + (n===1?'':'s') + ' picked';
   }
 
-  document.getElementById('clr').onclick=function(){ picked={}; paint(); painBar(); };
-  document.getElementById('ask').onclick=function(){ panel.className='panel on'; note.focus(); };
-  document.getElementById('cancel').onclick=function(){ panel.className='panel'; };
+  if(bar){
+    document.getElementById('clr').onclick=function(){ picked={}; paint(); painBar(); };
+    document.getElementById('ask').onclick=function(){ send(); };
+  }
 
-  document.getElementById('mkbtn').onclick=function(){ panel.className='panel on'; note.focus(); };
+  // what the editor understood, as you type — so a misreading shows before
+  // the cut, not after. "15 seconds" in the sentence also sets the length.
+  function showBrief(){
+    if(!note || !brief) return;
+    var text=note.value.trim();
+    if(!text){ brief.textContent=''; return; }
+    fetch('/vi/brief?q=' + encodeURIComponent(text) + '&length=' + chosenLength(), {credentials:'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(!d.ok || note.value.trim()!==text) return;
+        brief.innerHTML = '<span class="k">Understood as</span> ' + esc(d.text);
+        if(d.length_said){ var r=document.getElementById('l'+d.length); if(r){ r.checked=true; } }
+      }).catch(function(){});
+  }
+  if(note){
+    note.addEventListener('input', function(){ clearTimeout(btimer); btimer=setTimeout(showBrief, 350); });
+    document.querySelectorAll('input[name=len]').forEach(function(r){ r.addEventListener('change', showBrief); });
+  }
+
+  // the switch: only the few who want to choose clips ever see clips
+  if(pickmode){
+    pickmode.addEventListener('change', function(){
+      if(pickmode.checked){
+        picker.hidden=false;
+        if(!q.value.trim() && note.value.trim()) q.value=note.value.trim().slice(0,120);
+        if(q.value.trim()) run();
+        picker.scrollIntoView({behavior:'smooth', block:'start'});
+      } else {
+        picker.hidden=true; picked={}; paint(); painBar();
+      }
+    });
+  }
+
   function chosenLength(){
     var r=document.querySelector('input[name=len]:checked'); return r ? parseInt(r.value,10) : 30;
   }
-  document.getElementById('send').onclick=function(){
-    var ids=Object.keys(picked), b=this;
+  function send(){
+    var b=document.getElementById('send');
+    var ids=(pickmode && pickmode.checked) ? Object.keys(picked) : [];
     if(!ids.length && !note.value.trim()){ note.focus(); return; }
     b.disabled=true; b.textContent='Sending…';
     fetch('/vi/request', {method:'POST', credentials:'same-origin',
@@ -415,14 +467,15 @@ APP_JS = r"""
     .then(function(d){
       b.disabled=false; b.textContent='Make it';
       if(!d.ok){ alert(d.error || 'That did not send. Try again in a moment.'); return; }
-      panel.className='panel'; picked={}; note.value='';
+      picked={}; note.value='';
       document.getElementById('lines').value=''; document.getElementById('cta').value='';
       paint(); painBar();
       window.location.href='/vi/queue#req' + d.id;
     })
     .catch(function(){ b.disabled=false; b.textContent='Make it';
       alert('That did not send. Try again in a moment.'); });
-  };
+  }
+  if(document.getElementById('send')) document.getElementById('send').onclick=send;
 
   function run(){
     var term=q.value, mine=++seq;
@@ -446,6 +499,7 @@ APP_JS = r"""
       .catch(function(){ if(mine===seq) meta.textContent='Could not reach the index.'; });
   }
 
+  if(!q) return;
   q.addEventListener('input', function(){ clearTimeout(timer); timer=setTimeout(run,200); });
   go.addEventListener('click', run);
   q.addEventListener('keydown', function(e){ if(e.key==='Enter'){ clearTimeout(timer); q.blur(); run(); }});
@@ -458,12 +512,13 @@ APP_JS = r"""
 """
 
 
-def app_page(email, role, event_title="Convention 2026", records=0):
+def app_page(email, role, event_title="Convention 2026", records=0, mode="make"):
+    """The front door (mode="make"): one box — say what you want — and a
+    switch for the few who want to choose clips themselves (Michael, 17 Sep:
+    "the majority of the requests are just people requesting with no need to
+    select any footage"). mode="browse" is the Library on its own."""
     chips = "".join("<button class=\"chip\">%s</button>" % c for c in CHIPS)
-    body = (
-        "<div class=\"wrap\">" + _head(email, event_title, tab="library") +
-        "<main>"
-        "<div class=\"mk\"><button id=\"mkbtn\">Make a video</button></div>"
+    picker = (
         "<div class=\"searchbar\">"
         "<input type=\"text\" id=\"q\" autocomplete=\"off\" autocorrect=\"off\" "
         "placeholder=\"What are you looking for?\">"
@@ -472,47 +527,53 @@ def app_page(email, role, event_title="Convention 2026", records=0):
         "<div class=\"tabs\" id=\"tabs\"></div>"
         "<div class=\"meta\" id=\"meta\"></div>"
         "<div id=\"out\"></div>"
-        "<div class=\"more\" id=\"more\"></div>"
-        "</main>"
+        "<div class=\"more\" id=\"more\"></div>")
+    if mode == "browse":
+        main = ("<p class=\"h\" style=\"margin:0 0 14px\">Search the footage and what people said; tap a picture to watch. "
+                "To make a video, go to <a href=\"/vi/\">Make a video</a>.</p>" + picker)
+        bar = ""
+    else:
+        main = (
+            "<section class=\"askbox\">"
+            "<h2>What video do you want?</h2>"
+            "<textarea id=\"note\" placeholder=\"A 15-second reel for students, fast pace, from the "
+            "Night of Champions with some board breaks.\"></textarea>"
+            "<div class=\"brief\" id=\"brief\"></div>"
+            "<div class=\"len\"><span>How long</span>"
+            "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
+            "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"
+            "<input type=\"radio\" name=\"len\" id=\"l60\" value=\"60\"><label for=\"l60\">60 s</label>"
+            "</div>"
+            "<details class=\"opts\"><summary>More options &mdash; words on screen, end card</summary>"
+            "<label class=\"lbl2\">Words on screen <span>optional &middot; one sentence per line, "
+            "up to four &middot; the first opens the video</span></label>"
+            "<textarea id=\"lines\" class=\"short\" placeholder=\"Four days. Every school. One floor.\n"
+            "Champions are made here.\"></textarea>"
+            "<label class=\"lbl2\">End card <span>optional &middot; your call to action</span></label>"
+            "<input type=\"text\" id=\"cta\" maxlength=\"60\" placeholder=\"Enroll today \u2014 victoryma.com\">"
+            "</details>"
+            "<label class=\"toggle\"><input type=\"checkbox\" id=\"pickmode\"> "
+            "<span>I want to choose my own clips</span></label>"
+            "<button id=\"send\" class=\"big\">Make it</button>"
+            "<p class=\"h\">The editor finds the footage, cuts it, and it appears under "
+            "<strong>My videos</strong> in a few minutes. Name the moments (candlelight, belts, board "
+            "breaks, the Night of Champions), who it is for, how long, and the feel.</p>"
+            "</section>"
+            "<section id=\"picker\" class=\"picker\" hidden>"
+            "<p class=\"h\">Clips that match what you wrote. Tap <b>+</b> to include one &mdash; "
+            "your picks always go in, in your order. Change the search to look for something else.</p>"
+            + picker + "</section>")
+        bar = ("<div class=\"bar\" id=\"bar\"><div class=\"in\">"
+               "<span class=\"n\" id=\"barn\"></span>"
+               "<button class=\"clr\" id=\"clr\">Clear</button>"
+               "<button class=\"go\" id=\"ask\">Make it with these</button>"
+               "</div></div>")
+    body = (
+        "<div class=\"wrap\">" + _head(email, event_title, tab=("library" if mode == "browse" else "make")) +
+        "<main class=\"" + ("browse" if mode == "browse" else "make") + "\">" + main + "</main>"
         "<footer>%s moments from %s &middot; every result names the session and "
         "camera it came from.</footer>"
-        "</div>"
-
-        "<div class=\"bar\" id=\"bar\"><div class=\"in\">"
-        "<span class=\"n\" id=\"barn\"></span>"
-        "<button class=\"clr\" id=\"clr\">Clear</button>"
-        "<button class=\"go\" id=\"ask\">Make a video with these</button>"
-        "</div></div>"
-
-        "<div class=\"panel\" id=\"panel\"><div class=\"card\">"
-        "<h2>Make a video</h2>"
-        "<p class=\"h\">Say what you want. Any moments you picked go in for sure; "
-        "the machine finds the rest, cuts it, and it appears under "
-        "<strong>My videos</strong> in a few minutes.</p>"
-        "<ul>"
-        "<li>Name the moments — candlelight, belts, board breaks, sparring, the crowd, "
-        "instructors. That is what the editor listens to most.</li>"
-        "<li>Say who it is for — parents, students, a specific school.</li>"
-        "<li>Say the feel, if you have one — proud, fun, epic, quiet. It picks the music.</li>"
-        "</ul>"
-        "<textarea id=\"note\" placeholder=\"A reel for the Lake Nona page, aimed at "
-        "parents — the candlelight moments.\"></textarea>"
-        "<label class=\"lbl2\">Words on screen <span>optional &middot; one sentence per line, "
-        "up to four &middot; the first opens the video</span></label>"
-        "<textarea id=\"lines\" class=\"short\" placeholder=\"Four days. Every school. One floor.\n"
-        "Champions are made here.\"></textarea>"
-        "<label class=\"lbl2\">End card <span>optional &middot; your call to action</span></label>"
-        "<input type=\"text\" id=\"cta\" maxlength=\"60\" placeholder=\"Enroll today \u2014 victoryma.com\">"
-        "<div class=\"len\"><span>How long</span>"
-        "<input type=\"radio\" name=\"len\" id=\"l15\" value=\"15\"><label for=\"l15\">15 s</label>"
-        "<input type=\"radio\" name=\"len\" id=\"l30\" value=\"30\" checked><label for=\"l30\">30 s</label>"
-        "<input type=\"radio\" name=\"len\" id=\"l60\" value=\"60\"><label for=\"l60\">60 s</label>"
-        "</div>"
-        "<div class=\"acts\">"
-        "<button class=\"cancel\" id=\"cancel\">Cancel</button>"
-        "<button id=\"send\">Make it</button>"
-        "</div></div></div>"
-        % ("{:,}".format(records), event_title)
+        "</div>" % ("{:,}".format(records), event_title) + bar
     )
     return _shell("Victory Intelligence", body, APP_JS)
 
@@ -628,6 +689,13 @@ def _request_card(r, mine_only):
             h.append("<div class=\"errbox\" style=\"background:#fdf6e7;border-left-color:#8a5a00;color:#5c4a1e\">"
                      "Could not find the recording for these picks, so they are not in this cut:\n%s</div>"
                      % "\n".join("\u2022 " + _e(x) for x in summ["skipped"]))
+        if r.get("note"):
+            try:
+                import victory_cut as _vc
+                h.append("<div class=\"brief\"><span class=\"k\">Understood as</span> %s</div>"
+                         % _e(_vc.brief_for(r["note"], r.get("length_s"))["text"]))
+            except Exception:
+                pass
         if summ.get("no_room"):
             h.append("<div class=\"errbox\" style=\"background:#fdf6e7;border-left-color:#8a5a00;color:#5c4a1e\">"
                      "Picked, but no room in a %s-second video (ask for a longer one to fit them):\n%s</div>"

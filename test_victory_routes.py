@@ -1218,5 +1218,60 @@ class TestQueuePageIsLightOnAPhone(VICase):
         self.assertIn("openPlayer", body)
 
 
+class TestTheFrontDoorIsOneBox(VICase):
+    """Michael, 17 Sep: most people only describe what they want; clips are
+    shown only to those who flip "I want to choose my own clips"."""
+
+    def test_the_door_shows_no_clips_until_asked(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        body = self.c.get("/vi/").data.decode("utf-8")
+        self.assertIn('id="note"', body)
+        self.assertIn('id="pickmode"', body)
+        self.assertIn("I want to choose my own clips", body)
+        self.assertIn('id="picker" class="picker" hidden', body)
+        self.assertIn('id="brief"', body)
+        self.assertIn("Browse footage", body)
+        self.assertIn('href="/vi/library"', body)
+
+    def test_browse_footage_is_the_library_on_its_own(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        body = self.c.get("/vi/library").data.decode("utf-8")
+        self.assertIn('id="q"', body)
+        self.assertNotIn('id="note"', body)
+        self.assertNotIn('id="pickmode"', body)
+        self.assertIn('<main class="browse">', body)
+
+    def test_the_brief_reads_the_sentence(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        d = self.c.get("/vi/brief?q=" + "a 15 second reel for students, very fast, from the Night of Champions "
+                       "and some board breaks&length=30").get_json()
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["length"], 15)
+        self.assertTrue(d["length_said"])
+        self.assertIn("Night of Champions", d["text"])
+        self.assertIn("board break", d["text"].lower())
+        self.assertIn("students", d["text"])
+        self.assertIn("fast", d["text"])
+        d = self.c.get("/vi/brief?q=something%20nice&length=60").get_json()
+        self.assertEqual(d["length"], 60)
+        self.assertFalse(d["length_said"])
+
+    def test_the_brief_needs_a_session(self):
+        self.assertEqual(self.c.get("/vi/brief?q=x").status_code, 401)
+        self.assertEqual(self.c.get("/vi/library").status_code, 200)   # the sign-in door
+        self.assertIn("/vi/login", self.c.get("/vi/library").data.decode("utf-8"))
+
+    def test_my_videos_says_what_was_understood(self):
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        rid = self.store.create_request("dev@mwmcreations.com", "mwm", "",
+                                        "15 seconds for students, fast, night of champions", [], 15)
+        self.store.set_request_state(rid, "rendering", "w")
+        self.store.finish_request(rid, "ready", drive_id="d1", file_name="x.mp4", size=10,
+                                  seconds=15, summary={"shots": []})
+        body = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertIn("Understood as", body)
+        self.assertIn("Night of Champions", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

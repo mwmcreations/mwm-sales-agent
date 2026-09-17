@@ -167,6 +167,48 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             _err("vi_home", e)
             return vp.signin_page(message="Something went wrong. Try again.")
 
+    @app.route("/vi/library", methods=["GET"])
+    def vi_library():
+        """The Library on its own (Browse footage). The front door no longer
+        shows clips unless the person asks to choose them (Michael, 17 Sep)."""
+        try:
+            sess = _session()
+            if not sess:
+                return vp.signin_page()
+            if not va.can_search(sess["role"]):
+                return vp.pending_page(sess["email"])
+            import victory_index as vi
+            if vi.corpus_size() == 0:
+                vi.load_corpus()
+            return vp.app_page(sess["email"], sess["role"], records=vi.corpus_size(), mode="browse")
+        except Exception as e:
+            _err("vi_library", e)
+            return vp.signin_page(message="Something went wrong. Try again.")
+
+    @app.route("/vi/brief", methods=["GET"])
+    def vi_brief():
+        """'Understood as …' — how the editor reads an ask, shown under the
+        box while the person types. Cheap: words only, no model, no search."""
+        try:
+            if not _is_admin():
+                sess = _session()
+                if not sess or not va.can_search(sess["role"]):
+                    return jsonify({"ok": False, "error": "unauthorized"}), 401
+            q = (request.values.get("q") or "")[:2000]
+            try:
+                length = int(request.values.get("length") or 0) or None
+            except Exception:
+                length = None
+            import victory_cut as _vc
+            said = _vc.length_from(q)
+            b = _vc.brief_for(q, said or length)
+            b["ok"] = True
+            b["length_said"] = bool(said)
+            return jsonify(b)
+        except Exception as e:
+            _err("vi_brief", e)
+            return jsonify({"ok": False, "error": "brief failed"}), 500
+
     @app.route("/vi/login", methods=["POST"])
     def vi_login():
         """Ask for a sign-in link.
