@@ -263,7 +263,7 @@ class TestWordsOnScreen(unittest.TestCase):
                             segments=["s0.mp4", "s1.mp4", "s2.mp4"])
         pic = " ".join(seg[0])
         self.assertIn("-i s0.mp4 -i s1.mp4 -i s2.mp4 -itsoffset 0.30 -i card00.mov", pic)
-        self.assertIn("[0:v][1:v][2:v]concat=n=3:v=1:a=0[body];[3:v]format=rgba", pic)
+        self.assertIn("[0:v]setsar=1[s0];[1:v]setsar=1[s1];[2:v]setsar=1[s2];[s0][s1][s2]concat=n=3:v=1:a=0[body];[3:v]format=rgba", pic)
         self.assertIn("[body][c0]overlay=", pic)
         self.assertNotIn("b.mp4", pic)
         self.assertIn("-i b.mp4", " ".join(seg[1]))     # the sound still comes from the joined body

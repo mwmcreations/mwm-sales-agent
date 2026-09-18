@@ -450,7 +450,9 @@ def main():
             try:
                 do_job(job, clips, reframe, library, search_fn, moments)
             except subprocess.CalledProcessError as e:
-                err = "ffmpeg failed: %s" % ((e.stderr or str(e))[-500:],)
+                text = (e.stderr or str(e)).strip()
+                # the first lines say what went wrong; the last say how it ended
+                err = "ffmpeg failed: %s" % (text if len(text) <= 900 else text[:500] + " … " + text[-400:],)
                 log("  job #%s FAILED: %s" % (job["id"], err))
                 try:
                     _post_json("/vi/jobs/%s/fail" % job["id"], {"error": err, "worker": WORKER})
