@@ -242,6 +242,19 @@ def local_search():
 
 
 # ── one job ────────────────────────────────────────────────────────────────
+def count_frames(path):
+    """How many picture frames a finished file holds. ffmpeg, not ffprobe
+    (see victory_cut.probe); the picture is decoded to nothing and the
+    frames counted on the way. -1 when it cannot be told."""
+    try:
+        r = subprocess.run([FFMPEG, "-hide_banner", "-i", path, "-map", "0:v:0", "-an", "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=300)
+        m = re.findall(r"frame=\s*(\d+)", r.stderr or "")
+        return int(m[-1]) if m else -1
+    except Exception:
+        return -1
+
+
 def do_job(job, clips, reframe, library, search_fn, moments=None):
     import victory_cut as vc
     rid = job["id"]
@@ -304,7 +317,15 @@ def do_job(job, clips, reframe, library, search_fn, moments=None):
     plan["titles"] = "cards" if cards else "none"
     plan["bytes"] = os.path.getsize(out_path)
     seconds = sum(s["dur"] for s in plan["shots"])
-    log("  rendered %s (%d bytes) in %.0fs; uploading" % (out_name, plan["bytes"], plan["render_seconds"]))
+    # the file, counted cold before it goes out: #30 (17 Sep) had 1,105 frames
+    # where 1,800 belonged and nobody knew until Michael pressed play
+    plan["frames"] = count_frames(out_path)
+    plan["frames_expected"] = int(round(seconds * vc.FPS))
+    short = plan["frames"] >= 0 and plan["frames"] < plan["frames_expected"] * 0.97
+    plan["frames_ok"] = not short
+    log("  rendered %s (%d bytes, %s of %d frames%s) in %.0fs; uploading" % (
+        out_name, plan["bytes"], plan["frames"] if plan["frames"] >= 0 else "?", plan["frames_expected"],
+        " — SHORT, this cut will not play smoothly" if short else "", plan["render_seconds"]))
     res = _post_file("/vi/jobs/%s/deliver" % rid,
                      {"summary": json.dumps(plan), "seconds": "%.2f" % seconds},
                      "video", out_path)

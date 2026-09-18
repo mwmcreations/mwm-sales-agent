@@ -805,7 +805,7 @@ def final_cmds(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx
         # rate and format by segment_cmd, but a source's pixel aspect can
         # differ (an ATEM or a proxy) — made square here
         vchain = ["[%d:v]setsar=1[s%d]" % (k, k) for k in range(len(segs))] + \
-                 ["".join("[s%d]" % k for k in range(len(segs))) + "concat=n=%d:v=1:a=0[body]" % len(segs)] + vchain
+                 ["".join("[s%d]" % k for k in range(len(segs))) + "concat=n=%d:v=1:a=0,fps=%d[body]" % (len(segs), FPS)] + vchain
     else:
         inputs, card_inputs, achain, vchain, venc, end = _final_parts(
             ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=False)
