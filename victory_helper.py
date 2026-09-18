@@ -353,8 +353,9 @@ Answer with ONE JSON object and nothing else:
 applies, with the change folded in — this sentence alone is what the editor will read>",
  "search": "<a short phrase (2-6 words) naming footage the change asks for, in the words the footage
 library uses (e.g. 'demo team red uniforms stage'), or null if the change is not about which footage>",
- "lines": [<up to 4 short lines for the screen, keep the old ones unless the change is about them>],
- "cta": "<end card text, keep the old one unless the change is about it>",
+ "lines": [<the old lines, unchanged, unless the change is about the words; if the cut had no words on screen,
+leave this EMPTY — do not write new ones>],
+ "cta": "<the old end card unchanged, or empty if there was none, unless the change is about it>",
  "say": "<one short sentence to the person, plain and warm, saying what you will do differently>"}
 Rules: keep the length and audience unless told otherwise; if they ask for less of something, say so in the
 sentence ("no crowd shots"); if they ask for more of something or a specific moment, name it in the
