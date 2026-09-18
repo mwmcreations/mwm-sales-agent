@@ -117,6 +117,45 @@ def main(paths):
     r = subprocess.run(cmdA, capture_output=True, text=True, timeout=600)
     out.append("variant[mov_card] rc=%d frames=%s err=%s" % (r.returncode, frames(os.path.join(work, "final_v_movcard.mp4")), (r.stderr or "")[-100:].replace("\n", " ")))
     out.append("base_cmd=%s" % " ".join(base))
+    # the picture pass still loses a frame or two per card (233 of 240; #30:
+    # 1,791 of 1,800 with a 0.27 s hole at 15.7 s). Where? ffmpeg's own
+    # summary counts dup/drop at its sync stage; the graph is the other place
+    pic = vc.final_cmds(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER,
+                        cards=cards, workdir=work)[0]
+
+    def run_pic(name, cmd):
+        dst = os.path.join(work, "pic_%s.mp4" % name)
+        cmd = list(cmd[:-1]) + [dst]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        err = r.stderr or ""
+        tail = [l for l in err.splitlines() if "frame=" in l]
+        drops = [l.strip()[:100] for l in err.splitlines()
+                 if "dropping" in l.lower() or "past duration" in l.lower() or "discard" in l.lower()]
+        out.append("pic[%s] rc=%d frames=%s summary=%s drops=%d %s err=%s" % (
+            name, r.returncode, frames(dst), (tail[-1].strip()[-60:] if tail else "-"), len(drops), drops[:3],
+            "" if r.returncode == 0 else err[-160:].replace("\n", " ")))
+
+    verbose = list(pic); verbose[verbose.index("-v") + 1] = "verbose"
+    run_pic("verbose", verbose)
+    fc_i = pic.index("-filter_complex") + 1
+    t1 = list(pic); t1[1:1] = ["-filter_complex_threads", "1", "-filter_threads", "1"]
+    run_pic("fthreads1", t1)
+    near = list(pic); near[fc_i] = pic[fc_i].replace("overlay=0:0:", "overlay=0:0:ts_sync_mode=nearest:")
+    run_pic("ts_nearest", near)
+    # the cards placed by setpts inside the graph instead of -itsoffset
+    sp = [a for k, a in enumerate(pic) if not (a == "-itsoffset" or (k > 0 and pic[k - 1] == "-itsoffset"))]
+    fc = pic[fc_i]
+    for k, (_, t_in, _) in enumerate(cards):
+        fc = fc.replace("[%d:v]format=rgba," % (k + 1), "[%d:v]setpts=PTS+%.2f/TB,format=rgba," % (k + 1, t_in))
+    sp[sp.index("-filter_complex") + 1] = fc
+    run_pic("setpts", sp)
+    tq = list(pic)
+    for k in range(len(tq) - 1, -1, -1):
+        if tq[k] == "-i":
+            tq[k:k] = ["-thread_queue_size", "2048"]
+    run_pic("thread_queue", tq)
+    passthrough = list(pic[:-1]) + ["-fps_mode", "passthrough", pic[-1]]
+    run_pic("passthrough", passthrough)
     # are the frames real or padding? count frames that differ from the one before
     def distinct(path):
         r = subprocess.run([FFMPEG, "-v", "info", "-i", path, "-vf", "mpdecimate=hi=64*4:lo=64*2:frac=0.5",
