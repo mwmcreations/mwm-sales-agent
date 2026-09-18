@@ -48,7 +48,15 @@ a:hover{border-bottom-color:#fff}
 main{flex:1}
 header.cv{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:26px 0 18px}
 header.cv .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
-header.cv h1{font-size:13px;margin:0;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:#fff}
+header.cv h1{font-size:13px;margin:0;font-weight:600;color:#fff;line-height:1}
+.vilogo{display:inline-flex;align-items:center;gap:10px;color:#fff;border:0;text-decoration:none}
+.vilogo .vimark{width:22px;height:22px;flex:0 0 22px}
+.viword{font-size:13px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;white-space:nowrap}
+.viword b{font-weight:300}
+main.door .vilogo.big{display:flex;margin:0 0 44px}
+main.door .vilogo.big .vimark{width:56px;height:56px;flex-basis:56px}
+main.door .vilogo.big .viword{font-size:22px;letter-spacing:.26em}
+main.door h2{font-size:30px;font-weight:300;letter-spacing:-.02em}
 header.cv .ev{font-size:11px;color:var(--dim);letter-spacing:.18em;text-transform:uppercase}
 header.cv .who{font-size:12.5px;color:var(--dim2);margin:0}
 header.cv .who a{color:var(--dim);border:0}
@@ -267,7 +275,10 @@ main.browse .pick{display:none}
  .wrap{padding:0 18px 100px}
  header.cv{padding:20px 0 12px;flex-wrap:nowrap;align-items:flex-start}
  header.cv .top{flex-direction:column;gap:5px}
- header.cv h1{font-size:12px;letter-spacing:.18em}
+ .viword{font-size:12px;letter-spacing:.18em}
+ .vilogo .vimark{width:19px;height:19px;flex-basis:19px}
+ main.door .vilogo.big{flex-direction:column;align-items:flex-start;gap:16px;margin:0 0 34px}
+ main.door .vilogo.big .viword{font-size:17px}
  header.cv .ev{font-size:10.5px;letter-spacing:.14em}
  header.cv .who .e{display:none}
  header.cv .who{margin-top:1px}
@@ -305,10 +316,24 @@ def _shell(title, body, extra=""):
     )
 
 
+VI_MARK = ("<svg class=\"vimark\" viewBox=\"0 0 34 34\" aria-hidden=\"true\">"
+           "<path d=\"M4 7 L13 27 L22 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3.2\" "
+           "stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+           "<rect x=\"27\" y=\"7\" width=\"3.2\" height=\"20\" rx=\"1.6\" fill=\"#e0102f\"/></svg>")
+VI_WORDMARK = "<span class=\"viword\">Victory <b>Intelligence</b></span>"
+
+
+def vi_logo(cls=""):
+    """The Victory Intelligence lockup: the VI mark (a V and a red I) and the
+    wordmark. Michael, 17 Sep: the platform gets its own logo, not the
+    Victory Martial Arts one."""
+    return "<a class=\"vilogo %s\" href=\"/vi/\">%s%s</a>" % (cls, VI_MARK, VI_WORDMARK)
+
+
 def _head(email, event_title="Convention 2026", tab="library", badge=0):
     b = ("<span class=\"n\">%d</span>" % badge) if badge else ""
     return ("<header class=\"cv\"><div class=\"top\">"
-            "<h1>Victory Intelligence</h1><span class=\"ev\">%s</span></div>"
+            "<h1>" + vi_logo() + "</h1><span class=\"ev\">%s</span></div>"
             "<div class=\"who\"><span class=\"e\">%s &middot; </span>"
             "<a href=\"/vi/logout\">sign out</a></div></header>"
             "<nav class=\"sub\"><a href=\"/vi/\"%s>Make a video</a>"
@@ -347,9 +372,8 @@ def signin_page(sent=False, message=""):
             "<p class=\"small\">Access is granted by MWM. "
             "If you sign in and see nothing yet, that is why.</p></div>")
     body = ("<div class=\"wrap\"><header class=\"cv\"><div class=\"top\">"
-            "<h1>Victory Intelligence</h1>"
             "<span class=\"ev\">MWM Creations &amp; Studios</span></div></header>"
-            "<main>" + inner + "</main>"
+            "<main class=\"door\">" + vi_logo("big") + inner + "</main>"
             "<footer>Built by MWM Creations &amp; Studios for Victory Martial Arts.</footer>"
             "</div>")
     return _shell("Victory Intelligence — sign in", body)
