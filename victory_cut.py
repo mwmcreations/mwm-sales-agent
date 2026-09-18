@@ -700,31 +700,30 @@ def _duck(spans, inside, outside, ramp=0.4):
     return "'" + expr + "'"
 
 
-def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None,
-              speech=None):
-    """cards: optional (head_png, outro_png) paths — transparent 1080x1920
-    pictures of the titles, used when this ffmpeg cannot draw text itself.
-    speech: [(t0, t1)] where an interview moment plays — its own sound is
-    full there and the music ducks under it."""
+def _final_parts(ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=True):
+    """The pieces of the final pass: the inputs, the sound chain (one
+    filter string ending in [a]), the picture chain (filter parts ending in
+    [v]) and the encoder flags."""
     end = float(total)
     venc = ["-c:v", encoder] + (["-b:v", "10M", "-allow_sw", "1"] if "videotoolbox" in encoder
                                  else ["-preset", "medium", "-crf", "21"])
-    cmd = [ffmpeg, "-v", "error", "-y", "-i", body]
-    chain = []          # filter_complex parts
-    vin = "[0:v]"
-    n_in = 1
+    inputs = ["-i", body]
     spans = list(speech or ())
     nat_vol = _duck(spans, 1.0, BROLL_NAT)
+    n_in = 1
     if music:
-        cmd += ["-i", music]
+        inputs += ["-i", music]
         mus_vol = _duck(spans, SPEECH_MUSIC, 1.0)
-        chain.append("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
-                     "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
-                     "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
-                     "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
-        n_in = 2
+        achain = ("[0:a]volume=%s:eval=frame[nat];[1:a]atrim=0:%.2f,asetpts=PTS-STARTPTS,"
+                  "afade=t=in:st=0:d=0.3,afade=t=out:st=%.2f:d=1.5,volume=%s:eval=frame[mus];"
+                  "[nat][mus]amix=inputs=2:duration=first:dropout_transition=0,"
+                  "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]" % (nat_vol, end, end - 1.5, mus_vol))
+        n_in = 2 if sound_in_process else 1     # the card inputs are numbered after the music
     else:
-        chain.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]")
+        achain = "[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]"
+    vchain = []
+    vin = "[0:v]"
+    card_inputs = []
     vfilters = []
     if cards:
         # cards: list of (png_path, t_in, t_out); each fades in and out over 0.4 s
@@ -737,14 +736,14 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
                 # looped PNG is overlaid, whatever its rate (video #30 "getting
                 # stuck", 17 Sep: 1,105 frames where 1,800 belonged), but keeps
                 # every frame when the card comes in as a real video track
-                cmd += ["-itsoffset", "%.2f" % t_in, "-i", png]
+                card_inputs += ["-itsoffset", "%.2f" % t_in, "-i", png]
             else:
-                cmd += ["-loop", "1", "-framerate", str(FPS), "-itsoffset", "%.2f" % t_in,
-                        "-t", "%.2f" % max(0.1, t_out - t_in + 0.2), "-i", png]
-            chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
-                         % (idx, t_in, max(t_in, t_out - 0.4), k))
-            chain.append("%s[c%d]overlay=0:0:eof_action=pass:enable='between(t,%.2f,%.2f)'[v%d]"
-                         % (vin, k, t_in, t_out, k))
+                card_inputs += ["-loop", "1", "-framerate", str(FPS), "-itsoffset", "%.2f" % t_in,
+                                "-t", "%.2f" % max(0.1, t_out - t_in + 0.2), "-i", png]
+            vchain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
+                          % (idx, t_in, max(t_in, t_out - 0.4), k))
+            vchain.append("%s[c%d]overlay=0:0:eof_action=pass:enable='between(t,%.2f,%.2f)'[v%d]"
+                          % (vin, k, t_in, t_out, k))
             vin = "[v%d]" % k
     elif font and has_filter(ffmpeg, "drawtext"):
         vfilters += [_drawtext(font, head[0], 70, "h*0.40", 0.3, 3.2),
@@ -752,11 +751,55 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
                      _drawtext(font, outro[0], 76, "h*0.42", end - 3.0, end - 0.1),
                      _drawtext(font, outro[1], 48, "h*0.42+100", end - 2.8, end - 0.1, "0xE8E8E8")]
     vfilters.append("fade=t=out:st=%.2f:d=0.5" % (end - 0.5))
-    chain.append("%s%s[v]" % (vin, ",".join(vfilters)))
-    cmd += ["-filter_complex", ";".join(chain), "-map", "[v]", "-map", "[a]"]
+    vchain.append("%s%s[v]" % (vin, ",".join(vfilters)))
+    return inputs, card_inputs, achain, vchain, venc, end
+
+
+def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None,
+              speech=None):
+    """cards: optional (head_png, outro_png) paths — transparent 1080x1920
+    pictures of the titles, used when this ffmpeg cannot draw text itself.
+    speech: [(t0, t1)] where an interview moment plays — its own sound is
+    full there and the music ducks under it.
+    The one-pass form: picture and sound in one filter graph. The editor
+    itself uses final_cmds (three passes) — see there for why."""
+    inputs, card_inputs, achain, vchain, venc, end = _final_parts(
+        ffmpeg, body, music, total, head, outro, font, encoder, cards, speech)
+    cmd = [ffmpeg, "-v", "error", "-y"] + inputs + card_inputs
+    cmd += ["-filter_complex", ";".join([achain] + vchain), "-map", "[v]", "-map", "[a]"]
     cmd += venc + ["-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-b:a", "192k",
                    "-movflags", "+faststart", "-t", "%.3f" % end, dst]
     return cmd
+
+
+def final_cmds(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None,
+               speech=None, workdir=None):
+    """The final pass as three commands: the picture (cards, fade — no sound
+    in the process), the sound (mix, loudness, limiter — no picture), then
+    the two joined without re-encoding. On the Mini's ffmpeg 8.0.1 a graph
+    that carries the sound chain alongside a card overlay loses a third of
+    the picture frames (video #30 "getting stuck", 17 Sep; the frame check
+    vi_segtest.py: 154 of 240 with the sound in the graph, 239 without), so
+    the picture is cut in a process of its own."""
+    if any(not str(c[0]).lower().endswith((".mov", ".mp4")) for c in (cards or ())):
+        # a looped still with no sound in the process never ends on that
+        # ffmpeg (20:45 ET, ten-minute hang) — render() turns every card into
+        # a video first; anything else takes the one-pass road
+        return [final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder, cards, speech)]
+    inputs, card_inputs, achain, vchain, venc, end = _final_parts(
+        ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=False)
+    workdir = workdir or os.path.dirname(dst) or "."
+    picture = os.path.join(workdir, "picture.mp4")
+    sound = os.path.join(workdir, "sound.m4a")
+    vcmd = [ffmpeg, "-v", "error", "-y", "-i", body] + card_inputs
+    vcmd += ["-filter_complex", ";".join(vchain), "-map", "[v]", "-an"]
+    vcmd += venc + ["-pix_fmt", "yuv420p", "-t", "%.3f" % end, picture]
+    acmd = [ffmpeg, "-v", "error", "-y"] + inputs + ["-filter_complex", achain, "-map", "[a]", "-vn",
+                                                     "-c:a", "aac", "-ar", "48000", "-b:a", "192k",
+                                                     "-t", "%.3f" % end, sound]
+    mcmd = [ffmpeg, "-v", "error", "-y", "-i", picture, "-i", sound, "-map", "0:v", "-map", "1:a",
+            "-c", "copy", "-movflags", "+faststart", dst]
+    return [vcmd, acmd, mcmd]
 
 
 def reanchor_cards(cards, planned, actual):
@@ -851,9 +894,9 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
                            check=True, capture_output=True, text=True, timeout=300)
             movs.append((mov, t_in, t_out))
         cards = movs
-    subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
-                             cards=cards, speech=speech_spans(cut)),
-                   check=True, capture_output=True, text=True, timeout=900)
+    for c in final_cmds(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
+                        cards=cards, speech=speech_spans(cut), workdir=workdir):
+        subprocess.run(c, check=True, capture_output=True, text=True, timeout=900)
     return out_path, round(total, 2)
 
 

@@ -232,6 +232,37 @@ class TestWordsOnScreen(unittest.TestCase):
         self.assertIn("-t", cv)
         self.assertEqual(cv[cv.index("-t") + 1], "3.40")
 
+    def test_the_picture_and_the_sound_are_cut_in_separate_passes(self):
+        """The Mini's ffmpeg 8 loses a third of the picture frames when the
+        sound chain shares the process with a card overlay (17 Sep, #30):
+        the editor cuts the picture alone, the sound alone, then joins them
+        without re-encoding."""
+        cmds = vc.final_cmds("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                             "h264_videotoolbox", cards=[("card00.mov", 0.3, 3.5), ("card01.mov", 27.0, 30.0)],
+                             workdir="w")
+        self.assertEqual(len(cmds), 3)
+        pic, snd, mux = [" ".join(c) for c in cmds]
+        self.assertIn("-an", pic)
+        self.assertNotIn("m.wav", pic)
+        self.assertNotIn("loudnorm", pic)
+        self.assertIn("-itsoffset 0.30 -i card00.mov -itsoffset 27.00 -i card01.mov", pic)
+        self.assertIn("[1:v]format=rgba", pic)          # cards numbered right after the body
+        self.assertIn("[2:v]format=rgba", pic)
+        self.assertIn("[v1]fade=t=out:st=29.50:d=0.5[v]", pic)
+        self.assertTrue(pic.endswith("w/picture.mp4"))
+        self.assertIn("-vn", snd)
+        self.assertIn("loudnorm", snd)
+        self.assertIn("alimiter=limit=0.7", snd)
+        self.assertIn("-ar 48000", snd)
+        self.assertNotIn("overlay", snd)
+        self.assertTrue(snd.endswith("w/sound.m4a"))
+        self.assertIn("-i w/picture.mp4 -i w/sound.m4a -map 0:v -map 1:a -c copy -movflags +faststart o.mp4", mux)
+        # a still card would hang the picture pass: that takes the one-pass road
+        one = vc.final_cmds("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                            "h264_videotoolbox", cards=[("card00.png", 0.3, 3.5)], workdir="w")
+        self.assertEqual(len(one), 1)
+        self.assertIn("-loop", " ".join(one[0]))
+
     def test_many_cards_in_the_ffmpeg_command(self):
         cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
                            cards=[("c0.png", 0.3, 3.5), ("c1.png", 12.0, 15.0), ("c2.png", 27.0, 30.0)])
