@@ -80,57 +80,60 @@ def main(paths):
         cmd = vc.final_cmd(FFMPEG, body, mus, final, total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cds)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         out.append("final[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-160:].replace("\n", " ")))
-    # variants of the card overlay, to find the one this ffmpeg keeps every frame through
+    # what differs between the editor's final pass (drops frames here) and the
+    # hand-built one-card command below (keeps them)? bisect from the editor's
+    # command, one change at a time
+    import re as _re
     base = vc.final_cmd(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cards)
     fc = base[base.index("-filter_complex") + 1]
+    parts = fc.split(";")
+    audio = [p for p in parts if p.endswith("[a]")]
+    no_audio = ";".join(p for p in parts if not p.endswith("[a]"))
+    last_v = [p for p in parts if p.endswith("[v]")][0]
+
+    def with_fc(newfc, extra=()):
+        c = list(base[:-1])
+        c[c.index("-filter_complex") + 1] = newfc
+        return c + list(extra)
+
+    def audio_out(c, af=None):
+        # take the sound out of the filter graph: map the body's own sound
+        c = list(c)
+        i = c.index("-map", c.index("-map") + 1)   # the second -map is [a]
+        c[i + 1] = "0:a?"
+        if af:
+            c += ["-af", af]
+        return c
+
+    aud_chain = audio[0].split("]", 1)[1].rsplit("[", 1)[0] if audio else ""
     variants = {
+        "one_card": (vc.final_cmd(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cards[:1])[:-1], None),
+        "two_cards": (vc.final_cmd(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cards[:2])[:-1], None),
+        "audio_out": (audio_out(with_fc(no_audio)), None),
+        "audio_af": (audio_out(with_fc(no_audio), aud_chain), None),
+        "no_fade": (with_fc(fc.replace(last_v, last_v.split("]", 1)[0] + "]null[v]")), None),
+        "no_faststart": ([a for k, a in enumerate(base[:-1]) if a not in ("-movflags", "+faststart")], None),
         "cfr": (base[:-1] + ["-fps_mode", "cfr"], None),
-        "passthrough": (base[:-1] + ["-fps_mode", "passthrough"], None),
-        "vsync1": (base[:-1] + ["-vsync", "1"], None),
-        "no_enable": (None, fc.replace(":eof_action=pass:enable='between(t,0.30,3.20)'", ":eof_action=pass")
-                      .replace(":eof_action=pass:enable='between(t,3.50,6.00)'", ":eof_action=pass")
-                      .replace(":eof_action=pass:enable='between(t,%.2f,%.2f)'" % (total - 3.0, total), ":eof_action=pass")),
-        "yuva": (None, fc.replace("format=rgba", "format=yuva420p")),
-        "x264": ([("libx264" if a == ENCODER else a) for a in base[:-1]], None),
     }
     for name, (cmd, newfc) in variants.items():
         final = os.path.join(work, "final_v_%s.mp4" % name)
-        if cmd is None:
-            cmd = list(base[:-1])
-            cmd[cmd.index("-filter_complex") + 1] = newfc
-        cmd = [a for a in cmd]
-        if name == "x264":
-            i = cmd.index("-c:v"); cmd[i + 1] = "libx264"
-            cmd = [a for a in cmd if a not in ("-allow_sw",)]
-            j = [k for k, a in enumerate(cmd) if a == "-b:v"]
-            for k in reversed(j):
-                del cmd[k:k + 2]
-            cmd = [a for a in cmd if a != "1"] if "-allow_sw" in base else cmd
-            cmd += ["-preset", "veryfast"]
-        cmd = cmd + [final]
+        cmd = list(cmd) + [final]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         out.append("variant[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-120:].replace("\n", " ")))
-    # where do the frames go? count what LEAVES the filter graph (showinfo), and try
-    # a card track that is a real video and a main input normalised by fps=30
-    import re as _re
+    # where do the frames go? count what LEAVES the filter graph (showinfo)
     def graph_frames(cmd_list):
         c = list(cmd_list)
         i = c.index("-filter_complex")
         c[i + 1] = c[i + 1].replace("[v]", "[vv]") + ";[vv]showinfo[v]"
-        c = [a for a in c]
-        c[c.index("-map") + 1] = "[v]"
+        c[c.index("-v") + 1] = "info"
         c = c[:c.index("-c:v")] + ["-fps_mode", "passthrough", "-f", "null", "-"]
         r = subprocess.run(c, capture_output=True, text=True, timeout=600)
         return len(_re.findall(r"showinfo.*?n:\s*\d+", r.stderr or ""))
-    out.append("graph_out[cards]=%d" % graph_frames(base[:-1]))
-    fc2 = fc.replace("[0:v][c0]", "[m0][c0]")
-    cmdC = list(base[:-1]); cmdC[cmdC.index("-filter_complex") + 1] = "[0:v]fps=30,settb=AVTB[m0];" + fc2
-    r = subprocess.run(cmdC + [os.path.join(work, "final_v_fpsmain.mp4")], capture_output=True, text=True, timeout=600)
-    out.append("variant[fps_main] rc=%d frames=%s err=%s" % (r.returncode, frames(os.path.join(work, "final_v_fpsmain.mp4")), (r.stderr or "")[-100:].replace("\n", " ")))
-    # the card as a short PNG-codec .mov (keeps alpha), fed with -itsoffset
-    mov = os.path.join(work, "card0.mov")
-    subprocess.run([FFMPEG, "-v", "error", "-y", "-loop", "1", "-framerate", "30", "-t", "3.1", "-i", pngs[0],
-                    "-c:v", "png", "-pix_fmt", "rgba", mov], capture_output=True, text=True, timeout=120)
+    out.append("graph_out[cards]=%d graph_out[bare]=%d" % (
+        graph_frames(base[:-1]),
+        graph_frames(vc.final_cmd(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER)[:-1])))
+    # the hand-built one-card command that keeps every frame on the Mini (reference)
+    mov = cards[0][0]
     cmdA = [FFMPEG, "-v", "error", "-y", "-i", body, "-itsoffset", "0.30", "-i", mov, "-filter_complex",
             "[1:v]format=rgba,fade=t=in:st=0.30:d=0.4:alpha=1,fade=t=out:st=2.80:d=0.4:alpha=1[c0];"
             "[0:v][c0]overlay=0:0:eof_action=pass:enable='between(t,0.30,3.20)'[v]",
@@ -138,6 +141,7 @@ def main(paths):
            ["-pix_fmt", "yuv420p", "-c:a", "aac", "-t", "%.3f" % total, os.path.join(work, "final_v_movcard.mp4")]
     r = subprocess.run(cmdA, capture_output=True, text=True, timeout=600)
     out.append("variant[mov_card] rc=%d frames=%s err=%s" % (r.returncode, frames(os.path.join(work, "final_v_movcard.mp4")), (r.stderr or "")[-100:].replace("\n", " ")))
+    out.append("base_cmd=%s" % " ".join(base))
     # are the frames real or padding? count frames that differ from the one before
     def distinct(path):
         r = subprocess.run([FFMPEG, "-v", "info", "-i", path, "-vf", "mpdecimate=hi=64*4:lo=64*2:frac=0.5",
@@ -145,7 +149,7 @@ def main(paths):
         import re as _re
         m = _re.findall(r"frame=\s*(\d+)", r.stderr or "")
         return m[-1] if m else "?"
-    for name in ("final_bare", "final_cards", "final_v_cfr", "final_v_fpsmain", "final_v_movcard"):
+    for name in ("final_bare", "final_cards", "final_v_one_card", "final_v_audio_out", "final_v_movcard"):
         pth = os.path.join(work, name + ".mp4")
         if os.path.exists(pth):
             out.append("distinct[%s]=%s" % (name, distinct(pth)))
