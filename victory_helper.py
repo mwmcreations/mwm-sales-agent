@@ -144,7 +144,7 @@ HOW TO TALK — like a person, not a form
 - If they ask what footage there is, answer from the list conversationally, then offer to make something from it.
 - After a proposal, keep talking: if they change something (longer, slower, for parents instead, add the candles), propose again with the change made and say what changed; if they ask why, explain; if they just chat, chat back and keep the proposal standing.
 - If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
-- "ask": the finished sentence, one line, in their terms, e.g. "A 15-second reel for parents of the candlelight ceremony, emotional, slow pace." The length is ALWAYS 15 seconds in this phase — say "15-second" in the sentence; if they ask for 30 seconds or a minute, propose 15 and say in one clause that everything is 15 seconds for now while the editor is being perfected. Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
+- "ask": the finished sentence, one line, in their terms, e.g. "A reel for parents of the candlelight ceremony, emotional, slow pace." Do NOT put a length in the sentence — every video is 15 seconds in this phase and the page says so; if they ask for 30 seconds or a minute, say in one clause of "say" that everything is 15 seconds for now (longer ones are coming soon) and propose it anyway. Name the evening or the kind of moment with the words above. The sentence says the footage, the pace, who it is for and the feel — nothing else.
 - "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
@@ -409,14 +409,16 @@ def ideas(records, seed=None, n=IDEAS_N):
     for what, who, length, feel in TEMPLATES:
         if what == "interviews":
             if inv["quotes"]:
-                pool.append("15 seconds of the instructors talking about what Victory means, with words on screen")
+                pool.append("The instructors talking about what Victory means, with words on screen")
             continue
         if what in have_kind:
-            pool.append("A %d-second reel of %s %s, %s" % (length, KIND_ASKS.get(what, what.lower()), who, feel))
+            # no length in an idea: every video is 15 s in this phase and the page says so (Michael, 18 Sep)
+            k = KIND_ASKS.get(what, what.lower())
+            pool.append("%s %s, %s" % (k[0].upper() + k[1:], who, feel))
         elif what in have_ses:
-            pool.append("%d seconds of the %s %s, %s" % (length, what, who, feel))
+            pool.append("The %s %s, %s" % (what, who, feel))
     if not pool:
-        return ["A 15-second highlights reel of the whole convention"]
+        return ["A highlights reel of the whole convention"]
     if seed is None:
         seed = int(time.time() // 3600)
     k = seed % len(pool)

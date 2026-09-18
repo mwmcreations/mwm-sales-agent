@@ -221,6 +221,8 @@ button.big{width:100%;font-size:17px;padding:17px 20px}
  min-height:52px;max-height:160px;transition:border-color .2s}
 .vichat .hin button{border-radius:100px;padding:18px 22px;font-size:15px}
 .vichat p.h{font-size:13px;color:var(--dim2);margin:16px 0 0}
+.vichat p.h.note15{margin:14px 0 0;color:var(--dim)}
+.vichat p.h.note15+p.h{margin-top:6px}
 .vichat p.h strong{color:var(--dim);font-weight:500}
 .vichat p.h a{color:var(--dim);font-weight:500}
 .vichat p.h a:hover{color:#fff}
@@ -778,6 +780,7 @@ def app_page(email, role, event_title="Convention 2026", records=0, mode="make",
             "<div class=\"hin\"><textarea id=\"hq\" rows=\"1\" autocomplete=\"off\" "
             "placeholder=\"Say what you want\u2026\"></textarea>"
             "<button id=\"hsend\">Send</button></div>"
+            "<p class=\"h note15\">Every video is <strong>15 seconds</strong> for now \u2014 longer ones are coming soon.</p>"
             "<p class=\"h\">Your videos appear under <strong>My videos</strong> in a few minutes. "
             "Prefer to pick the clips yourself? <a href=\"#\" id=\"pickmode\">Choose my own clips</a> "
             "&middot; <a href=\"#\" id=\"memlink\">What I remember about you</a></p>"

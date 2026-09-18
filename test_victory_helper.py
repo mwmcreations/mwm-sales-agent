@@ -50,11 +50,13 @@ class TestBriefing(unittest.TestCase):
     def test_ideas_only_name_footage_we_have(self):
         ideas = vh.ideas(CLIPS + QUOTES, seed=0)
         self.assertEqual(len(ideas), vh.IDEAS_N)
-        self.assertTrue(any("board breaks" in i for i in ideas), ideas)
+        self.assertTrue(any("board breaks" in i.lower() for i in ideas), ideas)
         self.assertNotEqual(vh.ideas(CLIPS + QUOTES, seed=0), vh.ideas(CLIPS + QUOTES, seed=1))
         few = [c for c in CLIPS if c["category"] == "Training & seminar"][:4]
-        self.assertEqual(vh.ideas(few, seed=0), ["A 15-second reel of the training sessions for new students, fast"])
-        self.assertEqual(vh.ideas([], seed=0), ["A 15-second highlights reel of the whole convention"])
+        # no length in an idea (Michael, 18 Sep): the page says every video is 15 s
+        self.assertEqual(vh.ideas(few, seed=0), ["The training sessions for new students, fast"])
+        self.assertEqual(vh.ideas([], seed=0), ["A highlights reel of the whole convention"])
+        self.assertFalse(any("second" in i for i in vh.ideas(CLIPS + QUOTES, seed=0)))
 
 
 class TestMemory(unittest.TestCase):

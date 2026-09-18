@@ -1434,7 +1434,7 @@ class TestTheHelper(VICase):
         d = self.c.get("/vi/ideas").get_json()
         self.assertTrue(d["ok"])
         self.assertTrue(d["ideas"])
-        self.assertTrue(all("second" in i for i in d["ideas"]), d["ideas"])
+        self.assertFalse(any("second" in i for i in d["ideas"]), d["ideas"])   # the page says 15 s once, not every idea
 
     def test_victory_staff_can_use_the_helper_and_get_a_sentence(self):
         fake = self._fake()
