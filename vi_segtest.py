@@ -156,6 +156,23 @@ def main(paths):
     run_pic("thread_queue", tq)
     passthrough = list(pic[:-1]) + ["-fps_mode", "passthrough", pic[-1]]
     run_pic("passthrough", passthrough)
+    # the body's own timestamps made regular before the overlay (a concat of
+    # segments can carry a wobble at each join; #30 lost its frames at 12 s and 16 s)
+    for name, pre in (("setpts_main", "[0:v]setpts=N/(30*TB)[m0];"), ("fps_main", "[0:v]fps=30[m0];")):
+        c = list(pic)
+        c[fc_i] = pre + pic[fc_i].replace("[0:v][c0]", "[m0][c0]", 1)
+        run_pic(name, c)
+
+    def holes(path):
+        r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v", "-show_entries", "frame=pts_time",
+                            "-of", "csv=p=0", path], capture_output=True, text=True, timeout=300)
+        ts = [float(l.strip().rstrip(",")) for l in r.stdout.splitlines() if l.strip()]
+        return [(round(ts[i - 1], 3), round(ts[i] - ts[i - 1], 3)) for i in range(1, len(ts))
+                if abs(ts[i] - ts[i - 1] - 1.0 / 30) > 0.002][:12]
+    for name, pth in (("body", body), ("pic_verbose", os.path.join(work, "pic_verbose.mp4")),
+                      ("pic_setpts_main", os.path.join(work, "pic_setpts_main.mp4")),
+                      ("movcard", os.path.join(work, "final_v_movcard.mp4"))):
+        out.append("holes[%s]=%s" % (name, holes(pth)))
     # are the frames real or padding? count frames that differ from the one before
     def distinct(path):
         r = subprocess.run([FFMPEG, "-v", "info", "-i", path, "-vf", "mpdecimate=hi=64*4:lo=64*2:frac=0.5",
