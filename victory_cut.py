@@ -700,7 +700,8 @@ def _duck(spans, inside, outside, ramp=0.4):
     return "'" + expr + "'"
 
 
-def _final_parts(ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=True):
+def _final_parts(ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=True,
+                 card_base=None, vin="[0:v]"):
     """The pieces of the final pass: the inputs, the sound chain (one
     filter string ending in [a]), the picture chain (filter parts ending in
     [v]) and the encoder flags."""
@@ -721,8 +722,9 @@ def _final_parts(ffmpeg, body, music, total, head, outro, font, encoder, cards, 
         n_in = 2 if sound_in_process else 1     # the card inputs are numbered after the music
     else:
         achain = "[0:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,alimiter=limit=0.7:level=false[a]"
+    if card_base is not None:
+        n_in = card_base
     vchain = []
-    vin = "[0:v]"
     card_inputs = []
     vfilters = []
     if cards:
@@ -773,25 +775,41 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
 
 
 def final_cmds(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx264", cards=None,
-               speech=None, workdir=None):
+               speech=None, workdir=None, segments=None):
     """The final pass as three commands: the picture (cards, fade — no sound
     in the process), the sound (mix, loudness, limiter — no picture), then
     the two joined without re-encoding. On the Mini's ffmpeg 8.0.1 a graph
     that carries the sound chain alongside a card overlay loses a third of
     the picture frames (video #30 "getting stuck", 17 Sep; the frame check
     vi_segtest.py: 154 of 240 with the sound in the graph, 239 without), so
-    the picture is cut in a process of its own."""
+    the picture is cut in a process of its own.
+    segments: the segment files the body was joined from. Given, the picture
+    is cut from them through the concat filter instead of from the joined
+    body: at each join of a copied concat that ffmpeg drops the seven frames
+    before the join whenever a card is on screen (#30 re-cut: holes at 12 s
+    and 16 s; a continuous stream keeps all 240 of 240)."""
     if any(not str(c[0]).lower().endswith((".mov", ".mp4")) for c in (cards or ())):
         # a looped still with no sound in the process never ends on that
         # ffmpeg (20:45 ET, ten-minute hang) — render() turns every card into
         # a video first; anything else takes the one-pass road
         return [final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder, cards, speech)]
-    inputs, card_inputs, achain, vchain, venc, end = _final_parts(
-        ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=False)
+    segs = list(segments or ())
+    if segs:
+        inputs, card_inputs, achain, vchain, venc, end = _final_parts(
+            ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=False,
+            card_base=len(segs), vin="[body]")
+        picture_in = []
+        for sgm in segs:
+            picture_in += ["-i", sgm]
+        vchain = ["".join("[%d:v]" % k for k in range(len(segs))) + "concat=n=%d:v=1:a=0[body]" % len(segs)] + vchain
+    else:
+        inputs, card_inputs, achain, vchain, venc, end = _final_parts(
+            ffmpeg, body, music, total, head, outro, font, encoder, cards, speech, sound_in_process=False)
+        picture_in = ["-i", body]
     workdir = workdir or os.path.dirname(dst) or "."
     picture = os.path.join(workdir, "picture.mp4")
     sound = os.path.join(workdir, "sound.m4a")
-    vcmd = [ffmpeg, "-v", "error", "-y", "-i", body] + card_inputs
+    vcmd = [ffmpeg, "-v", "error", "-y"] + picture_in + card_inputs
     vcmd += ["-filter_complex", ";".join(vchain), "-map", "[v]", "-an"]
     vcmd += venc + ["-pix_fmt", "yuv420p", "-t", "%.3f" % end, picture]
     acmd = [ffmpeg, "-v", "error", "-y"] + inputs + ["-filter_complex", achain, "-map", "[a]", "-vn",
@@ -895,7 +913,7 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
             movs.append((mov, t_in, t_out))
         cards = movs
     for c in final_cmds(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
-                        cards=cards, speech=speech_spans(cut), workdir=workdir):
+                        cards=cards, speech=speech_spans(cut), workdir=workdir, segments=segs):
         subprocess.run(c, check=True, capture_output=True, text=True, timeout=900)
     return out_path, round(total, 2)
 

@@ -257,6 +257,16 @@ class TestWordsOnScreen(unittest.TestCase):
         self.assertNotIn("overlay", snd)
         self.assertTrue(snd.endswith("w/sound.m4a"))
         self.assertIn("-i w/picture.mp4 -i w/sound.m4a -map 0:v -map 1:a -c copy -movflags +faststart o.mp4", mux)
+        # from the segments, the picture is one continuous stream (no joins to drop frames at)
+        seg = vc.final_cmds("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                            "h264_videotoolbox", cards=[("card00.mov", 0.3, 3.5)], workdir="w",
+                            segments=["s0.mp4", "s1.mp4", "s2.mp4"])
+        pic = " ".join(seg[0])
+        self.assertIn("-i s0.mp4 -i s1.mp4 -i s2.mp4 -itsoffset 0.30 -i card00.mov", pic)
+        self.assertIn("[0:v][1:v][2:v]concat=n=3:v=1:a=0[body];[3:v]format=rgba", pic)
+        self.assertIn("[body][c0]overlay=", pic)
+        self.assertNotIn("b.mp4", pic)
+        self.assertIn("-i b.mp4", " ".join(seg[1]))     # the sound still comes from the joined body
         # a still card would hang the picture pass: that takes the one-pass road
         one = vc.final_cmds("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
                             "h264_videotoolbox", cards=[("card00.png", 0.3, 3.5)], workdir="w")

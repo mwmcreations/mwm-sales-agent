@@ -38,12 +38,14 @@ def main(paths):
     work = tempfile.mkdtemp(prefix="segtest_")
     out = []
     lst = []
+    segs = []
     for i, src in enumerate(paths):
         dst = os.path.join(work, "seg%d.mp4" % i)
         cmd = vc.segment_cmd(FFMPEG, src, dst, 1920, 1080, 0.5, 6.0, 4.0, ENCODER)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         out.append("seg%d rc=%d frames=%s err=%s" % (i, r.returncode, frames(dst), (r.stderr or "")[-160:].replace("\n", " ")))
         lst.append("file '%s'" % dst)
+        segs.append(dst)
     lp = os.path.join(work, "list.txt")
     open(lp, "w").write("\n".join(lst) + "\n")
     body = os.path.join(work, "body.mp4")
@@ -83,11 +85,11 @@ def main(paths):
     # the editor's real final pass since the fix: picture alone, sound alone, joined
     # (a looped PNG card with no sound in the process never ends on the Mini's
     # ffmpeg 8 — 20:45 ET: ten-minute hang — so only video cards are tried here)
-    for name, cds, mus in (("three_pass", cards, music), ("three_pass_nomusic", cards, None)):
+    for name, cds, mus, sg in (("three_pass", cards, music, segs), ("three_pass_from_body", cards, None, None)):
         final = os.path.join(work, "final_%s.mp4" % name)
         rcs = []
         for c in vc.final_cmds(FFMPEG, body, mus, final, total, ("A", "B"), ("C", "D"), None, ENCODER,
-                               cards=cds, workdir=work):
+                               cards=cds, workdir=work, segments=sg):
             r = subprocess.run(c, capture_output=True, text=True, timeout=600)
             rcs.append(r.returncode)
         out.append("final[%s] rc=%s frames=%s picture=%s err=%s" % (
@@ -137,32 +139,6 @@ def main(paths):
 
     verbose = list(pic); verbose[verbose.index("-v") + 1] = "verbose"
     run_pic("verbose", verbose)
-    fc_i = pic.index("-filter_complex") + 1
-    t1 = list(pic); t1[1:1] = ["-filter_complex_threads", "1", "-filter_threads", "1"]
-    run_pic("fthreads1", t1)
-    near = list(pic); near[fc_i] = pic[fc_i].replace("overlay=0:0:", "overlay=0:0:ts_sync_mode=nearest:")
-    run_pic("ts_nearest", near)
-    # the cards placed by setpts inside the graph instead of -itsoffset
-    sp = [a for k, a in enumerate(pic) if not (a == "-itsoffset" or (k > 0 and pic[k - 1] == "-itsoffset"))]
-    fc = pic[fc_i]
-    for k, (_, t_in, _) in enumerate(cards):
-        fc = fc.replace("[%d:v]format=rgba," % (k + 1), "[%d:v]setpts=PTS+%.2f/TB,format=rgba," % (k + 1, t_in))
-    sp[sp.index("-filter_complex") + 1] = fc
-    run_pic("setpts", sp)
-    tq = list(pic)
-    for k in range(len(tq) - 1, -1, -1):
-        if tq[k] == "-i":
-            tq[k:k] = ["-thread_queue_size", "2048"]
-    run_pic("thread_queue", tq)
-    passthrough = list(pic[:-1]) + ["-fps_mode", "passthrough", pic[-1]]
-    run_pic("passthrough", passthrough)
-    # the body's own timestamps made regular before the overlay (a concat of
-    # segments can carry a wobble at each join; #30 lost its frames at 12 s and 16 s)
-    for name, pre in (("setpts_main", "[0:v]setpts=N/(30*TB)[m0];"), ("fps_main", "[0:v]fps=30[m0];")):
-        c = list(pic)
-        c[fc_i] = pre + pic[fc_i].replace("[0:v][c0]", "[m0][c0]", 1)
-        run_pic(name, c)
-
     # the hole sits just before a segment join with a card on screen: the
     # join itself, four ways round it
     body_re = os.path.join(work, "body_re.mp4")
@@ -173,26 +149,6 @@ def main(paths):
     run_pic("body_reenc", c)
     c = list(pic); i = c.index("-i"); c[i:i + 2] = ["-f", "concat", "-safe", "0", "-i", lp]
     run_pic("concat_demux", c)
-    c = list(pic); i = c.index("-i"); c[i:i] = ["-fflags", "+genpts"]
-    run_pic("genpts", c)
-    c = list(pic); i = c.index("-i"); c[i:i] = ["-fflags", "+igndts"]
-    run_pic("igndts", c)
-    # segments without frame reordering (no B-frames) at the join
-    lst2 = []
-    for i, src in enumerate(paths):
-        dst = os.path.join(work, "segb%d.mp4" % i)
-        cmd = vc.segment_cmd(FFMPEG, src, dst, 1920, 1080, 0.5, 6.0, 4.0, ENCODER)
-        j = cmd.index("-c:v")
-        cmd[j + 2:j + 2] = ["-profile:v", "baseline"] if "videotoolbox" in ENCODER else ["-bf", "0"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        lst2.append("file '%s'" % dst)
-    lp2 = os.path.join(work, "list2.txt")
-    open(lp2, "w").write("\n".join(lst2) + "\n")
-    body_b = os.path.join(work, "body_b.mp4")
-    r = subprocess.run(vc.concat_cmd(FFMPEG, lp2, body_b), capture_output=True, text=True, timeout=300)
-    out.append("concat[baseline] rc=%d frames=%s" % (r.returncode, frames(body_b)))
-    c = list(pic); c[c.index("-i") + 1] = body_b
-    run_pic("baseline_segs", c)
 
     def holes(path):
         r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v", "-show_entries", "frame=pts_time",
@@ -203,7 +159,7 @@ def main(paths):
     for name, pth in (("body", body), ("pic_verbose", os.path.join(work, "pic_verbose.mp4")),
                       ("pic_body_reenc", os.path.join(work, "pic_body_reenc.mp4")),
                       ("pic_concat_demux", os.path.join(work, "pic_concat_demux.mp4")),
-                      ("pic_baseline_segs", os.path.join(work, "pic_baseline_segs.mp4")),
+                      ("three_pass", os.path.join(work, "final_three_pass.mp4")),
                       ("movcard", os.path.join(work, "final_v_movcard.mp4"))):
         out.append("holes[%s]=%s" % (name, holes(pth)))
     # are the frames real or padding? count frames that differ from the one before
@@ -213,7 +169,7 @@ def main(paths):
         import re as _re
         m = _re.findall(r"frame=\s*(\d+)", r.stderr or "")
         return m[-1] if m else "?"
-    for name in ("final_bare", "final_cards", "final_three_pass", "final_three_pass_nomusic", "final_v_movcard"):
+    for name in ("final_bare", "final_cards", "final_three_pass", "final_three_pass_from_body", "final_v_movcard"):
         pth = os.path.join(work, name + ".mp4")
         if os.path.exists(pth):
             out.append("distinct[%s]=%s" % (name, distinct(pth)))
