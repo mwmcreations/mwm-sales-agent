@@ -189,9 +189,9 @@ button.big{width:100%;font-size:17px;padding:17px 20px}
 .msg .ph{font-weight:600;font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
 .msg .step{padding:14px 0;border-top:1px solid var(--line)}
 .msg .step:first-of-type{border-top:0;padding-top:0}
-.msg .st{font-weight:500;font-size:16.5px;line-height:1.35}
-.msg .st .n{display:inline-block;width:24px;height:24px;border-radius:100px;border:1px solid var(--line2);color:#fff;font-size:12px;
- line-height:22px;text-align:center;margin-right:8px;font-weight:500}
+.msg .st{font-weight:500;font-size:16.5px;line-height:1.35;display:flex;gap:10px;align-items:flex-start}
+.msg .st .n{flex:0 0 24px;width:24px;height:24px;border-radius:100px;border:1px solid var(--line2);color:#fff;font-size:12px;
+ line-height:22px;text-align:center;font-weight:500;margin-top:-1px}
 .msg .sw{font-size:14px;color:var(--dim);margin:5px 0 0}
 .msg .sv{font-size:13.5px;color:#e6e6e6;margin:8px 0 0;padding:10px 12px;background:var(--sur2);border-radius:12px}
 .msg .sx{font-size:12.5px;color:var(--dim2);margin:5px 0 0}
