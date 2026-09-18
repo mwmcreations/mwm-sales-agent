@@ -65,12 +65,43 @@ def main(paths):
         wavs = sorted(f for f in os.listdir(mdir) if f.lower().endswith((".wav", ".mp3", ".m4a")))
         if wavs:
             music = os.path.join(mdir, wavs[0])
-    for name, cds, mus in (("bare", None, None), ("cards", cards, None), ("music", None, music), ("cards+music", cards, music)):
+    for name, cds, mus in (("bare", None, None), ("cards", cards, None), ("cards+music", cards, music)):
         final = os.path.join(work, "final_%s.mp4" % name.replace("+", "_"))
         cmd = vc.final_cmd(FFMPEG, body, mus, final, total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cds)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         out.append("final[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-160:].replace("\n", " ")))
-    out.append("music=%s" % (music,))
+    # variants of the card overlay, to find the one this ffmpeg keeps every frame through
+    base = vc.final_cmd(FFMPEG, body, None, "X", total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cards)
+    fc = base[base.index("-filter_complex") + 1]
+    variants = {
+        "cfr": (base[:-1] + ["-fps_mode", "cfr"], None),
+        "passthrough": (base[:-1] + ["-fps_mode", "passthrough"], None),
+        "vsync1": (base[:-1] + ["-vsync", "1"], None),
+        "no_enable": (None, fc.replace(":eof_action=pass:enable='between(t,0.30,3.20)'", ":eof_action=pass")
+                      .replace(":eof_action=pass:enable='between(t,3.50,6.00)'", ":eof_action=pass")
+                      .replace(":eof_action=pass:enable='between(t,%.2f,%.2f)'" % (total - 3.0, total), ":eof_action=pass")),
+        "yuva": (None, fc.replace("format=rgba", "format=yuva420p")),
+        "x264": ([("libx264" if a == ENCODER else a) for a in base[:-1]], None),
+    }
+    for name, (cmd, newfc) in variants.items():
+        final = os.path.join(work, "final_v_%s.mp4" % name)
+        if cmd is None:
+            cmd = list(base[:-1])
+            cmd[cmd.index("-filter_complex") + 1] = newfc
+        cmd = [a for a in cmd]
+        if name == "x264":
+            i = cmd.index("-c:v"); cmd[i + 1] = "libx264"
+            cmd = [a for a in cmd if a not in ("-allow_sw",)]
+            j = [k for k, a in enumerate(cmd) if a == "-b:v"]
+            for k in reversed(j):
+                del cmd[k:k + 2]
+            cmd = [a for a in cmd if a != "1"] if "-allow_sw" in base else cmd
+            cmd += ["-preset", "veryfast"]
+        cmd = cmd + [final]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        out.append("variant[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-120:].replace("\n", " ")))
+    v = subprocess.run([FFMPEG, "-version"], capture_output=True, text=True).stdout.splitlines()[:1]
+    out.append("music=%s ffmpeg=%s" % (music, v))
     out.append("encoder=%s ffmpeg=%s" % (ENCODER, FFMPEG))
     text = "\n".join(out)
     print(text)
