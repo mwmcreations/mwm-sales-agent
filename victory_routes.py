@@ -73,7 +73,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
     drive_upload(name, bytes) -> {"id",..} | None   where a finished cut goes
                                         (optional; defaults to victory_drive)
     """
-    from flask import request, jsonify, make_response, redirect
+    from flask import request, jsonify, make_response, redirect, Response, stream_with_context
 
     import victory_auth as va
     import victory_store as vs
@@ -606,6 +606,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             if j.get("result_drive_id"):
                 import victory_drive as vd
                 j["preview_url"] = vd.preview_url(j["result_drive_id"])
+                j["watch_url"] = "/vi/watch/%s.mp4" % j["id"]
                 j["download_url"] = vd.download_url(j["result_drive_id"])
             out.append(j)
         return out
@@ -746,6 +747,46 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         except Exception as e:
             _err("vi_recut", e)
             return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/watch/<int:rid>.mp4", methods=["GET", "HEAD"])
+    def vi_watch(rid):
+        """A finished cut as a plain video stream, for a plain <video> tag.
+        Streamed through from Drive with the Range header passed along, so
+        it seeks and plays inline on a phone with one set of controls
+        (Michael, 18 Sep: the Drive player drew a second set over iOS's)."""
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            row = vs.get_request(rid)
+            if not row or (row["email"] != sess["email"] and not _is_mwm(sess)):
+                return jsonify({"ok": False, "error": "not yours"}), 404
+            fid = row.get("result_drive_id")
+            if not fid:
+                return jsonify({"ok": False, "error": "no video yet"}), 404
+            import victory_drive as vd
+            up = vd.open_stream(fid, request.headers.get("Range"))
+            headers = {"Content-Type": "video/mp4", "Accept-Ranges": "bytes",
+                       "Cache-Control": "private, max-age=3600",
+                       "Content-Disposition": "inline; filename=\"VI_video_%d.mp4\"" % rid}
+            for k in ("Content-Length", "Content-Range"):
+                if up.headers.get(k):
+                    headers[k] = up.headers[k]
+            if request.method == "HEAD":
+                up.close()
+                return Response(b"", status=up.status_code, headers=headers)
+
+            def gen():
+                try:
+                    for chunk in up.iter_content(chunk_size=256 * 1024):
+                        if chunk:
+                            yield chunk
+                finally:
+                    up.close()
+            return Response(stream_with_context(gen()), status=up.status_code, headers=headers, direct_passthrough=True)
+        except Exception as e:
+            _err("vi_watch", e, "rid=%s" % rid)
+            return jsonify({"ok": False, "error": "could not play that"}), 502
 
     @app.route("/vi/decide", methods=["POST"])
     def vi_decide():

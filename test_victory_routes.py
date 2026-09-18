@@ -1088,7 +1088,9 @@ class TestTheMachineEditor(VICase):
     def test_the_page_plays_the_cut_and_asks_what_i_think(self):
         self._next(); self._deliver(1)
         page = self.c.get("/vi/queue").data.decode("utf-8")
-        self.assertIn("drive.google.com/file/d/drive-1/preview", page)
+        self.assertIn('<video class="player" controls playsinline preload="none"', page)
+        self.assertIn('src="/vi/watch/1.mp4"', page)
+        self.assertNotIn("drive.google.com/file/d/drive-1/preview", page)    # no Drive iframe: one set of controls
         self.assertIn("Approve", page)
         self.assertIn("Cut it again", page)
         self.assertIn('data-recut="1"', page)          # one box, one button: the change becomes the next cut
@@ -1275,7 +1277,10 @@ class TestQueuePageIsLightOnAPhone(VICase):
     """Twenty Drive players on one page crashed Safari on Michael's phone
     (17 Sep). Finished cuts show a Watch button; the player loads on a tap."""
 
-    def test_finished_cuts_are_placeholders_not_players(self):
+    def test_finished_cuts_load_nothing_until_tapped(self):
+        """Three finished cuts: three plain <video> tags with preload=none and
+        no Drive iframes (18 Sep: the Drive player drew a second set of
+        controls over iOS's; 17 Sep: twenty Drive players crashed Safari)."""
         self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
         for i in range(3):
             rid = self.store.create_request("dev@mwmcreations.com", "mwm", "", "test %d" % i, [], 30)
@@ -1284,8 +1289,50 @@ class TestQueuePageIsLightOnAPhone(VICase):
                                       seconds=30, summary={"shots": []})
         body = self.c.get("/vi/queue").data.decode("utf-8")
         self.assertNotIn("<iframe", body)
-        self.assertEqual(body.count('class="player pl"'), 3)
-        self.assertIn("openPlayer", body)
+        self.assertEqual(body.count('<video class="player"'), 3)
+        self.assertEqual(body.count('preload="none"'), 3)
+        self.assertNotIn("drive.google.com/file/d", body)
+
+    def test_the_video_streams_through_the_app_with_range(self):
+        """/vi/watch/<id>.mp4 passes the phone's Range header to Drive and
+        the answer's status and Content-Range back; strangers get nothing."""
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+        rid = self.store.create_request("dev@mwmcreations.com", "mwm", "", "test", [], 30)
+        self.store.set_request_state(rid, "rendering", "w")
+        self.store.finish_request(rid, "ready", drive_id="driveX", file_name="x.mp4", size=10, seconds=30, summary={})
+        import victory_drive as vd
+        seen = {}
+
+        class Up:
+            status_code = 206
+            headers = {"Content-Length": "4", "Content-Range": "bytes 2-5/10"}
+
+            def iter_content(self, chunk_size):
+                yield b"abcd"
+
+            def close(self):
+                seen["closed"] = True
+
+        def fake_open(fid, rng=None, timeout=60):
+            seen["fid"], seen["range"] = fid, rng
+            return Up()
+        old = vd.open_stream
+        vd.open_stream = fake_open
+        try:
+            r = self.c.get("/vi/watch/%d.mp4" % rid, headers={"Range": "bytes=2-5"})
+            self.assertEqual(r.status_code, 206)
+            self.assertEqual(r.data, b"abcd")
+            self.assertEqual(r.headers["Content-Range"], "bytes 2-5/10")
+            self.assertEqual(r.headers["Accept-Ranges"], "bytes")
+            self.assertEqual(r.headers["Content-Type"], "video/mp4")
+            self.assertEqual((seen["fid"], seen["range"]), ("driveX", "bytes=2-5"))
+            self.c.get("/vi/logout")
+            self._sign_in_as("ann@victoryma.com", va.ROLE_SCHOOL, "Lake Nona")
+            self.assertEqual(self.c.get("/vi/watch/%d.mp4" % rid).status_code, 404)
+            self.c.get("/vi/logout")
+            self.assertEqual(self.c.get("/vi/watch/%d.mp4" % rid).status_code, 401)
+        finally:
+            vd.open_stream = old
 
 
 class TestTheFrontDoorIsTheChat(VICase):

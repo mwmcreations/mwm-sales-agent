@@ -83,6 +83,29 @@ def selftest():
         return {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:400])}
 
 
+def open_stream(file_id, range_header=None, timeout=60):
+    """The file's bytes from Drive as a streaming HTTP response (requests),
+    with the browser's Range header passed through so a phone can seek.
+    Michael's phone (18 Sep): the Drive preview iframe drew its own controls
+    on top of iOS's — two sets. A plain <video> needs a plain media URL, so
+    the app now streams the cut through itself. Raises on failure."""
+    import requests
+    from google.auth.transport.requests import Request
+    from lara_actions import _get_google_creds
+    creds = _get_google_creds(SCOPES, use_dwd=True)
+    if not creds.valid:
+        creds.refresh(Request())
+    headers = {"Authorization": "Bearer " + creds.token}
+    if range_header:
+        headers["Range"] = range_header
+    r = requests.get("https://www.googleapis.com/drive/v3/files/%s?alt=media&supportsAllDrives=true" % file_id,
+                     headers=headers, stream=True, timeout=timeout)
+    if r.status_code not in (200, 206):
+        r.close()
+        raise RuntimeError("drive answered %s" % r.status_code)
+    return r
+
+
 def preview_url(file_id):
     return "https://drive.google.com/file/d/%s/preview" % file_id
 

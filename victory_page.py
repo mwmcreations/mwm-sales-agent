@@ -253,9 +253,7 @@ main.browse .pick{display:none}
 .m .mt{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:var(--sur2);margin:0 0 5px}
 .m .mt img{width:100%;height:100%;object-fit:cover;display:block}
 .m .t{font-size:12px;font-weight:400;line-height:1.3;color:var(--dim)}
-.player.pl{display:flex;align-items:center;justify-content:center;cursor:pointer;border:1px solid var(--line)}
-.player .pb{color:#000;font-weight:600;font-family:inherit;font-size:15px;line-height:1;background:#fff;padding:15px 24px;border-radius:100px}
-.player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:16px;background:#000;display:block;margin:0 0 14px}
+.player{width:100%;max-width:300px;aspect-ratio:9/16;border:1px solid var(--line);border-radius:16px;background:#000;display:block;margin:0 0 14px;object-fit:cover}
 .summ{font-size:12.5px;color:var(--dim2);margin:0 0 12px;line-height:1.5}
 .fb{margin:16px 0 0;border-top:1px solid var(--line);padding-top:14px}
 .fb .fbh{font-size:14px;color:var(--dim);margin:0 0 10px}
@@ -904,14 +902,19 @@ def _request_card(r, mine_only):
                      % (pic, _e(it.get("title") or it.get("quote") or it.get("id"))))
         h.append("</div>")
     if st == "ready" or (st in ("approved", "delivered") and r.get("result_drive_id")):
-        if r.get("preview_url"):
-            # a placeholder, not a live player: twenty Drive players on one
-            # page crashed Safari on Michael's phone (17 Sep, "a problem
-            # repeatedly occurred"). The page opens the one you came for
-            # (#reqN) or the newest; the rest load when tapped.
-            h.append("<div class=\"player pl\" data-src=\"%s\" role=\"button\" tabindex=\"0\">"
-                     "<span class=\"pb\">&#9654;&nbsp; Watch</span></div>" % _e(r["preview_url"]))
         shots = summ.get("shots") or []
+        if r.get("result_drive_id"):
+            # a plain <video>, streamed through the app (/vi/watch): one set of
+            # controls, the phone's own (18 Sep — the Drive iframe drew a
+            # second set over iOS's). preload=none: twenty cards on one page
+            # load nothing until tapped (17 Sep, Safari "a problem repeatedly
+            # occurred" with twenty Drive players). The poster is the first
+            # shot's frame.
+            first = next((str(s.get("id") or "").split(":")[-1] for s in shots
+                          if isinstance(s, dict) and s.get("id") and s.get("kind") != "speech"), "")
+            poster = (" poster=\"/vi/thumb/%s.jpg\"" % _e(first)) if first else ""
+            h.append("<video class=\"player\" controls playsinline preload=\"none\"%s "
+                     "src=\"/vi/watch/%s.mp4\"></video>" % (poster, rid))
         bits = []
         if shots:
             bits.append("%d shots" % len(shots))
@@ -1016,25 +1019,11 @@ QUEUE_JS = r"""
         .catch(function(){ d.disabled=false; alert('That did not save.'); });
     }
   });
-  // Drive players load one at a time: the card you came for (or the newest
-  // finished one) opens by itself, the others on a tap
-  function openPlayer(el){
-    if(!el || el.querySelector('iframe')) return;
-    var f=document.createElement('iframe');
-    f.className='player'; f.src=el.getAttribute('data-src');
-    f.setAttribute('allow','autoplay; fullscreen'); f.setAttribute('allowfullscreen','');
-    el.parentNode.replaceChild(f, el);
-  }
-  document.addEventListener('click', function(e){
-    var el=e.target.closest('.player.pl'); if(el){ e.preventDefault(); openPlayer(el); }
-  });
-  (function(){
-    var want = (location.hash||'').replace('#','');
-    var card = want ? document.getElementById(want) : null;
-    var el = card ? card.querySelector('.player.pl') : null;
-    if(!el) el = document.querySelector('.player.pl');
-    openPlayer(el);
-  })();
+  // one video plays at a time
+  document.addEventListener('play', function(e){
+    if(!(e.target instanceof HTMLVideoElement)) return;
+    document.querySelectorAll('video.player').forEach(function(v){ if(v!==e.target) v.pause(); });
+  }, true);
   // while anything is in the queue or cutting, look again every 20 s
   if(document.querySelector('.status.asked, .status.rendering')){
     setTimeout(function(){
