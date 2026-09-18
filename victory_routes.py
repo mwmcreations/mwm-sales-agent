@@ -666,6 +666,85 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             _err("vi_feedback", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
+    @app.route("/vi/recut", methods=["POST"])
+    def vi_recut():
+        """Cut it again WITH the change the person typed (Michael, 18 Sep:
+        "the person can type in what they want to change and click cut again
+        with those changes"). The change is kept as feedback on the cut they
+        watched, turned into the brief for a new version, and the footage it
+        names is found and put in as picks. A new request is made — the old
+        cut stays, so the two can be compared."""
+        try:
+            sess = _session()
+            if not sess:
+                return jsonify({"ok": False, "error": "unauthorized"}), 401
+            body = request.get_json(force=True, silent=True) or {}
+            rid = int(body.get("id") or 0)
+            change = (body.get("text") or "").strip()[:1000]
+            row = vs.get_request(rid) if rid else None
+            if not row or (row["email"] != sess["email"] and not _is_mwm(sess)):
+                return jsonify({"ok": False, "error": "not yours"}), 404
+            if not change:
+                # nothing typed: the plain re-cut, as before
+                if not vs.set_request_state(rid, "asked", by=sess["email"]):
+                    return jsonify({"ok": False, "error": "could not record that"}), 500
+                return jsonify({"ok": True, "id": rid, "state": "asked", "same": True}), 200
+            if not limiter.allow("help:" + sess["email"], HELPER_MAX_PER_WINDOW):
+                return jsonify({"ok": False, "error": "Give me a minute — too many at once."}), 429
+            row = _jsonable_request(row)
+            vs.add_feedback(rid, sess["email"], change)
+            import json as _json
+            summ = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+            text, old = row.get("text"), row.get("items")
+            for name in ("text", "old"):
+                v = text if name == "text" else old
+                if isinstance(v, str):
+                    try:
+                        v = _json.loads(v)
+                    except Exception:
+                        v = None
+                if name == "text":
+                    text = v if isinstance(v, dict) else {}
+                else:
+                    old = v if isinstance(v, list) else []
+            import victory_index as vi
+            import victory_helper as vh
+            import victory_cut as _vc
+            if vi.corpus_size() == 0:
+                vi.load_corpus()
+            client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
+            rev = vh.revise(row.get("note") or "", (summ or {}).get("ask") or _vc.brief_for(row.get("note") or "")["text"],
+                            (summ or {}).get("shots") or [], text.get("lines") or [], text.get("cta") or "",
+                            change, vi.snapshot(), client=client)
+            picks = []
+            if rev.get("search"):
+                try:
+                    found = vi.search(rev["search"], event_key=None, limit=12)
+                    for it in (found.get("results") or []):
+                        if it.get("kind") == "clip" and not found.get("fallback"):
+                            picks.append({k: str(it.get(k) or "")[:300] for k in ("id", "title", "kind", "file", "quote")})
+                        if len(picks) >= 4:
+                            break
+                except Exception as e:
+                    _err("vi_recut.search", e, "q=%r" % (rev["search"],))
+            # the person's earlier picks stay in front of the new ones
+            items = [i for i in old if isinstance(i, dict)] + [p for p in picks if p["id"] not in {i.get("id") for i in old}]
+            new_text = {"lines": rev.get("lines") or [], "cta": rev.get("cta") or "",
+                        "parent": rid, "change": change, "version": int((text or {}).get("version") or 1) + 1}
+            new_id = vs.create_request(sess["email"], sess["role"], sess.get("school", ""), rev["ask"], items[:60],
+                                       length_s=row.get("length_s") or 30, text=new_text)
+            if not new_id:
+                return jsonify({"ok": False, "error": "could not save the new version"}), 500
+            _tell(":scissors: *Victory Intelligence \u2014 cut #%s again as #%s* for *%s*\n> change: %s\n> brief: %s%s"
+                  % (rid, new_id, sess["email"], change[:400], rev["ask"][:400],
+                     ("\n> footage found for it: %d" % len(picks)) if picks else ""))
+            print("[VI] recut #%s -> #%s (%d picks, search %r)" % (rid, new_id, len(picks), rev.get("search")))
+            return jsonify({"ok": True, "id": new_id, "parent": rid, "say": rev.get("say"), "ask": rev["ask"],
+                            "picks": len(picks)}), 200
+        except Exception as e:
+            _err("vi_recut", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
     @app.route("/vi/decide", methods=["POST"])
     def vi_decide():
         """approve / decline a finished cut, or ask for it again (redo)."""

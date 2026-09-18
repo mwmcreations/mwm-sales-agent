@@ -258,6 +258,10 @@ main.browse .pick{display:none}
 .player{width:100%;max-width:300px;aspect-ratio:9/16;border:0;border-radius:16px;background:#000;display:block;margin:0 0 14px}
 .summ{font-size:12.5px;color:var(--dim2);margin:0 0 12px;line-height:1.5}
 .fb{margin:16px 0 0;border-top:1px solid var(--line);padding-top:14px}
+.fb .fbh{font-size:14px;color:var(--dim);margin:0 0 10px}
+.fb .fbs{font-size:13.5px;color:var(--dim)}
+.ver{font-size:13px;color:var(--dim);margin:-2px 0 10px}
+.ver a{color:#fff}
 .fb .note{background:var(--sur2);border-left:2px solid var(--line2);padding:10px 14px;font-size:14px;color:#ddd;margin:0 0 8px;white-space:pre-wrap;border-radius:0 10px 10px 0}
 .fb .note small{display:block;color:var(--dim2);font-size:11.5px;margin-top:3px}
 .fb textarea{width:100%;font-size:15px;line-height:1.5;padding:12px 16px;border-radius:14px;min-height:70px;resize:vertical;margin:0 0 10px}
@@ -874,6 +878,12 @@ def _request_card(r, mine_only):
             txt = _json.loads(txt)
         except Exception:
             txt = {}
+    if not isinstance(txt, dict):
+        txt = {}
+    if txt.get("parent"):
+        h.append("<div class=\"ver\">Version %s &middot; cut again from <a href=\"#req%s\">Video #%s</a> "
+                 "with your change: &ldquo;%s&rdquo;</div>"
+                 % (txt.get("version") or 2, txt["parent"], txt["parent"], _e(txt.get("change") or "")))
     if txt.get("lines") or txt.get("cta"):
         bits = ["on screen: %s" % " / ".join(_e(x) for x in txt.get("lines") or [])] if txt.get("lines") else []
         if txt.get("cta"):
@@ -942,7 +952,6 @@ def _request_card(r, mine_only):
             h.append("<a class=\"dl\" href=\"%s\">Download</a>" % _e(r["download_url"]))
         if st == "ready":
             h.append("<button class=\"sec\" data-decide=\"approved\" data-id=\"%s\">Approve</button>" % rid)
-            h.append("<button class=\"quiet\" data-decide=\"redo\" data-id=\"%s\">Cut it again</button>" % rid)
         h.append("</div>")
     elif st == "failed":
         h.append("<div class=\"errbox\">The machine could not make this one.\n%s</div>"
@@ -958,9 +967,13 @@ def _request_card(r, mine_only):
         h.append("<div class=\"note\">%s<small>%s &middot; %s</small></div>"
                  % (_e(f.get("text")), _e(f.get("email")), _when(f.get("at"))))
     if st not in ("asked", "rendering"):
-        h.append("<textarea placeholder=\"What would you change? Be specific — the editor learns from this.\" "
-                 "data-fb=\"%s\"></textarea>"
-                 "<div class=\"acts\"><button data-fbsend=\"%s\">Send feedback</button></div>" % (rid, rid))
+        # what would you change -> the next version, cut with that change
+        # (Michael, 18 Sep). Empty box = the same brief cut again.
+        h.append("<div class=\"fbh\">Not quite right? Say what to change and it gets cut again with that change.</div>"
+                 "<textarea placeholder=\"e.g. use the demo team on stage in the red uniforms · less of the crowd · "
+                 "slower · different music\" data-fb=\"%s\"></textarea>"
+                 "<div class=\"acts\"><button data-recut=\"%s\">Cut it again</button>"
+                 "<span class=\"fbs\" data-fbs=\"%s\"></span></div>" % (rid, rid, rid))
     h.append("</div></div>")
     return "".join(h)
 
@@ -973,16 +986,25 @@ QUEUE_JS = r"""
       headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json();});
   }
+  // the button says what it will do as the person types
+  document.addEventListener('input', function(e){
+    var ta=e.target.closest('textarea[data-fb]'); if(!ta) return;
+    var b=document.querySelector('button[data-recut="'+ta.getAttribute('data-fb')+'"]');
+    if(b) b.textContent = ta.value.trim() ? 'Cut it again with this change' : 'Cut it again';
+  });
   document.addEventListener('click', function(e){
-    var b=e.target.closest('button[data-fbsend]');
+    var b=e.target.closest('button[data-recut]');
     if(b){
-      var id=b.getAttribute('data-fbsend'), ta=document.querySelector('textarea[data-fb="'+id+'"]');
-      if(!ta || !ta.value.trim()){ if(ta) ta.focus(); return; }
-      b.disabled=true;
-      post('/vi/feedback',{id:parseInt(id,10), text:ta.value}).then(function(d){
-        if(!d.ok){ b.disabled=false; alert(d.error||'That did not save.'); return; }
-        window.location.reload();
-      }).catch(function(){ b.disabled=false; alert('That did not save.'); });
+      var id=b.getAttribute('data-recut'), ta=document.querySelector('textarea[data-fb="'+id+'"]');
+      var s=document.querySelector('[data-fbs="'+id+'"]');
+      var text=(ta&&ta.value.trim())||'';
+      b.disabled=true; if(s) s.textContent = text ? 'Reading your change\u2026' : 'Back in the queue\u2026';
+      post('/vi/recut',{id:parseInt(id,10), text:text}).then(function(d){
+        if(!d.ok){ b.disabled=false; if(s) s.textContent = d.error||'That did not work.'; return; }
+        if(d.same){ window.location.reload(); return; }
+        if(s) s.textContent = (d.say||'Cutting it again.') + ' It will appear above as Video #'+d.id+'.';
+        setTimeout(function(){ window.location.href='/vi/queue#req'+d.id; window.location.reload(); }, 1800);
+      }).catch(function(){ b.disabled=false; if(s) s.textContent='That did not work.'; });
       return;
     }
     var d=e.target.closest('button[data-decide]');

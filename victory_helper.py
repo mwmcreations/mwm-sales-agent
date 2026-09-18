@@ -332,6 +332,72 @@ def chat(messages, records, client=None, model=None, event_title="Victory World 
             "plan": [], "remember": "", "forget": ""}
 
 
+REVISE_PROMPT = """You are the editor behind Victory Intelligence, a tool that cuts short vertical videos
+from Victory Martial Arts' own convention footage. A person watched a cut and typed what they would change.
+Turn that into the brief for the next version.
+
+%s
+
+THE CUT THEY WATCHED
+- The sentence it was made from: %s
+- How the editor read it: %s
+- The shots it used, in order: %s
+- Words on screen: %s
+- End card: %s
+
+WHAT THEY WOULD CHANGE
+%s
+
+Answer with ONE JSON object and nothing else:
+{"ask": "<one sentence, the complete brief for the new version: everything from the original that still
+applies, with the change folded in — this sentence alone is what the editor will read>",
+ "search": "<a short phrase (2-6 words) naming footage the change asks for, in the words the footage
+library uses (e.g. 'demo team red uniforms stage'), or null if the change is not about which footage>",
+ "lines": [<up to 4 short lines for the screen, keep the old ones unless the change is about them>],
+ "cta": "<end card text, keep the old one unless the change is about it>",
+ "say": "<one short sentence to the person, plain and warm, saying what you will do differently>"}
+Rules: keep the length and audience unless told otherwise; if they ask for less of something, say so in the
+sentence ("no crowd shots"); if they ask for more of something or a specific moment, name it in the
+sentence AND in search; never invent footage the library does not have."""
+
+
+def revise(original_ask, brief, shots, lines, cta, change, records, client=None, model=None,
+           event_title="Victory World Convention 2026"):
+    """The change a person typed on a finished cut -> the brief for the next
+    version. Returns {"ask","search","lines","cta","say"}; never raises — the
+    fallback is the original sentence with the change stapled on."""
+    fallback = {"ask": (original_ask or "").strip().rstrip(".") + ". Change: " + (change or "").strip(),
+                "search": (change or "").strip()[:80] or None, "lines": list(lines or []), "cta": cta or "",
+                "say": "Cutting it again with that change."}
+    try:
+        if client is None:
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        model = model or os.environ.get("MODEL_MAIN", "claude-sonnet-4-6")
+        shot_text = "; ".join("%s (%s)" % (s.get("title") or s.get("id"), s.get("category") or "")
+                              for s in (shots or [])[:20]) or "unknown"
+        prompt = REVISE_PROMPT % (briefing(records, event_title), original_ask or "-", brief or "-", shot_text,
+                                  " / ".join(lines or []) or "none", cta or "none", change)
+        msg = client.messages.create(model=model, max_tokens=600, messages=[{"role": "user", "content": prompt}])
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        m = re.search(r"\{.*\}", text, re.S)
+        out = json.loads(m.group(0)) if m else None
+        if not out or not str(out.get("ask") or "").strip():
+            raise ValueError("no ask in %r" % text[:200])
+        out = {"ask": str(out["ask"]).strip()[:600],
+               "search": (str(out.get("search")).strip()[:80] if out.get("search") else None),
+               "lines": [str(x).strip()[:60] for x in (out.get("lines") or []) if str(x).strip()][:4],
+               "cta": str(out.get("cta") or "").strip()[:60],
+               "say": str(out.get("say") or fallback["say"]).strip()[:300]}
+        if out["search"] and out["search"].lower() in ("null", "none", ""):
+            out["search"] = None
+        return out
+    except Exception as e:
+        print("[VI] revise: %r" % (e,))
+        _note_error("revise: " + repr(e))
+        return fallback
+
+
 def ideas(records, seed=None, n=IDEAS_N):
     """Ready-made asks from what the Library holds. Rotates by the hour so the
     page does not always open on the same four."""

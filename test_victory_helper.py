@@ -208,3 +208,49 @@ class TestChat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRevise(unittest.TestCase):
+    """The change typed on a finished cut becomes the brief for the next one."""
+
+    def test_the_change_is_folded_into_a_new_brief(self):
+        class Fake:
+            def __init__(self):
+                self.messages = self
+                self.calls = []
+
+            def create(self, **kw):
+                self.calls.append(kw)
+
+                class B:
+                    text = ('{"ask": "15 seconds of board breaks and the demo team on stage in red, fast.", '
+                            '"search": "demo team red uniforms", "lines": ["Break through"], "cta": "Join us", '
+                            '"say": "Adding the demo team."}')
+
+                class M:
+                    content = [B()]
+                return M()
+        f = Fake()
+        out = vh.revise("15 seconds of board breaks, fast", "15 s · fast · board breaks",
+                        [{"title": "Board strike", "category": "Board breaks"}], [], "",
+                        "use the demo team on stage in the red uniforms", [], client=f)
+        self.assertIn("demo team", out["ask"])
+        self.assertEqual(out["search"], "demo team red uniforms")
+        self.assertEqual(out["lines"], ["Break through"])
+        prompt = f.calls[0]["messages"][0]["content"]
+        self.assertIn("use the demo team on stage", prompt)
+        self.assertIn("Board strike", prompt)
+
+    def test_when_the_model_fails_the_change_is_stapled_on(self):
+        class Broken:
+            def __init__(self):
+                self.messages = self
+
+            def create(self, **kw):
+                raise RuntimeError("down")
+        out = vh.revise("15 seconds of board breaks, fast", "", [], [], "", "slower", [], client=Broken())
+        self.assertIn("board breaks", out["ask"])
+        self.assertIn("slower", out["ask"])
+        self.assertEqual(out["search"], "slower")
+
+

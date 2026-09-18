@@ -1086,10 +1086,51 @@ class TestTheMachineEditor(VICase):
         self._next(); self._deliver(1)
         page = self.c.get("/vi/queue").data.decode("utf-8")
         self.assertIn("drive.google.com/file/d/drive-1/preview", page)
-        self.assertIn("Send feedback", page)
         self.assertIn("Approve", page)
         self.assertIn("Cut it again", page)
+        self.assertIn('data-recut="1"', page)          # one box, one button: the change becomes the next cut
+        self.assertNotIn("Send feedback", page)
         self.assertIn("Download", page)
+
+    def test_the_change_i_type_becomes_the_next_version(self):
+        """Michael, 18 Sep: "the person can type in what they want to change
+        and click cut again with those changes." The change is kept on the
+        old cut, a new request carries the revised brief, and the footage
+        the change names goes in as picks."""
+        self._next(); self._deliver(1, summary={"music_id": "01", "ask": "30 s · for parents",
+                                                "shots": [{"id": "VWC26_A", "title": "Crowd claps", "category": "Crowd"}]})
+
+        class Fake(FakeClaude):
+            answer = ('{"ask": "A 30-second reel for parents with the demo team performing on stage in red uniforms, '
+                      'medium pace.", "search": "demo team stage red uniforms", "lines": [], "cta": "", '
+                      '"say": "Bringing in the demo team on stage."}')
+        fake = Fake()
+        self.c.application.config["VI_HELPER_CLIENT"] = fake
+        r = self.c.post("/vi/recut", json={"id": 1, "text": "Use the demo team on stage with their red uniforms"})
+        self.assertEqual(r.status_code, 200, r.data[:200])
+        d = self._j(r)
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["parent"], 1)
+        self.assertNotEqual(d["id"], 1, "a new version, the old cut stays")
+        self.assertIn("demo team", d["ask"])
+        self.assertEqual(len(fake.calls), 1)
+        self.assertIn("Use the demo team on stage", fake.calls[0]["messages"][0]["content"])
+        self.assertIn("Crowd claps", fake.calls[0]["messages"][0]["content"])
+        # the change is on the record against the cut they watched
+        self.assertEqual(self.store.feedback[0]["text"], "Use the demo team on stage with their red uniforms")
+        new = self.store.get_request(d["id"])
+        self.assertIn("demo team", new["note"])
+        text = new["text"] if isinstance(new["text"], dict) else json.loads(new["text"])
+        self.assertEqual(text["parent"], 1)
+        self.assertEqual(text["version"], 2)
+        self.assertEqual(text["change"], "Use the demo team on stage with their red uniforms")
+        page = self.c.get("/vi/queue").data.decode("utf-8")
+        self.assertIn("Version 2", page)
+        self.assertIn("cut again from", page)
+        # an empty box is the plain re-cut of the same brief
+        r = self.c.post("/vi/recut", json={"id": 1, "text": ""})
+        self.assertTrue(self._j(r)["same"])
+        self.assertEqual(self.store.get_request(1)["state"], "asked")
 
     def test_feedback_is_kept_and_dev_hears_it(self):
         self._next(); self._deliver(1)
