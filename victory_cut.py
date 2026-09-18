@@ -34,9 +34,11 @@ PRIORITY = {"hero": 3, "high": 2, "standard": 1, "low": 0}
 STORY = ["Training & seminar", "Instructor training", "Competition", "Board breaks",
          "Winning moments", "Crowd & parent reactions", "Belt & rank presentation",
          "Candlelight ceremony"]
-LENGTHS = (15, 30)      # what is OFFERED. Michael, 18 Sep: no 60 s while the editor is learning —
-                        # too many chances to slip. The planner itself can still cut any of CAN_CUT.
+LENGTHS = (15,)         # what is OFFERED. Michael, 18 Sep: 15 s is the standard for this first phase —
+                        # "let's nail 15 seconds"; no 30 s, no 60 s, until he says (or DEV suggests) it is time.
+                        # The planner itself can still cut any of CAN_CUT (old requests, tests).
 CAN_CUT = (15, 30, 60)
+STANDARD = 15
 LOGO_CARD = "[victory-logo]"    # a card that is the Victory Martial Arts logo (victory_cards renders it)
 SHOT_SECONDS = 3.0      # a shot the machine chose
 PICK_SECONDS = 5.0      # a shot the person picked
@@ -930,20 +932,20 @@ AUDIENCE_WORDS = {"students": "students", "student": "students", "kids": "kids",
                   "families": "families", "family": "families", "instructors": "instructors",
                   "instructor": "instructors", "masters": "masters", "schools": "schools",
                   "school": "schools", "teens": "teens", "adults": "adults"}
-NUMBER_WORDS = {"fifteen": 15, "thirty": 30, "sixty": 30, "one": 30, "a": 30, "half": 30}
+NUMBER_WORDS = {"fifteen": 15, "thirty": 15, "sixty": 15, "one": 15, "a": 15, "half": 15}
 
 
 def length_from(ask):
     """A length the sentence names — "15 seconds", "30s", "one minute",
-    "half a minute" — snapped to 15 / 30 (a minute lands on 30: 60 s is not
-    offered while the editor is learning). None when it says nothing."""
+    "half a minute" — snapped to what is offered (15 s only for now: a minute
+    or half of one lands on 15). None when it says nothing."""
     low = (ask or "").lower()
     m = re.search(r"\b(\d{1,3})\s*(?:-|\s)?(s|sec|secs|second|seconds)\b", low)
     n = None
     if m:
         n = int(m.group(1))
     elif re.search(r"\b(half\s+a|half)\s+minute", low):
-        n = 30
+        n = 15
     elif re.search(r"\b(one|a|1)\s+minute", low):
         n = 60
     else:
@@ -959,7 +961,7 @@ def brief_for(ask, length_s=None):
     """What the editor understood from a sentence, as data and as one plain
     line for the card — so a person sees a misreading before the cut, not
     after (Michael, 17 Sep: most people will only ever type a sentence)."""
-    length = length_from(ask) or (int(length_s) if length_s in LENGTHS else 30)
+    length = length_from(ask) or (int(length_s) if length_s in LENGTHS else STANDARD)
     pace = pace_seconds(ask)
     sessions = ask_sessions(ask)
     cats, soft = ask_categories(ask)

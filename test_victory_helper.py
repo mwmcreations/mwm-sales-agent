@@ -43,8 +43,8 @@ class TestBriefing(unittest.TestCase):
         self.assertIn("Black Belt Testing:", b)
         self.assertIn("Board breaks (", b)
         self.assertIn("Never give up", b)
-        self.assertIn("15 or 30 seconds", b)          # 60 s is not offered for now (Michael, 18 Sep)
-        self.assertNotIn("15, 30 or 60", b)
+        self.assertIn("Every video is 15 seconds", b)   # the one length of this phase (Michael, 18 Sep)
+        self.assertNotIn("15 or 30", b)
         self.assertLess(len(b), 12000, "a briefing the model reads on every message stays small")
 
     def test_ideas_only_name_footage_we_have(self):
@@ -54,7 +54,7 @@ class TestBriefing(unittest.TestCase):
         self.assertNotEqual(vh.ideas(CLIPS + QUOTES, seed=0), vh.ideas(CLIPS + QUOTES, seed=1))
         few = [c for c in CLIPS if c["category"] == "Training & seminar"][:4]
         self.assertEqual(vh.ideas(few, seed=0), ["A 15-second reel of the training sessions for new students, fast"])
-        self.assertEqual(vh.ideas([], seed=0), ["A 30-second highlights reel of the whole convention"])
+        self.assertEqual(vh.ideas([], seed=0), ["A 15-second highlights reel of the whole convention"])
 
 
 class TestMemory(unittest.TestCase):

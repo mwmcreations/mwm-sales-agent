@@ -733,12 +733,13 @@ class TestWhatTheEditorUnderstood(unittest.TestCase):
 
     def test_a_length_in_the_sentence(self):
         self.assertEqual(vc.length_from("15 seconds, fast"), 15)
-        self.assertEqual(vc.length_from("a 30s reel"), 30)
-        self.assertEqual(vc.length_from("about one minute"), 30)      # 60 s is not offered (Michael, 18 Sep)
-        self.assertEqual(vc.length_from("half a minute"), 30)
+        # 15 s is the only length offered in this phase (Michael, 18 Sep): every ask lands on it
+        self.assertEqual(vc.length_from("a 30s reel"), 15)
+        self.assertEqual(vc.length_from("about one minute"), 15)
+        self.assertEqual(vc.length_from("half a minute"), 15)
         self.assertEqual(vc.length_from("twenty seconds"), None)     # not a word we snap
         self.assertEqual(vc.length_from("20 seconds"), 15)
-        self.assertEqual(vc.length_from("45 sec"), 30)
+        self.assertEqual(vc.length_from("45 sec"), 15)
         self.assertEqual(vc.length_from("proud parents"), None)
         self.assertEqual(vc.length_from(""), None)
 
@@ -752,11 +753,11 @@ class TestWhatTheEditorUnderstood(unittest.TestCase):
         self.assertIn("fast", b["feel"])
         self.assertEqual(b["text"], "15 s \u00b7 fast pace \u00b7 Night of Champions, board breaks \u00b7 for students \u00b7 feel: fast")
         b = vc.brief_for("something nice for the schools", 60)
-        self.assertEqual(b["length"], 30)          # a minute is not on offer while the editor learns
+        self.assertEqual(b["length"], 15)          # only 15 s is on offer while the editor learns
         self.assertIn("the whole convention", b["text"])
         self.assertIn("for schools", b["text"])
         b = vc.brief_for("", None)
-        self.assertEqual(b["length"], 30)
+        self.assertEqual(b["length"], 15)          # the standard of this phase
 
     def test_the_card_says_what_was_understood_not_the_first_three_words(self):
         """#26 opened on "I STUDENTS THIS"."""

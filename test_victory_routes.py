@@ -816,11 +816,12 @@ class TestAskForACut(VICase):
         self.assertEqual(len(self.store.requests[2]["text"]["cta"]), 60)
 
     def test_length_is_kept_and_kept_sane(self):
-        self._ask(note="x", length=60)          # a minute is not on offer for now: it becomes 30
+        self._ask(note="x", length=60)          # only 15 s is on offer in this phase: everything lands on it
         self._ask(note="x", length=7)
         self._ask(note="x", length="sixty")
         self._ask(note="x", length=15)
-        self.assertEqual([r["length_s"] for r in self.store.requests], [30, 30, 30, 15])
+        self._ask(note="x", length=30)
+        self.assertEqual([r["length_s"] for r in self.store.requests], [15, 15, 15, 15, 15])
 
     def test_a_silly_number_of_items_is_refused(self):
         many = [{"id": str(i), "title": "t"} for i in range(200)]
@@ -950,11 +951,13 @@ class TestThePageHelps(VICase):
         self.assertIn("/vi/request", self.page)
         self.assertIn("/vi/queue", self.page)
 
-    def test_it_offers_two_lengths(self):
-        # the proposal card in the chat carries 15 / 30 s buttons — no 60 s
-        # while the editor is learning (Michael, 18 Sep)
-        self.assertIn("[15,30].forEach", self.page)
-        self.assertNotIn("60].forEach", self.page)
+    def test_it_offers_one_length(self):
+        # the proposal card carries no length buttons: 15 s is the standard
+        # for this phase (Michael, 18 Sep — "let's nail 15 seconds")
+        self.assertNotIn("[15,30]", self.page)
+        self.assertNotIn("[15,30,60]", self.page)
+        self.assertIn("curLen=15", self.page)
+        self.assertIn("length: 15,", self.page)
 
     def test_it_separates_footage_from_talking(self):
         self.assertIn("Footage", self.page)
@@ -1002,7 +1005,7 @@ class TestTheMachineEditor(VICase):
         a = self._next()["job"]; b = self._next()["job"]; c = self._next()["job"]
         self.assertEqual((a["id"], b["id"], c), (1, 2, None))
         self.assertEqual(self.store.requests[0]["state"], "rendering")
-        self.assertEqual(a["length_s"], 30)
+        self.assertEqual(a["length_s"], 15)
         self.assertIn("recent_music", a)
 
     def test_delivery_stores_the_file_in_drive_and_marks_it_ready(self):
@@ -1442,7 +1445,7 @@ class TestTheHelper(VICase):
         self.assertTrue(d["ok"])
         self.assertEqual(d["ask"], "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace.")
         self.assertEqual(d["ideas"], ["15 seconds of board breaks, fast"])
-        self.assertEqual(d["length"], 30)
+        self.assertEqual(d["length"], 15)       # whatever the sentence says, this phase cuts 15 s
         self.assertIn("candlelight ceremony", d["brief"])
         self.assertIn("for parents", d["brief"])
         self.assertEqual(len(fake.calls), 1)

@@ -43,16 +43,16 @@ KIND_ASKS = {
 # (what, who/where, length, feel) — only kinds with footage are used
 TEMPLATES = [
     ("Board breaks", "for Instagram", 15, "fast"),
-    ("Night of Champions", "for the whole school", 30, "energetic"),
-    ("Candlelight ceremony", "for parents", 30, "emotional, slow"),
-    ("Black Belt Testing", "for students", 30, "motivational"),
+    ("Night of Champions", "for the whole school", 15, "energetic"),
+    ("Candlelight ceremony", "for parents", 15, "emotional, slow"),
+    ("Black Belt Testing", "for students", 15, "motivational"),
     ("Winning moments", "for our champions", 15, "fast"),
-    ("Crowd & parent reactions", "for families", 30, "happy"),
-    ("Victory Dinner", "for the staff", 30, "warm"),
-    ("Victory for Life Reception", "for our masters", 30, "emotional"),
-    ("Instructor training", "for the team", 30, "powerful"),
+    ("Crowd & parent reactions", "for families", 15, "happy"),
+    ("Victory Dinner", "for the staff", 15, "warm"),
+    ("Victory for Life Reception", "for our masters", 15, "emotional"),
+    ("Instructor training", "for the team", 15, "powerful"),
     ("Training & seminar", "for new students", 15, "fast"),
-    ("interviews", "with words on screen", 30, "inspiring"),
+    ("interviews", "with words on screen", 15, "inspiring"),
 ]
 
 
@@ -94,7 +94,7 @@ def briefing(records, event_title="Victory World Convention 2026"):
              "own footage of the %s. A person types ONE sentence in the box and presses Make it; the "
              "editor finds the footage, cuts it to music, and it appears under My videos in a few minutes."
              % event_title,
-             "A sentence can say: how long (15 or 30 seconds — nothing longer for now), the pace (fast / slow), which evening or "
+             "Every video is 15 seconds in this phase (no 30 s, no 60 s — nothing longer for now). A sentence can say the pace (fast / slow), which evening or "
              "kind of moment, who it is for (students, parents, kids, families, instructors, schools), where "
              "it will be posted (Instagram, Facebook, a school's page, an email), and the feel (energetic, "
              "emotional, motivational, happy, quiet). Optional: words on screen (up to four short lines) "
@@ -123,12 +123,12 @@ You know ONLY what is below. Never promise footage that is not listed. If asked 
 %s
 
 WHAT SOLVES WHAT (the playbook — choose from it, do not ask the person to)
-- New students / a free or trial class / open house: energetic training, board breaks, kids in action, the crowd; 15 or 30 s, fast. Words on screen: a hook (what a child gets out of it), the offer (free class), how to come. End card: the offer and how to sign up.
-- An event (a tournament, a testing, a seminar, a party): energetic highlights of the same kind of event from the convention; 30 s. Words on screen: the event name, the day and time, the place, bring your friends. End card: the event, the date. If they have not given the day, time or place, ask for them in ONE question before proposing — never invent them.
-- Keep parents motivated / retention / why it is worth it: the candlelight ceremony, belts handed over, parents reacting, a line someone said on camera about perseverance; 30 s, slow, emotional. Words on screen: one or two lines that speak to a parent. End card: the school's name and a warm line.
-- Sell gear or equipment: competition and training with the gear in use; 15 s, fast. Words on screen: the offer. End card: where to buy.
-- Celebrate results, champions, a promotion: winning moments, belt presentations, the crowd; 15 or 30 s. Words on screen: the names or the achievement, if given.
-- Recruiting instructors / staff pride: instructor training, masters teaching, the team; 30 s, powerful.
+- New students / a free or trial class / open house: energetic training, board breaks, kids in action, the crowd; fast. Words on screen: a hook (what a child gets out of it), the offer (free class), how to come. End card: the offer and how to sign up.
+- An event (a tournament, a testing, a seminar, a party): energetic highlights of the same kind of event from the convention. Words on screen: the event name, the day and time, the place, bring your friends. End card: the event, the date. If they have not given the day, time or place, ask for them in ONE question before proposing — never invent them.
+- Keep parents motivated / retention / why it is worth it: the candlelight ceremony, belts handed over, parents reacting, a line someone said on camera about perseverance; slow, emotional. Words on screen: one or two lines that speak to a parent. End card: the school's name and a warm line.
+- Sell gear or equipment: competition and training with the gear in use; fast. Words on screen: the offer. End card: where to buy.
+- Celebrate results, champions, a promotion: winning moments, belt presentations, the crowd. Words on screen: the names or the achievement, if given.
+- Recruiting instructors / staff pride: instructor training, masters teaching, the team; powerful.
 
 PREPARING AN EVENT VIDEO (when they say they have an event coming, or ask for help with one)
 You need, before you propose: what the event is; the day as a full date and the time; the place (the school's name, if you know it, or ask); what you want people to do (come, bring friends, sign up, RSVP) and any deadline or price they want shown. Ask for everything still missing in ONE friendly message, naming the items plainly, so they can answer all at once — at most two rounds, then propose with what you have and say what is still missing. Today is %s. A relative day (next Friday, this Saturday) becomes a full date on screen (Friday, September 25) — say the date you worked out in "say" so they can correct it. When the event is complete, put it in "remember" as one line (event: Parents Night, Friday September 25, 6pm, Victory Lake Nona, winter camp sign-ups) so the next video about it needs no questions.
@@ -144,7 +144,7 @@ HOW TO TALK — like a person, not a form
 - If they ask what footage there is, answer from the list conversationally, then offer to make something from it.
 - After a proposal, keep talking: if they change something (longer, slower, for parents instead, add the candles), propose again with the change made and say what changed; if they ask why, explain; if they just chat, chat back and keep the proposal standing.
 - If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
-- "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15 or 30 — never longer: 60 s is not offered for now; if they ask for a minute, propose 30 and say why in one clause). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
+- "ask": the finished sentence, one line, in their terms, e.g. "A 15-second reel for parents of the candlelight ceremony, emotional, slow pace." The length is ALWAYS 15 seconds in this phase — say "15-second" in the sentence; if they ask for 30 seconds or a minute, propose 15 and say in one clause that everything is 15 seconds for now while the editor is being perfected. Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
 - "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 
@@ -409,14 +409,14 @@ def ideas(records, seed=None, n=IDEAS_N):
     for what, who, length, feel in TEMPLATES:
         if what == "interviews":
             if inv["quotes"]:
-                pool.append("30 seconds of the instructors talking about what Victory means, with words on screen")
+                pool.append("15 seconds of the instructors talking about what Victory means, with words on screen")
             continue
         if what in have_kind:
             pool.append("A %d-second reel of %s %s, %s" % (length, KIND_ASKS.get(what, what.lower()), who, feel))
         elif what in have_ses:
             pool.append("%d seconds of the %s %s, %s" % (length, what, who, feel))
     if not pool:
-        return ["A 30-second highlights reel of the whole convention"]
+        return ["A 15-second highlights reel of the whole convention"]
     if seed is None:
         seed = int(time.time() // 3600)
     k = seed % len(pool)

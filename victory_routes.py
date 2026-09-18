@@ -524,12 +524,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             body = request.get_json(force=True, silent=True) or {}
             items = body.get("items") or []
             note = (body.get("note") or "").strip()
+            import victory_cut as _vc
             try:
-                length_s = int(body.get("length") or 30)
+                length_s = int(body.get("length") or _vc.STANDARD)
             except (TypeError, ValueError):
-                length_s = 30
-            if length_s not in (15, 30):
-                length_s = 30       # 60 s is not offered for now (Michael, 18 Sep)
+                length_s = _vc.STANDARD
+            if length_s not in _vc.LENGTHS:
+                length_s = _vc.STANDARD     # 15 s is the standard for this phase (Michael, 18 Sep)
             if not isinstance(items, list):
                 items = []
             # The person's own words on screen (up to 4 lines) and the end card.
@@ -735,7 +736,8 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             # the new version belongs to whoever owns the cut, even when MWM presses the button for them
             new_id = vs.create_request(row.get("email") or sess["email"], row.get("role") or sess["role"],
                                        row.get("school") or sess.get("school", ""), rev["ask"], items[:60],
-                                       length_s=row.get("length_s") or 30, text=new_text)
+                                       length_s=(row.get("length_s") if row.get("length_s") in _vc.LENGTHS else _vc.STANDARD),
+                                       text=new_text)
             if not new_id:
                 return jsonify({"ok": False, "error": "could not save the new version"}), 500
             _tell(":scissors: *Victory Intelligence \u2014 cut #%s again as #%s* for *%s*\n> change: %s\n> brief: %s%s"

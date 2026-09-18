@@ -532,7 +532,7 @@ APP_JS = r"""
   // are used to go to AI and chat with AI … make this 100% interactive")
   var ideas=document.getElementById('ideas'), hlog=document.getElementById('hlog'),
       hq=document.getElementById('hq'), hsend=document.getElementById('hsend'),
-      hist=[], curAsk='', curLen=30, curLines=[], curCta='';
+      hist=[], curAsk='', curLen=15, curLines=[], curCta='';
 
   function bubble(cls, text){
     var m=document.createElement('div'); m.className='msg '+cls; if(text) m.textContent=text;
@@ -553,7 +553,7 @@ APP_JS = r"""
   // the card that offers the cut: the sentence, how the editor reads it,
   // the length, and the one button that matters
   function offer(d){
-    curAsk=d.ask; curLen=d.length||30; curLines=d.lines||[]; curCta=d.cta||'';
+    curAsk=d.ask; curLen=15; curLines=d.lines||[]; curCta=d.cta||'';
     var m=bubble('bot offer');
     var q=document.createElement('div'); q.className='ask'; q.textContent=d.ask; m.appendChild(q);
     if(d.brief){ var b=document.createElement('div'); b.className='brief'; b.innerHTML='<span class="k">Understood as</span> '+esc(d.brief); m.appendChild(b); }
@@ -567,13 +567,8 @@ APP_JS = r"""
       if(curCta){ var c=document.createElement('div'); c.className='pk'; c.innerHTML='<span class="k">End card</span> '+esc(curCta)+' <span class="then">then the Victory Martial Arts card</span>'; x.appendChild(c); }
       m.appendChild(x);
     }
-    var len=document.createElement('div'); len.className='lens';
-    [15,30].forEach(function(n){
-      var c=document.createElement('button'); c.type='button'; c.textContent=n+' s'; c.className=(n===curLen?'on':'');
-      c.onclick=function(){ curLen=n; len.querySelectorAll('button').forEach(function(o){ o.className=''; }); c.className='on'; };
-      len.appendChild(c);
-    });
-    m.appendChild(len);
+    // one length for this phase: 15 s (Michael, 18 Sep) — no buttons to choose
+    curLen=15;
     var go=document.createElement('button'); go.type='button'; go.className='use'; go.textContent='Make it';
     go.onclick=function(){ makeIt(go); }; m.appendChild(go);
     var ch=document.createElement('div'); ch.className='hint'; ch.textContent='Want something different? Just say so below.'; m.appendChild(ch);
@@ -614,7 +609,7 @@ APP_JS = r"""
     btn.disabled=true; btn.textContent='Sending…';
     fetch('/vi/request', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({note: pkg.ask, length: pkg.len || 30, lines: (pkg.lines||[]).join('\n'), cta: pkg.cta || '',
+      body: JSON.stringify({note: pkg.ask, length: 15, lines: (pkg.lines||[]).join('\n'), cta: pkg.cta || '',
         items: ids.map(function(i){ return {id:i, title: picked[i].title, kind: picked[i].kind,
                                              file: picked[i].file, quote: picked[i].quote}; })})})
     .then(function(r){ return r.json(); })
@@ -645,8 +640,8 @@ APP_JS = r"""
           x.textContent=((st.lines||[]).length ? 'On screen: '+st.lines.join(' / ') : '') + (st.cta ? ((st.lines||[]).length?' · ':'')+'End card: '+st.cta : '');
           row.appendChild(x);
         }
-        var b=document.createElement('button'); b.type='button'; b.className='mk'; b.textContent='Make this video · '+(st.length||30)+' s';
-        b.onclick=function(){ makeIt(b, {ask: st.ask, len: st.length||30, lines: st.lines||[], cta: st.cta||''}, true); };
+        var b=document.createElement('button'); b.type='button'; b.className='mk'; b.textContent='Make this video · 15 s';
+        b.onclick=function(){ makeIt(b, {ask: st.ask, len: 15, lines: st.lines||[], cta: st.cta||''}, true); };
         row.appendChild(b);
       }
       m.appendChild(row);
@@ -888,7 +883,7 @@ def _request_card(r, mine_only):
             bits.append("end card: %s" % _e(txt["cta"]))
         h.append("<div class=\"from\">%s</div>" % " &middot; ".join(bits))
     h.append("<div class=\"from\">%ss requested%s</div>"
-             % (r.get("length_s") or 30,
+             % (r.get("length_s") or 15,
                 (" &middot; %d moment%s picked" % (len(items), "" if len(items) == 1 else "s")) if items else
                 " &middot; no moments picked, the machine chose"))
     if items:
@@ -938,7 +933,7 @@ def _request_card(r, mine_only):
                 pass
         if summ.get("no_room"):
             h.append("<div class=\"errbox warn\">"
-                     "Picked, but no room in a %s-second video (ask for a longer one to fit them):\n%s</div>"
+                     "Picked, but no room in a %s-second video (fewer picks next time):\n%s</div>"
                      % (_e(str(r.get("length_s") or "")), "\n".join("\u2022 " + _e(x) for x in summ["no_room"])))
         if summ.get("speech_seconds"):
             bits.append("%ds of interview" % int(round(summ["speech_seconds"])))
