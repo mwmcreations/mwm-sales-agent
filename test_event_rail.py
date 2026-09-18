@@ -2180,5 +2180,30 @@ check("malformed env is ignored, the built-in survives",
       _ev115(_LUZIA115)[0], [_LUZIA115, _NICOLE115])
 _os115.environ.pop("MWM_STANDING_CONTACTS", None)
 
+
+# ── #116 REVIEW-ASK TIMING ───────────────────────────────────────────────
+# Todd was asked to review work he may not have received yet. Measured
+# turnarounds: 4, 5, 6, 7, 9 days, plus one revision round at 10.
+_p116 = outcome_plan("completed", CH_WHATSAPP, True)
+_rev116 = [h for h, _c, k in _p116["steps"] if k == STEP_REVIEW]
+check("completed fires exactly one review ask", len(_rev116), 1)
+check("the review ask waits 14 days", _rev116[0], 24 * 14)
+check_true("the ask clears the slowest measured delivery (10 days)",
+           _rev116[0] > 24 * 10)
+
+# The trap this patch was one line away from setting. outcome_sender checks
+# seq_should_close BEFORE next_due_step and closes on `>=`, so a step due at
+# exactly close_after_days is dropped without a trace. This must hold for
+# EVERY step of EVERY outcome, not just this one.
+for _oc116 in ("not_interested", "client_won", "completed", "no_show",
+               "follow_up", "studio_package_pitched"):
+    _pl116 = outcome_plan(_oc116, CH_WHATSAPP, True)
+    _cad116 = _pl116.get("close_after_days")
+    if not _cad116:
+        continue
+    _late116 = [k for h, _c, k in _pl116["steps"] if h >= _cad116 * 24]
+    check(f"{_oc116}: no step is scheduled at or past its own close",
+          _late116, [])
+
 print(f"\n{'=' * 60}\n  TOTAL: {_passed} passed, {_failed} failed\n{'=' * 60}")
 sys.exit(1 if _failed else 0)

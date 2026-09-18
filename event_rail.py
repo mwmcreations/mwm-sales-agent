@@ -2242,11 +2242,31 @@ def outcome_plan(outcome, channel=CH_UNKNOWN, has_email=False,
     if outcome == "completed":
         plan["editing"] = True
         plan["owner"] = "LARA"
-        plan["close_after_days"] = 14
-        plan["steps"] = [(24 * 7, _reachable(channel, has_email, hours_since_inbound),
+        # REVIEW TIMING, 18 Sep 2026. Day 7 was a coin flip: measured
+        # shoot->delivery turnarounds were 4, 5, 6, 7 and 9 days, and one job
+        # that needed a revision round landed at 10. Day 7 sits in the middle
+        # of that spread, so roughly half the asks went out to people who had
+        # not seen a single photo yet. Todd got one of those. Day 14 clears
+        # the worst case observed by four days.
+        #
+        # close_after_days MUST stay strictly greater than the review delay.
+        # outcome_sender runs seq_should_close BEFORE next_due_step and closes
+        # on `elapsed >= close_after_days`, so a step due at exactly the close
+        # boundary is never sent — it is swallowed silently, with the sequence
+        # reported as cleanly closed. Leaving this at 14 alongside a day-14
+        # ask would have deleted the review step altogether. The extra week
+        # also absorbs the 8am-8pm send-window hold.
+        #
+        # A fixed delay is still a guess. The honest fix is a real delivery
+        # event emitted when the edit ships, with this step gated on it;
+        # until that exists, this number is an estimate of when the work
+        # probably landed, not knowledge that it did.
+        plan["close_after_days"] = 21
+        plan["steps"] = [(24 * 14, _reachable(channel, has_email, hours_since_inbound),
                           STEP_REVIEW)]
         plan["why"] = ("shoot complete -> editing pipeline ALWAYS (no keyword "
-                       "test), plus one review ask at day 7.")
+                       "test), plus one review ask at day 14 — after the "
+                       "slowest measured delivery, not during editing.")
         return plan
 
     # ── NO-SHOW — the proven-broken one. Ezechiel no-showed Jul 22; the
