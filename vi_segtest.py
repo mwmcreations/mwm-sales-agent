@@ -100,6 +100,17 @@ def main(paths):
         cmd = cmd + [final]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         out.append("variant[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-120:].replace("\n", " ")))
+    # are the frames real or padding? count frames that differ from the one before
+    def distinct(path):
+        r = subprocess.run([FFMPEG, "-v", "info", "-i", path, "-vf", "mpdecimate=hi=64*4:lo=64*2:frac=0.5",
+                            "-fps_mode", "vfr", "-f", "null", "-"], capture_output=True, text=True, timeout=300)
+        import re as _re
+        m = _re.findall(r"frame=\s*(\d+)", r.stderr or "")
+        return m[-1] if m else "?"
+    for name in ("final_bare", "final_cards", "final_v_cfr", "final_v_vsync1"):
+        pth = os.path.join(work, name + ".mp4")
+        if os.path.exists(pth):
+            out.append("distinct[%s]=%s" % (name, distinct(pth)))
     v = subprocess.run([FFMPEG, "-version"], capture_output=True, text=True).stdout.splitlines()[:1]
     out.append("music=%s ffmpeg=%s" % (music, v))
     out.append("encoder=%s ffmpeg=%s" % (ENCODER, FFMPEG))
