@@ -163,6 +163,37 @@ def main(paths):
         c[fc_i] = pre + pic[fc_i].replace("[0:v][c0]", "[m0][c0]", 1)
         run_pic(name, c)
 
+    # the hole sits just before a segment join with a card on screen: the
+    # join itself, four ways round it
+    body_re = os.path.join(work, "body_re.mp4")
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", body, "-c:v", ENCODER] +
+                   (["-b:v", "10M", "-allow_sw", "1"] if "videotoolbox" in ENCODER else ["-preset", "veryfast"]) +
+                   ["-pix_fmt", "yuv420p", "-an", body_re], capture_output=True, text=True, timeout=600)
+    c = list(pic); c[c.index("-i") + 1] = body_re
+    run_pic("body_reenc", c)
+    c = list(pic); i = c.index("-i"); c[i:i + 2] = ["-f", "concat", "-safe", "0", "-i", lp]
+    run_pic("concat_demux", c)
+    c = list(pic); i = c.index("-i"); c[i:i] = ["-fflags", "+genpts"]
+    run_pic("genpts", c)
+    c = list(pic); i = c.index("-i"); c[i:i] = ["-fflags", "+igndts"]
+    run_pic("igndts", c)
+    # segments without frame reordering (no B-frames) at the join
+    lst2 = []
+    for i, src in enumerate(paths):
+        dst = os.path.join(work, "segb%d.mp4" % i)
+        cmd = vc.segment_cmd(FFMPEG, src, dst, 1920, 1080, 0.5, 6.0, 4.0, ENCODER)
+        j = cmd.index("-c:v")
+        cmd[j + 2:j + 2] = ["-profile:v", "baseline"] if "videotoolbox" in ENCODER else ["-bf", "0"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        lst2.append("file '%s'" % dst)
+    lp2 = os.path.join(work, "list2.txt")
+    open(lp2, "w").write("\n".join(lst2) + "\n")
+    body_b = os.path.join(work, "body_b.mp4")
+    r = subprocess.run(vc.concat_cmd(FFMPEG, lp2, body_b), capture_output=True, text=True, timeout=300)
+    out.append("concat[baseline] rc=%d frames=%s" % (r.returncode, frames(body_b)))
+    c = list(pic); c[c.index("-i") + 1] = body_b
+    run_pic("baseline_segs", c)
+
     def holes(path):
         r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v", "-show_entries", "frame=pts_time",
                             "-of", "csv=p=0", path], capture_output=True, text=True, timeout=300)
@@ -170,7 +201,9 @@ def main(paths):
         return [(round(ts[i - 1], 3), round(ts[i] - ts[i - 1], 3)) for i in range(1, len(ts))
                 if abs(ts[i] - ts[i - 1] - 1.0 / 30) > 0.002][:12]
     for name, pth in (("body", body), ("pic_verbose", os.path.join(work, "pic_verbose.mp4")),
-                      ("pic_setpts_main", os.path.join(work, "pic_setpts_main.mp4")),
+                      ("pic_body_reenc", os.path.join(work, "pic_body_reenc.mp4")),
+                      ("pic_concat_demux", os.path.join(work, "pic_concat_demux.mp4")),
+                      ("pic_baseline_segs", os.path.join(work, "pic_baseline_segs.mp4")),
                       ("movcard", os.path.join(work, "final_v_movcard.mp4"))):
         out.append("holes[%s]=%s" % (name, holes(pth)))
     # are the frames real or padding? count frames that differ from the one before
