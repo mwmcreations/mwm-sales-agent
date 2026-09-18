@@ -1127,6 +1127,7 @@ class TestTheMachineEditor(VICase):
         page = self.c.get("/vi/queue").data.decode("utf-8")
         self.assertIn("Version 2", page)
         self.assertIn("cut again from", page)
+        self.assertEqual(new["email"], "jim@victoryma.com")
         # an empty box is the plain re-cut of the same brief
         r = self.c.post("/vi/recut", json={"id": 1, "text": ""})
         self.assertTrue(self._j(r)["same"])

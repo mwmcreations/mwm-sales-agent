@@ -731,7 +731,9 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             items = [i for i in old if isinstance(i, dict)] + [p for p in picks if p["id"] not in {i.get("id") for i in old}]
             new_text = {"lines": rev.get("lines") or [], "cta": rev.get("cta") or "",
                         "parent": rid, "change": change, "version": int((text or {}).get("version") or 1) + 1}
-            new_id = vs.create_request(sess["email"], sess["role"], sess.get("school", ""), rev["ask"], items[:60],
+            # the new version belongs to whoever owns the cut, even when MWM presses the button for them
+            new_id = vs.create_request(row.get("email") or sess["email"], row.get("role") or sess["role"],
+                                       row.get("school") or sess.get("school", ""), rev["ask"], items[:60],
                                        length_s=row.get("length_s") or 30, text=new_text)
             if not new_id:
                 return jsonify({"ok": False, "error": "could not save the new version"}), 500
