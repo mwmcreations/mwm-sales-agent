@@ -57,6 +57,10 @@ CYCLE_SECONDS = 20 * 60          # 20 min: finest step granularity is 0h (no-sho
 MAX_SENDS_PER_PASS = 12          # blast radius cap; a runaway loop stays small
 
 BOOK_URL = "https://mwmcreations.com/book-studio/"
+# Google review page for MWM Creations. Verified 18 Sep 2026: resolves to the
+# listing at 1500 Park Center Dr (ludocid 10542546229788725128). The review ask
+# shipped for weeks with no link at all - see STEP_REVIEW below.
+REVIEW_URL = "https://search.google.com/local/writereview?placeid=ChIJYZrUOLx56YgRiM-wbvClTpI"
 STUDIO_ADDRESS = "1500 Park Center Dr, Suite 230, Orlando, FL 32835"
 
 _deps = {}
@@ -202,14 +206,29 @@ def _email_copy(kind, first, business="", agreed_next=""):
             + sign)
 
     if kind == STEP_REVIEW:
+        # This ask shipped for weeks with no link in it. Michael, 17 Sep 2026:
+        # "there is no way the person will click anywhere to do a review if it
+        # is just plain text with no place for them to go." The one thing the
+        # message existed to produce was the one thing it could not produce.
+        #
+        # The bare URL is repeated under the button deliberately: a button here
+        # is an anchor with a background colour, and the clients most likely to
+        # strip that styling are the phone clients our customers actually read.
         return (
             f"{first}, how did we do?",
             f"<p>Hi {first},</p>"
             f"<p>It was a pleasure having you in the studio{biz}. Hope you're happy "
             f"with how it turned out.</p>"
             f"<p>If you have two minutes, a short review genuinely helps a small "
-            f"studio like ours — and if anything fell short instead, I'd rather "
-            f"hear it from you directly. Just reply.</p>" + sign)
+            f"studio like ours:</p>"
+            f"<p><a href=\"{REVIEW_URL}\" style=\"display:inline-block;"
+            f"background:#1a73e8;color:#ffffff;text-decoration:none;"
+            f"padding:12px 22px;border-radius:6px;font-weight:600\">"
+            f"Leave a Google review</a></p>"
+            f"<p style=\"color:#666;font-size:13px\">Or paste this into your browser:<br>"
+            f"{REVIEW_URL}</p>"
+            f"<p>And if anything fell short instead, I'd rather hear it from you "
+            f"directly \u2014 just reply to this one.</p>" + sign)
 
     if kind == STEP_EMAIL_ASK:
         # Only ever sent on a NON-email channel — asking for an email address
@@ -251,8 +270,9 @@ def _short_copy(kind, first, business="", agreed_next=""):
                 f"like to see the space first, a studio visit is free: {BOOK_URL}")
     if kind == STEP_REVIEW:
         return (f"Hi {first}! Hope you're happy with how the shoot turned out. If "
-                f"you have two minutes, a short review really helps us — and if "
-                f"anything fell short instead, I'd rather hear it from you directly.")
+                f"you have two minutes, a short review really helps us: {REVIEW_URL} "
+                f"\u2014 and if anything fell short instead, I'd rather hear it from "
+                f"you directly, just reply here.")
     if kind == STEP_EMAIL_ASK:
         return (f"Hi {first}! What's the best email for you? I'd like to send this "
                 f"over properly rather than in a chat window.")
