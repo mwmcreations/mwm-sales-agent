@@ -253,7 +253,7 @@ main.browse .pick{display:none}
 .m .mt{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:var(--sur2);margin:0 0 5px}
 .m .mt img{width:100%;height:100%;object-fit:cover;display:block}
 .m .t{font-size:12px;font-weight:400;line-height:1.3;color:var(--dim)}
-.player{width:100%;max-width:300px;aspect-ratio:9/16;border:1px solid var(--line);border-radius:16px;background:#000;display:block;margin:0 0 14px;object-fit:cover}
+.player{width:100%;max-width:300px;aspect-ratio:9/16;border:1px solid var(--line);border-radius:16px;background:#000;display:block;margin:0 0 14px;object-fit:contain}
 .summ{font-size:12.5px;color:var(--dim2);margin:0 0 12px;line-height:1.5}
 .fb{margin:16px 0 0;border-top:1px solid var(--line);padding-top:14px}
 .fb .fbh{font-size:14px;color:var(--dim);margin:0 0 10px}
