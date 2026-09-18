@@ -640,6 +640,13 @@ def segment_cmd(ffmpeg, src, dst, width, height, x, t0, dur, encoder="libx264"):
                                  "-af", "aresample=async=1", dst]
 
 
+def card_video_cmd(ffmpeg, png, dst, seconds):
+    """A card PNG as a short video with its alpha kept (PNG codec in a .mov),
+    at the reel's frame rate, for exactly the seconds it is on screen."""
+    return [ffmpeg, "-v", "error", "-y", "-loop", "1", "-framerate", str(FPS), "-t", "%.2f" % max(0.2, seconds),
+            "-i", png, "-c:v", "png", "-pix_fmt", "rgba", dst]
+
+
 def concat_cmd(ffmpeg, list_file, dst):
     return [ffmpeg, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", dst]
 
@@ -724,14 +731,16 @@ def final_cmd(ffmpeg, body, music, dst, total, head, outro, font, encoder="libx2
         for k, (png, t_in, t_out) in enumerate(cards):
             idx = n_in + k
             t_out = min(float(t_out), end)
-            # The card is a looped PNG at the reel's own frame rate, but only
-            # for the seconds it is on screen (-t after -itsoffset), so a 60 s
-            # reel with four cards decodes ~360 card frames, not 7,200 (the
-            # 10 fps loop that replaced them in #162 made the Mini's ffmpeg
-            # drop a third of the picture frames at the overlay — video #30
-            # "getting stuck", 17 Sep: 1,105 frames where 1,800 belonged).
-            cmd += ["-loop", "1", "-framerate", str(FPS), "-itsoffset", "%.2f" % t_in,
-                    "-t", "%.2f" % max(0.1, t_out - t_in + 0.2), "-i", png]
+            if str(png).lower().endswith((".mov", ".mp4")):
+                # a card that is already a short video (card_video_cmd): the
+                # Mini's ffmpeg 8 drops a third of the picture frames when a
+                # looped PNG is overlaid, whatever its rate (video #30 "getting
+                # stuck", 17 Sep: 1,105 frames where 1,800 belonged), but keeps
+                # every frame when the card comes in as a real video track
+                cmd += ["-itsoffset", "%.2f" % t_in, "-i", png]
+            else:
+                cmd += ["-loop", "1", "-framerate", str(FPS), "-itsoffset", "%.2f" % t_in,
+                        "-t", "%.2f" % max(0.1, t_out - t_in + 0.2), "-i", png]
             chain.append("[%d:v]format=rgba,fade=t=in:st=%.2f:d=0.4:alpha=1,fade=t=out:st=%.2f:d=0.4:alpha=1[c%d]"
                          % (idx, t_in, max(t_in, t_out - 0.4), k))
             chain.append("%s[c%d]overlay=0:0:eof_action=pass:enable='between(t,%.2f,%.2f)'[v%d]"
@@ -833,6 +842,15 @@ def render(plan_, clip_paths, music_path, workdir, out_path, ffmpeg="ffmpeg",
         cards = reanchor_cards(cards, total, actual)
         total = actual
     head, outro = titles_for(plan_["ask"], event_title)
+    if cards:
+        # every card becomes a short video track before the final pass
+        movs = []
+        for k, (png, t_in, t_out) in enumerate(cards):
+            mov = os.path.join(workdir, "card%02d.mov" % k)
+            subprocess.run(card_video_cmd(ffmpeg, png, mov, min(float(t_out), total) - float(t_in) + 0.2),
+                           check=True, capture_output=True, text=True, timeout=300)
+            movs.append((mov, t_in, t_out))
+        cards = movs
     subprocess.run(final_cmd(ffmpeg, body, music_path, out_path, total, head, outro, font_path(), encoder,
                              cards=cards, speech=speech_spans(cut)),
                    check=True, capture_output=True, text=True, timeout=900)

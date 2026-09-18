@@ -218,6 +218,20 @@ class TestWordsOnScreen(unittest.TestCase):
         self.assertEqual(p["cards"][-2][0], "Join")
         self.assertEqual(p["cards"][-1][0], vc.LOGO_CARD)
 
+    def test_a_card_that_is_a_video_comes_in_by_offset(self):
+        """The Mini's ffmpeg keeps every frame only when the card is a real
+        video track (17 Sep, video #30 "getting stuck")."""
+        cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
+                           cards=[("card00.mov", 0.3, 3.5), ("card01.mov", 27.0, 30.0)])
+        joined = " ".join(cmd)
+        self.assertIn("-itsoffset 0.30 -i card00.mov", joined)
+        self.assertIn("-itsoffset 27.00 -i card01.mov", joined)
+        self.assertNotIn("-loop", joined)
+        cv = vc.card_video_cmd("f", "c.png", "c.mov", 3.4)
+        self.assertEqual(cv[-4:], ["-c:v", "png", "-pix_fmt", "rgba", "c.mov"][-4:])
+        self.assertIn("-t", cv)
+        self.assertEqual(cv[cv.index("-t") + 1], "3.40")
+
     def test_many_cards_in_the_ffmpeg_command(self):
         cmd = vc.final_cmd("f", "b.mp4", "m.wav", "o.mp4", 30.0, ("A", "B"), ("C", "D"), None,
                            cards=[("c0.png", 0.3, 3.5), ("c1.png", 12.0, 15.0), ("c2.png", 27.0, 30.0)])

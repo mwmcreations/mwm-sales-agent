@@ -58,14 +58,24 @@ def main(paths):
         subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.5:s=1080x1920:d=1,format=rgba",
                         "-frames:v", "1", png], capture_output=True, text=True, timeout=60)
         pngs.append(png)
-    cards = [(pngs[0], 0.3, 3.2), (pngs[1], 3.5, 6.0), (pngs[2], total - 3.0, total)]
+    png_cards = [(pngs[0], 0.3, 3.2), (pngs[1], 3.5, 6.0), (pngs[2], total - 3.0, total)]
+    # what render() does since the cards-as-video fix: every card becomes a
+    # short PNG-codec .mov, fed to the final pass by -itsoffset
+    cards = []
+    for k, (png, t_in, t_out) in enumerate(png_cards):
+        mov = os.path.join(work, "card%02d.mov" % k)
+        r = subprocess.run(vc.card_video_cmd(FFMPEG, png, mov, min(t_out, total) - t_in + 0.2),
+                           capture_output=True, text=True, timeout=300)
+        out.append("cardmov%d rc=%d frames=%s" % (k, r.returncode, frames(mov)))
+        cards.append((mov, t_in, t_out))
     music = None
     mdir = os.environ.get("VI_MUSIC_DIR", os.path.join(HERE, ".deploy", "vi_music"))
     if os.path.isdir(mdir):
         wavs = sorted(f for f in os.listdir(mdir) if f.lower().endswith((".wav", ".mp3", ".m4a")))
         if wavs:
             music = os.path.join(mdir, wavs[0])
-    for name, cds, mus in (("bare", None, None), ("cards", cards, None), ("cards+music", cards, music)):
+    for name, cds, mus in (("bare", None, None), ("cards", cards, None), ("cards+music", cards, music),
+                           ("cards_png_oldway", png_cards, None)):
         final = os.path.join(work, "final_%s.mp4" % name.replace("+", "_"))
         cmd = vc.final_cmd(FFMPEG, body, mus, final, total, ("A", "B"), ("C", "D"), None, ENCODER, cards=cds)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
