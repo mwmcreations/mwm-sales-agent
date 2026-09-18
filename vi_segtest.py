@@ -100,6 +100,34 @@ def main(paths):
         cmd = cmd + [final]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         out.append("variant[%s] rc=%d frames=%s err=%s" % (name, r.returncode, frames(final), (r.stderr or "")[-120:].replace("\n", " ")))
+    # where do the frames go? count what LEAVES the filter graph (showinfo), and try
+    # a card track that is a real video and a main input normalised by fps=30
+    import re as _re
+    def graph_frames(cmd_list):
+        c = list(cmd_list)
+        i = c.index("-filter_complex")
+        c[i + 1] = c[i + 1].replace("[v]", "[vv]") + ";[vv]showinfo[v]"
+        c = [a for a in c]
+        c[c.index("-map") + 1] = "[v]"
+        c = c[:c.index("-c:v")] + ["-fps_mode", "passthrough", "-f", "null", "-"]
+        r = subprocess.run(c, capture_output=True, text=True, timeout=600)
+        return len(_re.findall(r"showinfo.*?n:\s*\d+", r.stderr or ""))
+    out.append("graph_out[cards]=%d" % graph_frames(base[:-1]))
+    fc2 = fc.replace("[0:v][c0]", "[m0][c0]")
+    cmdC = list(base[:-1]); cmdC[cmdC.index("-filter_complex") + 1] = "[0:v]fps=30,settb=AVTB[m0];" + fc2
+    r = subprocess.run(cmdC + [os.path.join(work, "final_v_fpsmain.mp4")], capture_output=True, text=True, timeout=600)
+    out.append("variant[fps_main] rc=%d frames=%s err=%s" % (r.returncode, frames(os.path.join(work, "final_v_fpsmain.mp4")), (r.stderr or "")[-100:].replace("\n", " ")))
+    # the card as a short PNG-codec .mov (keeps alpha), fed with -itsoffset
+    mov = os.path.join(work, "card0.mov")
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-loop", "1", "-framerate", "30", "-t", "3.1", "-i", pngs[0],
+                    "-c:v", "png", "-pix_fmt", "rgba", mov], capture_output=True, text=True, timeout=120)
+    cmdA = [FFMPEG, "-v", "error", "-y", "-i", body, "-itsoffset", "0.30", "-i", mov, "-filter_complex",
+            "[1:v]format=rgba,fade=t=in:st=0.30:d=0.4:alpha=1,fade=t=out:st=2.80:d=0.4:alpha=1[c0];"
+            "[0:v][c0]overlay=0:0:eof_action=pass:enable='between(t,0.30,3.20)'[v]",
+            "-map", "[v]", "-map", "0:a?", "-c:v", ENCODER] + (["-b:v", "10M", "-allow_sw", "1"] if "videotoolbox" in ENCODER else []) + \
+           ["-pix_fmt", "yuv420p", "-c:a", "aac", "-t", "%.3f" % total, os.path.join(work, "final_v_movcard.mp4")]
+    r = subprocess.run(cmdA, capture_output=True, text=True, timeout=600)
+    out.append("variant[mov_card] rc=%d frames=%s err=%s" % (r.returncode, frames(os.path.join(work, "final_v_movcard.mp4")), (r.stderr or "")[-100:].replace("\n", " ")))
     # are the frames real or padding? count frames that differ from the one before
     def distinct(path):
         r = subprocess.run([FFMPEG, "-v", "info", "-i", path, "-vf", "mpdecimate=hi=64*4:lo=64*2:frac=0.5",
@@ -107,7 +135,7 @@ def main(paths):
         import re as _re
         m = _re.findall(r"frame=\s*(\d+)", r.stderr or "")
         return m[-1] if m else "?"
-    for name in ("final_bare", "final_cards", "final_v_cfr", "final_v_vsync1"):
+    for name in ("final_bare", "final_cards", "final_v_cfr", "final_v_fpsmain", "final_v_movcard"):
         pth = os.path.join(work, name + ".mp4")
         if os.path.exists(pth):
             out.append("distinct[%s]=%s" % (name, distinct(pth)))
