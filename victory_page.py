@@ -570,7 +570,7 @@ APP_JS = r"""
       m.appendChild(x);
     }
     var len=document.createElement('div'); len.className='lens';
-    [15,30,60].forEach(function(n){
+    [15,30].forEach(function(n){
       var c=document.createElement('button'); c.type='button'; c.textContent=n+' s'; c.className=(n===curLen?'on':'');
       c.onclick=function(){ curLen=n; len.querySelectorAll('button').forEach(function(o){ o.className=''; }); c.className='on'; };
       len.appendChild(c);

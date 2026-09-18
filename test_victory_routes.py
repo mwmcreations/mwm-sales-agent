@@ -816,10 +816,11 @@ class TestAskForACut(VICase):
         self.assertEqual(len(self.store.requests[2]["text"]["cta"]), 60)
 
     def test_length_is_kept_and_kept_sane(self):
-        self._ask(note="x", length=60)
+        self._ask(note="x", length=60)          # a minute is not on offer for now: it becomes 30
         self._ask(note="x", length=7)
         self._ask(note="x", length="sixty")
-        self.assertEqual([r["length_s"] for r in self.store.requests], [60, 30, 30])
+        self._ask(note="x", length=15)
+        self.assertEqual([r["length_s"] for r in self.store.requests], [30, 30, 30, 15])
 
     def test_a_silly_number_of_items_is_refused(self):
         many = [{"id": str(i), "title": "t"} for i in range(200)]
@@ -949,9 +950,11 @@ class TestThePageHelps(VICase):
         self.assertIn("/vi/request", self.page)
         self.assertIn("/vi/queue", self.page)
 
-    def test_it_offers_the_three_lengths(self):
-        # the proposal card in the chat carries 15 / 30 / 60 s buttons
-        self.assertIn("[15,30,60].forEach", self.page)
+    def test_it_offers_two_lengths(self):
+        # the proposal card in the chat carries 15 / 30 s buttons — no 60 s
+        # while the editor is learning (Michael, 18 Sep)
+        self.assertIn("[15,30].forEach", self.page)
+        self.assertNotIn("60].forEach", self.page)
 
     def test_it_separates_footage_from_talking(self):
         self.assertIn("Footage", self.page)

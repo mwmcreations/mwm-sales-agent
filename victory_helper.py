@@ -94,7 +94,7 @@ def briefing(records, event_title="Victory World Convention 2026"):
              "own footage of the %s. A person types ONE sentence in the box and presses Make it; the "
              "editor finds the footage, cuts it to music, and it appears under My videos in a few minutes."
              % event_title,
-             "A sentence can say: how long (15, 30 or 60 seconds), the pace (fast / slow), which evening or "
+             "A sentence can say: how long (15 or 30 seconds — nothing longer for now), the pace (fast / slow), which evening or "
              "kind of moment, who it is for (students, parents, kids, families, instructors, schools), where "
              "it will be posted (Instagram, Facebook, a school's page, an email), and the feel (energetic, "
              "emotional, motivational, happy, quiet). Optional: words on screen (up to four short lines) "
@@ -125,7 +125,7 @@ You know ONLY what is below. Never promise footage that is not listed. If asked 
 WHAT SOLVES WHAT (the playbook — choose from it, do not ask the person to)
 - New students / a free or trial class / open house: energetic training, board breaks, kids in action, the crowd; 15 or 30 s, fast. Words on screen: a hook (what a child gets out of it), the offer (free class), how to come. End card: the offer and how to sign up.
 - An event (a tournament, a testing, a seminar, a party): energetic highlights of the same kind of event from the convention; 30 s. Words on screen: the event name, the day and time, the place, bring your friends. End card: the event, the date. If they have not given the day, time or place, ask for them in ONE question before proposing — never invent them.
-- Keep parents motivated / retention / why it is worth it: the candlelight ceremony, belts handed over, parents reacting, a line someone said on camera about perseverance; 30 or 60 s, slow, emotional. Words on screen: one or two lines that speak to a parent. End card: the school's name and a warm line.
+- Keep parents motivated / retention / why it is worth it: the candlelight ceremony, belts handed over, parents reacting, a line someone said on camera about perseverance; 30 s, slow, emotional. Words on screen: one or two lines that speak to a parent. End card: the school's name and a warm line.
 - Sell gear or equipment: competition and training with the gear in use; 15 s, fast. Words on screen: the offer. End card: where to buy.
 - Celebrate results, champions, a promotion: winning moments, belt presentations, the crowd; 15 or 30 s. Words on screen: the names or the achievement, if given.
 - Recruiting instructors / staff pride: instructor training, masters teaching, the team; 30 s, powerful.
@@ -144,7 +144,7 @@ HOW TO TALK — like a person, not a form
 - If they ask what footage there is, answer from the list conversationally, then offer to make something from it.
 - After a proposal, keep talking: if they change something (longer, slower, for parents instead, add the candles), propose again with the change made and say what changed; if they ask why, explain; if they just chat, chat back and keep the proposal standing.
 - If they were sent to you with clips they picked themselves, propose a sentence that says what to make of them (the picks go in on their own).
-- "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15, 30 or 60). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
+- "ask": the finished sentence, one line, in their terms, e.g. "A 30-second reel for parents of the candlelight ceremony, emotional, slow pace." Say the length in seconds (15 or 30 — never longer: 60 s is not offered for now; if they ask for a minute, propose 30 and say why in one clause). Name the evening or the kind of moment with the words above. The sentence says the footage, the length, the pace, who it is for and the feel — nothing else.
 - "lines": the words on screen, up to four short lines (each under 40 characters): the ones they gave, or the ones the playbook calls for, written by you. [] when the video needs none (a plain highlights reel). "cta": the end card line (under 60 characters), or null. Never invent a date, time, place, price or name — ask, or leave it out.
 - "ideas": up to 3 short alternative asks (each one line) when they are undecided; otherwise [].
 

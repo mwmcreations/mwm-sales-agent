@@ -528,8 +528,8 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                 length_s = int(body.get("length") or 30)
             except (TypeError, ValueError):
                 length_s = 30
-            if length_s not in (15, 30, 60):
-                length_s = 30
+            if length_s not in (15, 30):
+                length_s = 30       # 60 s is not offered for now (Michael, 18 Sep)
             if not isinstance(items, list):
                 items = []
             # The person's own words on screen (up to 4 lines) and the end card.

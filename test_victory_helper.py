@@ -43,7 +43,8 @@ class TestBriefing(unittest.TestCase):
         self.assertIn("Black Belt Testing:", b)
         self.assertIn("Board breaks (", b)
         self.assertIn("Never give up", b)
-        self.assertIn("15, 30 or 60 seconds", b)
+        self.assertIn("15 or 30 seconds", b)          # 60 s is not offered for now (Michael, 18 Sep)
+        self.assertNotIn("15, 30 or 60", b)
         self.assertLess(len(b), 12000, "a briefing the model reads on every message stays small")
 
     def test_ideas_only_name_footage_we_have(self):

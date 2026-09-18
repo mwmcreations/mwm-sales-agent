@@ -34,7 +34,9 @@ PRIORITY = {"hero": 3, "high": 2, "standard": 1, "low": 0}
 STORY = ["Training & seminar", "Instructor training", "Competition", "Board breaks",
          "Winning moments", "Crowd & parent reactions", "Belt & rank presentation",
          "Candlelight ceremony"]
-LENGTHS = (15, 30, 60)
+LENGTHS = (15, 30)      # what is OFFERED. Michael, 18 Sep: no 60 s while the editor is learning —
+                        # too many chances to slip. The planner itself can still cut any of CAN_CUT.
+CAN_CUT = (15, 30, 60)
 LOGO_CARD = "[victory-logo]"    # a card that is the Victory Martial Arts logo (victory_cards renders it)
 SHOT_SECONDS = 3.0      # a shot the machine chose
 PICK_SECONDS = 5.0      # a shot the person picked
@@ -436,7 +438,7 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
     focus:     kinds of moment the ask named (from candidates()); uncapped.
     all_clips: the whole library, so a PICK is always found even when the
                ask narrowed the pool (#25: nine picks, none in the cut)."""
-    length_s = int(length_s) if int(length_s or 0) in LENGTHS else 30
+    length_s = int(length_s) if int(length_s or 0) in CAN_CUT else 30
     budget = length_s - 0.5
     shot_s = pace_seconds(ask)
     # THE PERSON'S PICKS LEAD (Michael, 16 Sep: his picks were "buried and
@@ -928,12 +930,13 @@ AUDIENCE_WORDS = {"students": "students", "student": "students", "kids": "kids",
                   "families": "families", "family": "families", "instructors": "instructors",
                   "instructor": "instructors", "masters": "masters", "schools": "schools",
                   "school": "schools", "teens": "teens", "adults": "adults"}
-NUMBER_WORDS = {"fifteen": 15, "thirty": 30, "sixty": 60, "one": 60, "a": 60, "half": 30}
+NUMBER_WORDS = {"fifteen": 15, "thirty": 30, "sixty": 30, "one": 30, "a": 30, "half": 30}
 
 
 def length_from(ask):
     """A length the sentence names — "15 seconds", "30s", "one minute",
-    "half a minute" — snapped to 15 / 30 / 60. None when it says nothing."""
+    "half a minute" — snapped to 15 / 30 (a minute lands on 30: 60 s is not
+    offered while the editor is learning). None when it says nothing."""
     low = (ask or "").lower()
     m = re.search(r"\b(\d{1,3})\s*(?:-|\s)?(s|sec|secs|second|seconds)\b", low)
     n = None
