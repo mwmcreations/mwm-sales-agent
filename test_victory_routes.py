@@ -1550,3 +1550,27 @@ class TestTheHelper(VICase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheOwnAddress(VICase):
+    """On vi.victorytvplus.com only Victory Intelligence exists: anything
+    outside /vi/ goes to the front door. On the app's other names, nothing
+    changes."""
+
+    def test_the_root_of_the_vi_host_is_the_front_door(self):
+        r = self.c.get("/", headers={"Host": "vi.victorytvplus.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/vi/"))
+        r = self.c.get("/somewhere/else", headers={"Host": "vi.victorytvplus.com"})
+        self.assertEqual(r.status_code, 302)
+        r = self.c.get("/vi/", headers={"Host": "vi.victorytvplus.com"})
+        self.assertIn(r.status_code, (200, 302))       # the door itself (or its sign-in redirect)
+        self.assertNotIn("Location: /vi/", str(r.headers))
+
+    def test_other_hosts_are_left_alone(self):
+        r = self.c.get("/definitely-not-a-page", headers={"Host": "mwm-sales-agent-production.up.railway.app"})
+        self.assertEqual(r.status_code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()

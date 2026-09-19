@@ -48,6 +48,7 @@ WHY /vi/issue-link EXISTS
     not a back door: it still mints an ordinary single-use link for an
     ordinary allowed address.
 """
+import os
 import time
 
 COOKIE = "vi_session"
@@ -183,6 +184,19 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         if request.headers.get("X-Forwarded-Proto", "").startswith("https"):
             root = "https://" + root.split("://", 1)[-1]
         return root
+
+    # ── the platform's own address ─────────────────────────────────────────
+    # Victory Intelligence lives under /vi/ on the sales-agent app. On its own
+    # host name (Michael, 18 Sep: a proper address for the schools, on the
+    # Victory TV+ domain — vi.victorytvplus.com) nothing but /vi/ exists: the
+    # root, and any other path, go to the front door.
+    vi_hosts = {h.strip().lower() for h in os.environ.get("VI_HOSTS", "vi.victorytvplus.com").split(",") if h.strip()}
+
+    @app.before_request
+    def _vi_host_only():
+        host = (request.host or "").split(":")[0].lower()
+        if host in vi_hosts and not request.path.startswith("/vi"):
+            return redirect("/vi/", code=302)
 
     # ── the door ───────────────────────────────────────────────────────────
     @app.route("/vi/", methods=["GET"])
