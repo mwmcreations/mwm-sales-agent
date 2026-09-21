@@ -441,17 +441,24 @@ def main():
         return 2
     os.makedirs(WORK_DIR, exist_ok=True)
     lock = os.path.join(WORK_DIR, "worker.lock")
-    if os.path.exists(lock):
+    waited = 0.0
+    while os.path.exists(lock):
         try:
             pid = int(open(lock).read().strip() or 0)
             os.kill(pid, 0)
             age = time.time() - os.path.getmtime(lock)
-            if age < 3 * 3600:
-                log("another worker (pid %d) is running — leaving" % pid)
+            if age >= 3 * 3600:
+                log("lock from pid %d is %.0fs old — taking over" % (pid, age))
+                break
+            # the previous pass's worker is still cutting or listening: wait
+            # for it (up to a cycle) rather than leave a gap nobody listens in
+            if waited >= 100:
+                log("another worker (pid %d) is still running — leaving" % pid)
                 return 0
-            log("lock from pid %d is %.0fs old — taking over" % (pid, age))
+            time.sleep(5)
+            waited += 5
         except (ValueError, ProcessLookupError, PermissionError):
-            pass
+            break
     with open(lock, "w") as f:
         f.write(str(os.getpid()))
     try:
@@ -459,12 +466,14 @@ def main():
         done = 0
         started = time.time()
         prepped = False
-        while done < MAX_JOBS:
-            try:
-                job = _get("/vi/jobs/next", {"worker": WORKER}).get("job")
-            except Exception as e:
-                log("could not reach the app: %r" % (e,))
-                return 1
+        while True:
+            job = None
+            if done < MAX_JOBS:
+                try:
+                    job = _get("/vi/jobs/next", {"worker": WORKER}).get("job")
+                except Exception as e:
+                    log("could not reach the app: %r" % (e,))
+                    return 1
             if not job:
                 # listen first (a person who just pressed Make it is waiting);
                 # the media prep runs once the listening window is over
