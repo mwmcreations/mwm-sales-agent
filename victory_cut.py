@@ -168,7 +168,10 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # a clip that carries the ask's own word is never held back for
             # rotation: someone who asked for candles gets the best candles
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
-                                     shaky[c["id"]], -named[c["id"]], same_scene(c), -round(float(c.get("weight") or 0), 1),
+                                     shaky[c["id"]], -named[c["id"]], same_scene(c),
+                                     # among clips that carry the ask's word, the hero shots lead
+                                     -(min(2, PRIORITY.get(c.get("priority"), 0)) if named[c["id"]] else 0),
+                                     -round(float(c.get("weight") or 0), 1),
                                      (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),   # hero before standard
                                      fam.get(c.get("category"), 0),
