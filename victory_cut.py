@@ -65,8 +65,42 @@ def font_path():
 
 
 # ── 1. what to cut ─────────────────────────────────────────────────────────
+NAME_STOP = {"video", "reel", "second", "seconds", "minute", "highlights", "moments", "moment", "parents", "parent",
+             "students", "student", "school", "schools", "families", "family", "instructors", "instructor", "masters",
+             "emotional", "energetic", "motivational", "inspiring", "happy", "powerful", "quiet", "fast", "slow", "pace",
+             "medium", "about", "their", "there", "these", "those", "would", "could", "should", "please", "something",
+             "victory", "martial", "words", "screen", "convention", "weekend", "evening", "kids", "children", "team",
+             "whole", "everyone", "showing", "feel", "feels", "feeling", "again", "another", "footage", "ceremony", "ceremonies",
+             "testing", "presentation", "presentations", "session", "sessions", "night", "champions", "black", "belts", "belt",
+             "reaction", "reactions", "crowd", "crowds", "audience", "interview", "interviews", "training", "seminar"}
+
+
+def named_words(ask):
+    """The words of an ask that name a THING in the footage — "candlelight",
+    "board", "demo", "belts" — as 5-letter stems, so "candle" matches
+    "candlelight" and "candles". Audience, feel, pace and filler words are
+    left out; those are handled elsewhere."""
+    out = set()
+    for w in re.findall(r"[a-z]+", (ask or "").lower()):
+        if len(w) >= 5 and w not in NAME_STOP:
+            out.add(w[:5])
+    return out
+
+
+def named_hits(clip, stems):
+    """How many of the ask's named things appear in this clip's own name
+    (its id and title). A candlelight ask ranks "masters holding candles"
+    above "instructors lined up on stage" even when both sit in the
+    Candlelight ceremony category (rehearsal #39, 21 Sep)."""
+    if not stems:
+        return 0
+    name = ("%s %s" % (clip.get("id") or "", clip.get("title") or "")).lower().replace("-", " ").replace("_", " ")
+    words = set(w[:5] for w in re.findall(r"[a-z]+", name) if len(w) >= 5)
+    return len(stems & words)
+
+
 def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False,
-               avoid=(), seed=0, uncapped=()):
+               avoid=(), seed=0, uncapped=(), stems=()):
     """Choose n clips. Requested ids always go in, in the order given. Then
     hero > high > the rest, but never more than max_per_family of one kind of
     shot or max_per_session from one session, and the kinds and days are
@@ -97,6 +131,8 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     # a clip the quality pass found shaky all the way through (no steady
     # stretch as long as a shot) goes behind every steady one
     shaky = {c["id"]: (steady_seconds(c) is not None and steady_seconds(c) < SHOT_SECONDS) for c in cands}
+    stems = set(stems or ())
+    named = {c["id"]: named_hits(c, stems) for c in cands}
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -129,14 +165,17 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # rather see a candle clip again than board breaks (self-test #11)
             # the ask's tier first (a hit, a named kind, the named evening all
             # sit near 10); inside it a fresh scene beats a finer weight
+            # a clip that carries the ask's own word is never held back for
+            # rotation: someone who asked for candles gets the best candles
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
-                                     shaky[c["id"]], same_scene(c), -round(float(c.get("weight") or 0), 1),
-                                     c["id"] in avoid, short[c["id"]],
+                                     shaky[c["id"]], -named[c["id"]], same_scene(c), -round(float(c.get("weight") or 0), 1),
+                                     (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),   # hero before standard
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
-            pool.sort(key=lambda c: (shaky[c["id"]], same_scene(c), c["id"] in avoid, short[c["id"]],
+            pool.sort(key=lambda c: (shaky[c["id"]], -named[c["id"]], same_scene(c),
+                                     (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
@@ -503,7 +542,7 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         # a narrow ask is narrow on purpose: the kind-of-moment cap loosens with the length
         chosen = pick_shots(pool, n_fill + extra, by_search=by_search, avoid=avoid, seed=seed,
                             max_per_family=max(2, (n_fill + extra) // 3) if by_search else 2,
-                            uncapped=focus)
+                            uncapped=focus, stems=named_words(ask))
         fill = [shot(f, shot_s, False) for f in chosen]
         if remaining - sum(x["dur"] for x in fill) < 1.5 or len(chosen) < n_fill + extra:
             break

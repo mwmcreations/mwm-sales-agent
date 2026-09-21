@@ -445,6 +445,37 @@ class TestMusic(unittest.TestCase):
         self.assertIsNone(p["music_id"])
 
 
+class TestTheAskNamesAThing(unittest.TestCase):
+    """Rehearsal #39 (21 Sep): "the candlelight ceremony, emotional" came out
+    as one candle shot and three stage line-ups from the same category. A
+    clip whose own name carries the ask's word goes first."""
+
+    def test_candles_beat_a_line_up_in_the_same_category(self):
+        a = {"id": "VWC26_BBL_060_instructors-cheer-with-arms-raised-on-stage", "title": "Instructors cheer with arms raised on stage",
+             "category": "Candlelight ceremony", "session": "BBT", "day": 4, "priority": "high", "weight": 10, "seconds": 12}
+        b = {"id": "VWC26_CANDLE_02_masters-holding-candles_D0217", "title": "Masters holding candles",
+             "category": "Candlelight ceremony", "session": "BBT", "day": 4, "priority": "standard", "weight": 10, "seconds": 12}
+        stems = vc.named_words("A video for parents of the candlelight ceremony, emotional, slow pace.")
+        self.assertIn("candl", stems)
+        self.assertNotIn("cerem", stems)          # a word every ceremony clip carries says nothing
+        self.assertNotIn("paren", stems)          # audience words are handled elsewhere
+        got = vc.pick_shots([a, b], 1, by_search=True, stems=stems)
+        self.assertEqual(got[0]["id"], b["id"])
+        got = vc.pick_shots([a, b], 1, by_search=False, stems=stems)
+        self.assertEqual(got[0]["id"], b["id"])
+        # without a named thing, the stronger clip leads as before
+        self.assertEqual(vc.pick_shots([a, b], 1, by_search=True)[0]["id"], a["id"])
+        # and rotation never holds back the clip that carries the ask's word
+        got = vc.pick_shots([a, b], 1, by_search=True, stems=stems, avoid=[b["id"]])
+        self.assertEqual(got[0]["id"], b["id"])
+
+    def test_kind_words_do_not_boost(self):
+        # "reactions" names a kind of moment, not a thing in a picture:
+        # the category logic owns it (the #30 weave would otherwise drown in reactions)
+        self.assertEqual(vc.named_words("belt presentations and parent reactions, slow, emotional"), set())
+        self.assertEqual(vc.named_words("15 seconds of board breaks, fast, for students"), {"board", "break"})
+
+
 class TestSteadyShots(unittest.TestCase):
     """Michael, 17 Sep, on #30: "camera shaky movements where the cameraman
     is still trying to find the shot". The quality pass measures every
