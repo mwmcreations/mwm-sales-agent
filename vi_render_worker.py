@@ -466,10 +466,8 @@ def main():
                 log("could not reach the app: %r" % (e,))
                 return 1
             if not job:
-                if done == 0 and not prepped:
-                    print("%s queue empty" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
-                    prep_media(limit=int(os.environ.get("VI_PREP_PER_PASS", "8")))
-                    prepped = True
+                # listen first (a person who just pressed Make it is waiting);
+                # the media prep runs once the listening window is over
                 if time.time() - started < LINGER:
                     time.sleep(LINGER_POLL)
                     try:
@@ -478,6 +476,10 @@ def main():
                     except OSError:
                         pass
                     continue
+                if done == 0 and not prepped:
+                    print("%s queue empty" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
+                    prep_media(limit=int(os.environ.get("VI_PREP_PER_PASS", "8")))
+                    prepped = True
                 return 0
             if clips is None:
                 clips, reframe, library, moments = load_sources()
