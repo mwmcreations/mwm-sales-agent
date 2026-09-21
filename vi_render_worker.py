@@ -44,6 +44,11 @@ FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 FFPROBE = os.environ.get("FFPROBE", "ffprobe")
 ENCODER = os.environ.get("VI_ENCODER", "libx264")
 MAX_JOBS = int(os.environ.get("VI_MAX_JOBS", "5"))
+# after an empty queue the worker keeps listening this long (polling every
+# few seconds) instead of leaving until the daemon's next pass two minutes
+# later — a person who just pressed Make it waits seconds, not minutes
+LINGER = float(os.environ.get("VI_LINGER", "70"))    # the daemon runs this inline; what is left of its ~115 s pass goes to the moments and quality passes
+LINGER_POLL = float(os.environ.get("VI_LINGER_POLL", "4"))
 
 
 def log(msg):
@@ -452,6 +457,8 @@ def main():
     try:
         clips = reframe = library = search_fn = moments = None
         done = 0
+        started = time.time()
+        prepped = False
         while done < MAX_JOBS:
             try:
                 job = _get("/vi/jobs/next", {"worker": WORKER}).get("job")
@@ -459,9 +466,18 @@ def main():
                 log("could not reach the app: %r" % (e,))
                 return 1
             if not job:
-                if done == 0:
+                if done == 0 and not prepped:
                     print("%s queue empty" % time.strftime("%Y-%m-%d %H:%M:%S"), flush=True)
                     prep_media(limit=int(os.environ.get("VI_PREP_PER_PASS", "8")))
+                    prepped = True
+                if time.time() - started < LINGER:
+                    time.sleep(LINGER_POLL)
+                    try:
+                        with open(lock, "w") as f:     # keep the lock fresh while listening
+                            f.write(str(os.getpid()))
+                    except OSError:
+                        pass
+                    continue
                 return 0
             if clips is None:
                 clips, reframe, library, moments = load_sources()
