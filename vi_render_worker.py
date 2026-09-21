@@ -47,7 +47,7 @@ MAX_JOBS = int(os.environ.get("VI_MAX_JOBS", "5"))
 # after an empty queue the worker keeps listening this long (polling every
 # few seconds) instead of leaving until the daemon's next pass two minutes
 # later — a person who just pressed Make it waits seconds, not minutes
-LINGER = float(os.environ.get("VI_LINGER", "95"))    # the daemon runs this inline; what is left of its ~115 s pass goes to the moments and quality passes
+LINGER = float(os.environ.get("VI_LINGER", "1500"))  # the daemon starts this in the background (21 Sep); it listens for 25 min, then the next pass starts a fresh one
 LINGER_POLL = float(os.environ.get("VI_LINGER_POLL", "4"))
 
 
