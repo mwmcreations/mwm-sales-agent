@@ -16,9 +16,17 @@ not a rewrite — victory_cut.py does not care where it runs.
 The admin secret arrives in the environment from the daemon (it reads
 ~/.mwm_upload_secret); it is never written to a log or a file here.
 """
+import os
+# FIRST THING, before the slow imports: leave the daemon's process group.
+# launchd ends that group the moment the daemon script exits, and the
+# daemon now starts this worker in the background and moves on (21 Sep);
+# a worker still importing when the daemon exited was killed with it.
+try:
+    os.setsid()
+except OSError:
+    pass
 import io
 import json
-import os
 import re
 import shutil
 import subprocess
