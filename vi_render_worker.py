@@ -47,7 +47,7 @@ MAX_JOBS = int(os.environ.get("VI_MAX_JOBS", "5"))
 # after an empty queue the worker keeps listening this long (polling every
 # few seconds) instead of leaving until the daemon's next pass two minutes
 # later — a person who just pressed Make it waits seconds, not minutes
-LINGER = float(os.environ.get("VI_LINGER", "105"))    # the daemon runs this inline; what is left of its ~115 s pass goes to the moments and quality passes
+LINGER = float(os.environ.get("VI_LINGER", "95"))    # the daemon runs this inline; what is left of its ~115 s pass goes to the moments and quality passes
 LINGER_POLL = float(os.environ.get("VI_LINGER_POLL", "4"))
 
 
@@ -452,7 +452,7 @@ def main():
                 break
             # the previous pass's worker is still cutting or listening: wait
             # for it (up to a cycle) rather than leave a gap nobody listens in
-            if waited >= 100:
+            if waited >= 30:
                 log("another worker (pid %d) is still running — leaving" % pid)
                 return 0
             time.sleep(5)
