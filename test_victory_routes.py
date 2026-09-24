@@ -1572,5 +1572,96 @@ class TestTheOwnAddress(VICase):
         self.assertEqual(r.status_code, 404)
 
 
+class TestSignInWithGoogle(VICase):
+    """Master Souffrant: one login. Google's button posts an ID token; the app
+    checks it with Google and then applies the same rules as a link. Tests
+    inject the verifier, so no token ever leaves this process."""
+
+    CID = "123-test.apps.googleusercontent.com"
+
+    def setUp(self):
+        VICase.setUp(self)
+        os.environ[va.GOOGLE_CLIENT_ID_ENV] = self.CID
+        os.environ.pop(va.CLIENT_EMAIL_ENV, None)      # locked, as it ships
+        self.claims = {}
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+        app.config["VI_DESCRIBE_CLIENT"] = FakeClaude()
+        vr.register(app, admin_ok, notify=self.notes.append, drive_upload=fake_drive_upload,
+                    google_verify=lambda cred: self.claims.get(cred))
+        self.c = app.test_client()
+
+    def tearDown(self):
+        os.environ.pop(va.GOOGLE_CLIENT_ID_ENV, None)
+        os.environ.pop(va.CLIENT_EMAIL_ENV, None)
+        VICase.tearDown(self)
+
+    def _google(self, email, cred="tok", **over):
+        claims = {"aud": self.CID, "iss": "https://accounts.google.com", "email": email,
+                  "email_verified": "true", "exp": str(int(time.time()) + 600)}
+        claims.update(over)
+        self.claims[cred] = claims
+        self.c.set_cookie("g_csrf_token", "c1")
+        return self.c.post("/vi/auth/google", data={"credential": cred, "g_csrf_token": "c1"})
+
+    def test_the_door_shows_the_google_button_only_when_switched_on(self):
+        r = self.c.get("/vi/")
+        body = r.data.decode("utf-8")
+        self.assertIn("g_id_signin", body)
+        self.assertIn(self.CID, body)
+        self.assertIn("/vi/auth/google", body)
+        os.environ.pop(va.GOOGLE_CLIENT_ID_ENV, None)
+        self.assertNotIn("g_id_signin", self.c.get("/vi/").data.decode("utf-8"))
+
+    def test_our_own_address_signs_in_with_google(self):
+        r = self._google("dev@mwmcreations.com")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/vi/"))
+        self.assertIn("mwmcreations.com", str(self.store.people))
+
+    def test_a_granted_victory_address_signs_in_while_the_lock_is_on(self):
+        self.store.grant("gmvs@victoryma.com", va.ROLE_HQ)
+        r = self._google("gmvs@victoryma.com")
+        self.assertEqual(r.status_code, 302)
+
+    def test_an_ungranted_victory_address_is_turned_away_while_the_lock_is_on(self):
+        r = self._google("someone@victoryma.com")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("invited", r.data.decode("utf-8"))
+        self.assertEqual(self.notes, [])          # no access was created, nothing to tell
+
+    def test_with_the_lock_off_an_unknown_victory_address_lands_pending(self):
+        os.environ[va.CLIENT_EMAIL_ENV] = "1"
+        r = self._google("someone@victoryma.com")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(any("no access yet" in n for n in self.notes))
+        r = self.c.get("/vi/")
+        self.assertIn("signed in", r.data.decode("utf-8").lower())   # the pending page, not the app
+
+    def test_a_stranger_domain_is_refused_even_with_a_real_google_account(self):
+        r = self._google("someone@gmail.com")
+        self.assertEqual(r.status_code, 403)
+
+    def test_a_token_for_another_app_is_refused(self):
+        r = self._google("dev@mwmcreations.com", aud="someone-elses-client-id")
+        self.assertEqual(r.status_code, 400)
+
+    def test_an_unverified_or_expired_token_is_refused(self):
+        self.assertEqual(self._google("dev@mwmcreations.com", email_verified="false").status_code, 400)
+        self.assertEqual(self._google("dev@mwmcreations.com", exp="1").status_code, 400)
+
+    def test_the_csrf_cookie_must_match(self):
+        self.claims["tok"] = {"aud": self.CID, "iss": "accounts.google.com",
+                              "email": "dev@mwmcreations.com", "email_verified": "true",
+                              "exp": str(int(time.time()) + 600)}
+        self.c.set_cookie("g_csrf_token", "c1")
+        r = self.c.post("/vi/auth/google", data={"credential": "tok", "g_csrf_token": "other"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_switched_off_means_the_route_does_not_exist_for_practical_purposes(self):
+        os.environ.pop(va.GOOGLE_CLIENT_ID_ENV, None)
+        self.assertEqual(self._google("dev@mwmcreations.com").status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

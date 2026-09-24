@@ -255,6 +255,7 @@ main.browse .pick{display:none}
 .m .mt{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:var(--sur2);margin:0 0 5px}
 .m .mt img{width:100%;height:100%;object-fit:cover;display:block}
 .m .t{font-size:12px;font-weight:400;line-height:1.3;color:var(--dim)}
+.orline{display:flex;align-items:center;gap:12px;margin:18px 0 14px;color:var(--dim);font-size:13px}.orline:before,.orline:after{content:"";flex:1;height:1px;background:var(--line)}.gbtn{margin:0 0 10px}
 .player{width:100%;max-width:300px;aspect-ratio:9/16;border:1px solid var(--line);border-radius:16px;background:#000;display:block;margin:0 0 14px;object-fit:contain}
 .summ{font-size:12.5px;color:var(--dim2);margin:0 0 12px;line-height:1.5}
 .fb{margin:16px 0 0;border-top:1px solid var(--line);padding-top:14px}
@@ -349,7 +350,28 @@ def _head(email, event_title="Convention 2026", tab="library", badge=0):
                " class=\"on\"" if tab == "library" else ""))
 
 
-def signin_page(sent=False, message=""):
+def google_button(google):
+    """Google's own sign-in button (24 Sep). `google` is (client_id, login_uri)
+    or None. Google renders it and, on success, POSTs the ID token to
+    login_uri together with a csrf token it also sets as a cookie."""
+    if not google:
+        return ""
+    cid, login_uri = google
+    esc = lambda v: str(v).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+    return (
+        "<div class=\"orline\"><span>or</span></div>"
+        "<script src=\"https://accounts.google.com/gsi/client\" async defer></script>"
+        "<div id=\"g_id_onload\" data-client_id=\"%s\" data-login_uri=\"%s\" "
+        "data-ux_mode=\"redirect\" data-auto_prompt=\"false\"></div>"
+        "<div class=\"g_id_signin gbtn\" data-type=\"standard\" data-shape=\"pill\" "
+        "data-theme=\"filled_black\" data-text=\"signin_with\" data-size=\"large\" "
+        "data-width=\"330\"></div>"
+        "<p class=\"small\">Use the work account you already have. "
+        "No new password.</p>"
+        % (esc(cid), esc(login_uri)))
+
+
+def signin_page(sent=False, message="", google=None):
     """The door. Says the same thing whether or not the address is known."""
     if sent:
         inner = (
@@ -373,6 +395,7 @@ def signin_page(sent=False, message=""):
             "<input type=\"email\" name=\"email\" required autofocus "
             "autocomplete=\"email\" placeholder=\"you@victoryma.com\">"
             "<button type=\"submit\">Send link</button></div></form>"
+            + google_button(google) +
             "<p class=\"small\">Access is granted by MWM. "
             "If you sign in and see nothing yet, that is why.</p></div>")
     body = ("<div class=\"wrap\"><header class=\"cv\"><div class=\"top\">"

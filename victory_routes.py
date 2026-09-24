@@ -7,6 +7,7 @@ its own.
     GET  /vi/            the app, or the sign-in form
     POST /vi/login       ask for a sign-in link
     GET  /vi/auth        spend a link, get a session
+    POST /vi/auth/google Sign in with Google (ID token from Google's button)
     GET  /vi/logout      end the session
     GET  /vi/search      ranked results          (session or admin)
     GET  /vi/health      what the index holds    (admin)
@@ -62,7 +63,8 @@ def _client_ip(request):
     return request.remote_addr or ""
 
 
-def register(app, admin_ok, report_error=None, send_email=None, notify=None, drive_upload=None):
+def register(app, admin_ok, report_error=None, send_email=None, notify=None, drive_upload=None,
+             google_verify=None):
     """Attach the /vi/* routes.
 
     admin_ok(provided) -> bool          the app's fail-closed admin check
@@ -192,6 +194,34 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
     # root, and any other path, go to the front door.
     vi_hosts = {h.strip().lower() for h in os.environ.get("VI_HOSTS", "vi.victorytvplus.com").split(",") if h.strip()}
 
+    # ── Sign in with Google (24 Sep) ─────────────────────────────────────
+    # Google's button posts an ID token here. We ask Google whether it is
+    # real (tokeninfo) rather than carrying a JWT library; a bad token is a
+    # 400 from Google, which reads as "not verified". Tests inject a fake.
+    def _google_tokeninfo(credential):
+        if not credential:
+            return None
+        import json as _json
+        import urllib.parse
+        import urllib.request
+        url = ("https://oauth2.googleapis.com/tokeninfo?"
+               + urllib.parse.urlencode({"id_token": credential}))
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return _json.loads(r.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    _verify_google = google_verify or _google_tokeninfo
+    _signin_page = vp.signin_page
+
+    def _door(**kw):
+        """The sign-in page, with Google's button when it is switched on."""
+        cid = va.google_client_id()
+        if cid:
+            kw["google"] = (cid, _base_url() + "/vi/auth/google")
+        return _signin_page(**kw)
+
     @app.before_request
     def _vi_host_only():
         host = (request.host or "").split(":")[0].lower()
@@ -205,7 +235,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         try:
             sess = _session()
             if not sess:
-                return vp.signin_page()
+                return _door()
             if not va.can_search(sess["role"]):
                 return vp.pending_page(sess["email"])
             import victory_index as vi
@@ -217,7 +247,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                                greeting=vh.greeting(person["name"], person))
         except Exception as e:
             _err("vi_home", e)
-            return vp.signin_page(message="Something went wrong. Try again.")
+            return _door(message="Something went wrong. Try again.")
 
     @app.route("/vi/library", methods=["GET"])
     def vi_library():
@@ -226,7 +256,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         try:
             sess = _session()
             if not sess:
-                return vp.signin_page()
+                return _door()
             if not va.can_search(sess["role"]):
                 return vp.pending_page(sess["email"])
             import victory_index as vi
@@ -235,7 +265,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return vp.app_page(sess["email"], sess["role"], records=vi.corpus_size(), mode="browse")
         except Exception as e:
             _err("vi_library", e)
-            return vp.signin_page(message="Something went wrong. Try again.")
+            return _door(message="Something went wrong. Try again.")
 
     @app.route("/vi/ideas", methods=["GET"])
     def vi_ideas():
@@ -394,7 +424,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                       "testing, so a sign-in link for *%s* was NOT created or "
                       "sent. Set VI_CLIENT_EMAIL=1 in Railway when the testing "
                       "is done." % email)
-                return vp.signin_page(sent=True)
+                return _door(sent=True)
 
             if email and va.is_allowed(email, known=known) and ok_ip and ok_em:
                 token, token_hash = va.new_token()
@@ -421,10 +451,10 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             elif not (ok_ip and ok_em):
                 print("[VI-AUTH] rate limited a link request")
 
-            return vp.signin_page(sent=True)
+            return _door(sent=True)
         except Exception as e:
             _err("vi_login", e)
-            return vp.signin_page(sent=True)      # still say nothing useful
+            return _door(sent=True)      # still say nothing useful
 
     @app.route("/vi/auth", methods=["GET"])
     def vi_auth():
@@ -433,16 +463,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             token = request.args.get("token", "")
             secret = vs.session_secret()
             if not secret:
-                return vp.signin_page(message="Sign-in is unavailable right now."), 503
+                return _door(message="Sign-in is unavailable right now."), 503
 
             claimed = vs.consume_link(va.hash_token(token)) if token else None
             if not claimed:
-                return vp.signin_page(
+                return _door(
                     message="That link has already been used, or it is not valid. "
                             "Ask for a new one."), 400
             email, issued_at = claimed
             if va.link_expired(issued_at):
-                return vp.signin_page(
+                return _door(
                     message="That link has expired. Ask for a new one."), 400
 
             person = vs.get_person(email)
@@ -459,7 +489,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
 
             value = va.sign_session(email, role, school, secret)
             if not value:
-                return vp.signin_page(message="Sign-in failed. Try again."), 500
+                return _door(message="Sign-in failed. Try again."), 500
 
             resp = make_response(redirect("/vi/"))
             resp.set_cookie(COOKIE, value, max_age=va.SESSION_TTL_SECONDS,
@@ -471,7 +501,62 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return resp
         except Exception as e:
             _err("vi_auth", e)
-            return vp.signin_page(message="Sign-in failed. Try again."), 500
+            return _door(message="Sign-in failed. Try again."), 500
+
+    @app.route("/vi/auth/google", methods=["POST"])
+    def vi_auth_google():
+        """Sign in with Google. Google's button posts `credential` (an ID
+        token) and `g_csrf_token`, and sets the same csrf value as a cookie."""
+        try:
+            client_id = va.google_client_id()
+            if not client_id:
+                return _door(message="Sign in with Google is not switched on."), 404
+            csrf = request.form.get("g_csrf_token", "")
+            if not csrf or csrf != request.cookies.get("g_csrf_token", ""):
+                return _door(message="That sign-in did not come from this page. "
+                                     "Try again."), 400
+            secret = vs.session_secret()
+            if not secret:
+                return _door(message="Sign-in is unavailable right now."), 503
+
+            claims = _verify_google(request.form.get("credential", ""))
+            email = va.google_claims_ok(claims, client_id)
+            if not email:
+                print("[VI-AUTH] google: token did not verify")
+                return _door(message="Google could not confirm that account. "
+                                     "Try again."), 400
+
+            person = vs.get_person(email)
+            if not va.may_sign_in_with_google(email, known=bool(person)):
+                print("[VI-AUTH] google: refused %s (not granted, or the lock is on)"
+                      % email)
+                return _door(message="Victory Intelligence is open to invited "
+                                     "people for now. Ask MWM for access."), 403
+
+            if person:
+                role, school = person["role"], person["school"]
+            else:
+                role, school = va.default_role(email), ""
+                if role == va.ROLE_PENDING:
+                    _tell(":bust_in_silhouette: *%s* signed in to Victory "
+                          "Intelligence with Google and has no access yet. "
+                          "Grant it with `/vi/grant`." % email)
+            vs.remember_person(email, role, school)
+
+            value = va.sign_session(email, role, school, secret)
+            if not value:
+                return _door(message="Sign-in failed. Try again."), 500
+            resp = make_response(redirect("/vi/"))
+            resp.set_cookie(COOKIE, value, max_age=va.SESSION_TTL_SECONDS,
+                            httponly=True, samesite="Lax",
+                            secure=request.headers.get(
+                                "X-Forwarded-Proto", "").startswith("https"),
+                            path="/vi")
+            print("[VI-AUTH] signed in %s as %s (google)" % (email, role))
+            return resp
+        except Exception as e:
+            _err("vi_auth_google", e)
+            return _door(message="Sign-in failed. Try again."), 500
 
     @app.route("/vi/logout", methods=["GET", "POST"])
     def vi_logout():
@@ -647,13 +732,13 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         try:
             sess = _session()
             if not sess:
-                return vp.signin_page()
+                return _door()
             if not va.can_search(sess["role"]):
                 return vp.pending_page(sess["email"])
             return vp.queue_page(sess["email"], sess["role"], _mine(sess), all_people=_is_mwm(sess))
         except Exception as e:
             _err("vi_queue", e)
-            return vp.signin_page(message="Something went wrong. Try again.")
+            return _door(message="Something went wrong. Try again.")
 
     @app.route("/vi/feedback", methods=["POST"])
     def vi_feedback():

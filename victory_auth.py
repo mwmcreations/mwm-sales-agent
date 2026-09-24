@@ -169,6 +169,65 @@ def may_email(email, getenv=None):
     return (not is_client_address(email)) or client_email_enabled(getenv)
 
 
+# ── Sign in with Google (24 Sep) ──────────────────────────────────────────
+# Master Souffrant: "one major system, one login". The first step is letting
+# Victory people in with the work account they already have. Google's button
+# posts an ID token to /vi/auth/google; the app asks Google whether the token
+# is real (tokeninfo) and then applies exactly the checks below. Only the
+# client ID is needed, and it is public by design — there is no secret to keep.
+GOOGLE_CLIENT_ID_ENV = "GOOGLE_OAUTH_CLIENT_ID"
+GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
+
+
+def google_client_id(getenv=None):
+    """The OAuth client ID, or '' when Sign in with Google is not switched on."""
+    import os
+    g = getenv if getenv is not None else os.getenv
+    return str(g(GOOGLE_CLIENT_ID_ENV, "") or "").strip()
+
+
+def google_claims_ok(claims, client_id, now=None):
+    """The address inside a verified Google ID token, or '' if any check fails.
+
+    The checks Google asks for: the token was minted for OUR client, by
+    Google, for a verified address, and has not expired. tokeninfo answers
+    with strings ("true", "1790000000"), so everything is compared as text.
+    """
+    if not claims or not client_id or not isinstance(claims, dict):
+        return ""
+    if str(claims.get("aud") or "") != client_id:
+        return ""
+    if str(claims.get("iss") or "") not in GOOGLE_ISSUERS:
+        return ""
+    if str(claims.get("email_verified") or "").strip().lower() != "true":
+        return ""
+    try:
+        exp = float(claims.get("exp") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if exp < (now if now is not None else time.time()):
+        return ""
+    return normalize_email(claims.get("email") or "")
+
+
+def may_sign_in_with_google(email, known, getenv=None):
+    """The send lock, in spirit, for a sign-in that sends nothing.
+
+    While Victory Intelligence is locked to internal testing, a client address
+    gets in with Google only if Michael has already granted it. Ours always
+    can. Nothing here creates access: an unknown Victory address that passes
+    still lands as 'pending' and sees nothing until it is granted.
+    """
+    e = normalize_email(email)
+    if not e:
+        return False
+    if known:
+        return True
+    if not is_allowed(e, known=False):
+        return False
+    return may_email(e, getenv)
+
+
 def can_search(role):
     return role in CAN_SEARCH
 
