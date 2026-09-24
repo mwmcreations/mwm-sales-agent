@@ -811,6 +811,14 @@ def sync_once():
         summary["mode"] = "no-service"
         return _record(summary)
 
+    # PATCH #131b — record the creation cutover on the FIRST TICK the switch is
+    # on, not lazily when the first "Studio:" event turns up. Lazily, the cutover
+    # was stamped AFTER that event's own 'created' time, so the very first
+    # studio event anyone made was always skipped. Found on the live QA run,
+    # before a real client was affected.
+    if create_enabled():
+        _create_since()
+
     try:
         if _load(KEY_REPAIR):
             _repair(svc, summary)

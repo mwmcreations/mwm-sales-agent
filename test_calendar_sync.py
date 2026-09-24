@@ -752,11 +752,27 @@ rig = Rig(FakeCalendar([{"items": [nostamp], "nextSyncToken": "TOKEN-2"}]),
 cs.sync_once()
 check("an event with no 'created' stamp is never booked (no guessing)", len(rig.portal.calls), 0)
 
+rig = Rig(FakeCalendar([{"items": [], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store={cs.KEY_SYNCTOKEN: {"token": "TOKEN-1"}})
+cs.sync_once()
+check("the first tick with the switch on records the cutover, even with nothing to book",
+      rig.store.get(cs.KEY_CREATE_SINCE), {"at": NOW.isoformat()})
+# PATCH #131b — the regression that reached the live QA run: an event created
+# AFTER the switch went on, but before any "Studio:" event had been seen, must
+# be booked. Lazily stamping the cutover made the first one always too early.
+_later = NOW + timedelta(minutes=3)
+cs._deps["now"] = lambda: _later
+rig.calendar.responses = [{"items": [new_event(created=_gstamp(NOW + timedelta(minutes=1)))],
+                           "nextSyncToken": "TOKEN-3"}]
+cs.sync_once()
+check("...so the FIRST studio event made after that is booked, not skipped",
+      [c["action"] for c in rig.portal.calls], ["created"])
+check("...and the cutover did not move when it was", rig.store.get(cs.KEY_CREATE_SINCE), {"at": NOW.isoformat()})
+
 rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
           portal=FakePortal(reply=created_reply), store={cs.KEY_SYNCTOKEN: {"token": "TOKEN-1"}})
 cs.sync_once()
-check("first tick with the switch on records the cutover", cs.KEY_CREATE_SINCE in rig.store, True)
-check("...and an event made before that first tick is not booked", len(rig.portal.calls), 0)
+check("an event made before the switch was ever on is not booked", len(rig.portal.calls), 0)
 
 # -- free and recurring --
 rig = Rig(FakeCalendar([{"items": [new_event(title="\U0001f3ac Studio: Camila (free)")],
