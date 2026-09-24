@@ -808,6 +808,7 @@ SLACK_SUSAN_CHANNEL = "C0APQ4TDF7W"  # #susan channel ID — email marketing
 SLACK_LARA_CHANNEL = "C0ARC24S9PF"   # #lara channel ID — CRM/follow-up
 SLACK_PIPELINE_CHANNEL = os.getenv("SLACK_PIPELINE_CHANNEL", "C0BBQ79R9DZ")  # #pipeline event bus
 SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"   # #eric channel ID — traffic manager
+SLACK_ROB_CHANNEL = "C0APLH98ANN"    # #rob channel ID — finance/Stripe (Patch #132)
 
 # ══════════════════════════════════════════════════════════════════════
 # PATCH #116 · THE LOOP GUARD — WE STOP TALKING TO OTHER PEOPLE'S ROBOTS
@@ -17111,6 +17112,8 @@ def web_chat_endpoint():
         # If visitor came from a specific page, add context
         if page_url:
             system_prompt += f"\n\nThe visitor is currently on: {page_url}"
+            # PATCH #132: on /exclusive-offer Maya knows the offer (Michael, 24 Sep)
+            system_prompt += _xo.maya_offer_context(page_url)
 
         # Call Anthropic API (Claude) with calendar tools
         client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
@@ -17932,6 +17935,12 @@ def stripe_webhook():
             # S17: on-demand studio rentals are routed first. Returns True if it
             # owned the event, so the package handler never sees a rental.
             if ev.get("type") == "checkout.session.completed" and handle_studio_rental_paid(ev):
+                return
+            # PATCH #132: the $2,497 Exclusive Video Offer (sku=exclusive_video_offer)
+            # was "other-product" and dropped — a sale nobody would hear about.
+            _xo_res = _xo.handle_offer_paid(ev)
+            if _xo_res is not None:
+                print(f"[STRIPE] {ev.get('type')} ({ev.get('id')}) -> exclusive offer {_xo_res}")
                 return
             _sw_res = _studio.handle_stripe_event(ev)
             print(f"[STRIPE] {ev.get('type')} ({ev.get('id')}) -> {_sw_res}")
@@ -20651,6 +20660,27 @@ _studio.configure(
     lead_data=lead_data,
 )
 threading.Thread(target=_studio.sequence_loop, daemon=True, name="studio_followup").start()
+
+# PATCH #132 — Exclusive Video Offer purchase handler (see exclusive_offer.py)
+import exclusive_offer as _xo
+_xo.configure(
+    report_error=_report_error,
+    post_slack=_post_to_slack_async,
+    pg_load=_pg.load_state,
+    pg_save=_pg.save_state,
+    lead_data=lead_data,
+    lead_lookup_by_email=_find_lead_by_email,
+    lead_lookup_by_phone=_find_lead_by_phone,
+    lead_lookup_by_name=_find_lead_by_name,
+    update_sheet_status=lambda name, status, notes="", service="", next_steps="":
+        _update_lead_sheet_status(name, status, notes=notes, service=service,
+                                  next_steps=next_steps),
+    pipeline_event=_post_pipeline_event,
+    lara_channel=SLACK_LARA_CHANNEL,
+    rob_channel=SLACK_ROB_CHANNEL,
+    dev_channel=SLACK_DEV_CHANNEL,
+    now=lambda: datetime.now(pytz.timezone(TIMEZONE)),
+)
 
 
 # ══════════════════════════════════════════════════════════════════════
