@@ -87,5 +87,15 @@ check("a refusal from the write path is passed on", $r->data["state"], "refused"
 check("...with its reason", $r->data["message"], "Duration must be a multiple of 0.25 hours (15 minutes).");
 check("...and nothing is remembered for that event", get_option("mwm_studio_calcreate_".md5("ev1"),0), 0);
 
+
+// PATCH #131d — a drag or stretch on the calendar emails the client "Booking Updated".
+// Structural, against the SHIPPING file: handle_calendar_sync is too WordPress-bound to run here.
+if(preg_match('/public function handle_calendar_sync\(.*?\n\t}\n/s',$src,$hm)){
+  $hs=$hm[0];
+  $drag = preg_match("/'action'\s*=>\s*'booking\.calendar_drag'.*?'notify_client'\s*=>\s*(true|false)/s",$hs,$dm) ? $dm[1] : null;
+  check("a calendar move emails the client (notify_client true on the drag write)", $drag, "true");
+  check("...and the 'unchanged' echo guard returns BEFORE that write, so a quiet tick sends nothing",
+        strpos($hs,"'state'      => 'unchanged'") !== false && strpos($hs,"'state'      => 'unchanged'") < strpos($hs,'$this->admin_write_booking('), true);
+} else { check("handle_calendar_sync found in the shipping file", false, true); }
 echo "\n  TOTAL: $P passed, $F failed\n";
 exit($F?1:0);

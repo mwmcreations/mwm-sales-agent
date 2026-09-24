@@ -5133,7 +5133,11 @@ QBJS;
 				'actor'          => 'google-calendar',
 				'push_calendar'  => false, // the calendar is already in the target state
 				'allow_conflict' => true,  // accept and flag; never refuse a drag
-				'notify_client'  => false,
+				// PATCH #131d (Michael, 24 Sep): a move or a stretch on the calendar
+				// emails the client the branded "Booking Updated" message + .ics.
+				// Only a real change reaches this call — an echo of our own write
+				// answers "unchanged" above, so a quiet tick sends nothing.
+				'notify_client'  => true,
 			)
 		);
 
