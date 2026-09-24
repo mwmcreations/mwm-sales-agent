@@ -476,12 +476,19 @@ def main():
         prepped = False
         while True:
             job = None
-            if done < MAX_JOBS:
-                try:
-                    job = _get("/vi/jobs/next", {"worker": WORKER}).get("job")
-                except Exception as e:
-                    log("could not reach the app: %r" % (e,))
-                    return 1
+            if done >= MAX_JOBS:
+                # 24 Sep: a worker that had done its share used to sit idle
+                # holding the lock for the rest of its listening window while
+                # the queue waited (round 1 of the editing room: 4 cut in 4
+                # minutes, 4 waited 20). Hand over; the daemon starts a fresh
+                # one on its next pass.
+                log("did %d jobs; handing over to a fresh worker" % done)
+                return 0
+            try:
+                job = _get("/vi/jobs/next", {"worker": WORKER}).get("job")
+            except Exception as e:
+                log("could not reach the app: %r" % (e,))
+                return 1
             if not job:
                 # listen first (a person who just pressed Make it is waiting);
                 # the media prep runs once the listening window is over
