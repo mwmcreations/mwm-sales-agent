@@ -1075,3 +1075,165 @@ def queue_page(email, role, rows, event_title="Convention 2026", all_people=Fals
         "</div>"
     )
     return _shell("Victory Intelligence — my videos", body, QUEUE_JS)
+
+# ── the editing room ──────────────────────────────────────────────────────
+REVIEW_ASPECTS = (
+    ("shots", "Shots match the ask"),
+    ("variety", "Variety"),
+    ("pacing", "Pacing"),
+    ("music", "Music"),
+    ("words", "Words on screen"),
+    ("ends", "Opening and ending"),
+)
+
+REVIEW_CSS = """
+.rv{max-width:560px}
+.rv .lead{color:var(--dim);font-size:14px;margin:0 0 6px}
+.rv .rounds{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 26px}
+.rv .rounds a{border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:13px;color:var(--dim)}
+.rv .rounds a.on{background:#fff;color:#000;border-color:#fff}
+.rv .score{font-size:13px;color:var(--dim);margin:0 0 4px;font-variant-numeric:tabular-nums}
+.rv .item{border-top:1px solid var(--line);padding:22px 0 26px}
+.rv .item .n{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim2);margin:0 0 6px}
+.rv .item .ask{font-size:18px;font-weight:500;letter-spacing:-.01em;margin:0 0 10px;text-wrap:balance}
+.rv .item .meta{font-size:12.5px;color:var(--dim);margin:0 0 12px}
+.rv .item .meta b{color:var(--tx);font-weight:500}
+.rv .wait{border:1px dashed var(--line2);border-radius:16px;padding:18px;color:var(--dim);font-size:14px;max-width:300px;text-align:center;margin:0 0 14px}
+.rv .asp{display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;margin:6px 0 14px}
+.rv .asp .l{font-size:14.5px}
+.rv .asp .tt{display:inline-flex;gap:6px}
+.rv .tt button{border:1px solid var(--line2);background:transparent;color:var(--dim);border-radius:999px;width:44px;height:34px;font:inherit;font-size:15px;cursor:pointer}
+.rv .tt button.up.on{background:var(--ok);color:#000;border-color:var(--ok)}
+.rv .tt button.down.on{background:var(--red);color:#fff;border-color:var(--red)}
+.rv .pf{display:flex;gap:8px;margin:4px 0 12px}
+.rv .pf button{flex:1;border:1px solid var(--line2);background:transparent;color:var(--tx);border-radius:999px;padding:11px 0;font:inherit;font-size:15px;font-weight:500;cursor:pointer}
+.rv .pf button.pass.on{background:var(--ok);color:#000;border-color:var(--ok)}
+.rv .pf button.fail.on{background:var(--red);color:#fff;border-color:var(--red)}
+.rv textarea{width:100%;min-height:64px;background:var(--sur);color:var(--tx);border:1px solid var(--line);border-radius:14px;padding:10px 12px;font:inherit;font-size:14.5px;resize:vertical}
+.rv .saved{font-size:12px;color:var(--dim2);margin:6px 0 0;min-height:16px}
+.rv .saved.ok{color:var(--ok)}
+.rv .saved.err{color:var(--warn)}
+.rv .done{margin:26px 0 0;color:var(--dim);font-size:14px}
+"""
+
+REVIEW_JS = """
+<script>
+(function(){
+  var timers = {};
+  function state(card){
+    var aspects = {};
+    card.querySelectorAll('.tt').forEach(function(t){
+      var k = t.getAttribute('data-k');
+      if (t.querySelector('.up.on')) aspects[k] = 1;
+      else if (t.querySelector('.down.on')) aspects[k] = -1;
+    });
+    var pass = null;
+    if (card.querySelector('.pf .pass.on')) pass = true;
+    else if (card.querySelector('.pf .fail.on')) pass = false;
+    return {item: parseInt(card.getAttribute('data-item'), 10), pass: pass, aspects: aspects,
+            note: card.querySelector('textarea').value};
+  }
+  function save(card){
+    var s = card.querySelector('.saved');
+    s.textContent = 'Saving\\u2026'; s.className = 'saved';
+    fetch('/vi/review/verdict', {method:'POST', headers:{'Content-Type':'application/json'},
+           credentials:'same-origin', body: JSON.stringify(state(card))})
+      .then(function(r){ return r.json(); })
+      .then(function(j){ if (j && j.ok) { s.textContent = 'Saved'; s.className = 'saved ok'; }
+                         else { s.textContent = 'Not saved \\u2014 try again'; s.className = 'saved err'; } })
+      .catch(function(){ s.textContent = 'Not saved \\u2014 no connection'; s.className = 'saved err'; });
+  }
+  function later(card){ clearTimeout(timers[card.id]); timers[card.id] = setTimeout(function(){ save(card); }, 700); }
+  document.querySelectorAll('.item').forEach(function(card){
+    card.querySelectorAll('.tt').forEach(function(t){
+      t.querySelectorAll('button').forEach(function(b){
+        b.addEventListener('click', function(){
+          var was = b.classList.contains('on');
+          t.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+          if (!was) b.classList.add('on');
+          later(card);
+        });
+      });
+    });
+    card.querySelectorAll('.pf button').forEach(function(b){
+      b.addEventListener('click', function(){
+        var was = b.classList.contains('on');
+        card.querySelectorAll('.pf button').forEach(function(x){ x.classList.remove('on'); });
+        if (!was) b.classList.add('on');
+        later(card);
+      });
+    });
+    card.querySelector('textarea').addEventListener('input', function(){ later(card); });
+  });
+})();
+</script>
+"""
+
+
+def review_page(email, rnd, rows, rounds):
+    """The editing room: one round of cuts, each with six taps, a pass or a
+    fail, and a line for anything else. Saves as he taps."""
+    h = []
+    h.append("<div class=\"wrap\"><header class=\"cv\"><div class=\"top\">%s"
+             "<span class=\"ev\">Editing room</span></div>"
+             "<p class=\"who\">%s &middot; <a href=\"/vi/\">back to Victory Intelligence</a></p></header>"
+             "<main class=\"rv\">" % (vi_logo(), _e(email)))
+    if not rnd:
+        h.append("<h2>Nothing to judge yet</h2><p class=\"lead\">DEV has not opened a round.</p>"
+                 "</main></div>")
+        return _shell("Editing room", "".join(h), REVIEW_JS)
+    judged = sum(1 for r in rows if r.get("pass") is not None)
+    passed = sum(1 for r in rows if r.get("pass"))
+    ready = sum(1 for r in rows if r.get("ready"))
+    h.append("<h2 style=\"font-size:28px;font-weight:300;letter-spacing:-.02em;margin:0 0 6px\">Round %d</h2>" % rnd)
+    h.append("<p class=\"lead\">The same asks, cut again after every fix. Tap what is right and what is "
+             "wrong, then pass or fail the video. It saves as you go.</p>")
+    h.append("<p class=\"score\">%d of %d ready &middot; %d judged &middot; %d passed</p>"
+             % (ready, len(rows), judged, passed))
+    if rounds:
+        h.append("<div class=\"rounds\">" + "".join(
+            "<a href=\"/vi/review?round=%d\"%s>Round %d%s</a>"
+            % (r["round"], " class=\"on\"" if r["round"] == rnd else "", r["round"],
+               (" &middot; %d/%d" % (r["passed"], r["items"])) if r["judged"] else "")
+            for r in rounds) + "</div>")
+    for r in rows:
+        h.append("<section class=\"item\" id=\"item%d\" data-item=\"%d\">" % (r["id"], r["id"]))
+        h.append("<p class=\"n\">%d of %d &middot; video #%s</p>" % (r["slot"], len(rows), r.get("request_id") or "?"))
+        h.append("<p class=\"ask\">%s</p>" % _e(r["ask"]))
+        bits = []
+        if r.get("lines"):
+            bits.append("On screen: <b>%s</b>" % _e(" / ".join(str(x) for x in r["lines"])))
+        if r.get("cta"):
+            bits.append("End card: <b>%s</b>" % _e(r["cta"]))
+        if r.get("shots"):
+            bits.append("%d shots" % r["shots"])
+        if bits:
+            h.append("<p class=\"meta\">%s</p>" % " &middot; ".join(bits))
+        if r.get("ready"):
+            poster = (" poster=\"/vi/thumb/%s.jpg\"" % _e(r["first_shot"])) if r.get("first_shot") else ""
+            h.append("<video class=\"player\" controls playsinline preload=\"none\"%s src=\"%s\"></video>"
+                     % (poster, _e(r["watch_url"])))
+        else:
+            st = r.get("state") or "asked"
+            word = {"asked": "In line to be cut", "rendering": "Being cut now",
+                    "failed": "The cut failed — DEV is on it"}.get(st, st)
+            h.append("<div class=\"wait\">%s</div>" % _e(word))
+        h.append("<div class=\"asp\">")
+        for k, label in REVIEW_ASPECTS:
+            v = (r.get("aspects") or {}).get(k)
+            h.append("<span class=\"l\">%s</span><span class=\"tt\" data-k=\"%s\">"
+                     "<button type=\"button\" class=\"up%s\" aria-label=\"%s: good\">&#10003;</button>"
+                     "<button type=\"button\" class=\"down%s\" aria-label=\"%s: not good\">&#10005;</button></span>"
+                     % (label, k, " on" if v == 1 else "", label, " on" if v == -1 else "", label))
+        h.append("</div>")
+        p = r.get("pass")
+        h.append("<div class=\"pf\"><button type=\"button\" class=\"pass%s\">Pass</button>"
+                 "<button type=\"button\" class=\"fail%s\">Fail</button></div>"
+                 % (" on" if p is True else "", " on" if p is False else ""))
+        h.append("<textarea placeholder=\"Anything else — in your words\">%s</textarea>" % _e(r.get("note") or ""))
+        h.append("<p class=\"saved\">%s</p>" % ("Saved" if r.get("pass") is not None or r.get("aspects") else ""))
+        h.append("</section>")
+    h.append("<p class=\"done\">When every video in a round passes, or the misses are ones you could live "
+             "with in front of a school, we start real use with Victory.</p>")
+    h.append("</main></div>")
+    return _shell("Editing room — round %d" % rnd, "".join(h), "<style>%s</style>%s" % (REVIEW_CSS, REVIEW_JS))

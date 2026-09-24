@@ -146,6 +146,57 @@ class FakeStore(object):
                 return dict(r)
         return None
 
+    # the editing room
+    REVIEW_ASPECTS = ("shots", "variety", "pacing", "music", "words", "ends")
+
+    def review_next_round(self):
+        items = getattr(self, "review", [])
+        return max([i["round"] for i in items] + [0]) + 1
+
+    def review_add_item(self, rnd, slot, ask, request_id, lines=None, cta=""):
+        self.review = getattr(self, "review", [])
+        self.verdicts = getattr(self, "verdicts", {})
+        self.review.append({"id": len(self.review) + 1, "round": rnd, "slot": slot, "ask": ask,
+                            "request_id": request_id, "lines": lines or [], "cta": cta,
+                            "created_at": "2026-09-24 17:00:00"})
+        return len(self.review)
+
+    def review_items(self, rnd):
+        out = []
+        for i in sorted(getattr(self, "review", []), key=lambda x: (x["slot"], x["id"])):
+            if i["round"] != rnd:
+                continue
+            d = dict(i)
+            r = self.get_request(i["request_id"]) or {}
+            d.update({"state": r.get("state"), "result_drive_id": r.get("result_drive_id"),
+                      "summary": r.get("summary"), "finished_at": r.get("finished_at")})
+            v = getattr(self, "verdicts", {}).get(i["id"]) or {}
+            d.update({"pass": v.get("pass"), "aspects": v.get("aspects") or {}, "note": v.get("note"),
+                      "at": v.get("at"), "email": v.get("email")})
+            out.append(d)
+        return out
+
+    def review_rounds(self):
+        out = {}
+        for i in getattr(self, "review", []):
+            o = out.setdefault(i["round"], {"round": i["round"], "items": 0, "judged": 0, "passed": 0,
+                                            "started_at": i["created_at"]})
+            o["items"] += 1
+            v = getattr(self, "verdicts", {}).get(i["id"])
+            if v:
+                o["judged"] += 1
+                if v.get("pass"):
+                    o["passed"] += 1
+        return [out[k] for k in sorted(out, reverse=True)]
+
+    def review_verdict(self, item_id, email, passed, aspects, note):
+        self.verdicts = getattr(self, "verdicts", {})
+        clean = {k: (1 if aspects.get(k) in (1, "1", True) else -1)
+                 for k in self.REVIEW_ASPECTS if aspects.get(k) in (1, -1, "1", "-1", True, False)}
+        self.verdicts[int(item_id)] = {"email": email, "pass": passed, "aspects": clean,
+                                       "note": note, "at": "2026-09-24 17:05:00"}
+        return True
+
     def claim_next_request(self, worker):
         for r in self.requests:
             if r["state"] == "asked":
@@ -279,7 +330,8 @@ def install_fake_store(fake):
                  "claim_next_request", "finish_request", "set_request_state",
                  "requeue_stale", "queue_counts", "recent_music", "recent_clips",
                  "add_feedback", "list_feedback", "media_have", "media_put", "media_get",
-                 "put_extra_clips", "extra_clips", "memory_notes", "add_memory", "forget_memory"):
+                 "put_extra_clips", "extra_clips", "memory_notes", "add_memory", "forget_memory",
+                 "review_next_round", "review_add_item", "review_items", "review_rounds", "review_verdict"):
         _REAL.setdefault(name, getattr(vs, name))
         setattr(vs, name, getattr(fake, name))
 
@@ -1661,6 +1713,114 @@ class TestSignInWithGoogle(VICase):
     def test_switched_off_means_the_route_does_not_exist_for_practical_purposes(self):
         os.environ.pop(va.GOOGLE_CLIENT_ID_ENV, None)
         self.assertEqual(self._google("dev@mwmcreations.com").status_code, 404)
+
+
+class TestTheEditingRoom(VICase):
+    """Michael, 24 Sep: "a process where you make a lot of tests and I approve or
+    disapprove ... until I'm satisfied". The same asks, round after round; six
+    taps and a pass/fail per cut; MWM eyes only."""
+
+    def setUp(self):
+        VICase.setUp(self)
+        self.c.fake_claude.answer = ('{"say": "Here is a board-break reel.", '
+                                     '"ask": "A 15-second reel of board breaks, energetic", '
+                                     '"lines": ["Break through", "Victory Martial Arts"], "cta": "Join us"}')
+        self._sign_in_as("dev@mwmcreations.com", va.ROLE_MWM)
+
+    def _open_round(self, asks):
+        rnd = self._j(self.c.post("/vi/review/round"))["round"]
+        out = []
+        for k, a in enumerate(asks, 1):
+            out.append(self._j(self.c.post("/vi/review/item", json={"round": rnd, "slot": k, "ask": a})))
+        return rnd, out
+
+    def test_a_round_puts_each_ask_through_the_helper_and_into_the_queue(self):
+        rnd, out = self._open_round(["board breaks, energetic", "the candlelight ceremony, emotional"])
+        self.assertEqual(rnd, 1)
+        self.assertTrue(all(o["ok"] for o in out))
+        self.assertEqual(len(self.store.requests), 2)
+        r = self.store.requests[0]
+        self.assertEqual(r["state"], "asked")
+        self.assertEqual(r["length_s"], 15)
+        self.assertEqual(r["text"]["lines"], ["Break through", "Victory Martial Arts"])
+        self.assertEqual(r["text"]["cta"], "Join us")
+        self.assertEqual(r["text"]["review"], {"round": 1, "slot": 1})
+        self.assertEqual(r["note"], "A 15-second reel of board breaks, energetic")   # the helper's reading
+        self.assertEqual(self.store.review[1]["slot"], 2)
+
+    def test_the_next_round_gets_the_next_number(self):
+        self._open_round(["a"])
+        rnd, _ = self._open_round(["a"])
+        self.assertEqual(rnd, 2)
+
+    def test_the_room_shows_the_round_and_waits_for_cuts(self):
+        self._open_round(["board breaks, energetic"])
+        body = self.c.get("/vi/review").data.decode("utf-8")
+        self.assertIn("Round 1", body)
+        self.assertIn("board breaks, energetic", body)
+        self.assertIn("In line to be cut", body)
+        self.assertNotIn("<video", body)
+        self.assertIn("Shots match the ask", body)
+        self.assertIn("Words on screen", body)
+
+    def test_a_finished_cut_gets_a_player(self):
+        self._open_round(["board breaks, energetic"])
+        r = self.store.requests[0]
+        r["state"] = "ready"; r["result_drive_id"] = "drive-1"
+        r["summary"] = {"shots": [{"id": "VWC26_BREAK_01_boards-on-mat_D0138", "kind": "clip"}]}
+        body = self.c.get("/vi/review").data.decode("utf-8")
+        self.assertIn("/vi/watch/1.mp4", body)
+        self.assertIn("/vi/thumb/VWC26_BREAK_01_boards-on-mat_D0138.jpg", body)
+
+    def test_his_taps_are_kept_and_counted(self):
+        self._open_round(["board breaks", "candlelight"])
+        r = self.c.post("/vi/review/verdict", json={"item": 1, "pass": False,
+                                                    "aspects": {"shots": -1, "music": 1, "bogus": 1},
+                                                    "note": "too many wide shots"})
+        self.assertEqual(self._j(r), {"ok": True})
+        r = self.c.post("/vi/review/verdict", json={"item": 2, "pass": True, "aspects": {"shots": 1}})
+        s = self._j(self.c.get("/vi/review/summary"))
+        self.assertEqual(s["round"], 1)
+        self.assertEqual(s["aspects"]["shots"], {"up": 1, "down": 1})
+        self.assertEqual(s["aspects"]["music"], {"up": 1, "down": 0})
+        self.assertNotIn("bogus", s["items"][0]["aspects"])
+        self.assertEqual(s["items"][0]["note"], "too many wide shots")
+        self.assertEqual(s["rounds"][0]["passed"], 1)
+        self.assertEqual(s["rounds"][0]["judged"], 2)
+        body = self.c.get("/vi/review").data.decode("utf-8")
+        self.assertIn("2 judged", body)
+        self.assertIn("1 passed", body)
+        self.assertIn("too many wide shots", body)
+
+    def test_a_second_tap_replaces_the_first(self):
+        self._open_round(["board breaks"])
+        self.c.post("/vi/review/verdict", json={"item": 1, "pass": False, "aspects": {"shots": -1}})
+        self.c.post("/vi/review/verdict", json={"item": 1, "pass": True, "aspects": {"shots": 1}})
+        s = self._j(self.c.get("/vi/review/summary"))
+        self.assertEqual(s["aspects"]["shots"], {"up": 1, "down": 0})
+        self.assertEqual(s["rounds"][0]["passed"], 1)
+
+    def test_a_business_question_uses_the_first_step_of_the_plan(self):
+        self.c.fake_claude.answer = ('{"say": "Four steps.", "ask": null, "plan": [{"title": "Reassure parents", '
+                                     '"ask": "Kids growing in confidence, for parents", "lines": ["Watch them grow"], '
+                                     '"cta": "Come see a class"}, {"title": "Second", "ask": "x"}]}')
+        self._open_round(["we are losing students, what can I do"])
+        r = self.store.requests[0]
+        self.assertEqual(r["note"], "Kids growing in confidence, for parents")
+        self.assertEqual(r["text"]["cta"], "Come see a class")
+
+    def test_the_room_does_not_exist_for_a_school(self):
+        self._open_round(["board breaks"])
+        self.c.get("/vi/logout")
+        self._sign_in_as("owner@victoryma.com", va.ROLE_SCHOOL, "Ocoee")
+        self.assertEqual(self.c.get("/vi/review").status_code, 404)
+        self.assertEqual(self.c.post("/vi/review/round").status_code, 404)
+        self.assertEqual(self.c.post("/vi/review/verdict", json={"item": 1, "pass": True}).status_code, 404)
+        self.assertEqual(self.c.get("/vi/review/summary").status_code, 404)
+
+    def test_an_empty_room_says_so(self):
+        body = self.c.get("/vi/review").data.decode("utf-8")
+        self.assertIn("Nothing to judge yet", body)
 
 
 if __name__ == "__main__":

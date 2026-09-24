@@ -8,6 +8,7 @@ its own.
     POST /vi/login       ask for a sign-in link
     GET  /vi/auth        spend a link, get a session
     POST /vi/auth/google Sign in with Google (ID token from Google's button)
+    GET  /vi/review      the editing room (MWM): a round of cuts to judge
     GET  /vi/logout      end the session
     GET  /vi/search      ranked results          (session or admin)
     GET  /vi/health      what the index holds    (admin)
@@ -920,6 +921,169 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             return jsonify({"ok": False, "error": "exception"}), 500
 
     # ── the machine editor: the worker's side (admin) ──────────────────────
+    # ── the editing room (24 Sep) ────────────────────────────────────────
+    # Michael: "the editing is still not good ... a process where you make a
+    # lot of tests and I approve or disapprove and say what is doing right,
+    # what is doing wrong ... until I'm satisfied". A round is the same set
+    # of asks cut again after a fix; he judges each cut with six taps and a
+    # pass/fail. MWM eyes only; to anyone else these pages do not exist.
+    def _review_only():
+        sess = _session()
+        if not sess or not _is_mwm(sess):
+            return None
+        return sess
+
+    def _review_rows(rnd):
+        rows = []
+        for it in vs.review_items(rnd):
+            d = dict(it)
+            for k in ("created_at", "finished_at", "at"):
+                if d.get(k) is not None:
+                    d[k] = str(d[k])
+            summ = d.get("summary") or {}
+            if not isinstance(summ, dict):
+                summ = {}
+            shots = summ.get("shots") or []
+            d["shots"] = len([s for s in shots if isinstance(s, dict)])
+            d["first_shot"] = next((str(s.get("id") or "").split(":")[-1] for s in shots
+                                    if isinstance(s, dict) and s.get("id") and s.get("kind") != "speech"), "")
+            d["ready"] = bool(d.get("result_drive_id")) and d.get("state") in ("ready", "approved", "delivered")
+            d["watch_url"] = ("/vi/watch/%s.mp4" % d["request_id"]) if d["ready"] else ""
+            d.pop("summary", None)
+            rows.append(d)
+        return rows
+
+    @app.route("/vi/review", methods=["GET"])
+    def vi_review():
+        try:
+            sess = _review_only()
+            if not sess:
+                return _door(), 404
+            rounds = vs.review_rounds()
+            try:
+                rnd = int(request.args.get("round") or (rounds[0]["round"] if rounds else 0))
+            except (TypeError, ValueError):
+                rnd = rounds[0]["round"] if rounds else 0
+            rows = _review_rows(rnd) if rnd else []
+            for r in rounds:
+                if r.get("started_at") is not None:
+                    r["started_at"] = str(r["started_at"])
+            return vp.review_page(sess["email"], rnd, rows, rounds)
+        except Exception as e:
+            _err("vi_review", e)
+            return _door(message="Something went wrong. Try again."), 500
+
+    @app.route("/vi/review/round", methods=["POST"])
+    def vi_review_round():
+        """Open a round: answers with the number the next items should carry."""
+        try:
+            if not _review_only():
+                return jsonify({"ok": False, "error": "not found"}), 404
+            vs.init_schema()
+            return jsonify({"ok": True, "round": vs.review_next_round()}), 200
+        except Exception as e:
+            _err("vi_review_round", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/review/item", methods=["POST"])
+    def vi_review_item():
+        """One ask into a round, through the same door a school would use:
+        the helper reads the sentence and writes the lines and the end card,
+        then the request goes to the queue like any other."""
+        try:
+            sess = _review_only()
+            if not sess:
+                return jsonify({"ok": False, "error": "not found"}), 404
+            body = request.get_json(force=True, silent=True) or {}
+            ask = str(body.get("ask") or "").strip()[:300]
+            try:
+                rnd = int(body.get("round") or 0)
+                slot = int(body.get("slot") or 0)
+            except (TypeError, ValueError):
+                rnd, slot = 0, 0
+            if not ask or rnd < 1 or slot < 1:
+                return jsonify({"ok": False, "error": "round, slot and ask are needed"}), 400
+            import victory_index as vi
+            import victory_helper as vh
+            import victory_cut as _vc
+            if vi.corpus_size() == 0:
+                vi.load_corpus()
+            client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
+            out = vh.chat([{"role": "user", "text": ask}], vi.snapshot(), client=client,
+                          person=_person(sess)) or {}
+            # a business question comes back as a plan: its first step is the video
+            step = (out.get("plan") or [{}])[0] if not out.get("ask") else out
+            final_ask = str(step.get("ask") or out.get("ask") or ask)[:300]
+            lines = [str(x)[:60] for x in (step.get("lines") or out.get("lines") or [])][:4]
+            cta = str(step.get("cta") or out.get("cta") or "")[:60]
+            text = {"lines": lines, "cta": cta, "review": {"round": rnd, "slot": slot}}
+            vs.init_schema()
+            rid = vs.create_request(sess["email"], sess["role"], sess.get("school", ""),
+                                    final_ask, [], length_s=_vc.STANDARD, text=text)
+            if not rid:
+                return jsonify({"ok": False, "error": "could not save the request"}), 500
+            item = vs.review_add_item(rnd, slot, ask, rid, lines, cta)
+            print("[VI-REVIEW] round %d slot %d -> request #%s" % (rnd, slot, rid))
+            return jsonify({"ok": True, "item": item, "request": rid, "ask": final_ask,
+                            "lines": lines, "cta": cta, "helper_said": (out.get("say") or "")[:300]}), 200
+        except Exception as e:
+            _err("vi_review_item", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/review/verdict", methods=["POST"])
+    def vi_review_verdict():
+        try:
+            sess = _review_only()
+            if not sess:
+                return jsonify({"ok": False, "error": "not found"}), 404
+            body = request.get_json(force=True, silent=True) or {}
+            try:
+                item = int(body.get("item") or 0)
+            except (TypeError, ValueError):
+                item = 0
+            if item < 1:
+                return jsonify({"ok": False, "error": "which item?"}), 400
+            passed = body.get("pass")
+            passed = None if passed is None else bool(passed)
+            aspects = body.get("aspects") if isinstance(body.get("aspects"), dict) else {}
+            note = str(body.get("note") or "").strip()[:2000]
+            if not vs.review_verdict(item, sess["email"], passed, aspects, note):
+                return jsonify({"ok": False, "error": "could not save"}), 500
+            return jsonify({"ok": True}), 200
+        except Exception as e:
+            _err("vi_review_verdict", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/review/summary", methods=["GET"])
+    def vi_review_summary():
+        """The round as numbers: what failed most, and every note. For DEV."""
+        try:
+            if not _review_only():
+                return jsonify({"ok": False, "error": "not found"}), 404
+            try:
+                rnd = int(request.args.get("round") or 0)
+            except (TypeError, ValueError):
+                rnd = 0
+            rounds = vs.review_rounds()
+            if not rnd and rounds:
+                rnd = rounds[0]["round"]
+            rows = _review_rows(rnd) if rnd else []
+            tally = {k: {"up": 0, "down": 0} for k in vs.REVIEW_ASPECTS}
+            for r in rows:
+                for k, v in (r.get("aspects") or {}).items():
+                    if k in tally:
+                        tally[k]["up" if v == 1 else "down"] += 1
+            for r in rounds:
+                if r.get("started_at") is not None:
+                    r["started_at"] = str(r["started_at"])
+            return jsonify({"ok": True, "round": rnd, "rounds": rounds, "aspects": tally,
+                            "items": [{k: r.get(k) for k in ("id", "slot", "ask", "request_id", "state",
+                                                              "pass", "aspects", "note", "lines", "cta")}
+                                      for r in rows]}), 200
+        except Exception as e:
+            _err("vi_review_summary", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
     @app.route("/vi/jobs/next", methods=["GET", "POST"])
     def vi_jobs_next():
         """The Mac worker asks for work. The claim is one UPDATE in the store."""

@@ -128,6 +128,29 @@ DDL = [
            gone    BOOLEAN DEFAULT FALSE
        )""",
     "CREATE INDEX IF NOT EXISTS vi_memory_email ON vi_memory (email, gone)",
+    # The editing room (24 Sep). Michael: "the editing is still not good... a
+    # process where you make a lot of tests and I approve or disapprove".
+    # A round is the same set of asks cut again after a fix; each item is one
+    # ask -> one request; a verdict is his taps on that item (latest wins).
+    """CREATE TABLE IF NOT EXISTS vi_review_item (
+           id         BIGSERIAL PRIMARY KEY,
+           round      INT NOT NULL,
+           slot       INT NOT NULL,
+           ask        TEXT NOT NULL,
+           request_id BIGINT,
+           lines      JSONB,
+           cta        TEXT,
+           created_at TIMESTAMPTZ DEFAULT now()
+       )""",
+    "CREATE INDEX IF NOT EXISTS vi_review_item_round ON vi_review_item (round, slot)",
+    """CREATE TABLE IF NOT EXISTS vi_review_verdict (
+           item_id    BIGINT PRIMARY KEY,
+           email      TEXT,
+           pass       BOOLEAN,
+           aspects    JSONB,
+           note       TEXT,
+           at         TIMESTAMPTZ DEFAULT now()
+       )""",
 ]
 
 # asked -> rendering -> ready -> approved -> delivered, or failed / declined.
@@ -797,3 +820,116 @@ def forget_memory(email, text=None):
     except Exception as e:
         print("[VI] forget_memory failed: %r" % (e,))
         return 0
+
+# ── the editing room ───────────────────────────────────────────────────────
+REVIEW_ASPECTS = ("shots", "variety", "pacing", "music", "words", "ends")
+
+
+def review_next_round():
+    """The number the next round gets: one more than the highest so far."""
+    pg = _pg()
+    if not pg:
+        return 1
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(round), 0) + 1 FROM vi_review_item")
+            return int(cur.fetchone()[0])
+    except Exception as e:
+        print("[VI] review_next_round failed: %r" % (e,))
+        return 1
+
+
+def review_add_item(rnd, slot, ask, request_id, lines=None, cta=""):
+    pg = _pg()
+    if not pg:
+        return None
+    import json as _json
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO vi_review_item (round, slot, ask, request_id, lines, cta)
+                        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (int(rnd), int(slot), (ask or "")[:400], int(request_id) if request_id else None,
+                 _json.dumps(lines or []), (cta or "")[:80]))
+            return cur.fetchone()[0]
+    except Exception as e:
+        print("[VI] review_add_item failed: %r" % (e,))
+        return None
+
+
+def review_items(rnd):
+    """The items of one round with the request's state and result and the
+    verdict so far, in slot order."""
+    pg = _pg()
+    if not pg:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT i.id, i.round, i.slot, i.ask, i.request_id, i.lines, i.cta, i.created_at,
+                          r.state, r.result_drive_id, r.summary, r.finished_at,
+                          v.pass, v.aspects, v.note, v.at, v.email
+                     FROM vi_review_item i
+                LEFT JOIN vi_request r ON r.id = i.request_id
+                LEFT JOIN vi_review_verdict v ON v.item_id = i.id
+                    WHERE i.round = %s ORDER BY i.slot, i.id""", (int(rnd),))
+            cols = [d[0] for d in cur.description]
+            out = []
+            for row in cur.fetchall():
+                d = dict(zip(cols, row))
+                d["lines"] = d.get("lines") or []
+                d["aspects"] = d.get("aspects") or {}
+                out.append(d)
+            return out
+    except Exception as e:
+        print("[VI] review_items failed: %r" % (e,))
+        return []
+
+
+def review_rounds():
+    """Every round, newest first: how many items, how many judged, how many passed."""
+    pg = _pg()
+    if not pg:
+        return []
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT i.round, COUNT(*) AS items,
+                          COUNT(v.item_id) AS judged,
+                          COUNT(*) FILTER (WHERE v.pass) AS passed,
+                          MIN(i.created_at) AS started_at
+                     FROM vi_review_item i
+                LEFT JOIN vi_review_verdict v ON v.item_id = i.id
+                 GROUP BY i.round ORDER BY i.round DESC""")
+            return [{"round": r, "items": n, "judged": j, "passed": p, "started_at": t}
+                    for r, n, j, p, t in cur.fetchall()]
+    except Exception as e:
+        print("[VI] review_rounds failed: %r" % (e,))
+        return []
+
+
+def review_verdict(item_id, email, passed, aspects, note):
+    """One verdict per item; a second tap replaces the first."""
+    pg = _pg()
+    if not pg:
+        return False
+    import json as _json
+    clean = {}
+    for k in REVIEW_ASPECTS:
+        v = (aspects or {}).get(k)
+        if v in (1, -1, "1", "-1", True, False):
+            clean[k] = 1 if v in (1, "1", True) else -1
+    try:
+        with pg._conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO vi_review_verdict (item_id, email, pass, aspects, note, at)
+                        VALUES (%s,%s,%s,%s,%s, now())
+                   ON CONFLICT (item_id) DO UPDATE
+                        SET email = EXCLUDED.email, pass = EXCLUDED.pass,
+                            aspects = EXCLUDED.aspects, note = EXCLUDED.note, at = now()""",
+                (int(item_id), email or "", None if passed is None else bool(passed),
+                 _json.dumps(clean), (note or "")[:2000]))
+            return True
+    except Exception as e:
+        print("[VI] review_verdict failed: %r" % (e,))
+        return False
