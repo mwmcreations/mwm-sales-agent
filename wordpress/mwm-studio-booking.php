@@ -5001,7 +5001,11 @@ QBJS;
 				'actor'          => 'google-calendar',
 				'push_calendar'  => false, // the calendar already holds this event
 				'allow_conflict' => true,  // accept and flag, as for a drag
-				'notify_client'  => false,
+				// PATCH #131c (Michael, 24 Sep): the client gets the branded
+				// "Booking Confirmed" email + .ics the moment LARA books, exactly as
+				// when they book themselves. Only on a real creation — a retry that
+				// answers "exists" never reaches this call, so no duplicate email.
+				'notify_client'  => true,
 			)
 		);
 		if ( empty( $res['ok'] ) ) {

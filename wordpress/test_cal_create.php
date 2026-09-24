@@ -42,7 +42,7 @@ check("...for that client", $h->writes[0][1]["client_id"], 1);
 check("...creating, not editing", $h->writes[0][0], 0);
 check("...1 hour", (float)$h->writes[0][1]["duration_hours"], 1.0);
 check("...push_calendar OFF (calendar already holds it)", $h->writes[0][2]["push_calendar"], false);
-check("...no client notification", $h->writes[0][2]["notify_client"], false);
+check("...the client IS sent the confirmation email (#131c)", $h->writes[0][2]["notify_client"], true);
 check("...audited as a calendar create", $h->writes[0][2]["action"], "booking.calendar_create");
 check("...returns the booking id", $r->data["booking_id"], 100);
 check("...and the event bid", $r->data["event_bid"], "100");
@@ -50,6 +50,7 @@ check("...and the package position", array($r->data["hours_used"],$r->data["hour
 $r2=$h->call(pl("Jonathan Pineda"));
 check("the same event again answers exists", $r2->data["state"], "exists");
 check("...and does NOT book twice", count($h->writes), 1);
+check("...so no second confirmation email can go out", count(array_filter($h->writes, function($w){ return $w[2]["notify_client"]; })), 1);
 
 $h=fresh(array(cl(1,"Jonathan Pineda")));
 check("case and spacing are ignored", $h->call(pl("  jonathan   PINEDA "))->data["state"], "created");
