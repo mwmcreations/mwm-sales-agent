@@ -163,6 +163,7 @@ class Rig(object):
             heartbeat=lambda name: None,
             matt_channel="#matt",
             dev_channel="#dev",
+            lara_channel="#lara",
             to_local=lambda dt: dt.astimezone(ET),
             now=lambda: NOW,
         )
@@ -611,6 +612,234 @@ check("...and the next tick is incremental, not another bootstrap", s2["mode"], 
 check("...so the counter is back to zero", cs._CONSECUTIVE_BOOTSTRAPS, 0)
 check_true("nothing was cried about", "inert" not in rig.slack_text)
 
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #131 — a NEW "🎬 Studio: <client>" event becomes a portal booking
+# ══════════════════════════════════════════════════════════════════════
+section("131 · calendar-created bookings")
+
+_reset()
+os.environ["MWM_GCAL_CREATE_ENABLED"] = "1"
+SINCE = (NOW - timedelta(hours=2)).isoformat()
+
+
+def _gstamp(dt):
+    """Google's 'created' format: UTC, milliseconds, trailing Z."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def new_event(eid="new1", title="\U0001f3ac Studio: Jonathan Pineda", date="2026-09-24",
+              start="14:15", end="15:15", created=None, description="", **extra):
+    ev = {
+        "id": eid,
+        "status": "confirmed",
+        "summary": title,
+        "description": description,
+        "created": _gstamp(NOW - timedelta(minutes=5)) if created is None else created,
+        "start": {"dateTime": "{}T{}:00-04:00".format(date, start)},
+        "end": {"dateTime": "{}T{}:00-04:00".format(date, end)},
+    }
+    ev.update(extra)
+    return ev
+
+
+def created_reply(payload):
+    if payload.get("action") != "created":
+        return {"ok": True, "state": "updated", "booking_id": payload.get("booking_id")}
+    return {"ok": True, "state": "created", "booking_id": 91, "event_bid": "91",
+            "client": "Jonathan Pineda", "hours_used": 6.5, "hours_total": 12.0,
+            "warnings": [],
+            "booking": {"date": payload["date"], "start": payload["start_time"],
+                        "end": payload["end_time"], "duration": 1.0, "status": "confirmed"}}
+
+
+def base_store(**extra):
+    st = {cs.KEY_SYNCTOKEN: {"token": "TOKEN-1"}, cs.KEY_CREATE_SINCE: {"at": SINCE}}
+    st.update(extra)
+    return st
+
+
+# -- the parts --
+check("title with emoji parses to the client name",
+      cs.studio_title_client("\U0001f3ac Studio: Jonathan Pineda"), "Jonathan Pineda")
+check("the portal's own '(1h)' suffix is dropped",
+      cs.studio_title_client("\U0001f3ac Studio: Jonathan Pineda (1h)"), "Jonathan Pineda")
+check("no emoji, lower case, extra spaces still parse",
+      cs.studio_title_client("studio:   Camila   Rocha "), "Camila Rocha")
+check("'Studio visit: x' is NOT a booking request",
+      cs.studio_title_client("Studio visit: Mark"), None)
+check("Calendly's 'STUDIO RECORDING | x' is NOT a booking request",
+      cs.studio_title_client("STUDIO RECORDING | Gisele at MWM"), None)
+check("'Studio:' with no name is NOT a booking request",
+      cs.studio_title_client("Studio:   "), None)
+check("'free' in the title is recognised", cs.says_free({"summary": "Studio: Camila FREE"}), True)
+check("'free' in the description is recognised",
+      cs.says_free({"summary": "Studio: Camila", "description": "free session, not deducted"}), True)
+check("'freestyle' is not 'free'", cs.says_free({"summary": "Studio: Freestyle Kings"}), False)
+
+# -- the happy path --
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+s = cs.sync_once()
+check("exactly one WordPress call", len(rig.portal.calls), 1)
+_p = rig.portal.calls[0]
+check("...and it asks to CREATE", _p["action"], "created")
+check("...for the client named in the title", _p["client_name"], "Jonathan Pineda")
+check("...at the event's date", _p["date"], "2026-09-24")
+check("...start", _p["start_time"], "14:15")
+check("...and end", _p["end_time"], "15:15")
+check("...naming the event", _p["event_id"], "new1")
+_inserts = [w for w in rig.calendar.writes if w[0] == "insert"]
+_deletes = [w for w in rig.calendar.writes if w[0] == "delete"]
+_patches = [w for w in rig.calendar.writes if w[0] == "patch"]
+check("NO second event is inserted — the calendar already holds it", len(_inserts), 0)
+check("nothing is deleted", len(_deletes), 0)
+check("one patch stamps the booking marker onto the description", len(_patches), 1)
+check_true("...and the stamp names the booking",
+           "portal booking #91" in _patches[0][1]["body"]["description"])
+check("...sent without notifying anyone", _patches[0][1].get("sendUpdates"), "none")
+check("the reverse index now points at the booking", rig.store[cs.KEY_EVENT + "new1"], {"booking_id": 91})
+check("the current-event map is written", rig.store[cs.KEY_CURRENT + "91"], {"event_id": "new1"})
+check("app.py's forward map is written, so a wp-admin edit removes THIS event",
+      rig.store[cs.KEY_FORWARD + "91"], {"event_id": "new1"})
+check("the position is remembered", rig.store[cs.KEY_SEEN + "new1"]["start"], "14:15")
+check("the run counts one creation", s["created"], 1)
+check("the syncToken advanced", rig.store[cs.KEY_SYNCTOKEN], {"token": "TOKEN-2"})
+check_true("#lara is told it was booked",
+           any(ch == "#lara" and "Booked from the calendar" in t for ch, t in rig.slack))
+check_true("...with the package position", "6.5/12.0" in rig.slack_text)
+
+# -- termination: our own description stamp comes back in the feed --
+stamped = new_event(description="Studio Package portal booking #91 (booked from the calendar)")
+rig.calendar.responses = [{"items": [stamped], "nextSyncToken": "TOKEN-3"},
+                          {"items": [stamped], "nextSyncToken": "TOKEN-4"}]
+_before = len(rig.portal.calls)
+cs.sync_once()
+cs.sync_once()
+check("the echo of our own stamp makes ZERO further WordPress calls",
+      len(rig.portal.calls) - _before, 0)
+check("...and zero further calendar writes", len(rig.calendar.writes), 1)
+
+# -- then a drag on it is an ordinary move --
+dragged = new_event(start="16:00", end="17:00",
+                    description="Studio Package portal booking #91 (booked from the calendar)")
+rig.store.pop(cs.KEY_SELFWRITE + "new1", None)
+rig.calendar.responses = [{"items": [dragged], "nextSyncToken": "TOKEN-5"}]
+cs.sync_once()
+check("a later drag of that event is sent as a MOVE of booking #91",
+      (rig.portal.calls[-1]["action"], rig.portal.calls[-1]["booking_id"]), ("moved", 91))
+
+# -- the switch --
+os.environ["MWM_GCAL_CREATE_ENABLED"] = "0"
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+cs.sync_once()
+check("with MWM_GCAL_CREATE_ENABLED off, nothing is created", len(rig.portal.calls), 0)
+os.environ["MWM_GCAL_CREATE_ENABLED"] = "1"
+
+# -- the cutover: nothing older than the switch is ever swept in --
+old = new_event(created=_gstamp(NOW - timedelta(days=3)))
+rig = Rig(FakeCalendar([{"items": [old], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+cs.sync_once()
+check("an event created BEFORE the switch went on is never booked", len(rig.portal.calls), 0)
+
+nostamp = new_event()
+nostamp.pop("created")
+rig = Rig(FakeCalendar([{"items": [nostamp], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+cs.sync_once()
+check("an event with no 'created' stamp is never booked (no guessing)", len(rig.portal.calls), 0)
+
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store={cs.KEY_SYNCTOKEN: {"token": "TOKEN-1"}})
+cs.sync_once()
+check("first tick with the switch on records the cutover", cs.KEY_CREATE_SINCE in rig.store, True)
+check("...and an event made before that first tick is not booked", len(rig.portal.calls), 0)
+
+# -- free and recurring --
+rig = Rig(FakeCalendar([{"items": [new_event(title="\U0001f3ac Studio: Camila (free)")],
+                         "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+cs.sync_once()
+check("a session marked free is never booked", len(rig.portal.calls), 0)
+
+rec = new_event(recurrence=["RRULE:FREQ=WEEKLY;COUNT=4"])
+rig = Rig(FakeCalendar([{"items": [rec], "nextSyncToken": "TOKEN-2"},
+                        {"items": [rec], "nextSyncToken": "TOKEN-3"}]),
+          portal=FakePortal(reply=created_reply), store=base_store())
+cs.sync_once()
+check("a repeating event is never booked", len(rig.portal.calls), 0)
+check_true("...and #lara is told to create each date", "repeating event" in rig.slack_text)
+_n = rig.slack_text.count("repeating event")
+cs.sync_once()
+check("...once, not every tick", rig.slack_text.count("repeating event"), _n)
+
+# -- the portal cannot match the name --
+def no_match(payload):
+    return {"ok": True, "state": "no_match",
+            "message": 'No studio client is named "Jon Pineda". Did you mean: Jonathan Pineda?'}
+
+typo = new_event(title="\U0001f3ac Studio: Jon Pineda")
+rig = Rig(FakeCalendar([{"items": [typo], "nextSyncToken": "TOKEN-2"},
+                        {"items": [typo], "nextSyncToken": "TOKEN-3"}]),
+          portal=FakePortal(reply=no_match), store=base_store())
+s = cs.sync_once()
+check("a name the portal cannot match is not a failure", s["failed"], 0)
+check("...the token still advances (a refusal must not re-fire forever)",
+      rig.store[cs.KEY_SYNCTOKEN], {"token": "TOKEN-2"})
+check_true("#lara is told, with the portal's suggestion", "Did you mean: Jonathan Pineda" in rig.slack_text)
+check_true("...and told the hours have NOT moved", "have NOT" in rig.slack_text)
+_n = rig.slack_text.count("Not booked from the calendar")
+cs.sync_once()
+check("...once for that title, not every tick",
+      rig.slack_text.count("Not booked from the calendar"), _n)
+check("nothing was remembered as a booking", cs.KEY_EVENT + "new1" in rig.store, False)
+
+fixed = new_event()
+rig.portal.reply = created_reply
+rig.calendar.responses = [{"items": [fixed], "nextSyncToken": "TOKEN-4"}]
+cs.sync_once()
+check("once the title is corrected, the same event is booked",
+      rig.store.get(cs.KEY_EVENT + "new1"), {"booking_id": 91})
+
+# -- the portal is unreachable --
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(raises=RuntimeError("WP calendar-sync HTTP 502")), store=base_store())
+s = cs.sync_once()
+check("an unreachable portal counts as a failure", s["failed"], 1)
+check("...and the token is NOT advanced, so it retries",
+      rig.store[cs.KEY_SYNCTOKEN], {"token": "TOKEN-1"})
+
+# -- WordPress had already booked it (a retry after a lost reply) --
+def exists(payload):
+    r = created_reply(payload)
+    r["state"] = "exists"
+    return r
+
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=exists), store=base_store())
+s = cs.sync_once()
+check("'exists' still links the event to the booking", rig.store[cs.KEY_EVENT + "new1"], {"booking_id": 91})
+check("...but does not announce a second booking", "Booked from the calendar" in rig.slack_text, False)
+check("...and is not counted as a new creation", s["created"], 0)
+
+# -- bootstrap never creates --
+rig = Rig(FakeCalendar([{"items": [new_event()], "nextSyncToken": "T1"}]),
+          portal=FakePortal(reply=created_reply), store={cs.KEY_CREATE_SINCE: {"at": SINCE}})
+cs.sync_once()
+check("a bootstrap never creates a booking", len(rig.portal.calls), 0)
+
+# -- a portal-owned event is never re-created --
+own = event(eid="ev7", bid_text="Studio Package portal booking #71")
+rig = Rig(FakeCalendar([{"items": [own], "nextSyncToken": "TOKEN-2"}]),
+          portal=FakePortal(reply=created_reply), store=seeded(eid="ev7"))
+cs.sync_once()
+check("an event that already belongs to a booking is never sent as 'created'",
+      [c["action"] for c in rig.portal.calls if c.get("action") == "created"], [])
+
+os.environ["MWM_GCAL_CREATE_ENABLED"] = "0"
 
 print("\nS28_GATE_RESULT: " + ("PASS" if _failed == 0 else "FAIL"))
 

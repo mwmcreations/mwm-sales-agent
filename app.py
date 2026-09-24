@@ -20773,6 +20773,7 @@ _calsync.configure(
     heartbeat=_heartbeat,
     matt_channel=SLACK_MATT_CHANNEL,
     dev_channel=SLACK_DEV_CHANNEL,
+    lara_channel=SLACK_LARA_CHANNEL,   # PATCH #131 — calendar-booking results
     to_local=lambda dt: dt.astimezone(pytz.timezone(TIMEZONE)),
     now=lambda: datetime.now(pytz.timezone(TIMEZONE)),
 )

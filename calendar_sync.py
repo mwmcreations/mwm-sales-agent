@@ -69,6 +69,28 @@ KEY_SELFDELETE = "studio_gcal_selfdelete:"
 
 ACTION_MOVED = "moved"
 ACTION_DELETED = "deleted"
+ACTION_CREATED = "created"
+
+# PATCH #131 — CALENDAR-CREATED BOOKINGS (Sep 24 2026).
+# Michael: LARA must be able to add studio time for a client "on my request".
+# She already writes the MWM CREATIONS calendar; until now an event she created
+# was invisible to the portal, so the client's hours never moved (Jonathan
+# Pineda, 24 Sep, 14:15). A NEW event titled "🎬 Studio: <exact client name>"
+# now becomes a portal booking through the same admin_write_booking() path.
+#
+# Deliberately narrow:
+#   * only the title prefix "Studio:" (emoji optional) — Michael's shoots,
+#     visits and "STUDIO RECORDING | x" Calendly events never match;
+#   * only events CREATED after the feature was switched on (KEY_CREATE_SINCE),
+#     so enabling it can never sweep old events into bookings and charge hours;
+#   * never during bootstrap, never for recurring series, never when the title
+#     or description says "free";
+#   * the client name must match EXACTLY ONE studio client in WordPress, or
+#     nothing is booked and #lara is told why — once per title, not every tick.
+# Ships dark behind MWM_GCAL_CREATE_ENABLED, independently of the drag sync.
+KEY_CREATE_SINCE = "studio_gcal_create_since"   # {"at": iso} — first enabled tick
+KEY_CREATE_NOTE = "studio_gcal_create_note:"    # event_id -> {"title": ..., "state": ...}
+KEY_FORWARD = "studio_booking_gcal:"            # event_bid -> {"event_id": ...} (app.py's map)
 
 _deps = {}
 
@@ -106,7 +128,8 @@ def configure(**kwargs):
               pg_load, pg_save, post_slack, report_error, heartbeat,
               matt_channel, dev_channel
     Optional: to_local (callable(aware datetime) -> local aware datetime),
-              now (callable -> aware datetime; tests inject a fixed clock)
+              now (callable -> aware datetime; tests inject a fixed clock),
+              lara_channel (PATCH #131 — where calendar-booking results go)
     """
     _deps.update(kwargs)
 
@@ -116,6 +139,11 @@ def configure(**kwargs):
 def enabled():
     """Ships dark. Michael turns this on deliberately, after the code is live."""
     return os.getenv("MWM_GCAL_SYNC_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def create_enabled():
+    """PATCH #131 — its own switch. The drag sync can stay on while this is off."""
+    return os.getenv("MWM_GCAL_CREATE_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _report(ctx, exc, detail=""):
@@ -190,6 +218,34 @@ def booking_id_from_description(description):
     except (TypeError, ValueError):
         return None
     return bid if bid > 0 else None
+
+
+_STUDIO_TITLE_RE = re.compile(r"^\s*(?:\U0001f3ac\s*)?studio\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+_FREE_RE = re.compile(r"\bfree\b", re.IGNORECASE)
+
+
+def studio_title_client(summary):
+    """'🎬 Studio: Jonathan Pineda' -> 'Jonathan Pineda'. Also accepts the
+    portal's own '(1h)' suffix and no emoji. Anything else -> None.
+
+    'Studio visit: x', 'STUDIO RECORDING | x' and 'Victory studio' do not
+    match: the colon has to follow the word Studio directly.
+    """
+    if not summary:
+        return None
+    m = _STUDIO_TITLE_RE.match(str(summary))
+    if not m:
+        return None
+    name = _TRAILING_PAREN_RE.sub("", m.group(1)).strip()
+    name = re.sub(r"\s+", " ", name)
+    return name or None
+
+
+def says_free(event):
+    ev = event or {}
+    return bool(_FREE_RE.search(str(ev.get("summary") or ""))
+                or _FREE_RE.search(str(ev.get("description") or "")))
 
 
 def _parse_dt(raw):
@@ -328,7 +384,7 @@ def is_gone_error(exc):
 # ── the sync itself ─────────────────────────────────────────────────────
 
 def _blank_summary():
-    return {"listed": 0, "synced": 0, "asked": 0, "adopted": 0,
+    return {"listed": 0, "synced": 0, "asked": 0, "adopted": 0, "created": 0,
             "skipped": 0, "failed": 0, "wp_calls": 0, "mode": ""}
 
 
@@ -459,6 +515,9 @@ def _handle_event(event, summary, adopt_unknown=True):
 
     bid = resolve_booking_id(event)
     if not bid:
+        # PATCH #131 — a NEW "🎬 Studio: <client>" event may be a booking request.
+        if create_enabled() and studio_title_client((event or {}).get("summary")):
+            return _handle_creation(event, summary)
         summary["skipped"] += 1      # Michael's own shoots, studio visits, the Victory block
         return
     times = event_times(event)
@@ -537,6 +596,160 @@ def _handle_event(event, summary, adopt_unknown=True):
 
     for w in (resp.get("warnings") or []):
         _slack("matt_channel", ":warning: *Booking #{}* — {}".format(bid, w))
+
+
+def _create_since():
+    """The moment creation was first switched on. Written on the first tick
+    that sees the switch, so nothing created before it is ever eligible."""
+    rec = _load(KEY_CREATE_SINCE)
+    if isinstance(rec, dict) and rec.get("at"):
+        dt = _parse_dt(rec["at"])
+        if dt:
+            return dt
+    now = _now()
+    _save(KEY_CREATE_SINCE, {"at": now.isoformat()})
+    return now
+
+
+def _created_after(event, since):
+    """Google stamps every event with 'created'. No stamp -> not eligible:
+    guessing is how an old event gets turned into a charge."""
+    created = _parse_dt((event or {}).get("created"))
+    return bool(created and since and created >= since)
+
+
+def _note_once(eid, title, state, text):
+    """Tell #lara (and #matt) why a studio event was not booked — once per
+    title. Re-listing, or an unrelated edit, must not repeat it every tick;
+    fixing the title is a new title, so it is judged again."""
+    prev = _load(KEY_CREATE_NOTE + eid)
+    if isinstance(prev, dict) and prev.get("title") == title and prev.get("state") == state:
+        return
+    _save(KEY_CREATE_NOTE + eid, {"title": title, "state": state, "at": _now().isoformat()})
+    _slack("lara_channel", text)
+    _slack("matt_channel", text)
+
+
+def _stamp_description(event, booking_id):
+    """Write the portal marker onto line 1 so the event resolves by description
+    too (the reverse index alone would do; belt and braces cost one patch).
+    Marked as our own write first, so the echo is ignored."""
+    eid = str((event or {}).get("id") or "")
+    svc = _service()
+    if not eid or svc is None:
+        return
+    old = str((event or {}).get("description") or "")
+    marker = "Studio Package portal booking #{}".format(booking_id)
+    if booking_id_from_description(old):
+        return
+    body = {"description": marker + " (booked from the calendar)" + ("\n\n" + old if old else "")}
+    try:
+        mark_self_write(eid)
+        svc.events().patch(calendarId=_calendar_id(), eventId=eid, body=body,
+                           sendUpdates="none").execute(num_retries=3)
+    except Exception as exc:
+        _report("stamp_description", exc, "booking={} event={}".format(booking_id, eid))
+
+
+def _handle_creation(event, summary):
+    """PATCH #131 — a new '🎬 Studio: <client>' event asks the portal for a booking.
+
+    The calendar is already in the target state (LARA or Michael just put the
+    event there), so WordPress writes the row with push_calendar => false: no
+    second event, no invite, no blink. Hours move because the row IS the ledger.
+    """
+    ev = event or {}
+    eid = str(ev.get("id") or "")
+    title = str(ev.get("summary") or "").strip()
+    name = studio_title_client(title)
+    times = event_times(ev)
+    if not eid or not name or not times:
+        summary["skipped"] += 1
+        return
+    if not _created_after(ev, _create_since()):
+        summary["skipped"] += 1      # existed before the switch went on — never swept in
+        return
+    if ev.get("recurrence") or ev.get("recurringEventId"):
+        summary["skipped"] += 1
+        _note_once(eid, title, "recurring",
+                   ":warning: *Not booked:* `{}` is a repeating event. The portal books "
+                   "one session per event — create each date as its own event.".format(title))
+        return
+    if says_free(ev):
+        summary["skipped"] += 1      # a free session is calendar-only by rule
+        return
+
+    payload = {
+        "action": ACTION_CREATED,
+        "event_id": eid,
+        "client_name": name,
+        "date": times[0],
+        "start_time": times[1],
+        "end_time": times[2],
+    }
+    try:
+        summary["wp_calls"] += 1
+        resp = _deps["wp_post"](payload) or {}
+    except Exception as exc:
+        # Unreachable portal: do not advance the token, try again next tick.
+        summary["failed"] += 1
+        _report("wp_post_create", exc, "event={} client={}".format(eid, name))
+        return
+
+    if not resp.get("ok"):
+        summary["failed"] += 1
+        _report("wp_refused_create", resp.get("message") or resp.get("error") or "no reason given",
+                "event={}".format(eid))
+        return
+
+    state = resp.get("state") or ""
+    if state not in ("created", "exists"):
+        summary["skipped"] += 1
+        _note_once(eid, title, state or "refused",
+                   ":warning: *Not booked from the calendar:* `{}` on {} {}–{}. {}\n"
+                   "_The event is still on the calendar but the client's hours have NOT "
+                   "moved. Fix the title to the client's exact name and it will be "
+                   "picked up again._".format(
+                       title, times[0], times[1], times[2],
+                       resp.get("message") or "The portal declined it."))
+        return
+
+    try:
+        bid = int(resp.get("booking_id"))
+    except (TypeError, ValueError):
+        summary["failed"] += 1
+        _report("wp_create_no_id", "created without a booking id", "event={}".format(eid))
+        return
+    ebid = str(resp.get("event_bid") or bid)
+
+    # The same three tiny writes a portal-created event gets, plus app.py's
+    # forward map: a later wp-admin edit or cancel must find THIS event to
+    # remove, or it leaves an orphan blocking the studio.
+    row = resp.get("booking") or {}
+    remember_event(bid, eid,
+                   date=row.get("date") or times[0],
+                   start=row.get("start") or times[1],
+                   end=row.get("end") or times[2])
+    _save(KEY_FORWARD + ebid, {"event_id": eid})
+    _stamp_description(ev, bid)
+
+    if state == "exists":
+        summary["skipped"] += 1      # WordPress had already booked this event
+        return
+
+    summary["synced"] += 1
+    summary["created"] += 1
+    hrs = ""
+    if resp.get("hours_total") is not None and resp.get("hours_used") is not None:
+        hrs = " · package {}/{} h used".format(resp.get("hours_used"), resp.get("hours_total"))
+    text = (":white_check_mark: *Booked from the calendar:* {} · {} {}–{} · booking #{}{}."
+            " Hours are deducted; no invite was sent.".format(
+                resp.get("client") or name, times[0], times[1], times[2], bid, hrs))
+    _slack("lara_channel", text)
+    _slack("matt_channel", text)
+    for w in (resp.get("warnings") or []):
+        _slack("matt_channel", ":warning: *Booking #{}* — {}".format(bid, w))
+        _slack("lara_channel", ":warning: *Booking #{}* — {}".format(bid, w))
 
 
 def _handle_deletion(event_id, summary):

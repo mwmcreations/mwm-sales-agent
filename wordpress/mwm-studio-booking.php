@@ -2860,9 +2860,10 @@ MWMJS;
 				 * entry all still run. Only the two push_booking_event() calls and
 				 * the reschedule_count bump are skipped.
 				 *
-				 * WARNING: reachable ONLY from handle_calendar_sync() and
-				 * cal_answer_handler(). It must NEVER be exposed in a form, a query
-				 * string, or the quick-book page — the next person will be tempted.
+				 * WARNING: reachable ONLY from handle_calendar_sync(),
+				 * cal_sync_created() (PATCH #131) and cal_answer_handler(). It must
+				 * NEVER be exposed in a form, a query string, or the quick-book
+				 * page — the next person will be tempted.
 				 */
 				'push_calendar'     => true,
 				/*
@@ -4868,6 +4869,167 @@ QBJS;
 		);
 	}
 
+	/**
+	 * PATCH #131 — CALENDAR-CREATED BOOKINGS (Sep 24 2026).
+	 *
+	 * Michael wants LARA to add studio time for a client on his request. She
+	 * already writes the MWM CREATIONS calendar; an event she created there was
+	 * invisible to this plugin, so the client's hours never moved (Jonathan
+	 * Pineda, 24 Sep 14:15). The machine now sends a NEW event titled
+	 * "Studio: <client>" here, and it is written through admin_write_booking()
+	 * like every other booking: validation, the hours maths, the audit entry.
+	 *
+	 * The calendar already holds the event, so push_calendar => false — no
+	 * second event, no invite. The same access rule applies as for a drag:
+	 * reachable only through the shared-secret REST route, never a form.
+	 *
+	 * The client must match EXACTLY ONE client by name (case and spacing
+	 * ignored). No match or two matches -> nothing is booked and the reason is
+	 * returned for the machine to post in #lara. Idempotent per event id: a
+	 * retry after a lost reply answers "exists" instead of booking twice.
+	 */
+	private function cal_sync_created( $p ) {
+		global $wpdb;
+
+		$event_id = isset( $p['event_id'] ) ? sanitize_text_field( (string) $p['event_id'] ) : '';
+		$name_in  = isset( $p['client_name'] ) ? sanitize_text_field( (string) $p['client_name'] ) : '';
+		$date     = isset( $p['date'] ) ? sanitize_text_field( (string) $p['date'] ) : '';
+		$start    = isset( $p['start_time'] ) ? substr( sanitize_text_field( (string) $p['start_time'] ), 0, 5 ) : '';
+		$end      = isset( $p['end_time'] ) ? substr( sanitize_text_field( (string) $p['end_time'] ), 0, 5 ) : '';
+		if ( '' === $event_id || '' === trim( $name_in )
+			|| ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date )
+			|| ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $start )
+			|| ! preg_match( '/^([01]\d|2[0-3]):([0-5]\d)$/', $end ) ) {
+			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'bad payload' ), 400 );
+		}
+
+		/* ---- idempotent per calendar event ---- */
+		$opt_key  = 'mwm_studio_calcreate_' . md5( $event_id );
+		$existing = (int) get_option( $opt_key, 0 );
+		if ( $existing ) {
+			$b = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $existing ) );
+			if ( $b ) {
+				return new \WP_REST_Response( array(
+					'ok'         => true,
+					'state'      => 'exists',
+					'booking_id' => (int) $b->id,
+					'event_bid'  => $this->event_bid( $b ),
+					'client'     => $this->booking_client_label( (int) $b->client_id, $b ),
+					'booking'    => $this->cal_booking_snapshot( $b ),
+				), 200 );
+			}
+		}
+
+		/* ---- exactly one client, by name ---- */
+		$norm = function ( $s ) {
+			$s = preg_replace( '/\s+/u', ' ', (string) $s );
+			return function_exists( 'mb_strtolower' ) ? mb_strtolower( trim( $s ), 'UTF-8' ) : strtolower( trim( $s ) );
+		};
+		$want    = $norm( $name_in );
+		$first   = strtok( $want, ' ' );
+		$clients = $wpdb->get_results( "SELECT id, name, active FROM {$this->clients_table}" );
+		$hits    = array();
+		$near    = array();
+		foreach ( (array) $clients as $c ) {
+			$n = $norm( $c->name );
+			if ( $n === $want ) {
+				$hits[] = $c;
+			} elseif ( $first && false !== strpos( $n, $first ) ) {
+				$near[] = $c->name;
+			}
+		}
+		if ( count( $hits ) > 1 ) {
+			$active = array();
+			foreach ( $hits as $h ) {
+				if ( (int) $h->active ) {
+					$active[] = $h;
+				}
+			}
+			if ( 1 === count( $active ) ) {
+				$hits = $active;
+			}
+		}
+		if ( 0 === count( $hits ) ) {
+			return new \WP_REST_Response( array(
+				'ok'      => true,
+				'state'   => 'no_match',
+				'message' => sprintf( 'No studio client is named "%s", so nothing was booked.', $name_in )
+					. ( $near ? ' Did you mean: ' . implode( ', ', array_slice( $near, 0, 5 ) ) . '?' : '' ),
+			), 200 );
+		}
+		if ( count( $hits ) > 1 ) {
+			return new \WP_REST_Response( array(
+				'ok'      => true,
+				'state'   => 'ambiguous',
+				'message' => sprintf( '%d studio clients are named "%s", so nothing was booked. Book this one in wp-admin.', count( $hits ), $name_in ),
+			), 200 );
+		}
+		$client = $this->get_client( (int) $hits[0]->id );
+		if ( ! $client ) {
+			return new \WP_REST_Response( array( 'ok' => true, 'state' => 'no_match', 'message' => 'That client no longer exists.' ), 200 );
+		}
+		if ( ! (int) $client->active ) {
+			return new \WP_REST_Response( array(
+				'ok'      => true,
+				'state'   => 'refused',
+				'message' => sprintf( '%s is marked inactive in the portal, so nothing was booked. Reactivate them or book it in wp-admin.', $client->name ),
+			), 200 );
+		}
+
+		$duration = ( strtotime( $date . ' ' . $end . ':00' ) - strtotime( $date . ' ' . $start . ':00' ) ) / HOUR_IN_SECONDS;
+		if ( $duration <= 0 ) {
+			return new \WP_REST_Response( array(
+				'ok'      => true,
+				'state'   => 'refused',
+				'message' => sprintf( 'The event runs past midnight (%s %s–%s), so nothing was booked.', $date, $start, $end ),
+			), 200 );
+		}
+
+		$res = $this->admin_write_booking(
+			0,
+			array(
+				'client_id'      => (int) $client->id,
+				'booking_date'   => $date,
+				'start_time'     => $start,
+				'duration_hours' => $duration,
+				'status'         => 'confirmed',
+				'notes'          => 'Booked from Google Calendar',
+			),
+			array(
+				'action'         => 'booking.calendar_create',
+				'reason'         => sprintf( 'Created on Google Calendar (event %s)', $event_id ),
+				'actor'          => 'google-calendar',
+				'push_calendar'  => false, // the calendar already holds this event
+				'allow_conflict' => true,  // accept and flag, as for a drag
+				'notify_client'  => false,
+			)
+		);
+		if ( empty( $res['ok'] ) ) {
+			return new \WP_REST_Response( array(
+				'ok'      => true,
+				'state'   => 'refused',
+				'message' => isset( $res['message'] ) ? $res['message'] : 'The booking was refused.',
+			), 200 );
+		}
+
+		$bid = (int) $res['booking_id'];
+		update_option( $opt_key, $bid, false );
+		$b    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$this->bookings_table} WHERE id = %d", $bid ) );
+		$used = $this->hours_used_in_contract( $client->id, $client->contract_start_date, $client->contract_end_date );
+
+		return new \WP_REST_Response( array(
+			'ok'          => true,
+			'state'       => 'created',
+			'booking_id'  => $bid,
+			'event_bid'   => $b ? $this->event_bid( $b ) : (string) $bid,
+			'client'      => $client->name,
+			'hours_used'  => round( (float) $used, 2 ),
+			'hours_total' => round( (float) $client->contract_hours, 2 ),
+			'warnings'    => isset( $res['warnings'] ) ? array_values( $res['warnings'] ) : array(),
+			'booking'     => $b ? $this->cal_booking_snapshot( $b ) : null,
+		), 200 );
+	}
+
 	public function handle_calendar_sync( \WP_REST_Request $request ) {
 		if ( ! $this->cal_sync_authorized( $request ) ) {
 			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'unauthorized' ), 401 );
@@ -4881,6 +5043,12 @@ QBJS;
 		$booking_id = isset( $p['booking_id'] ) ? (int) $p['booking_id'] : 0;
 		$event_id   = isset( $p['event_id'] ) ? sanitize_text_field( (string) $p['event_id'] ) : '';
 		$action     = isset( $p['action'] ) ? sanitize_text_field( (string) $p['action'] ) : '';
+
+		// PATCH #131 — a NEW "🎬 Studio: <client>" event on the calendar asks for a
+		// booking. It has no booking id yet, so it is routed before that check.
+		if ( 'created' === $action ) {
+			return $this->cal_sync_created( $p );
+		}
 
 		if ( ! $booking_id || ! in_array( $action, array( 'moved', 'deleted' ), true ) ) {
 			return new \WP_REST_Response( array( 'ok' => false, 'error' => 'bad payload' ), 400 );
