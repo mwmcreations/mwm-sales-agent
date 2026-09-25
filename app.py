@@ -6914,6 +6914,9 @@ def _sq_persist():
         pass
 
 
+import attribution_sheet as _attr_sheet   # PATCH #136
+
+
 def log_new_contact_to_sheets(sender: str, _raise: bool = False):
     """Log a minimal row on first contact — phone + timestamp + status 'New Lead'.
     This ensures every person who messages Maya is captured, even if they never share their info.
@@ -6986,6 +6989,11 @@ def log_new_contact_to_sheets(sender: str, _raise: bool = False):
             _lead_source_for(sender),    # M: Source (S6.4 — entry channel)
             now.strftime("%Y-%m-%d"),    # N: Last Contact Date
         ]
+        # PATCH #136 — attribution on the FIRST row, not only on full capture.
+        # Organic leads stay A..N exactly as before.
+        _cells136 = _attr_sheet.attr_cells(lead_data.get(sender))
+        if _cells136:
+            row += [""] * 6 + _cells136   # O..T blank, then U / V / W
         svc.spreadsheets().values().append(
             spreadsheetId=SHEETS_LEADS_ID,
             range=f"'{tab_name}'!A1",
@@ -7160,6 +7168,68 @@ def lookup_lead_in_sheets(sender: str) -> str:
     except Exception as e:
         print(f"\u26a0\ufe0f Lead context lookup failed (non-fatal): {e}")
         return ""
+
+
+def stamp_attribution_in_sheets(sender):
+    """PATCH #136 — write Ad ID / Ad Campaign / CTWA Click ID (U/V/W) onto the
+    lead's row as soon as the ad referral arrives.
+
+    Before this, U/V/W were written only on [LEAD CAPTURED], so the ~80% of
+    ad leads who never give their details had no attribution at all (ERIC,
+    Sep 23). On WhatsApp the first-contact row is written before the referral
+    is parsed, so this runs right after the parse and fills the row in place.
+    Only blank cells are filled; nothing is overwritten or reordered.
+    """
+    if not SHEETS_LEADS_ID:
+        return {"ok": False, "why": "no sheet id"}
+    _rec = lead_data.get(sender)
+    cells = _attr_sheet.attr_cells(_rec if isinstance(_rec, dict) else None)
+    if not cells:
+        return {"ok": True, "why": "organic"}
+    _phone = _attr_sheet.clean_phone(sender)
+    try:
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        tab_name = now.strftime("%b %Y")
+        svc = get_sheets_service()
+        ensure_monthly_tab(svc, SHEETS_LEADS_ID, tab_name)
+        rows = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID, range=f"'{tab_name}'!A:W",
+        ).execute(num_retries=3).get("values", [])
+        if rows:
+            _fix = _attr_sheet.header_fix(rows[0], SHEET_HEADERS)
+            if _fix:
+                svc.spreadsheets().values().update(
+                    spreadsheetId=SHEETS_LEADS_ID,
+                    range=f"'{tab_name}'!{_fix[0]}1",
+                    valueInputOption="RAW", body={"values": [_fix[1]]},
+                ).execute(num_retries=3)
+                print(f"[Sheets] #136 header repair on {tab_name}: added {_fix[1]}")
+        ups = _attr_sheet.plan_stamp(rows, _phone, cells)
+        if not ups:
+            _TALLY.bump("sheets.attr_stamp_noop", _phone[-4:])
+            return {"ok": True, "stamped": 0}
+        svc.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEETS_LEADS_ID,
+            body={"valueInputOption": "RAW", "data": [
+                {"range": f"'{tab_name}'!{c}{n}", "values": [[v]]} for c, n, v in ups]},
+        ).execute(num_retries=3)
+        _TALLY.bump("sheets.attr_stamped", _phone[-4:])
+        print(f"[Sheets] #136 attribution stamped on row {ups[0][1]} ({len(ups)} cells)")
+        return {"ok": True, "stamped": len(ups)}
+    except Exception as e:
+        _TALLY.bump("sheets.attr_stamp_FAILED", _phone[-4:])
+        _report_error("sheets.attr_stamp (PATCH #136)", e,
+                      f"lead={sender} — attribution only; the lead row itself is unaffected")
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def _stamp_attribution_async(sender):
+    """Off the reply path: a slow Sheets call must never delay Maya."""
+    try:
+        threading.Thread(target=stamp_attribution_in_sheets, args=(sender,),
+                         daemon=True, name="attr_stamp").start()
+    except Exception as _te:
+        print(f"[Sheets] #136 stamp thread failed to start (non-fatal): {_te}")
 
 
 def log_lead_to_sheets(lead_info: str, sender: str, history: list = None):
@@ -9568,6 +9638,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 print(f"[UTM] WhatsApp ad referral: ad_id={_wa_referral.get('source_id','N/A')} "
                       f"clid={(_wa_referral.get('ctwa_clid','') or '')[:12]} "
                       f"headline={_wa_referral.get('headline', 'N/A')}")
+                _stamp_attribution_async(sender)   # PATCH #136
         except Exception as _utm_err:
             print(f"⚠️ UTM tracking error (non-fatal, Maya still responds): {_utm_err}")
 
@@ -10024,6 +10095,7 @@ def webhook_instagram():
                     lead_data[_ig_sender]["ad_referral"] = True
                     print(f"[UTM] Instagram ad referral: ad_id={_ig_ref.get('ad_id','N/A')} "
                           f"ref={(_ig_ref.get('ref','') or '')[:12]}")
+                    _stamp_attribution_async(_ig_sender)   # PATCH #136
             except Exception as _ig_utm_err:
                 print(f"⚠️ IG UTM tracking error (non-fatal): {_ig_utm_err}")
 
@@ -24091,6 +24163,69 @@ def admin_register_client():
         "booking_deadline": _sbox.get("booking_deadline"),
         "sheet_status": _spec["sheet_status"],
     }), 200
+
+
+@app.route('/admin/attribution-backfill', methods=['GET'])
+def admin_attribution_backfill():
+    """PATCH #136 — fill U/V/W on leads-sheet rows where all three are blank,
+    from the ad referral kept on each lead record (Postgres-backed).
+
+    /admin/attribution-backfill?secret=..&tab=Sep 2026&since=2026-09-12[&apply=1]
+
+    DRY RUN unless apply=1. Only blank cells are written. Before writing, the
+    exact cells are saved in pg under `attr_backfill:<tab>:<stamp>` so the run
+    can be undone by clearing those cells.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if not SHEETS_LEADS_ID:
+        return jsonify({"ok": False, "error": "no SHEETS_LEADS_ID"}), 500
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    tab = (request.args.get("tab") or now.strftime("%b %Y")).strip()
+    since = (request.args.get("since") or "").strip()
+    apply_ = request.args.get("apply") == "1"
+    try:
+        svc = get_sheets_service()
+        rows = svc.spreadsheets().values().get(
+            spreadsheetId=SHEETS_LEADS_ID, range=f"'{tab}'!A:W",
+        ).execute(num_retries=3).get("values", [])
+
+        def _lookup(p):
+            for k in _attr_sheet.candidate_keys(p):
+                r = lead_data.get(k)
+                if isinstance(r, dict):
+                    return r
+            return None
+
+        ups, rep = _attr_sheet.plan_backfill(rows, _lookup)
+        if since:
+            keep = {x["row"] for x in rep if x["date"] >= since}
+            rep = [x for x in rep if x["row"] in keep]
+            ups = [u for u in ups if u[1] in keep]
+        out = {"ok": True, "tab": tab, "since": since or None,
+               "rows_scanned": max(len(rows) - 1, 0), "rows_to_fill": len(rep),
+               "cells_to_fill": len(ups), "rows": rep, "applied": False}
+        if not apply_ or not ups:
+            return jsonify(out), 200
+        if rows:
+            _fix = _attr_sheet.header_fix(rows[0], SHEET_HEADERS)
+            if _fix:
+                svc.spreadsheets().values().update(
+                    spreadsheetId=SHEETS_LEADS_ID, range=f"'{tab}'!{_fix[0]}1",
+                    valueInputOption="RAW", body={"values": [_fix[1]]},
+                ).execute(num_retries=3)
+        _key = f"attr_backfill:{tab}:{now.strftime('%Y%m%d-%H%M%S')}"
+        _pg.save_state(_key, {"tab": tab, "cells": [[c, n, v] for c, n, v in ups]})
+        svc.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEETS_LEADS_ID,
+            body={"valueInputOption": "RAW", "data": [
+                {"range": f"'{tab}'!{c}{n}", "values": [[v]]} for c, n, v in ups]},
+        ).execute(num_retries=3)
+        out.update({"applied": True, "undo_key": _key})
+        return jsonify(out), 200
+    except Exception as e:
+        _report_error("admin_attribution_backfill (PATCH #136)", e, f"tab={tab}")
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
 
 
 @app.route('/admin/lead-seq', methods=['GET'])
