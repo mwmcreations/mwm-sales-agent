@@ -1800,6 +1800,28 @@ class TestTheEditingRoom(VICase):
         self.assertEqual(s["aspects"]["shots"], {"up": 1, "down": 0})
         self.assertEqual(s["rounds"][0]["passed"], 1)
 
+    def test_when_the_helper_asks_a_question_the_room_answers_once(self):
+        """Round 1, #66: the free-class promo came back with no words on screen
+        because the helper asked for the place instead of proposing."""
+        fake = self.c.fake_claude
+        answers = ['{"say": "Which school, and is there a price?", "ask": null}',
+                   '{"say": "Done.", "ask": "Promote the free class, Saturday 10 AM, for new families, energetic, fast pace.", '
+                   '"lines": ["Free class", "Saturday 10 AM", "New families welcome"], "cta": "Come try a class"}']
+        fake.answer = answers[0]
+        real_create = fake.create
+
+        def create(**kw):
+            r = real_create(**kw)
+            fake.answer = answers[1]
+            return r
+        fake.create = create
+        self._open_round(["Promote our free class this Saturday at 10 AM for new families"])
+        r = self.store.requests[0]
+        self.assertEqual(r["text"]["lines"], ["Free class", "Saturday 10 AM", "New families welcome"])
+        self.assertEqual(r["text"]["cta"], "Come try a class")
+        self.assertEqual(len(fake.calls), 2)
+        self.assertIn("Go with what you have", json.dumps(fake.calls[1].get("messages")))
+
     def test_a_business_question_uses_the_first_step_of_the_plan(self):
         self.c.fake_claude.answer = ('{"say": "Four steps.", "ask": null, "plan": [{"title": "Reassure parents", '
                                      '"ask": "Kids growing in confidence, for parents", "lines": ["Watch them grow"], '

@@ -66,13 +66,48 @@ def font_path():
 
 # ── 1. what to cut ─────────────────────────────────────────────────────────
 NAME_STOP = {"video", "reel", "second", "seconds", "minute", "highlights", "moments", "moment", "parents", "parent",
-             "students", "student", "school", "schools", "families", "family", "instructors", "instructor", "masters",
+             "students", "student", "school", "schools", "families", "family",
              "emotional", "energetic", "motivational", "inspiring", "happy", "powerful", "quiet", "fast", "slow", "pace",
              "medium", "about", "their", "there", "these", "those", "would", "could", "should", "please", "something",
              "victory", "martial", "words", "screen", "convention", "weekend", "evening", "kids", "children", "team",
              "whole", "everyone", "showing", "feel", "feels", "feeling", "again", "another", "footage", "ceremony", "ceremonies",
              "testing", "presentation", "presentations", "session", "sessions", "night", "champions", "black", "belts", "belt",
              "reaction", "reactions", "crowd", "crowds", "audience", "interview", "interviews", "training", "seminar"}
+
+
+# Round 1 of the editing room (Michael, 24 Sep): "if we are talking a highlight
+# of the Night of Champions we need to show some amazing flips, moves and stuff
+# beautifully done on the stage by the teams". A highlights ask is a PEAK ask:
+# the hero moments lead, whatever kind they are.
+HIGHLIGHT_WORDS = {"highlights", "highlight", "best", "amazing", "spectacular", "incredible",
+                   "greatest", "iconic", "unforgettable", "wow", "epic", "top"}
+# the kinds of moment that pay a reel off — a reel closes on one of these when it has one
+PAYOFF = ("Board breaks", "Winning moments", "Belt & rank presentation", "Candlelight ceremony",
+          "Competition")
+# who the video is FOR is not what is on screen. A parents video shows their
+# kids at the proud moments (round 1, #61: "not even one shot of her kid doing
+# something that makes the parent proud"); a reaction is a seasoning, not a dish.
+AUDIENCE_SUBJECT = {
+    "parents": ("Belt & rank presentation", "Board breaks", "Winning moments", "Competition"),
+    "families": ("Belt & rank presentation", "Board breaks", "Winning moments", "Competition"),
+    "kids": ("Board breaks", "Training & seminar", "Competition", "Belt & rank presentation"),
+    "students": ("Board breaks", "Competition", "Belt & rank presentation", "Training & seminar"),
+}
+
+
+def is_peak_ask(ask):
+    """True when the sentence asks for the best of something."""
+    return bool(HIGHLIGHT_WORDS & set(re.findall(r"[a-z]+", (ask or "").lower())))
+
+
+def subject_for(ask):
+    """The kinds of moment an audience-only ask should put on screen."""
+    out = []
+    for w in re.findall(r"[a-z]+", (ask or "").lower()):
+        for k in AUDIENCE_SUBJECT.get(AUDIENCE_WORDS.get(w, ""), ()):
+            if k not in out:
+                out.append(k)
+    return tuple(out)
 
 
 def named_words(ask):
@@ -100,7 +135,7 @@ def named_hits(clip, stems):
 
 
 def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False,
-               avoid=(), seed=0, uncapped=(), stems=()):
+               avoid=(), seed=0, uncapped=(), stems=(), peak=False, subject=()):
     """Choose n clips. Requested ids always go in, in the order given. Then
     hero > high > the rest, but never more than max_per_family of one kind of
     shot or max_per_session from one session, and the kinds and days are
@@ -133,6 +168,13 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     shaky = {c["id"]: (steady_seconds(c) is not None and steady_seconds(c) < SHOT_SECONDS) for c in cands}
     stems = set(stems or ())
     named = {c["id"]: named_hits(c, stems) for c in cands}
+    subject = set(subject or ())
+    # a reaction shot is a seasoning: at most one in four, unless the ask
+    # named the crowd itself (round 1, #61: a parents reel that was all parents)
+    reaction_cap = None if REACTION in uncapped else max(1, n // 4)
+    # a peak ask ("highlights", "the best"): hero moments lead, whatever their kind
+    def strength(c):
+        return min(3, PRIORITY.get(c.get("priority"), 0)) if peak else 0
     by_id = {c["id"]: c for c in cands}
     chosen = [by_id[r] for r in requested if r in by_id]
     fam, ses, day = {}, {}, {}
@@ -169,6 +211,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # rotation: someone who asked for candles gets the best candles
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
                                      shaky[c["id"]], -named[c["id"]], same_scene(c),
+                                     -strength(c), -(c.get("category") in subject),
                                      # among clips that carry the ask's word, the hero shots lead
                                      -(min(2, PRIORITY.get(c.get("priority"), 0)) if named[c["id"]] else 0),
                                      -round(float(c.get("weight") or 0), 1),
@@ -178,12 +221,16 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
             pool.sort(key=lambda c: (shaky[c["id"]], -named[c["id"]], same_scene(c),
+                                     -strength(c), -(c.get("category") in subject),
                                      (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         pick = None
         for c in pool:
+            if reaction_cap is not None and c.get("category") == REACTION \
+                    and fam.get(REACTION, 0) >= reaction_cap:
+                continue
             if c.get("category") not in uncapped:
                 in_named = c.get("session") in free_sessions
                 # a named evening may repeat a kind twice as often before the
@@ -199,30 +246,54 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         chosen.append(pick)
         bump(pick)
         pool.remove(pick)
-    return story_order(chosen)
+    return story_order(chosen, stems=stems)
 
 
 REACTION = "Crowd & parent reactions"
 
 
-def story_order(shots):
-    """The reel's order. Kinds follow STORY (training first, candles last);
-    within the first kind the strongest moment opens the reel. Reactions are
-    woven in AFTER the moments they react to — one every few shots, never
-    first, never last — instead of sitting in a block: Michael's #30 (17 Sep)
-    opened on sixteen seconds of seated parents before a single belt."""
-    def key(c):
-        return (STORY.index(c.get("category")) if c.get("category") in STORY else 99,
-                c.get("day") or 0, c["id"])
-    acts = sorted([c for c in shots if c.get("category") != REACTION], key=key)
-    reacts = sorted([c for c in shots if c.get("category") == REACTION], key=key)
+def story_order(shots, stems=()):
+    """The reel's order. Kinds follow STORY (training first, candles last).
+    The strongest moment of the first kind OPENS; the strongest moment of the
+    last kind CLOSES (a payoff: a break, a medal, a belt, the candles); inside
+    a kind the shots build towards the stronger ones. Round 1 of the editing
+    room (24 Sep) failed four of eight on "opening and ending": a narrow ask
+    used to order its shots by day and file name, so a reel of board breaks
+    opened on whichever break was filmed first and just stopped.
+    Reactions are woven in AFTER the moments they react to — one every few
+    shots, never first, never last — instead of sitting in a block: Michael's
+    #30 (17 Sep) opened on sixteen seconds of seated parents before a belt."""
+    stems = set(stems or ())
+
+    def strong(c):
+        return (named_hits(c, stems) > 0, PRIORITY.get(c.get("priority"), 0), float(c.get("weight") or 0))
+
+    def kind_rank(c):
+        return STORY.index(c.get("category")) if c.get("category") in STORY else 99
+    acts = [c for c in shots if c.get("category") != REACTION]
+    reacts = sorted([c for c in shots if c.get("category") == REACTION], key=lambda c: (c.get("day") or 0, c["id"]))
     if not acts:
         return reacts
-    first_kind = acts[0].get("category")
-    group = [c for c in acts if c.get("category") == first_kind]
-    opener = max(group, key=lambda c: (PRIORITY.get(c.get("priority"), 0), float(c.get("weight") or 0)))
-    acts.remove(opener)
-    acts.insert(0, opener)
+    ranks = sorted({kind_rank(c) for c in acts})
+    ordered = []
+    for r in ranks:                     # each kind builds: weaker first, strongest last
+        ordered.extend(sorted([c for c in acts if kind_rank(c) == r], key=lambda c: (strong(c), c["id"])))
+    first_kind = kind_rank(ordered[0])
+    opener = max([c for c in ordered if kind_rank(c) == first_kind], key=strong)
+    ordered.remove(opener)
+    ordered.insert(0, opener)
+    if len(ordered) > 2:
+        # the closer: the strongest payoff moment on offer after the opener
+        # (the last kind's strongest already sits last; a payoff kind earlier
+        # in the story is pulled to the end only when the last kind is not one)
+        last = ordered[-1]
+        if last.get("category") not in PAYOFF:
+            pay = [c for c in ordered[1:] if c.get("category") in PAYOFF]
+            if pay:
+                closer = max(pay, key=strong)
+                ordered.remove(closer)
+                ordered.append(closer)
+    acts = ordered
     if not reacts:
         return acts
     out, ri = [], 0
@@ -545,7 +616,8 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         # a narrow ask is narrow on purpose: the kind-of-moment cap loosens with the length
         chosen = pick_shots(pool, n_fill + extra, by_search=by_search, avoid=avoid, seed=seed,
                             max_per_family=max(2, (n_fill + extra) // 3) if by_search else 2,
-                            uncapped=focus, stems=named_words(ask))
+                            uncapped=focus, stems=named_words(ask), peak=is_peak_ask(ask),
+                            subject=subject_for(ask) if not focus else ())
         fill = [shot(f, shot_s, False) for f in chosen]
         if remaining - sum(x["dur"] for x in fill) < 1.5 or len(chosen) < n_fill + extra:
             break
@@ -1054,10 +1126,9 @@ CATEGORY_WORDS = {
     "Training & seminar": ("training", "seminar", "seminars", "class", "classes", "drill",
                            "drills", "workout", "practice", "technique", "techniques"),
     "Crowd & parent reactions": ("crowd", "crowds", "cheering", "cheer", "reactions", "reaction",
-                                 "audience", "celebration", "celebrating", "celebrate",
-                                 "parents", "parent", "mom", "moms", "mother", "mothers",
-                                 "dad", "dads", "father", "fathers", "family", "families"),
+                                 "audience", "celebration", "celebrating", "celebrate"),
 }
+# who the video is FOR — never a kind of moment on its own (round 1, #61)
 SOFT_WORDS = {"parents", "parent", "mom", "moms", "mother", "mothers", "dad", "dads", "father",
               "fathers", "family", "families"}
 CEREMONIES = ("Candlelight ceremony", "Belt & rank presentation")
@@ -1184,6 +1255,18 @@ def candidates(ask, clips, need, search_fn=None):
             c["weight"] = 9.5
             first.append(c)
             seen.add(c["id"])
+        # a clip that carries the ask's own word from ANOTHER kind joins the
+        # front, behind the named kind (round 1, #64: "instructors teaching"
+        # found the Instructor training kind and missed the instructors
+        # holding boards, teaching on the floor, in every other kind)
+        stems = named_words(ask)
+        if stems:
+            for c in sorted([c for c in clips if c["id"] not in seen and named_hits(c, stems)],
+                            key=lambda c: (-named_hits(c, stems), -PRIORITY.get(c.get("priority"), 0), c["id"])):
+                c = dict(c)
+                c["weight"] = 9.7
+                first.append(c)
+                seen.add(c["id"])
         rest = sorted([c for c in clips if c["id"] not in seen],
                       key=lambda c: (-PRIORITY.get(c.get("priority"), 0), c["id"]))
         return first + rest, True, () if soft else tuple(cats)

@@ -332,14 +332,21 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertTrue(all(s["category"] == "Board breaks" for s in p["shots"]))
 
     def test_audience_words_steer_softly(self):
-        """"parents" alone is who the reel is FOR: crowd and parent reactions
-        lead, but the whole convention still shows."""
+        """"parents" alone is who the reel is FOR, not what is on screen. Round 1
+        of the editing room (Michael, 24 Sep, #61): "not even one shot of her
+        kid doing something that makes the parent proud... we should also see
+        kids' faces, not only the parents' face". A parents reel shows the kids
+        at the proud moments; a reaction is at most one shot in four."""
         pool, by_search, focus = vc.candidates("Instagram reels. Parents. Proud.", CLIPS, 10, search)
         self.assertEqual(focus, ())
         p = vc.plan("Instagram reels. Parents. Proud.", pool, [], LIBRARY, {}, 30, by_search=by_search, focus=focus)
         kinds = [s["category"] for s in p["shots"]]
-        self.assertGreaterEqual(kinds.count("Crowd & parent reactions"), 3)
+        self.assertLessEqual(kinds.count("Crowd & parent reactions"), max(1, len(kinds) // 4), kinds)
+        proud = [k for k in kinds if k in vc.AUDIENCE_SUBJECT["parents"]]
+        self.assertGreaterEqual(len(proud), len(kinds) // 2, kinds)
         self.assertGreaterEqual(len(set(kinds)), 4)
+        self.assertEqual(vc.subject_for("something for the parents"), vc.AUDIENCE_SUBJECT["parents"])
+        self.assertEqual(vc.subject_for("board breaks"), ())
 
     def test_a_named_evening_gets_that_evening(self):
         """Michael, 16 Sep: Night of Champions is one long recording; once it
@@ -396,7 +403,8 @@ class TestTheIndexLeads(unittest.TestCase):
         self.assertEqual(vc.ask_categories("the ceremony"), (list(vc.CEREMONIES), False))
         self.assertEqual(vc.ask_categories("belt ceremony"), (["Belt & rank presentation"], False))
         self.assertEqual(vc.ask_categories("best moments"), ([], False))
-        self.assertEqual(vc.ask_categories("for the moms"), (["Crowd & parent reactions"], True))
+        self.assertEqual(vc.ask_categories("for the moms"), ([], False))      # an audience, not a kind (round 1, #61)
+        self.assertEqual(vc.ask_categories("the crowd cheering"), (["Crowd & parent reactions"], False))
 
     def test_a_broad_ask_gets_the_whole_convention(self):
         pool, by_search, _ = vc.candidates("best moments", CLIPS, 10, search)
@@ -474,6 +482,87 @@ class TestTheAskNamesAThing(unittest.TestCase):
         # the category logic owns it (the #30 weave would otherwise drown in reactions)
         self.assertEqual(vc.named_words("belt presentations and parent reactions, slow, emotional"), set())
         self.assertEqual(vc.named_words("15 seconds of board breaks, fast, for students"), {"board", "break"})
+
+
+class TestRoundOneOfTheEditingRoom(unittest.TestCase):
+    """Michael judged eight cuts on 24 Sep: zero passed. Variety wrong on
+    five, shot choice on four, opening and ending on four. These are the
+    rules that came out of his notes."""
+
+    def _clip(self, cid, title, cat, prio="standard", weight=1.0, session="BBT", day=4, **kw):
+        d = {"id": cid, "title": title, "category": cat, "priority": prio, "weight": weight,
+             "session": session, "day": day, "seconds": 12}
+        d.update(kw)
+        return d
+
+    def test_a_reel_opens_on_its_strongest_moment_and_closes_on_a_payoff(self):
+        """#59 board breaks, #62 testing, #63 champions, #64 instructors all
+        failed "opening and ending": a narrow reel was ordered by file name."""
+        breaks = [self._clip("B1", "boards on mat", "Board breaks", "low", 0.5),
+                  self._clip("B2", "kid breaks board", "Board breaks", "hero", 0.9),
+                  self._clip("B3", "instructor holds board", "Board breaks", "standard", 0.6),
+                  self._clip("B4", "board strike stance", "Board breaks", "high", 0.8)]
+        got = vc.story_order(breaks)
+        self.assertEqual(got[0]["id"], "B2", "the strongest opens")
+        self.assertEqual(got[-1]["id"], "B4", "the next strongest pays it off")
+        self.assertEqual([c["id"] for c in got[1:-1]], ["B1", "B3"], "the middle builds")
+        # a named thing counts as strength: the ask's own word opens the reel
+        got = vc.story_order(breaks, stems={"stanc"})
+        self.assertEqual(got[0]["id"], "B4")
+
+    def test_a_reel_of_teaching_still_closes_on_a_payoff_when_it_has_one(self):
+        shots = [self._clip("T1", "instructor teaches kids", "Training & seminar", "hero"),
+                 self._clip("T2", "drill on mats", "Training & seminar", "standard"),
+                 self._clip("W1", "medal handed to student", "Winning moments", "standard"),
+                 self._clip("T3", "instructor corrects a stance", "Training & seminar", "high")]
+        got = vc.story_order(shots)
+        self.assertEqual(got[0]["id"], "T1")
+        self.assertEqual(got[-1]["id"], "W1", "a medal closes, not a drill")
+
+    def test_a_highlights_ask_takes_the_hero_moments(self):
+        """#63 Night of Champions highlights: "we need to show some amazing
+        flips, moves... beautifully done on the stage by the teams"."""
+        self.assertTrue(vc.is_peak_ask("Night of Champions highlights"))
+        self.assertTrue(vc.is_peak_ask("the best of the black belt testing"))
+        self.assertFalse(vc.is_peak_ask("the candlelight ceremony, emotional"))
+        pool = [self._clip("N%d" % k, "team lines up on stage %d" % k, "Competition", "standard",
+                           session="Night of Champions", long_src="noc", long_start=1000 * k) for k in range(6)]
+        pool += [self._clip("H1", "demo team flips across the stage", "Competition", "hero",
+                            session="Night of Champions", long_src="noc", long_start=9000),
+                 self._clip("H2", "kid breaks three boards", "Board breaks", "hero",
+                            session="Night of Champions", long_src="noc", long_start=12000)]
+        got = vc.pick_shots(pool, 3, peak=True, seed=1)
+        ids = {c["id"] for c in got}
+        self.assertIn("H1", ids)
+        self.assertIn("H2", ids)
+        got = vc.pick_shots(pool, 3, peak=False, seed=1)
+        self.assertEqual(len(got), 3)
+
+    def test_instructors_are_a_subject_not_an_audience(self):
+        """#64: "I couldn't see a lot of instructors footage. It was a lot of students"."""
+        stems = vc.named_words("Instructors teaching kids, warm and encouraging")
+        self.assertIn("instr", stems)
+        self.assertIn("teach", stems)
+        a = self._clip("S1", "students drill on the mats", "Training & seminar", "hero")
+        b = self._clip("I1", "instructor teaching a kids class", "Training & seminar", "standard")
+        c = self._clip("I2", "instructors hold boards for breaking", "Board breaks", "standard")
+        got = vc.pick_shots([a, b, c], 2, stems=stems)
+        self.assertEqual({x["id"] for x in got}, {"I1", "I2"})
+        # and in the candidate pool, an instructor clip of ANOTHER kind joins the front
+        pool, by_search, focus = vc.candidates("Instructors teaching kids, warm and encouraging",
+                                               [a, b, c], 3, None)
+        self.assertEqual([x["id"] for x in pool[:2]], ["I1", "I2"])
+
+    def test_reactions_are_a_seasoning(self):
+        """#61: a parents reel that was all parents."""
+        pool = [self._clip("R%d" % k, "parents cheer %d" % k, vc.REACTION, "hero", 0.9) for k in range(6)]
+        pool += [self._clip("K%d" % k, "kid gets belt %d" % k, "Belt & rank presentation", "standard", 0.5) for k in range(6)]
+        got = vc.pick_shots(pool, 8, seed=2, subject=vc.AUDIENCE_SUBJECT["parents"])
+        kinds = [c["category"] for c in got]
+        self.assertEqual(kinds.count(vc.REACTION), 2, kinds)           # 8 // 4
+        # the crowd itself, named: no cap
+        got = vc.pick_shots(pool, 8, seed=2, uncapped=(vc.REACTION,))
+        self.assertGreater([c["category"] for c in got].count(vc.REACTION), 2)
 
 
 class TestSteadyShots(unittest.TestCase):

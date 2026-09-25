@@ -1009,8 +1009,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             if vi.corpus_size() == 0:
                 vi.load_corpus()
             client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
-            out = vh.chat([{"role": "user", "text": ask}], vi.snapshot(), client=client,
-                          person=_person(sess)) or {}
+            msgs = [{"role": "user", "text": ask}]
+            out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or {}
+            if not out.get("ask") and not out.get("plan"):
+                # the helper asked a question (round 1, #66: "which school, what
+                # price?"). A person would answer; the room answers the way a
+                # busy owner does, once, so the round keeps the same eight asks.
+                import json as _json
+                msgs += [{"role": "bot", "text": vh.as_answer(_json.dumps(out)) if out else "?"},
+                         {"role": "user", "text": "Go with what you have and leave out anything I did not say."}]
+                out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or out
             # a business question comes back as a plan: its first step is the video
             step = (out.get("plan") or [{}])[0] if not out.get("ask") else out
             final_ask = str(step.get("ask") or out.get("ask") or ask)[:300]
