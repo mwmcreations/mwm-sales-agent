@@ -1,0 +1,15 @@
+{
+ "review_id": "valente-2026-09-18",
+ "title": "Valente Brothers — technique names, classes of 18 Sep 2026",
+ "slack_channel": "C0BM0EETDLL",
+ "reviewers": [
+  {
+   "label": "Guilherme Valente",
+   "token_sha256": "1630c1c88f01b7707f1ec2445a34f143ec3976d6b1157f7324cfc857a45a3b7e"
+  },
+  {
+   "label": "MWM test (internal)",
+   "token_sha256": "94aee6360b48a23601db007c8ab9ce460e8095f5c6182e959a7b994d4c77a5a7"
+  }
+ ]
+}

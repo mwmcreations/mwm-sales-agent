@@ -25133,6 +25133,33 @@ except Exception as _vix:
     print(f"[VI] wiring skipped (non-fatal): {_vix!r}")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #137 — client review pages (client_review.py). First use: the Valente
+# Brothers name 86 technique repetitions and star the best take of each. The
+# page lives at /r/<token>/ (no sign-in, the token is the lock); our live table
+# is /admin/review/<review_id> behind ?secret= or an MWM sign-in at /vi/.
+# ══════════════════════════════════════════════════════════════════════
+def _cr_session_ok():
+    try:
+        import victory_auth as _va
+        import victory_store as _vs
+        from flask import request as _rq
+        _s = _va.verify_session(_rq.cookies.get("vi_session", ""), _vs.session_secret(create=False))
+        return bool(_s) and _s.get("role") == _va.ROLE_MWM
+    except Exception:
+        return False
+
+
+try:
+    import client_review as _cr
+    _cr.register(app, _admin_secret_ok, _report_error,
+                 notify=lambda _ch, _text: _post_to_slack_async(_ch, _text),
+                 session_ok=_cr_session_ok)
+    _cr.boot()
+except Exception as _crx:
+    # A review-page problem must never stop the sales machine booting.
+    print(f"[CR] wiring skipped (non-fatal): {_crx!r}")
+
 if __name__ == "__main__":
     print("Starting MWM Creations Sales Agent — Maya")
     print("Server running on http://127.0.0.1:5000")

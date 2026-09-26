@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>Valente Techniques Review</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0e1115; --bg2:#151a23; --bg3:#1c2330; --line:#28303e; --line2:#384252;
+  --fg:#e9ecf1; --mut:#8a93a3; --accent:#e0573f; --accentq:#3a2019;
+  --ok:#4f9e78; --okq:#16271f; --sand:#d9ab63;
+  --dsp:"Oswald","Helvetica Neue",Arial,sans-serif;
+  --bdy:"Source Sans 3","Helvetica Neue",Arial,sans-serif;
+  --mno:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--bdy);font-size:15px;line-height:1.5;
+  margin:0;padding:0 0 92px;-webkit-text-size-adjust:100%}
+h1,h2,h3{font-family:var(--dsp);font-weight:500;text-wrap:balance;margin:0}
+.mono{font-family:var(--mno);font-variant-numeric:tabular-nums}
+.wrap{padding-inline:16px;max-width:620px;margin-inline:auto}
+button{font-family:var(--bdy);font-size:15px;cursor:pointer;border:0;background:none;color:inherit}
+:focus-visible{outline:2px solid var(--sand);outline-offset:2px}
+
+/* header */
+.hd{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:#0e1115f2;
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.hd .wrap{padding-block:12px 10px}
+.brand{font-family:var(--dsp);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut)}
+.hd h1{font-size:21px;letter-spacing:.005em;margin-top:2px}
+.hd .when{font-size:12.5px;color:var(--mut);margin-top:2px}
+.prog{display:flex;align-items:center;gap:10px;margin-top:11px}
+.track{flex:1;height:5px;border-radius:3px;background:var(--bg3);overflow:hidden}
+.fill{height:100%;width:0;background:var(--ok);transition:width .25s ease}
+.cnt{font-family:var(--mno);font-size:12px;color:var(--mut);white-space:nowrap}
+.cnt b{color:var(--fg)}
+.tabs{display:flex;gap:6px;margin-top:10px}
+.tabs button{flex:1;padding:7px 2px;border-radius:5px;background:var(--bg3);color:var(--mut);
+  font-family:var(--dsp);font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+.tabs button[aria-selected="true"]{background:var(--fg);color:#0e1115}
+
+/* brief */
+.brief{margin:14px 0 4px;border:1px solid var(--line);border-radius:7px;background:var(--bg2)}
+.brief summary{padding:11px 14px;font-family:var(--dsp);font-size:13.5px;letter-spacing:.05em;
+  text-transform:uppercase;color:var(--sand);cursor:pointer}
+.brief .in{padding:0 14px 13px;font-size:14px;color:#c3cad6}
+.brief p{margin:0 0 9px}
+.brief b{color:var(--fg);font-weight:600}
+
+/* clip heading */
+.ch{display:flex;align-items:baseline;gap:8px;margin:22px 0 9px;
+  padding-bottom:6px;border-bottom:1px solid var(--line)}
+.ch h2{font-size:16px;letter-spacing:.09em}
+.ch span{font-family:var(--mno);font-size:11.5px;color:var(--mut)}
+
+/* card */
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-bottom:12px}
+.card.done{border-color:#2f4a3d}
+.thumb{position:relative;aspect-ratio:16/9;background:#000;max-width:100%}
+.thumb img,.thumb video{width:100%;height:100%;object-fit:cover;display:block}
+.pl{position:absolute;inset:0;display:grid;place-items:center;background:#0006}
+.pl span{width:52px;height:52px;border-radius:50%;background:#0e1115cc;border:1.5px solid #ffffff5c;
+  display:grid;place-items:center;font-size:17px;padding-left:3px;color:#fff}
+.tag{position:absolute;right:7px;bottom:7px;font-family:var(--mno);font-size:11px;
+  background:#0e1115cc;padding:2px 6px;border-radius:3px;color:#dfe4ec}
+.bd{padding:11px 13px 13px}
+.ids{font-size:12.5px;color:var(--mut);display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.ids .id{font-family:var(--mno);color:#c3cad6}
+.rep{font-family:var(--dsp);font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--sand)}
+.wpn{display:inline-flex;align-items:center;gap:5px;font-family:var(--dsp);font-size:11px;
+  letter-spacing:.07em;text-transform:uppercase;color:#f0b08f;background:#3d2418;
+  border:1px solid #6b4128;border-radius:4px;padding:2px 7px}
+.pickbtn{width:100%;margin-top:10px;padding:12px;border-radius:6px;text-align:left;
+  background:var(--accentq);border:1px solid #6b3428;color:#f3b2a4;font-size:14.5px}
+.pickbtn:hover{background:#4a271f}
+.chip{width:100%;margin-top:10px;padding:10px 12px;border-radius:6px;text-align:left;
+  background:var(--okq);border:1px solid #2f5a45;display:flex;gap:9px;align-items:flex-start}
+.chip .num{font-family:var(--mno);font-size:12.5px;color:var(--sand);padding-top:2px}
+.chip .nm{flex:1;font-size:14.5px;color:#d6ecdf}
+.chip .ed{font-family:var(--dsp);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--mut);padding-top:3px}
+.best{width:100%;margin-top:8px;padding:11px;border-radius:6px;background:var(--bg3);
+  border:1px solid var(--line2);color:var(--mut);font-size:14px;display:flex;gap:8px;
+  align-items:center;justify-content:center;min-height:44px}
+.best:hover{border-color:#5a6478}
+.best.on{background:#3a2e12;border-color:#7a6220;color:var(--sand);font-weight:600}
+.best .st{font-size:16px;line-height:1}
+.grp{margin-top:6px;font-size:12px;color:var(--mut);text-align:center}
+.card.pick{border-color:#7a6220}
+.mic{margin-top:9px}
+.mic summary{font-family:var(--dsp);font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--mut);cursor:pointer}
+.mic p{margin:6px 0 0;font-size:13px;font-style:italic;color:#7d8697;line-height:1.45}
+.note{width:100%;margin-top:9px;background:var(--bg3);border:1px solid var(--line);border-radius:5px;
+  color:var(--fg);font-family:var(--bdy);font-size:14px;padding:9px 10px}
+.note::placeholder{color:#616a7b}
+
+/* bottom bar */
+.bar{position:fixed;left:0;right:0;bottom:0;z-index:25;background:#151a23f5;
+  border-top:1px solid var(--line2);backdrop-filter:blur(8px);
+  padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px))}
+.bar .in{max-width:620px;margin-inline:auto;display:flex;gap:12px;align-items:center}
+.bar .st{flex:1;font-size:12.5px;color:var(--mut);line-height:1.3}
+.bar .st b{color:var(--fg);font-family:var(--mno)}
+[hidden]{display:none!important}  /* claude.ai injected this; on our hosting the sheets would cover the page */
+.sync{font-size:12.5px;color:var(--ok);font-family:var(--mno);white-space:nowrap;text-align:right}
+.sync.wait{color:var(--sand)}
+.send{background:var(--fg);color:#0e1115;padding:11px 18px;border-radius:6px;
+  font-family:var(--dsp);font-size:14px;letter-spacing:.06em;text-transform:uppercase}
+
+/* sheets */
+.sheet{position:fixed;inset:0;z-index:40;background:var(--bg);display:flex;flex-direction:column;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.sh-hd{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;
+  background:var(--bg2)}
+.sh-hd h3{flex:1;font-size:15px;letter-spacing:.06em}
+.sh-hd .x{font-size:22px;line-height:1;color:var(--mut);padding:0 4px}
+.sh-bd{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.srch{padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--line)}
+.srch input{width:100%;background:var(--bg3);border:1px solid var(--line2);border-radius:6px;
+  color:var(--fg);font-family:var(--bdy);font-size:16px;padding:10px 12px}
+.quick{padding:10px 16px 2px}
+.quick .lb{font-family:var(--dsp);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:6px}
+.quick button{display:block;width:100%;text-align:left;padding:10px 12px;margin-bottom:6px;
+  border-radius:6px;background:var(--bg3);border:1px solid var(--line2);font-size:14px}
+.gl{font-family:var(--dsp);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--sand);padding:16px 16px 6px;border-top:1px solid var(--line);margin-top:10px}
+.gl.first{border-top:0;margin-top:0}
+.gn{font-size:12.5px;color:var(--mut);text-transform:none;letter-spacing:0;font-family:var(--bdy)}
+.opt{display:flex;gap:10px;width:100%;text-align:left;padding:12px 16px;min-height:46px;
+  border-bottom:1px solid #1c222c;font-size:15px;align-items:baseline}
+.opt:hover{background:var(--bg2)}
+.opt .n{font-family:var(--mno);font-size:12.5px;color:var(--sand);min-width:26px}
+.opt.sel{background:var(--okq)}
+.none{padding:22px 16px;color:var(--mut);font-size:14px}
+#out{width:100%;height:44vh;background:#0a0c10;border:1px solid var(--line);border-radius:6px;
+  color:#a9dfbf;font-family:var(--mno);font-size:12px;line-height:1.5;padding:10px;resize:none}
+.sh-bd .pad{padding:14px 16px}
+.cpbtn{width:100%;margin-top:11px;padding:13px;border-radius:6px;background:var(--fg);color:#0e1115;
+  font-family:var(--dsp);font-size:14.5px;letter-spacing:.06em;text-transform:uppercase}
+.hint{font-size:13.5px;color:var(--mut);margin:11px 0 0;line-height:1.5}
+.warn{margin:0 0 12px;padding:10px 12px;border-radius:6px;background:var(--accentq);
+  border:1px solid #6b3428;color:#f3b2a4;font-size:13.5px}
+.who{width:100%;background:var(--bg3);border:1px solid var(--line);border-radius:5px;color:var(--fg);
+  font-family:var(--bdy);font-size:16px;padding:10px;margin-bottom:12px}
+.saved{font-family:var(--mno);font-size:11px;color:var(--ok);opacity:0;transition:opacity .3s}
+.saved.on{opacity:1}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header class="hd">
+ <div class="wrap">
+  <div class="brand">MWM Creations &middot; assistant edit</div>
+  <h1>Valente Brothers &mdash; technique names</h1>
+  <div class="when">Classes of 18 September 2026 &middot; 86 repetitions across 32 camera clips</div>
+  <div class="prog">
+   <div class="track"><div class="fill" id="fill"></div></div>
+   <div class="cnt"><b id="cn">0</b>/86 named &middot; <b id="bn">0</b> best <span class="saved" id="sv">saved</span></div>
+  </div>
+  <div class="tabs" role="tablist">
+   <button role="tab" data-f="all" aria-selected="true">All</button>
+   <button role="tab" data-f="todo" aria-selected="false">To name</button>
+   <button role="tab" data-f="done" aria-selected="false">Named</button>
+   <button role="tab" data-f="best" aria-selected="false">Best</button>
+  </div>
+ </div>
+</header>
+
+<div class="wrap">
+ <details class="brief">
+  <summary>Three things before you start</summary>
+  <div class="in">
+   <p><b>Play, then name.</b> Each card is one repetition. Tap the frame to watch it &mdash; the clip
+   starts two seconds early so you see the set-up. Then tap the red bar and pick the technique from
+   the curriculum list. Every tap saves by itself, so you can stop and come back &mdash; on this phone or another one.</p>
+   <p><b>Chapter 3 was filmed.</b> Going back through frame by frame we can see a wooden club from
+   about 13:05, a chair at 13:11 and a copper training revolver at 13:18 and 13:20, plus a blue
+   training knife much earlier, at 11:58. Cards where we can see a weapon carry an orange badge.
+   Our first automatic pass missed all of this &mdash; anything you heard from us about &ldquo;no
+   weapons&rdquo; is withdrawn. The badge is only where we spotted one; please tag every weapon
+   repetition you recognise, badge or no badge.</p>
+   <p><b>The first five clips look different.</b> C9995 to C9999, before the break at 12:13, are
+   mostly ground work. If that was warm-up or rolling rather than curriculum, tag it as such from the
+   top of the list.</p>
+   <p><b>Then pick the best take.</b> Most techniques were shot more than once &mdash; each card says
+   which repetition it is. Star the one you want in the finished video. The star moves: once a
+   repetition is named, starring another one with the same name takes the star off the first, so
+   there is only ever one best take per technique. Repetitions you have not named yet star within
+   their own camera clip.</p>
+   <p><b>Nothing to send.</b> Your answers reach us by themselves as you go &mdash; there is no
+   button to press at the end. If the signal drops, the page keeps your answers and sends them as
+   soon as it is back.</p>
+  </div>
+ </details>
+ <main id="list"></main>
+</div>
+
+<div class="bar"><div class="in">
+ <div class="st"><b>86</b> still to name</div>
+ <span class="sync" id="sync">All saved</span>
+</div></div>
+
+<div class="sheet" id="pick" hidden>
+ <div class="sh-hd"><h3 id="pt">Pick the technique</h3><button class="x" id="px" aria-label="Close">&times;</button></div>
+ <div class="srch"><input id="q" type="search" placeholder="Search &mdash; headlock, kick, 52&hellip;" autocomplete="off"></div>
+ <div class="sh-bd" id="pb"></div>
+</div>
+
+
+<script>
+const DATA=[{"k":"C9995_00","clip":"C9995","n":1,"of":4,"wall":"11:55:09","dur":13,"tr":""},{"k":"C9995_01","clip":"C9995","n":2,"of":4,"wall":"11:55:58","dur":19,"tr":""},{"k":"C9995_02","clip":"C9995","n":3,"of":4,"wall":"11:56:33","dur":13,"tr":"... Tá, boa pergunta."},{"k":"C9995_03","clip":"C9995","n":4,"of":4,"wall":"11:56:48","dur":9,"tr":""},{"k":"C9996_00","clip":"C9996","n":1,"of":2,"wall":"11:58:06","dur":30,"tr":"","w":"training knife"},{"k":"C9996_01","clip":"C9996","n":2,"of":2,"wall":"12:00:13","dur":13,"tr":"","w":"object in hand"},{"k":"C9997_00","clip":"C9997","n":1,"of":4,"wall":"12:03:33","dur":9,"tr":""},{"k":"C9997_01","clip":"C9997","n":2,"of":4,"wall":"12:04:16","dur":18,"tr":""},{"k":"C9997_02","clip":"C9997","n":3,"of":4,"wall":"12:04:42","dur":12,"tr":""},{"k":"C9997_03","clip":"C9997","n":4,"of":4,"wall":"12:05:45","dur":12,"tr":"Você está soltando o microfone, né?"},{"k":"C9998_00","clip":"C9998","n":1,"of":5,"wall":"12:07:57","dur":12,"tr":""},{"k":"C9998_01","clip":"C9998","n":2,"of":5,"wall":"12:09:15","dur":7,"tr":"Crius!"},{"k":"C9998_02","clip":"C9998","n":3,"of":5,"wall":"12:09:25","dur":23,"tr":"Ahahahah Vamos vir! Ok! Sobe! Crius! Crius! Crius!"},{"k":"C9998_03","clip":"C9998","n":4,"of":5,"wall":"12:10:01","dur":9,"tr":""},{"k":"C9998_04","clip":"C9998","n":5,"of":5,"wall":"12:11:15","dur":14,"tr":"O destinations. Sim. Então,sight bagulho här."},{"k":"C9999_00","clip":"C9999","n":1,"of":5,"wall":"12:30:23","dur":11,"tr":"Inscrevem vocêmito, potência aberta. Vem cá para você ver essa câmera aqui, que legal! Tá bom, fechou! Chá comigo!"},{"k":"C9999_01","clip":"C9999","n":2,"of":5,"wall":"12:31:04","dur":23,"tr":"Vai! Agora, se você não tem uma aderência, vá para cá. Eu vou fazer o vídeo."},{"k":"C9999_02","clip":"C9999","n":3,"of":5,"wall":"12:31:28","dur":11,"tr":"Agora, se você não tem uma aderência, vá para cá. Eu sei que você é dating um rato de menos, ele está fazendo o rato de menos. Eu sei que você está raspando meia fila. Mas eu tenho que falar que ela está lainvendo. Eu sei que você tá com a fila. Because w"},{"k":"C9999_03","clip":"C9999","n":4,"of":5,"wall":"12:31:42","dur":16,"tr":"Pazes de 90, que os primeiros são o primeiro de assim. e aí e aí e aí o e aí e aí e aí e aí"},{"k":"C9999_04","clip":"C9999","n":5,"of":5,"wall":"12:32:16","dur":8,"tr":"e aí Tinha um chocando o óleo. Não, não é isso. Vai dar em perna pra ele der o óleo aqui dentro. O óleo não vai ser acertado. Então faz, já. Faz as alas do ovo. O que é o óleo? Isso foi o óleo. Todo o óleo. Vai vir o óleo sobre a dentro. Não dá luz,"},{"k":"C0001_00","clip":"C0001","n":1,"of":1,"wall":"12:34:10","dur":17,"tr":"3 gravando"},{"k":"C0002_00","clip":"C0002","n":1,"of":3,"wall":"12:34:49","dur":10,"tr":"Quanto quiserem. Apenas o resto de volta."},{"k":"C0002_01","clip":"C0002","n":2,"of":3,"wall":"12:36:00","dur":11,"tr":"Apenas a mão. Apenas a mão. Apenas a mão."},{"k":"C0002_02","clip":"C0002","n":3,"of":3,"wall":"12:37:50","dur":30,"tr":"oi oi do lado do lado do lado de lá"},{"k":"C0003_00","clip":"C0003","n":1,"of":1,"wall":"12:39:13","dur":13,"tr":"Então, vamos lá? Vamos lá!"},{"k":"C0004_00","clip":"C0004","n":1,"of":1,"wall":"12:41:46","dur":19,"tr":""},{"k":"C0005_00","clip":"C0005","n":1,"of":1,"wall":"12:42:19","dur":12,"tr":"Ok."},{"k":"C0006_00","clip":"C0006","n":1,"of":5,"wall":"12:43:59","dur":15,"tr":"Pobre Peguei, Peguei Pega aí! Pega aí!"},{"k":"C0006_01","clip":"C0006","n":2,"of":5,"wall":"12:44:15","dur":17,"tr":"Eita! Se liga! Se liga! Calma!"},{"k":"C0006_02","clip":"C0006","n":3,"of":5,"wall":"12:45:21","dur":13,"tr":"Aburro o marão! Aburro o marão! Não, fica na cara do... Fica na cara do... Uou! Fazer alguma coisa dele? Eu vou lá para cima. Ok? Lá de novo, jazz. Vamos de novo. Vamos de novo. Tá ótimo. Ele está fora. Ele está fora. Tá fora."},{"k":"C0006_03","clip":"C0006","n":4,"of":5,"wall":"12:45:55","dur":14,"tr":"Ali. Traga você no... Amigo. E? O que?"},{"k":"C0006_04","clip":"C0006","n":5,"of":5,"wall":"12:47:12","dur":13,"tr":""},{"k":"C0007_00","clip":"C0007","n":1,"of":4,"wall":"12:48:16","dur":13,"tr":"Agora não olhe se você está descansando, retorna para o guarda. É muito bom isso, mas vamos para o chão, para o chão. O que mais pra cá? O que mais pra cá é que a gente foi puxando com este puxão Tá, combinado"},{"k":"C0007_01","clip":"C0007","n":2,"of":4,"wall":"12:49:25","dur":12,"tr":"O que você tem que fazer assim? É, é isso. É, é isso. É, é isso. É, é isso. Tá com a peça do início, né? Só o subar."},{"k":"C0007_02","clip":"C0007","n":3,"of":4,"wall":"12:49:47","dur":16,"tr":"A fonte do Bairro de Over-the-Arts. Eu acho que se puder repetir, eu pego um ângulo de baixo aqui. Por favor, por favor."},{"k":"C0007_03","clip":"C0007","n":4,"of":4,"wall":"12:50:07","dur":7,"tr":"Eu acho que você pode repetir. Eu pego um ângulo de baixo aqui, por favor. Perfeito."},{"k":"C0008_00","clip":"C0008","n":1,"of":1,"wall":"12:50:48","dur":9,"tr":"4 väldigt basco Existe neighborhood Estou sabendo."},{"k":"C0009_00","clip":"C0009","n":1,"of":3,"wall":"12:51:39","dur":9,"tr":"Estou sabendo. Ótimo doro, ótimo! Excelente! Faz algumas ali, já tinha um piscar."},{"k":"C0009_01","clip":"C0009","n":2,"of":3,"wall":"12:52:15","dur":23,"tr":"Ótimo doro, ótimo! Excelente! Faz algumas ali, já tinha um piscar. Por você nega isso? Por você nega isso. É! Vamos sofrer o bem? O que é isso? Claro que não é isso. Você sabe o que é isso?"},{"k":"C0009_02","clip":"C0009","n":3,"of":3,"wall":"12:53:49","dur":5,"tr":"Muito bom! Seus fãs são os fãs. O que é isso, velho? Estando em um pedaço."},{"k":"C0010_00","clip":"C0010","n":1,"of":4,"wall":"12:54:50","dur":8,"tr":"Um pelado. Tem que pentear atrás da cabeça. De novo? Você está vendo um pouquinho mais perto, né? É isso. Isso. Fante. Agora dá um soco, dá um soco. Sata Fante."},{"k":"C0010_01","clip":"C0010","n":2,"of":4,"wall":"12:55:07","dur":9,"tr":"Isso. Fante. Agora dá um soco, dá um soco. Então dá um soco de saco-pante. Agora com a tuvê, tá? De novo, repete. Agora o chuel faz assim, ó. E aí dá."},{"k":"C0010_02","clip":"C0010","n":3,"of":4,"wall":"12:55:31","dur":15,"tr":"E aí dá. Eu estou a ficar de frente, pode fazer assim, anda aí, vive dela lá em cima, o filme normal, e vê o dano do Orlando, é só o dano, é. Quando ele levanta a mão e está assim, está meio, está meio assim, tem que tirar"},{"k":"C0010_03","clip":"C0010","n":4,"of":4,"wall":"12:56:07","dur":23,"tr":"Quando ele levanta a mão e está assim, está meio, está meio assim, tem que tirar Então por favor mais um passo atrás Começa Então para, não se sentir o ponto de acorregamento O meu pé fica parado, então não está parindo Ele está fazendo de mão fechada? Si"},{"k":"C0011_00","clip":"C0011","n":1,"of":2,"wall":"12:57:23","dur":10,"tr":"Ele está fazendo de mão fechada? Sim, os dois estão de mão fechada. Cheguei e comece aquela base aqui na boxa antiga. Vou ver a próxima. Tô com pressa de hard option 1. Tá bom? Sim. Vamos."},{"k":"C0011_01","clip":"C0011","n":2,"of":2,"wall":"12:58:05","dur":11,"tr":"100 gramas. 100 gramas de dor. Ele vai pegar aqui mais assim, com o aluno de curaços. Não, vai de uma hora. Agora aquela de passar por trás daquela casa de palheira. Essa, ele..."},{"k":"C0012_00","clip":"C0012","n":1,"of":3,"wall":"13:00:18","dur":8,"tr":"Bom. Perna a boba de armas. Vamos lá? Perna a corso de gato. Não dá essa frutada de perra, viu? Ficou muito aute natural, viu?"},{"k":"C0012_01","clip":"C0012","n":2,"of":3,"wall":"13:01:07","dur":9,"tr":"Agora é o abraço por debaixo do braço Bota com chão, na quarta-cota, bota, nessa bota."},{"k":"C0012_02","clip":"C0012","n":3,"of":3,"wall":"13:01:48","dur":24,"tr":"Nessa, ele posta o peso assim, pô, mas não bota a mão, filmar com chão, tá? Continuo Agora o Fulmelso, a primeira, ele só mostra as defesas que vão me utilizar Primeiro assim De novo, não, porque o Mário está pegando o custo, você deu muito alta, a mão vê"},{"k":"C0013_00","clip":"C0013","n":1,"of":2,"wall":"13:05:04","dur":15,"tr":"De novo, não, porque o Mário está pegando o custo, você deu muito alta, a mão vê e voa entra. Eu? Ele levantou muito o palo, assim, a mão vê e voa aqui, mas aqui você pode... Aí, melhor. O melhor? Você continua. Proxima. Agora vai tirar. Faz novo?","w":"club"},{"k":"C0013_01","clip":"C0013","n":2,"of":2,"wall":"13:05:56","dur":7,"tr":"Jure na barriga, sabe? Não, você não tinha um rato. Esqueceu. É pra gerar um rato. Agora a paulada de longe, você vai para o lado e faz o ritmo. O que é isso? De novo? Júlio, Júlio! Você tem que dar um...","w":"club"},{"k":"C0014_00","clip":"C0014","n":1,"of":1,"wall":"13:06:53","dur":16,"tr":"Porra, aí tu tenta! Aí, aí! Eu achei melhor assim. Eu achei melhor, eu achei melhor. Mas não mesmo, você se ajuda uma bola. É isso. Acho que mais de entender se a galera é recarregada. Agora ele dá com as duas mãos. Nunca vi esse ataque, não é fixo, é","w":"club"},{"k":"C0015_00","clip":"C0015","n":1,"of":2,"wall":"13:07:32","dur":11,"tr":"Nunca vi esse ataque, não é fixo, é super bom lá. Eu vou falar com o cara, eu vou falar com o grande do cara Assim, ó, é isso, ou o quente de futebol É, ou os quentes de futebol O cara consegue ser uma pessoa ruim Ele não consegue ser uma pessoa Na verda","w":"club"},{"k":"C0015_01","clip":"C0015","n":2,"of":2,"wall":"13:07:59","dur":8,"tr":"Só peraíra, vai falar um pouco grande agora. Assim, ó. É, é isso. Ovo, quente. É, o volto vai assim. Ovo, os quentes. O cara consegue ser... uma pessoa ruim. Ele não consegue ser uma pessoa. Na verdade, a ropa tem que ser mais fácil. Não, tem que ser","w":"club"},{"k":"C0016_00","clip":"C0016","n":1,"of":2,"wall":"13:09:32","dur":18,"tr":"Tem que ter entre os esquinos. Ele tem que começar com o outro lado. Não, ele tem que ter no mesmo lado. Ele tenta fazer isso, e isso foi de uma forma melhor. Assim? Sim. E depois ele vai... Deslouca um e depois vai para o outro. Ele vai para o outro l"},{"k":"C0016_01","clip":"C0016","n":2,"of":2,"wall":"13:09:56","dur":5,"tr":"Você caiu agora, sabe o que é o batalho? Você caiu agora, sabe o batalho?","w":"club"},{"k":"C0017_00","clip":"C0017","n":1,"of":2,"wall":"13:11:19","dur":17,"tr":"Você caiu agora, sabe o batalho? Você continua com a mão na cutuvela assim pra derrubar a cabeça pra ver, né? Acho que sim. Fazendo bem. E dá de mão, dá o meu break forte pra dar a cabeça pra ver. E como eu vou segurando a cutuvela da gente no segredo de","w":"chair"},{"k":"C0017_01","clip":"C0017","n":2,"of":2,"wall":"13:11:59","dur":15,"tr":"Tô dando, tô dando, tô dando, vamo embora, vamo embora. Facada por cima.","w":"chair"},{"k":"C0018_00","clip":"C0018","n":1,"of":3,"wall":"13:12:57","dur":7,"tr":"Não tá lento se fazer de abruta. O baixo é agora com o escudo. solta papo, solta bom, solta bom, e bota no solto, acho que é solta"},{"k":"C0018_01","clip":"C0018","n":2,"of":3,"wall":"13:13:06","dur":19,"tr":"Involve o sol todo. Acho que é solta, agora."},{"k":"C0018_02","clip":"C0018","n":3,"of":3,"wall":"13:13:28","dur":6,"tr":"Solta a faca. Involve o sol todo. Acho que é solta, agora. Agora joguei. Agora tu é que faz aqui?"},{"k":"C0019_00","clip":"C0019","n":1,"of":3,"wall":"13:13:42","dur":15,"tr":"Agora joguei. Agora tu é que faz aqui? É isso. Mil deslares, mil deslares, para de novo. Agora a mesma coisa para puxar, você vai passar para o tranche de cortes ali. Tudo. Tudo. Você não consegue fazer isso, tem que ser feito sempre.","w":"object in hand"},{"k":"C0019_01","clip":"C0019","n":2,"of":3,"wall":"13:14:00","dur":9,"tr":"Agora a mesma coisa para puxar, Você não consegue fazer isso, tem que fazer sempre."},{"k":"C0019_02","clip":"C0019","n":3,"of":3,"wall":"13:14:20","dur":11,"tr":"Você tem que telegrafar, telegrafar muito, telegrafar o balão. Isso! Muito bom. Agora..."},{"k":"C0020_00","clip":"C0020","n":1,"of":3,"wall":"13:15:04","dur":7,"tr":"Não tem que fazer que ela pegue as cortinhas da mão em cima. Não, não, cara, a parte derracha. O que faz assim? A na cor de um joelho, não, João. É, ela se pôs sempre mais alto do que nunca. É que é que é a sua mão, gente. A esquerda, cara. Mostra aí is"},{"k":"C0020_01","clip":"C0020","n":2,"of":3,"wall":"13:15:21","dur":13,"tr":"Nossa, é mais alta do que a fuma É que é que é essa fuma, né? É que é essa fuma, né? Vou mostrar isso Aí esqueço de soltar de novo Essa fuma é essa fontealão"},{"k":"C0020_02","clip":"C0020","n":3,"of":3,"wall":"13:15:40","dur":17,"tr":"ele tem que cair no chão ele tem que rodar para o chão agora e você tem que pegar as duas mãos no braço na mão dele assim e torcer mas de novo, de novo, eu já sei o que você quer eu já sei o que você quer só que eu já sei"},{"k":"C0021_00","clip":"C0021","n":1,"of":2,"wall":"13:16:14","dur":7,"tr":"eu quero a mesma coisa de novo para eu não estar no chão é, aqui no livro é assim dá um lado para aqui inteiro aqui A faca é no peixe-coço. Não, mas aqui no Viverno tem. Solta a faca, meu filho. Solta a faca... Nossa! Solta a faca... Mas creio? Não,"},{"k":"C0021_01","clip":"C0021","n":2,"of":2,"wall":"13:16:38","dur":12,"tr":"O que a merda com o híbrido do outro, o que ela achou? É, aqui no Viverno... Dá um lado para mim, um pouco. Tem o olho aqui. a faca é muito chucosa não, naquilo a gente tem solta a faca meu filho solta a faca nossa solta naqui a cria tá, já tem que"},{"k":"C0022_00","clip":"C0022","n":1,"of":5,"wall":"13:17:33","dur":18,"tr":"é aquele colar, tá? eu não vou botar o teu barro É assim, vai. Tem que acabar na mão de vaca, com a arma da tua mão contando pra ele e mão de vaca. Levanta as mãos, mãos ao alto, de novo. M mãos ao alto, tá perê. M mãos ao alto, o tigeto tá assim, ó. Iss"},{"k":"C0022_01","clip":"C0022","n":2,"of":5,"wall":"13:17:56","dur":9,"tr":"Eu não vou contar o tempo, ele vai fazer assim, ele vai... Ele tem que acabar na mão de vaca com a arma da tua mão apontando para ele a mão de vaca. Levanta as mãos, mãos ao alto, de novo. M mãos ao alto, pera aí. M mãos ao alto, já está assim, olha. E iss","w":"handgun"},{"k":"C0022_02","clip":"C0022","n":3,"of":5,"wall":"13:18:07","dur":7,"tr":"Não usou a off, da periga Não usou a off, junta-se-a E... Isso aí, não segura, não cumprime-se Não segura, não segura... Não, não, não vai... Não, não, porque o é que você está... O fugindo vai para aquelaquê... Mas é verdade. Isso é seguro e ajuda, c"},{"k":"C0022_03","clip":"C0022","n":4,"of":5,"wall":"13:18:20","dur":8,"tr":"Ok. Não, é porque você está confundindo com aquela que não... Mas é verdade. Isso é seguro e ajuda, certo? Para. Segundo custo. aqui... você recebeu um pulso para o braço? ok, de novo senha você não doa vai direto Júlia, mantenha o pulso firme tá f","w":"handgun"},{"k":"C0022_04","clip":"C0022","n":5,"of":5,"wall":"13:18:30","dur":9,"tr":"segura o pulso segundo pulso você recebeu um pulso para o braço? Porque 100% você não doa, não tem nada. Ah não, vai direto. Julia, mantê o pulso firme. Tá firme, tá certo? Vou já aqui. Vamos ver, vamos ver, vamos ver. Vamos ver, vamos ver, vamos ver."},{"k":"C0023_00","clip":"C0023","n":1,"of":2,"wall":"13:18:49","dur":8,"tr":"Não é assim, não é assim, não é assim. Qual vai? Aqui. Aqui. Segurou o pulso? Segurou você então. Próximo, bota pelo lado. Ele bota a mão no ché. Não é assim, não é assim. Qual vai? Aqui. Aqui?"},{"k":"C0023_01","clip":"C0023","n":2,"of":2,"wall":"13:19:03","dur":10,"tr":"Aqui? É. Segurou o pulso? Segurou você então. Próximo. Agora pelo lado. Ele bota a mão no ché. Não é assim. Não é assim. Segurou o pulso? Segurou você então. Próximo. Não nos usam, ele é um mestre que não é a gente que já fez."},{"k":"C0024_00","clip":"C0024","n":1,"of":4,"wall":"13:19:56","dur":11,"tr":"Agora sim, ele vai botar em tudo, irmão. E aí vai entrar o outro a um por dentro. Esse revolvinho aí está conhecendo da minha volta. A minha brincadeira. Você tem que segurar o revolvinho. Ele vai com a mão só no revolve, com a esquerda. E depois aí ele"},{"k":"C0024_01","clip":"C0024","n":2,"of":4,"wall":"13:20:41","dur":20,"tr":"Agora quando o revólvo está na cabeça, o revólvo está na cabeça e pega aqui e o chupo é cá. Lá? Não. Nossa, ele tem o braço que ele costeia. E bota o revólvo na tempore. Ague mais o que vê no computador. Ague mais o que vê no computador. Agora revolta","w":"handgun"},{"k":"C0024_02","clip":"C0024","n":3,"of":4,"wall":"13:21:04","dur":13,"tr":"Agora revolta na esticóstica, não solta nem um pouco, não solta nem um pouco, não solta Dá um passo bem baixo, gente. Vai ficar do lado de lá? Aqui.","w":"handgun"},{"k":"C0024_03","clip":"C0024","n":4,"of":4,"wall":"13:21:32","dur":8,"tr":"Não tem, não tem."},{"k":"C0025_00","clip":"C0025","n":1,"of":1,"wall":"13:22:20","dur":10,"tr":"A impressão é minha. Não, um massager de marmão. Um massager de marmão. É normal. Isso."},{"k":"C0026_00","clip":"C0026","n":1,"of":1,"wall":"13:22:48","dur":8,"tr":"Este lado. Perfeito."},{"k":"C0027_00","clip":"C0027","n":1,"of":4,"wall":"13:23:10","dur":10,"tr":"É só para filmar um pouco a gente começando a ensinar. Tá. Tá. Alguém. Passa a ver o que é verdadeiro. Não, é só isso aí ensinando a gente. Não é expulsão, não é verdade. É só para pegar um pouco de sinal de postura. Não é isso aí. Até agora... É só p"},{"k":"C0027_01","clip":"C0027","n":2,"of":4,"wall":"13:24:33","dur":16,"tr":"e o sábado. Exatamente, quero pegar agora esse lado, cada verde ali. Não é que esteja completamente errado nesse maior braço, mas quando você bota o ovo,"},{"k":"C0027_02","clip":"C0027","n":3,"of":4,"wall":"13:25:19","dur":10,"tr":"Não é que esteja completamente errado nesse maior braço, mas quando você bota o ovo, onde der na tendência de me contar o soco é fugir de você, eu não sei o que é ele. Se eu for acaso perder ele, pode fecher de glória e me proteger, mas você não Se você que"},{"k":"C0027_03","clip":"C0027","n":4,"of":4,"wall":"13:25:47","dur":8,"tr":"Eu posso dar uma gerada com a equipe, eu posso dar a equipe de cá lá. Mas não em busca de falta de massa forte. Não é o que eu tenho que deixar do braço. É o que eu tenho que eu tenho que deixar do braço. 2,5 quilos de braço lá e uma outra, porque tem 2 qu"}], GROUPS=[["Other",["— warm-up / sparring, not curriculum","— repeat of the previous segment","— talk-through only, no demo","— false detection / nothing here"]],["CH.1 Standing defenses from the front",["20 Hip throw","22 Two-hand front choke defense","24 Two-hand front choke defense (with hip throw)","26 Two-hand front choke defense (with armlock)","28 Two-hand front choke defense (against a wall)","30 Single-hand front choke defense (against a wall)","31 Wall-pin defense","32 Single-hand collar grab defense","33 Single-hand collar grab defense (wrist fold)","34 Single-hand collar grab defense (palm turned up)","36 Single-hand collar grab defense (straight arm)","38 Single-hand collar grab defense (thumb down)","40 Single-hand chest-push defense","42 Double-collar grab defense (hands apart)","44 Double-collar grab defense (hands together)","46 Shoulder grab defense (arm bent)","48 Shoulder grab defense (straight arm)","50 Headlock defense (with punch)","52 Headlock defense (attacker upright)","54 Headlock defense (attacker bent over)","56 Headlock defense (attacker with wide stance)","58 Headlock defense (pressure on the nose)","60 Headlock defense against a wall (attacker outside)","62 Headlock defense against a wall (attacker inside)","64 Guillotine defense (sitting back)","66 Guillotine defense (sliding down)","68 Guillotine defense (with trip takedown)","70 Guillotine choke","72 Guillotine choke (if taken down)","74 Tackle defense (with elbow strike)","75 Tackle defense (with knee strike)","76 Front bear hug over the arms defense","78 Front bear hug under arms defense (with frame)","79 Front bear hug under arms defense (with chin push)","80 Sucker punch defense","82 Haymaker punch defense","84 Front kick defense","86 Front kick defense (with pivot)","87 Front kick defense (high)","88 Roundhouse kick defense","90 Standing up in base","92 Hand chop","93 Punch","94 Elbow strike","95 Side kick (surprise attack)","95 Side kick"]],["CH.2 Standing defenses from behind",["98 Rear choke defense","100 Rear choke defense pulled back (with side throw)","102 Rear choke defense pulled back (with overhead throw)","104 Rear two-hand choke defense","106 Rear bear hug over the arms defense","108 Rear bear hug over the arms defense (with wide stance)","110 Rear bear hug under arms defense","112 Rear bear hug under arms defense (with lift)","114 Full nelson defense"]],["CH.3 Weapons — no weapon seen in any frame",["118 Club defense (overhead close range)","120 Club defense (overhead close range with slide)","122 Club defense (overhead distant range)","124 Club defense (two-hand overhead)","126 Club defense (horizontal swing)","128 Chair defense","130 Knife defense (overhead)","132 Knife defense (underhand)","134 Knife defense (underhand straight arm block)","136 Knife defense (underhand straight arm block with resistance)","138 Knife defense (backhand)","140 Knife defense (side)","142 Rear knife defense (chest thrust)","144 Rear knife defense (throat slice)","146 Gun defense (pointed at stomach)","148 Gun defense (front waistband)","150 Gun defense (side waistband)","152 Gun defense (pointed at head)","154 Rear gun defense (hostage position)","156 Rear gun defense (pointed at back)"]]];
+const KEY='vb_tech_18sep_v1';
+/* ---- storage (MWM hosting): every change is queued on the phone AND posted.
+   The server is the authority; anything not yet sent is merged back on load. ---- */
+const TOKEN=(location.pathname.match(/\/r\/([A-Za-z0-9_\-]+)/)||[])[1]||'';
+const API='/api/'+TOKEN;
+const LKEY=KEY+'_'+TOKEN.slice(0,10), QKEY=LKEY+'_queue';
+let st={}, filt='all', cur=null, queue=[];
+try{ st=JSON.parse(localStorage.getItem(LKEY)||'{}')||{}; }catch(e){ st={}; }
+try{ queue=JSON.parse(localStorage.getItem(QKEY)||'[]')||[]; }catch(e){ queue=[]; }
+queue.forEach(o=>{ delete o.fl; });
+function persist(){ try{ localStorage.setItem(LKEY,JSON.stringify(st)); localStorage.setItem(QKEY,JSON.stringify(queue)); }catch(e){} }
+function save(){ persist(); }
+let failing=false, busy=false, backoff=2000, retryT=null, lastPull=0;
+function syncUI(){
+  const el=document.getElementById('sync'); if(!el) return;
+  const n=queue.length;
+  if(!n){ el.textContent='All saved ✓'; el.classList.remove('wait'); return; }
+  el.classList.add('wait');
+  el.textContent = failing ? ('No signal — '+n+' waiting, will send by itself') : 'Saving…';
+}
+function enqueue(k,f,v){
+  queue=queue.filter(o=>!(o.k===k&&o.f===f&&!o.fl));   /* keep only the newest unsent value */
+  queue.push({k:k,f:f,v:v,ts:Date.now()});
+  persist(); syncUI(); flush();
+}
+function pending(k){ const p={}; queue.forEach(o=>{ if(o.k===k) p[o.f]=1; }); return p; }
+function applyRow(k,row){
+  const p=pending(k), r=st[k]||{};
+  if(!p.technique){ if(row.technique) r.t=row.technique; else delete r.t; }
+  if(!p.is_best){ if(row.is_best) r.b=true; else delete r.b; }
+  if(!p.note){ if(row.note) r.n=row.note; else delete r.n; }
+  if(Object.keys(r).length) st[k]=r; else delete st[k];
+}
+async function flush(){
+  if(busy||!queue.length){ syncUI(); return; }
+  busy=true; const op=queue[0]; op.fl=1;
+  try{
+    const body={segment_key:op.k, ts:op.ts}; body[op.f]=op.v;
+    const r=await fetch(API+'/answer',{method:'POST',cache:'no-store',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.status===400||r.status===404){ queue.shift(); }          /* refused for good: do not loop */
+    else if(!r.ok){ throw new Error('http '+r.status); }
+    else{
+      const d=await r.json(); queue.shift();
+      const ch=d.changed||{};
+      Object.keys(ch).forEach(k=>applyRow(k,ch[k]));
+      Object.keys(ch).forEach(k=>{ if(k!==op.k||op.f==='is_best') refreshBest(k); });
+      counters(); flash();
+    }
+    failing=false; backoff=2000; busy=false; persist(); syncUI();
+    if(queue.length) flush();
+  }catch(e){
+    delete op.fl; busy=false; failing=true; persist(); syncUI();
+    clearTimeout(retryT); retryT=setTimeout(flush,backoff); backoff=Math.min(backoff*2,60000);
+  }
+}
+async function pull(){
+  try{
+    const r=await fetch(API+'/answers',{cache:'no-store'}); if(!r.ok) throw 0;
+    const d=await r.json(); if(!d.ok) throw 0;
+    const srv=d.answers||{}, keys={};
+    Object.keys(srv).forEach(k=>keys[k]=1); Object.keys(st).forEach(k=>{ if(k[0]!=='_') keys[k]=1; });
+    Object.keys(keys).forEach(k=>applyRow(k, srv[k]||{technique:null,is_best:false,note:''}));
+    lastPull=Date.now(); persist();
+    const a=document.activeElement;
+    if(!(a&&a.classList&&a.classList.contains('note'))) render(); else counters();
+  }catch(e){}
+  syncUI(); flush();
+}
+window.addEventListener('online',()=>{ backoff=2000; flush(); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){
+  backoff=2000; if(!queue.length&&Date.now()-lastPull>30000) pull(); else flush(); } });
+let svt; const sv=document.getElementById('sv');
+function flash(){ sv.classList.add('on'); clearTimeout(svt); svt=setTimeout(()=>sv.classList.remove('on'),1400); }
+
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const namedCount=()=>DATA.filter(d=>st[d.k]&&st[d.k].t).length;
+const bestCount=()=>DATA.filter(d=>st[d.k]&&st[d.k].b).length;
+const clipOf=k=>{const d=DATA.find(x=>x.k===k);return d?d.clip:'';};
+function groupOf(k){ const r=st[k]||{}; return r.t?('T:'+r.t):('C:'+clipOf(k)); }
+function groupMates(k){ const g=groupOf(k); return DATA.filter(d=>groupOf(d.k)===g); }
+function setBest(k,on){
+  if(on) groupMates(k).forEach(d=>{ if(d.k!==k&&st[d.k]) delete st[d.k].b; });
+  st[k]=st[k]||{}; if(on) st[k].b=true; else delete st[k].b;
+}
+function splitNum(t){ const m=/^(\d+)\s+(.*)$/.exec(t); return m?[m[1],m[2]]:['',t]; }
+
+function render(){
+  const L=document.getElementById('list'); L.innerHTML='';
+  let lastClip=null, shown=0;
+  DATA.forEach(d=>{
+    const rec=st[d.k]||{}, done=!!rec.t;
+    if(filt==='todo'&&done) return;
+    if(filt==='done'&&!done) return;
+    if(filt==='best'&&!rec.b) return;
+    shown++;
+    if(d.clip!==lastClip){
+      lastClip=d.clip;
+      const h=document.createElement('div'); h.className='ch';
+      h.innerHTML='<h2>'+d.clip+'</h2><span>'+d.of+(d.of>1?' repetitions':' repetition')+'</span>';
+      L.appendChild(h);
+    }
+    const c=document.createElement('article');
+    c.className='card'+(done?' done':'')+(rec.b?' pick':''); c.dataset.k=d.k;
+    const mates=groupMates(d.k).length;
+    let chip;
+    if(done){ const [n,nm]=splitNum(rec.t);
+      chip='<button class="chip" data-act="pick"><span class="num">'+(n||'&bull;')+'</span>'+
+           '<span class="nm">'+esc(nm)+'</span><span class="ed">change</span></button>';
+    } else {
+      chip='<button class="pickbtn" data-act="pick">Choose the technique &nbsp;&rsaquo;</button>';
+    }
+    c.innerHTML=
+      '<div class="thumb" data-act="play">'+
+        '<img loading="lazy" src="p/'+d.k+'.jpg" alt="">'+
+        '<span class="pl"><span>&#9654;</span></span>'+
+        '<span class="tag">'+d.dur+'s</span>'+
+      '</div>'+
+      '<div class="bd">'+
+        '<div class="ids"><span class="rep">rep '+d.n+' of '+d.of+'</span>'+
+        '<span class="id">'+d.clip+'</span><span class="mono">'+d.wall+'</span>'+
+        (d.w?'<span class="wpn">weapon &mdash; '+esc(d.w)+'</span>':'')+'</div>'+
+        chip+
+        '<button class="best'+(rec.b?' on':'')+'" data-act="best">'+
+          '<span class="st">'+(rec.b?'\u2605':'\u2606')+'</span>'+
+          (rec.b?'Best take':'Mark as best take')+'</button>'+
+        (mates>1?'<div class="grp">'+(done
+            ?'one of '+mates+' named as this technique'
+            :'one of '+mates+' in '+d.clip)+'</div>':'')+
+        (d.tr?'<details class="mic"><summary>What the mic caught</summary><p>'+esc(d.tr)+'</p></details>':'')+
+        '<input class="note" data-act="note" placeholder="Note for Michael (optional)" value="'+esc(rec.n||'')+'">'+
+      '</div>';
+    L.appendChild(c);
+  });
+  if(!shown){ const p=document.createElement('p'); p.className='none';
+    p.textContent = filt==='todo' ? 'Nothing left \u2014 every repetition has a name.'
+      : filt==='best' ? 'No best takes starred yet. Star the repetition you want on any card.'
+      : 'Nothing named yet.';
+    L.appendChild(p); }
+  counters();
+}
+
+function counters(){
+  const n=namedCount();
+  document.getElementById('cn').textContent=n;
+  document.getElementById('bn').textContent=bestCount();
+  document.getElementById('fill').style.width=(n/DATA.length*100)+'%';
+  const names={}; DATA.forEach(d=>{const r=st[d.k]||{}; if(r.t) (names[r.t]=names[r.t]||[]).push(!!r.b);});
+  const miss=Object.keys(names).filter(t=>!names[t].some(Boolean)).length;
+  document.querySelector('.bar .st').innerHTML = (DATA.length-n)
+    ? '<b>'+(DATA.length-n)+'</b> still to name'
+    : miss ? '<b>'+miss+'</b> without a best take'
+    : 'All named and starred &mdash; thank you, it has all reached us';
+}
+
+/* update the star on one group in place, so a playing clip is not torn down */
+function refreshBest(k){
+  groupMates(k).forEach(d=>{
+    const c=document.querySelector('.card[data-k="'+d.k+'"]'); if(!c) return;
+    const on=!!(st[d.k]&&st[d.k].b), b=c.querySelector('.best');
+    c.classList.toggle('pick',on);
+    if(b){ b.classList.toggle('on',on);
+      b.innerHTML='<span class="st">'+(on?'\u2605':'\u2606')+'</span>'+
+                  (on?'Best take':'Mark as best take'); }
+  });
+  counters();
+}
+
+document.getElementById('list').addEventListener('click',e=>{
+  const t=e.target.closest('[data-act]'); if(!t) return;
+  const card=t.closest('.card'); const k=card.dataset.k;
+  if(t.dataset.act==='play') playIn(t.closest('.thumb'),k);
+  if(t.dataset.act==='pick') openPick(k);
+  if(t.dataset.act==='best'){ const on=!(st[k]&&st[k].b); setBest(k,on); save(); enqueue(k,'is_best',on);
+    if(filt==='best') render(); else refreshBest(k); }
+});
+document.getElementById('list').addEventListener('input',e=>{
+  const t=e.target.closest('input.note'); if(!t) return;
+  const k=t.closest('.card').dataset.k;
+  st[k]=st[k]||{}; st[k].n=t.value; save();
+  clearTimeout(noteT[k]); noteT[k]=setTimeout(()=>enqueue(k,'note',t.value),700);
+});
+const noteT={};
+document.getElementById('list').addEventListener('change',e=>{
+  const t=e.target.closest('input.note'); if(!t) return;
+  const k=t.closest('.card').dataset.k; clearTimeout(noteT[k]); enqueue(k,'note',t.value);
+});
+
+function playIn(box,k){
+  if(!box) return;
+  document.querySelectorAll('#list video').forEach(v=>v.pause());
+  const d=DATA.find(x=>x.k===k);
+  box.removeAttribute('data-act');
+  box.innerHTML='<video controls autoplay playsinline preload="auto" src="c/'+k+'.mp4"></video>'+
+                '<span class="tag">'+d.dur+'s</span>';
+}
+
+/* ---- picker ---- */
+const pick=document.getElementById('pick'), pb=document.getElementById('pb'), q=document.getElementById('q');
+function prevNamed(k){
+  const i=DATA.findIndex(d=>d.k===k);
+  for(let j=i-1;j>=0;j--){ const r=st[DATA[j].k]; if(r&&r.t) return r.t; }
+  return null;
+}
+function recent(k){
+  const seen=[]; const i=DATA.findIndex(d=>d.k===k);
+  for(let j=i-1;j>=0&&seen.length<3;j--){ const r=st[DATA[j].k];
+    if(r&&r.t&&!seen.includes(r.t)) seen.push(r.t); }
+  return seen;
+}
+function openPick(k){
+  cur=k; const d=DATA.find(x=>x.k===k);
+  document.getElementById('pt').textContent=d.clip+' · rep '+d.n+' of '+d.of;
+  q.value=''; drawOpts(''); pick.hidden=false; document.body.style.overflow='hidden';
+  pb.scrollTop=0;
+}
+function closePick(){ pick.hidden=true; document.body.style.overflow=''; cur=null; }
+document.getElementById('px').onclick=closePick;
+q.addEventListener('input',()=>drawOpts(q.value.trim().toLowerCase()));
+
+function drawOpts(f){
+  const sel=(st[cur]||{}).t||'';
+  let h='';
+  if(!f){
+    const p=prevNamed(cur), r=recent(cur);
+    if(r.length){
+      h+='<div class="quick"><div class="lb">Reuse</div>';
+      if(p) h+='<button data-v="'+esc(p)+'">Same as the one before &mdash; '+esc(p)+'</button>';
+      r.filter(x=>x!==p).forEach(x=>{ h+='<button data-v="'+esc(x)+'">'+esc(x)+'</button>'; });
+      h+='</div>';
+    }
+  }
+  let any=false, first=!h;
+  GROUPS.forEach(g=>{
+    const hits=g[1].filter(o=>!f||o.toLowerCase().includes(f));
+    if(!hits.length) return;
+    any=true;
+    const parts=g[0].split(' ');
+    const tag=/^CH\.\d+$/.test(parts[0])?parts[0]:'';
+    const rest=tag?g[0].slice(tag.length+1):g[0];
+    h+='<div class="gl'+(first?' first':'')+'">'+(tag?tag+' ':'')+'<span class="gn">'+esc(rest)+'</span></div>';
+    first=false;
+    hits.forEach(o=>{ const [n,nm]=splitNum(o);
+      h+='<button class="opt'+(o===sel?' sel':'')+'" data-v="'+esc(o)+'">'+
+         '<span class="n">'+(n||'')+'</span><span>'+esc(nm)+'</span></button>'; });
+  });
+  if(!any) h+='<p class="none">No technique matches that. Try one word &mdash; headlock, choke, kick &mdash; or the number.</p>';
+  if(sel) h+='<div class="pad"><button class="opt" data-v="" style="border:1px solid var(--line2);border-radius:6px;color:var(--mut)"><span class="n"></span><span>Clear this answer</span></button></div>';
+  pb.innerHTML=h; pb.scrollTop=0;
+}
+pb.addEventListener('click',e=>{
+  const b=e.target.closest('[data-v]'); if(!b) return;
+  const v=b.dataset.v, k=cur;
+  st[k]=st[k]||{}; if(v) st[k].t=v; else delete st[k].t;
+  if(st[k].b) setBest(k,true);
+  save(); enqueue(k,'technique',v||null); closePick(); render();
+  const nx=document.querySelector('.card[data-k="'+k+'"]');
+  if(nx){ const n=nx.nextElementSibling;
+    (n||nx).scrollIntoView({behavior:'smooth',block:'center'}); }
+});
+
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+  filt=b.dataset.f;
+  document.querySelectorAll('.tabs button').forEach(x=>x.setAttribute('aria-selected',x===b));
+  render(); window.scrollTo({top:0});
+});
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(!pick.hidden) closePick(); } });
+
+render(); syncUI(); pull();
+</script>
+</body>
+</html>
