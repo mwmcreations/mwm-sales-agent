@@ -505,7 +505,8 @@ class TestRoundOneOfTheEditingRoom(unittest.TestCase):
         got = vc.story_order(breaks)
         self.assertEqual(got[0]["id"], "B2", "the strongest opens")
         self.assertEqual(got[-1]["id"], "B4", "the next strongest pays it off")
-        self.assertEqual([c["id"] for c in got[1:-1]], ["B1", "B3"], "the middle builds")
+        self.assertEqual([c["id"] for c in got[1:-1]], ["B3", "B1"], "the middle builds; a setup shot sits lowest")
+        self.assertTrue(vc.is_setup(breaks[2]) and not vc.is_setup(breaks[1]))
         # a named thing counts as strength: the ask's own word opens the reel
         got = vc.story_order(breaks, stems={"stanc"})
         self.assertEqual(got[0]["id"], "B4")
@@ -560,9 +561,9 @@ class TestRoundOneOfTheEditingRoom(unittest.TestCase):
         got = vc.pick_shots(pool, 8, seed=2, subject=vc.AUDIENCE_SUBJECT["parents"])
         kinds = [c["category"] for c in got]
         self.assertEqual(kinds.count(vc.REACTION), 2, kinds)           # 8 // 4
-        # the crowd itself, named: no cap
-        got = vc.pick_shots(pool, 8, seed=2, uncapped=(vc.REACTION,))
-        self.assertGreater([c["category"] for c in got].count(vc.REACTION), 2)
+        # the crowd itself, named: more, but still never the dish (one in three)
+        got = vc.pick_shots(pool, 9, seed=2, uncapped=(vc.REACTION,), max_per_family=9, max_per_session=9)
+        self.assertEqual([c["category"] for c in got].count(vc.REACTION), 3)
 
 
 class TestSteadyShots(unittest.TestCase):
