@@ -511,6 +511,37 @@ def register(app, admin_ok, report_error=None, notify=None, session_ok=None, rev
         except Exception as e:
             _err("client_review.ping", e)
 
+    # ── the friendly address (26 Sep): review.mwmcreations.com/<token>/ ──────
+    # On a review host nothing but review pages exist: the sales machine's
+    # webhooks, admin and /vi/ must never show up under the client's link.
+    review_hosts = {h.strip().lower() for h in
+                    os.environ.get("REVIEW_HOSTS", "review.mwmcreations.com").split(",") if h.strip()}
+
+    @app.before_request
+    def _cr_review_host_only():
+        host = (request.host or "").split(":")[0].lower()
+        if host not in review_hosts:
+            return None
+        path = request.path or "/"
+        if path == "/":
+            return redirect("https://mwmcreations.com/", code=302)
+        first = path.strip("/").split("/", 1)[0]
+        if path.startswith("/api/") or path.startswith("/r/") or find_review(R, first)[0]:
+            return None
+        return _nf()
+
+    @app.route("/<token>/", methods=["GET"])
+    def cr_page_short(token):
+        return cr_page(token)
+
+    @app.route("/<token>/p/<key>.jpg", methods=["GET"])
+    def cr_poster_short(token, key):
+        return cr_poster(token, key)
+
+    @app.route("/<token>/c/<key>.mp4", methods=["GET", "HEAD"])
+    def cr_clip_short(token, key):
+        return cr_clip(token, key)
+
     @app.route("/r/<token>", methods=["GET"])
     def cr_page_noslash(token):
         rv, _, _ = find_review(R, token)

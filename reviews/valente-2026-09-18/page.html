@@ -220,7 +220,7 @@ const DATA=[{"k":"C9995_00","clip":"C9995","n":1,"of":4,"wall":"11:55:09","dur":
 const KEY='vb_tech_18sep_v1';
 /* ---- storage (MWM hosting): every change is queued on the phone AND posted.
    The server is the authority; anything not yet sent is merged back on load. ---- */
-const TOKEN=(location.pathname.match(/\/r\/([A-Za-z0-9_\-]+)/)||[])[1]||'';
+const TOKEN=(location.pathname.match(/^\/(?:r\/)?([A-Za-z0-9_\-]{20,80})(?:\/|$)/)||[])[1]||'';
 const API='/api/'+TOKEN;
 const LKEY=KEY+'_'+TOKEN.slice(0,10), QKEY=LKEY+'_queue';
 let st={}, filt='all', cur=null, queue=[];

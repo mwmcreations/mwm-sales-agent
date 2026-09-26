@@ -193,6 +193,21 @@ if Flask:
     ok(r.status_code == 200 and "attachment" in r.headers["Content-Disposition"] and T52 in r.get_data(as_text=True), "csv export")
     ok(c.get("/admin/review/nope?secret=adm").status_code == 404, "unknown review -> 404")
 
+    print("\n== the friendly address + review-host lock")
+    RH = {"base_url": "https://review.mwmcreations.com"}
+    r = c.get("/%s/" % TOK, **RH)
+    ok(r.status_code == 200 and b"page" in r.data, "review.mwmcreations.com/<token>/ serves the page")
+    ok(c.get("/%s/p/A1.jpg" % TOK, **RH).data == jpg, "relative media works under the short path")
+    ok(c.get("/%s/c/A1.mp4" % TOK, headers={"Range": "bytes=0-9"}, **RH).status_code == 206, "clip Range under the short path")
+    ok(c.get("/api/%s/answers" % TOK, **RH).status_code == 200, "api works on the review host")
+    ok(c.get("/%s" % TOK, **RH).status_code in (301, 302, 308), "no trailing slash -> redirect")
+    r = c.get("/", **RH)
+    ok(r.status_code == 302 and "mwmcreations.com" in r.headers["Location"], "bare review host -> mwmcreations.com")
+    ok(c.get("/admin/review/rv1?secret=adm", **RH).status_code == 404, "admin is NOT reachable on the review host")
+    ok(c.get("/%s/" % ("Q" * 30), **RH).status_code == 404, "unknown token on the review host -> 404")
+    ok(c.get("/%s/" % ("Q" * 30)).status_code == 404, "unknown token on the main host -> 404")
+    ok(c.get("/r/%s/" % TOK).status_code == 200, "old /r/ address still works on the main host")
+
 shutil.rmtree(tmp)
 print("\n%d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
