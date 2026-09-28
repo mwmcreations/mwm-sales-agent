@@ -42,6 +42,7 @@ import burst as _burst        # Patch #96 — one reply per burst, not per fragm
 import pg_store as _pgs  # Patch #125 — approvals must survive a deploy
 import lead_watch as _lw  # Patch #128 — somebody has to count the leads
 import known_client as _kc  # Patch #110 — a client is not a lead
+import relationship as _rel  # Patch #138 — client / personal contact / lead
 import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
 import sms_promises as _sms_promises  # Patch #117 — what the website promises
@@ -1139,7 +1140,7 @@ _PIPELINE_EVENT_TYPES = {
 }
 
 
-def _known_client_lookup(sender):
+def _known_client_lookup(sender, cand=None):
     """Patch #110 — has this person already bought from us on another channel?
 
     Jaysee Soto bought a Studio Package on 26 Aug and was announced as a NEW
@@ -1151,7 +1152,9 @@ def _known_client_lookup(sender):
     error this returns "not a client", because wrongly suppressing a real
     lead is the one failure nobody would ever notice."""
     try:
-        cand = dict(lead_data.get(sender) or {})
+        # PATCH #138: a caller may pass a candidate that is not (yet) a lead
+        # record — an unknown sender who only shared a reel is never recorded.
+        cand = dict(cand if cand is not None else (lead_data.get(sender) or {}))
         cand.setdefault("phone", sender)
         if _kc.is_client_record(cand):
             return False, "already_marked", None   # nothing to correct
@@ -1193,7 +1196,7 @@ def _existing_client_context(rec, fallback_name=""):
         return ""
     try:
         who = (rec.get("name") or fallback_name or "This person").strip()
-        pkg = (rec.get("package") or "").strip()
+        pkg = (rec.get("package") or rec.get("product") or "").strip()  # #138: lead records carry product
         package_line = f" is on {pkg}." if pkg else " is a current client."
         hours_line = ""
         if rec.get("contract_hours"):
@@ -9792,6 +9795,11 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         # branches — a different assistant for a different kind of person.
         try:
             _cm_hit, _cm_why, _cm_rec = _known_client_lookup(sender)
+            if not _cm_hit and _cm_why == "already_marked":
+                # PATCH #138 — "already_marked" is the pipeline's "don't re-announce";
+                # for Maya it means THIS record already says client. It used to
+                # switch client mode OFF for exactly the people it exists for.
+                _cm_hit, _cm_rec = True, (lead_data.get(sender) or {})
             if _cm_hit:
                 _cm_block = _existing_client_context(
                     _cm_rec, (lead_data.get(sender) or {}).get("name", ""))
@@ -10116,7 +10124,10 @@ def webhook_instagram():
                     # Lead sent an image/file without text
                     att_type = attachments[0].get("type", "")
                     print(f"[IG DM] Attachment ({att_type}) from {sender_id} — no text")
-                    send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+                    # PATCH #138 — this canned line went to friends, family and
+                    # clients alike. Decide who they are first (background).
+                    threading.Thread(target=_ig_attachment_only,
+                                     args=(sender_id, att_type), daemon=True).start()
                     continue
 
                 # Handle story replies/mentions
@@ -10141,6 +10152,82 @@ def webhook_instagram():
             ).start()
 
     return "OK", 200
+
+
+def _ig_relationship(sender, sender_id, rec=None):
+    """PATCH #138 — (kind, why) for an Instagram sender: client, known_personal
+    or lead. Refreshes the follow flag when it is missing or older than a week.
+    `rec` defaults to the sender's lead record; pass a scratch dict to check
+    someone without recording them. Fails OPEN to "lead"."""
+    try:
+        if rec is None:
+            rec = lead_data.setdefault(sender, {})
+        now_ts = time.time()
+        if "ig_we_follow" not in rec or _rel.follow_check_due(rec, now_ts):
+            pf = _fetch_ig_profile(sender_id)
+            if pf.get("name") and not rec.get("name"):
+                rec["name"] = pf["name"]
+            if pf.get("username") and not rec.get("ig_username"):
+                rec["ig_username"] = pf["username"]
+            if pf.get("we_follow") is not None:
+                rec["ig_we_follow"] = pf["we_follow"]
+                rec["ig_they_follow"] = pf.get("they_follow")
+            rec["ig_follow_checked_ts"] = now_ts
+        c_hit, c_why, _ = _known_client_lookup(sender, cand=rec)
+        if not c_hit and c_why == "already_marked":
+            c_hit = True
+        kind, why = _rel.classify(rec, client_hit=c_hit)
+        rec["relationship"] = kind
+        _TALLY.bump("maya.relationship." + kind, why)
+        print(f"[Relationship] {sender} → {kind} ({why})")
+        return kind, why
+    except Exception as _rx:
+        print(f"[Relationship] check failed, treating as lead: {_rx}")
+        return _rel.LEAD, "check_failed"
+
+
+def _ig_stay_quiet(sender, sender_id, text, kind, why):
+    """PATCH #138 — Maya does not answer. Mirror to #maya-shadow with a ping so
+    Michael replies personally in the thread (the shadow relay sends it)."""
+    try:
+        ident = _build_ig_sender_identity(sender_id)
+        _mirror_to_maya_shadow_async(
+            ident, "inbound",
+            f"[IG DM] {text}" + _rel.quiet_note(kind, MICHAEL_SLACK_USER_ID))
+    except Exception as _qx:
+        print(f"[Relationship] quiet mirror failed (non-fatal): {_qx}")
+    _TALLY.bump("maya.stayed_quiet", f"{kind} — {why}")
+    print(f"[Relationship] Maya stayed quiet for {sender} ({kind}, {why})")
+
+
+def _ig_attachment_only(sender_id, att_type):
+    """PATCH #138 — a share / reel / photo / story mention with no text.
+
+    Before: "Thanks for sharing! How can I help you today? 😊" to everybody.
+    Now: clients and personal contacts get no bot reply (Michael is pinged);
+    unknown senders get exactly the old reply and, as before, are not recorded
+    as leads. The check runs on a scratch record for people we have not met,
+    so nothing is ever added and then removed."""
+    sender = f"instagram:{sender_id}"
+    text = _rel.attachment_text(att_type)
+    try:
+        existing = lead_data.get(sender)
+        rec = existing if existing is not None else {}
+        kind, why = _ig_relationship(sender, sender_id, rec=rec)
+        if existing is None and kind == _rel.KNOWN:
+            lead_data[sender] = rec        # remember the relationship, no pipeline
+        if _rel.should_stay_quiet(kind, attachment_only=True):
+            if existing is None and kind != _rel.KNOWN:
+                lead_data.setdefault(sender, rec)   # identity for the shadow thread
+            _ig_stay_quiet(sender, sender_id, text, kind, why)
+            return
+        send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+    except Exception as _ax:
+        print(f"[Relationship] attachment path failed, old reply sent: {_ax}")
+        try:
+            send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+        except Exception:
+            pass
 
 
 def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
@@ -10235,10 +10322,24 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             if _ig_profile.get("username"):
                 lead_data[sender]["ig_username"] = _ig_profile["username"]
                 print(f"[IG DM] Auto-populated IG username: @{_ig_profile['username']}")
+            if _ig_profile.get("we_follow") is not None:          # PATCH #138
+                lead_data[sender]["ig_we_follow"] = _ig_profile["we_follow"]
+                lead_data[sender]["ig_they_follow"] = _ig_profile.get("they_follow")
+                lead_data[sender]["ig_follow_checked_ts"] = time.time()
         except Exception as _prof_err:
             print(f"⚠️ IG profile auto-lookup error (non-fatal): {_prof_err}")
     lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
     lead_data[sender]["channel"] = "Instagram DM"  # ensure channel tag even for existing leads
+
+    # ── PATCH #138: who is this? client / personal contact / lead ──
+    # Runs before NEW_LEAD, Sheets, scoring and Maya. A personal contact never
+    # enters the pipeline and never hears from the bot; Michael answers them.
+    _rel_kind, _rel_why = _ig_relationship(sender, sender_id)
+    # A story reply with no words is a reaction, not a question — same as a share.
+    _rel_bare = (incoming_msg or "").strip() == "[Replied to your Instagram story]"
+    if _rel.should_stay_quiet(_rel_kind, attachment_only=_rel_bare):
+        _ig_stay_quiet(sender, sender_id, incoming_msg, _rel_kind, _rel_why)
+        return
 
     # ── Lead context lookup ──
     _lead_ctx = ""
@@ -10277,6 +10378,8 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
     # branches — a different assistant for a different kind of person.
     try:
         _cm_hit, _cm_why, _cm_rec = _known_client_lookup(sender)
+        if not _cm_hit and _cm_why == "already_marked":
+            _cm_hit, _cm_rec = True, (lead_data.get(sender) or {})   # PATCH #138
         if _cm_hit:
             _cm_block = _existing_client_context(
                 _cm_rec, (lead_data.get(sender) or {}).get("name", ""))
@@ -10492,14 +10595,22 @@ def _fetch_ig_profile(igsid: str) -> dict:
             url = f"https://graph.instagram.com/v21.0/{igsid}"
         else:
             url = f"https://graph.facebook.com/v19.0/{igsid}"
-        params = {"fields": "name,username", "access_token": token}
+        # PATCH #138 — also ask whether @mwm.creations follows this person.
+        # Some tokens refuse the follow fields; fall back to the basic pair.
+        params = {"fields": _rel.PROFILE_FIELDS, "access_token": token}
         resp = http_requests.get(url, params=params, timeout=10)
+        if resp.status_code >= 400:
+            params = {"fields": _rel.BASIC_FIELDS, "access_token": token}
+            resp = http_requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         _name = data.get("name", "")
         _username = data.get("username", "")
-        print(f"[IG Profile] {igsid} → name={_name!r}, username=@{_username}")
-        return {"name": _name, "username": _username}
+        _we, _they = _rel.follow_flags(data)
+        print(f"[IG Profile] {igsid} → name={_name!r}, username=@{_username}, "
+              f"we_follow={_we}, follows_us={_they}")
+        return {"name": _name, "username": _username,
+                "we_follow": _we, "they_follow": _they}
     except Exception as e:
         print(f"⚠️ IG profile lookup failed for {igsid} (non-fatal): {e}")
         return {"name": "", "username": ""}
@@ -10781,6 +10892,11 @@ def _cold_lead_checker():
             now = datetime.now(pytz.timezone(TIMEZONE))
             for phone, data in list(lead_data.items()):
                 if data.get("booked") or data.get("cold_fired"):
+                    continue
+                # PATCH #138 — a personal contact is not a cold lead, and a client
+                # the 24h check already recognised must not be carded "Cold" at 48h.
+                if data.get("relationship") == _rel.KNOWN or \
+                        str(data.get("reengagement_enqueued", "")).startswith("skipped:"):
                     continue
                 if _is_internal_number(phone):
                     continue  # S28: internal/test lines never go cold-lead/farewell
