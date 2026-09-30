@@ -9790,6 +9790,25 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         except Exception as _a9e:
             print(f"\u26a0\ufe0f AD_09 branch error (non-fatal, Maya still replies): {_a9e}")
 
+        # ── PATCH #140: AI Studio branch (WhatsApp leg). The lead's OWN words,
+        # the AI ad ids (AI_AD_IDS) or an AI ad headline switch it on.
+        try:
+            _ai_msgs = [incoming_msg] + [
+                (_m.get("content") or "")
+                for _m in (conversation_history.get(sender) or [])[-8:]
+                if _m.get("role") == "user"
+            ]
+            _ai_rec = lead_data.get(sender) or {}
+            _ai_on, _ai_why = _ai.ai_lead(_ai_rec.get("ad_id", ""), _ai_msgs,
+                                          _ai_rec.get("utm_campaign", ""))
+            if _ai_on:
+                _lead_ctx = (_lead_ctx or "") + _ai.maya_ai_context("", _ai_why)
+                (lead_data.setdefault(sender, {}))["ai_interest"] = _ai_why
+                _TALLY.bump("ai.branch_on", f"whatsapp via {_ai_why}")
+                print(f"[AI] AI Studio branch ON for {sender} via {_ai_why}")
+        except Exception as _aie:
+            print(f"\u26a0\ufe0f AI branch error (non-fatal, Maya still replies): {_aie}")
+
         # ── PATCH #111: client mode. If this person already pays us, tell Maya
         # so before she runs the sales script. Same shape as the HOA and AD_09
         # branches — a different assistant for a different kind of person.
@@ -10372,6 +10391,24 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
             _TALLY.bump("ad09.branch_off", "instagram — normal studio-visit flow")
     except Exception as _a9e:
         print(f"\u26a0\ufe0f AD_09 branch error IG (non-fatal): {_a9e}")
+
+    # ── PATCH #140: AI Studio branch (Instagram leg), same rules as WhatsApp.
+    try:
+        _ai_msgs = [incoming_msg] + [
+            (_m.get("content") or "")
+            for _m in (conversation_history.get(sender) or [])[-8:]
+            if _m.get("role") == "user"
+        ]
+        _ai_rec = lead_data.get(sender) or {}
+        _ai_on, _ai_why = _ai.ai_lead(_ai_rec.get("ad_id", ""), _ai_msgs,
+                                      _ai_rec.get("utm_campaign", ""))
+        if _ai_on:
+            _lead_ctx = (_lead_ctx or "") + _ai.maya_ai_context("", _ai_why)
+            (lead_data.setdefault(sender, {}))["ai_interest"] = _ai_why
+            _TALLY.bump("ai.branch_on", f"instagram via {_ai_why}")
+            print(f"[AI] AI Studio branch ON for IG {sender} via {_ai_why}")
+    except Exception as _aie:
+        print(f"\u26a0\ufe0f AI branch error IG (non-fatal): {_aie}")
 
     # ── PATCH #111: client mode. If this person already pays us, tell Maya
     # so before she runs the sales script. Same shape as the HOA and AD_09
@@ -17303,6 +17340,16 @@ def web_chat_endpoint():
             # PATCH #132: on /exclusive-offer Maya knows the offer (Michael, 24 Sep)
             system_prompt += _xo.maya_offer_context(page_url)
 
+        # PATCH #140: Maya knows the AI Studio offers — on the AI page, or when
+        # the visitor's OWN words are about AI video (never Maya's replies).
+        try:
+            _ai_on, _ai_why = _ai.ai_lead(None, [
+                str(_m.get('content') or '') for _m in conv['messages'][-8:]
+                if _m.get('role') == 'user'], "")
+            system_prompt += _ai.maya_ai_context(page_url, _ai_why if _ai_on else "")
+        except Exception as _aie:
+            print(f"[AI] web-chat AI context error (non-fatal): {_aie}")
+
         # Call Anthropic API (Claude) with calendar tools
         client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
 
@@ -20851,6 +20898,7 @@ threading.Thread(target=_studio.sequence_loop, daemon=True, name="studio_followu
 
 # PATCH #132 — Exclusive Video Offer purchase handler (see exclusive_offer.py)
 import exclusive_offer as _xo
+import ai_studio as _ai   # PATCH #140: Maya knows the AI Studio offers
 _xo.configure(
     report_error=_report_error,
     post_slack=_post_to_slack_async,
