@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>Valente Brothers — Technique Review</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: sticky control bar over a list of segment cards; one column on phone, two from 820px. */
+:root{
+  --paper:#f5f3ef; --card:#ffffff; --ink:#16191d; --ink-soft:#5a6269; --rule:#ddd9d2;
+  --mat:#1a5fa6; --mat-soft:#e4eef8; --clay:#b0532c; --clay-soft:#f7e9e2;
+  --good:#2f6b46; --good-soft:#e3f0e8; --star:#c98a1f; --star-soft:#fbf0d9;
+  --display:'Archivo','Helvetica Neue',Arial,sans-serif;
+  --body:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#111417; --card:#191d21; --ink:#e9ebed; --ink-soft:#98a1a9; --rule:#2c3238;
+  --mat:#6ba9e8; --mat-soft:#1b2b3c; --clay:#e08a5f; --clay-soft:#33221a;
+  --good:#7cc79a; --good-soft:#1b2c22; --star:#e0b45c; --star-soft:#33290f; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --paper:#111417; --card:#191d21; --ink:#e9ebed; --ink-soft:#98a1a9; --rule:#2c3238;
+  --mat:#6ba9e8; --mat-soft:#1b2b3c; --clay:#e08a5f; --clay-soft:#33221a;
+  --good:#7cc79a; --good-soft:#1b2c22; --star:#e0b45c; --star-soft:#33290f; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+img{max-width:100%}
+[hidden]{display:none!important}
+body{background:var(--paper);color:var(--ink);font-family:var(--body);line-height:1.5;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:0 56px}
+header.top{padding-block:28px 14px}
+.eyebrow{font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:.20em;
+  text-transform:uppercase;color:var(--mat);margin:0 0 6px}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(26px,5vw,38px);letter-spacing:-.01em;
+  margin:0 0 10px;text-wrap:balance}
+.lede{margin:0;max-width:64ch;color:var(--ink-soft);font-size:15px}
+.lede b{color:var(--ink);font-weight:600}
+.ask{margin:16px 0 0;padding:14px 16px;border-left:3px solid var(--mat);background:var(--mat-soft);
+  border-radius:0 6px 6px 0;font-size:14.5px;max-width:64ch}
+.ask h2{font-family:var(--display);font-size:11px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;margin:0 0 7px;color:var(--mat)}
+.ask ol{margin:0;padding-left:19px}
+.ask li{margin-bottom:5px}.ask li:last-child{margin-bottom:0}
+.banner{display:none;margin:14px 0 0;padding:12px 15px;border-radius:6px;background:var(--clay-soft);
+  color:var(--clay);font-size:13.5px;max-width:64ch}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:30;background:var(--paper);
+  border-bottom:1px solid var(--rule);padding-block:10px;margin-bottom:18px}
+.barin{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.meter{flex:1 1 190px;min-width:0}
+.meterlab{font-family:var(--display);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-soft);display:flex;justify-content:space-between;gap:8px}
+.meterlab b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.track{height:5px;background:var(--rule);border-radius:3px;overflow:hidden;margin-top:5px}
+.fill{height:100%;width:0;background:var(--mat);transition:width .25s}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:.10em;
+  text-transform:uppercase;padding:7px 11px;border-radius:999px;border:1px solid var(--rule);
+  background:transparent;color:var(--ink-soft);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.chip:focus-visible,.btn:focus-visible,input:focus-visible,textarea:focus-visible,.q:focus-visible,
+.play:focus-visible,.star:focus-visible,.pick:focus-visible{outline:2px solid var(--mat);outline-offset:2px}
+.saveind{font-family:var(--display);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--good);opacity:0;transition:opacity .2s}
+.saveind.on{opacity:1}
+.grid{display:grid;gap:16px}
+@media(min-width:820px){.grid{grid-template-columns:1fr 1fr}}
+.seg{background:var(--card);border:1px solid var(--rule);border-radius:10px;overflow:hidden;
+  display:flex;flex-direction:column;min-width:0}
+.seg.done{border-color:var(--good)}
+.seg.best{border-color:var(--star)}
+.vidwrap{position:relative;background:#0b0d0f;aspect-ratio:16/9;max-width:100%}
+.vidwrap video,.vidwrap img{width:100%;height:100%;display:block;object-fit:cover}
+.play{position:absolute;inset:0;display:grid;place-items:center;border:0;background:transparent;cursor:pointer}
+.play span{width:52px;height:52px;border-radius:50%;background:rgba(10,12,14,.55);display:grid;place-items:center}
+.play svg{width:19px;height:19px;margin-left:3px;fill:#fff}
+.num{position:absolute;left:10px;top:10px;font-family:var(--display);font-weight:700;font-size:15px;
+  letter-spacing:.06em;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.7)}
+.wtag{position:absolute;right:10px;top:10px;font-family:var(--display);font-size:10px;font-weight:600;
+  letter-spacing:.12em;text-transform:uppercase;padding:4px 8px;border-radius:4px;background:var(--clay);color:#fff}
+.body{padding:13px 14px 15px;display:flex;flex-direction:column;gap:11px;min-width:0}
+.meta{font-family:var(--display);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-soft);font-variant-numeric:tabular-nums}
+.pick{width:100%;text-align:left;font-family:var(--body);font-size:14.5px;color:var(--ink);
+  background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:10px 11px;cursor:pointer}
+.pick.empty{color:var(--ink-soft)}
+.pick b{font-weight:600}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.star{font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:.10em;
+  text-transform:uppercase;padding:8px 12px;border-radius:6px;border:1px solid var(--rule);
+  background:transparent;color:var(--ink-soft);cursor:pointer;display:flex;gap:6px;align-items:center}
+.star[aria-pressed="true"]{background:var(--star-soft);color:var(--star);border-color:var(--star)}
+.star svg{width:14px;height:14px;fill:currentColor}
+.same{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;padding:7px 10px;border-radius:999px;border:1px dashed var(--rule);
+  background:transparent;color:var(--ink-soft);cursor:pointer}
+.quick{display:flex;gap:5px;flex-wrap:wrap}
+.q{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;padding:5px 8px;border-radius:999px;border:1px solid var(--rule);
+  background:transparent;color:var(--ink-soft);cursor:pointer}
+.q[aria-pressed="true"]{background:var(--clay-soft);color:var(--clay);border-color:var(--clay)}
+.q.ok[aria-pressed="true"]{background:var(--good-soft);color:var(--good);border-color:var(--good)}
+label.f{display:block;min-width:0}
+label.f>span{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-soft);display:block;margin-bottom:4px}
+textarea{width:100%;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--paper);
+  border:1px solid var(--rule);border-radius:6px;padding:8px 9px;resize:vertical;min-height:54px}
+.sheet{position:fixed;inset:0;z-index:100;background:rgba(8,10,12,.45);display:flex;
+  align-items:flex-end;justify-content:center}
+.sheetin{background:var(--card);width:100%;max-width:640px;max-height:86vh;display:flex;
+  flex-direction:column;border-radius:12px 12px 0 0;padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(min-width:700px){.sheet{align-items:center}.sheetin{border-radius:12px;max-height:80vh}}
+.sheethead{padding:14px 16px 10px;border-bottom:1px solid var(--rule);display:flex;gap:10px;align-items:center}
+.sheethead input{flex:1;min-width:0;font-family:var(--body);font-size:16px;color:var(--ink);
+  background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:10px 11px}
+.sheethead button{font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:.10em;
+  text-transform:uppercase;border:0;background:transparent;color:var(--mat);cursor:pointer;padding:8px}
+.sheetlist{overflow-y:auto;padding:6px 0 14px}
+.gh{font-family:var(--display);font-size:10px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-soft);padding:14px 16px 6px}
+.opt{display:block;width:100%;text-align:left;font-family:var(--body);font-size:15.5px;
+  color:var(--ink);background:transparent;border:0;border-bottom:1px solid var(--rule);
+  padding:13px 16px;cursor:pointer}
+.opt:hover,.opt:focus-visible{background:var(--mat-soft)}
+.opt.sel{background:var(--mat-soft);color:var(--mat);font-weight:600}
+footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);color:var(--ink-soft);
+  font-size:13px;max-width:64ch}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <p class="eyebrow">Valente Brothers &middot; classes of 18 September 2026</p>
+  <h1>Technique review</h1>
+  <p class="lede">Professor, this is the cut of your class that day &mdash; one clip per technique, in the order
+  you taught them, each trimmed to the technique itself. Tap any one to play it on a loop.</p>
+
+  <div class="ask">
+    <h2>Where we need you</h2>
+    <ol>
+      <li><b>Name each technique.</b> Tap the name field and the list from your book comes up &mdash;
+      type a word to narrow it, or pick from the list.</li>
+      <li><b>Tell us if the moment is wrong</b> &mdash; the buttons cover the usual misses, and
+      anything that should not go out at all can be marked <i>Not a technique</i>.</li>
+    </ol>
+  </div>
+
+  <div class="banner" id="banner"></div>
+</header>
+
+<div class="bar"><div class="barin">
+  <div class="meter">
+    <div class="meterlab"><span>Named</span><b><span id="cnt">0</span> / <span id="tot">0</span></b></div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+  </div>
+  <div class="filters">
+    <button class="chip" data-f="all" aria-pressed="true">All</button>
+    <button class="chip" data-f="todo" aria-pressed="false">Not yet named</button>
+    
+    <button class="chip" data-f="flagged" aria-pressed="false">Flagged</button>
+  </div>
+  <div class="saveind" id="saveind">Saved</div>
+</div></div>
+
+<div class="grid" id="grid"></div>
+
+<footer>
+  These clips are silent and at preview quality &mdash; they are here for judging the technique and
+  the take, not the colour or the sound.
+</footer>
+</div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheetin" role="dialog" aria-modal="true" aria-label="Choose the technique">
+    <div class="sheethead">
+      <input type="text" id="q" placeholder="Search the list" autocomplete="off">
+      <button type="button" id="sheetclose">Close</button>
+    </div>
+    <div class="sheetlist" id="sheetlist"></div>
+  </div>
+</div>
+
+<script>
+/* ── DATA + GROUPS: replaced from data/segments.json and data/techniques.json ── */
+const DATA=[{"k":"T01","clip":"C9995","n":1,"of":1,"wall":"11:53:40","dur":3.5,"tr":""},{"k":"T02","clip":"C9995","n":1,"of":1,"wall":"11:54:17","dur":3.4,"tr":""},{"k":"T03","clip":"C9995","n":1,"of":1,"wall":"11:54:41","dur":3.3,"tr":""},{"k":"T04","clip":"C9995","n":1,"of":1,"wall":"11:57:07","dur":3.7,"tr":""},{"k":"T05","clip":"C9996","n":1,"of":1,"wall":"11:59:13","dur":3.4,"tr":""},{"k":"T06","clip":"C9996","n":1,"of":1,"wall":"12:00:22","dur":3.4,"tr":""},{"k":"T07","clip":"C9997","n":1,"of":1,"wall":"12:04:30","dur":2.4,"tr":""},{"k":"T08","clip":"C9997","n":1,"of":1,"wall":"12:05:19","dur":5.2,"tr":""},{"k":"T09","clip":"C9998","n":1,"of":1,"wall":"12:07:56","dur":4.3,"tr":""},{"k":"T10","clip":"C9998","n":1,"of":1,"wall":"12:09:49","dur":3.7,"tr":""},{"k":"T11","clip":"C9998","n":1,"of":1,"wall":"12:10:16","dur":2.3,"tr":""},{"k":"T12","clip":"C9998","n":1,"of":1,"wall":"12:10:32","dur":2.5,"tr":""},{"k":"T13","clip":"C9998","n":1,"of":1,"wall":"12:12:17","dur":5.2,"tr":""},{"k":"T14","clip":"C9998","n":1,"of":1,"wall":"12:12:55","dur":3.4,"tr":""},{"k":"T15","clip":"C9999","n":1,"of":1,"wall":"12:30:58","dur":3.4,"tr":""},{"k":"T16","clip":"C9999","n":1,"of":1,"wall":"12:31:18","dur":3.4,"tr":""},{"k":"T17","clip":"C9999","n":1,"of":1,"wall":"12:31:37","dur":3.0,"tr":""},{"k":"T18","clip":"C0002","n":1,"of":1,"wall":"12:35:34","dur":3.4,"tr":""},{"k":"T19","clip":"C0002","n":1,"of":1,"wall":"12:36:09","dur":3.4,"tr":""},{"k":"T20","clip":"C0002","n":1,"of":1,"wall":"12:36:19","dur":3.4,"tr":""},{"k":"T21","clip":"C0002","n":1,"of":1,"wall":"12:36:53","dur":3.4,"tr":""},{"k":"T22","clip":"C0003","n":1,"of":1,"wall":"12:39:25","dur":2.4,"tr":""},{"k":"T23","clip":"C0003","n":1,"of":1,"wall":"12:39:44","dur":3.7,"tr":""},{"k":"T24","clip":"C0003","n":1,"of":1,"wall":"12:40:03","dur":2.4,"tr":""},{"k":"T25","clip":"C0003","n":1,"of":1,"wall":"12:40:22","dur":5.1,"tr":""},{"k":"T26","clip":"C0004","n":1,"of":1,"wall":"12:41:40","dur":2.9,"tr":""},{"k":"T27","clip":"C0006","n":1,"of":1,"wall":"12:44:01","dur":3.6,"tr":""},{"k":"T28","clip":"C0006","n":1,"of":1,"wall":"12:45:56","dur":3.2,"tr":""},{"k":"T29","clip":"C0006","n":1,"of":1,"wall":"12:46:16","dur":4.1,"tr":""},{"k":"T30","clip":"C0006","n":1,"of":1,"wall":"12:47:13","dur":3.4,"tr":""},{"k":"T31","clip":"C0007","n":1,"of":1,"wall":"12:48:23","dur":3.4,"tr":""},{"k":"T32","clip":"C0007","n":1,"of":1,"wall":"12:49:12","dur":2.3,"tr":""},{"k":"T33","clip":"C0007","n":1,"of":1,"wall":"12:49:45","dur":2.5,"tr":""},{"k":"T34","clip":"C0007","n":1,"of":1,"wall":"12:50:04","dur":2.5,"tr":""},{"k":"T35","clip":"C0008","n":1,"of":1,"wall":"12:51:01","dur":3.5,"tr":""},{"k":"T36","clip":"C0009","n":1,"of":1,"wall":"12:51:31","dur":2.5,"tr":""},{"k":"T37","clip":"C0009","n":1,"of":1,"wall":"12:51:34","dur":3.4,"tr":""},{"k":"T38","clip":"C0009","n":1,"of":1,"wall":"12:52:21","dur":5.2,"tr":""},{"k":"T39","clip":"C0009","n":1,"of":1,"wall":"12:53:25","dur":3.0,"tr":""},{"k":"T40","clip":"C0011","n":1,"of":1,"wall":"12:56:43","dur":5.2,"tr":""},{"k":"T41","clip":"C0011","n":1,"of":1,"wall":"12:57:29","dur":3.4,"tr":""},{"k":"T42","clip":"C0011","n":1,"of":1,"wall":"12:58:03","dur":3.4,"tr":""},{"k":"T43","clip":"C0011","n":1,"of":1,"wall":"12:58:55","dur":3.4,"tr":""},{"k":"T44","clip":"C0012","n":1,"of":1,"wall":"13:00:12","dur":3.4,"tr":""},{"k":"T45","clip":"C0012","n":1,"of":1,"wall":"13:01:10","dur":3.4,"tr":""},{"k":"T46","clip":"C0012","n":1,"of":1,"wall":"13:01:43","dur":3.4,"tr":""},{"k":"T47","clip":"C0013","n":1,"of":1,"wall":"13:04:54","dur":5.2,"tr":""},{"k":"T48","clip":"C0013","n":1,"of":1,"wall":"13:05:24","dur":3.4,"tr":""},{"k":"T49","clip":"C0013","n":1,"of":1,"wall":"13:06:11","dur":2.5,"tr":""},{"k":"T50","clip":"C0014","n":1,"of":1,"wall":"13:06:41","dur":3.4,"tr":""},{"k":"T51","clip":"C0015","n":1,"of":1,"wall":"13:08:06","dur":4.5,"tr":""},{"k":"T52","clip":"C0016","n":1,"of":1,"wall":"13:09:56","dur":3.1,"tr":""},{"k":"T53","clip":"C0017","n":1,"of":1,"wall":"13:11:16","dur":3.4,"tr":""},{"k":"T54","clip":"C0017","n":1,"of":1,"wall":"13:11:47","dur":3.4,"tr":""},{"k":"T55","clip":"C0018","n":1,"of":1,"wall":"13:13:04","dur":2.9,"tr":""},{"k":"T56","clip":"C0018","n":1,"of":1,"wall":"13:13:21","dur":3.4,"tr":""},{"k":"T57","clip":"C0019","n":1,"of":1,"wall":"13:14:30","dur":5.2,"tr":""},{"k":"T58","clip":"C0020","n":1,"of":1,"wall":"13:14:51","dur":4.2,"tr":""},{"k":"T59","clip":"C0020","n":1,"of":1,"wall":"13:15:33","dur":2.6,"tr":""},{"k":"T60","clip":"C0020","n":1,"of":1,"wall":"13:16:00","dur":2.4,"tr":""},{"k":"T61","clip":"C0021","n":1,"of":1,"wall":"13:16:31","dur":3.4,"tr":""},{"k":"T62","clip":"C0021","n":1,"of":1,"wall":"13:16:53","dur":2.5,"tr":""},{"k":"T63","clip":"C0024","n":1,"of":1,"wall":"13:21:06","dur":3.4,"tr":""},{"k":"T64","clip":"C0025","n":1,"of":1,"wall":"13:22:30","dur":4.8,"tr":""}], GROUPS=[["Other",["— warm-up / sparring, not curriculum","— repeat of the previous segment","— talk-through only, no demo","— false detection / nothing here"]],["CH.1 Standing defenses from the front",["20 Hip throw","22 Two-hand front choke defense","24 Two-hand front choke defense (with hip throw)","26 Two-hand front choke defense (with armlock)","28 Two-hand front choke defense (against a wall)","30 Single-hand front choke defense (against a wall)","31 Wall-pin defense","32 Single-hand collar grab defense","33 Single-hand collar grab defense (wrist fold)","34 Single-hand collar grab defense (palm turned up)","36 Single-hand collar grab defense (straight arm)","38 Single-hand collar grab defense (thumb down)","40 Single-hand chest-push defense","42 Double-collar grab defense (hands apart)","44 Double-collar grab defense (hands together)","46 Shoulder grab defense (arm bent)","48 Shoulder grab defense (straight arm)","50 Headlock defense (with punch)","52 Headlock defense (attacker upright)","54 Headlock defense (attacker bent over)","56 Headlock defense (attacker with wide stance)","58 Headlock defense (pressure on the nose)","60 Headlock defense against a wall (attacker outside)","62 Headlock defense against a wall (attacker inside)","64 Guillotine defense (sitting back)","66 Guillotine defense (sliding down)","68 Guillotine defense (with trip takedown)","70 Guillotine choke","72 Guillotine choke (if taken down)","74 Tackle defense (with elbow strike)","75 Tackle defense (with knee strike)","76 Front bear hug over the arms defense","78 Front bear hug under arms defense (with frame)","79 Front bear hug under arms defense (with chin push)","80 Sucker punch defense","82 Haymaker punch defense","84 Front kick defense","86 Front kick defense (with pivot)","87 Front kick defense (high)","88 Roundhouse kick defense","90 Standing up in base","92 Hand chop","93 Punch","94 Elbow strike","95 Side kick (surprise attack)","95 Side kick"]],["CH.2 Standing defenses from behind",["98 Rear choke defense","100 Rear choke defense pulled back (with side throw)","102 Rear choke defense pulled back (with overhead throw)","104 Rear two-hand choke defense","106 Rear bear hug over the arms defense","108 Rear bear hug over the arms defense (with wide stance)","110 Rear bear hug under arms defense","112 Rear bear hug under arms defense (with lift)","114 Full nelson defense"]],["CH.3 Weapons — no weapon seen in any frame",["118 Club defense (overhead close range)","120 Club defense (overhead close range with slide)","122 Club defense (overhead distant range)","124 Club defense (two-hand overhead)","126 Club defense (horizontal swing)","128 Chair defense","130 Knife defense (overhead)","132 Knife defense (underhand)","134 Knife defense (underhand straight arm block)","136 Knife defense (underhand straight arm block with resistance)","138 Knife defense (backhand)","140 Knife defense (side)","142 Rear knife defense (chest thrust)","144 Rear knife defense (throat slice)","146 Gun defense (pointed at stomach)","148 Gun defense (front waistband)","150 Gun defense (side waistband)","152 Gun defense (pointed at head)","154 Rear gun defense (hostage position)","156 Rear gun defense (pointed at back)"]]];
+/* ───────────────────────────────────────────────────────────────────────────── */
+
+const QUICK=[
+  {k:"ok",    t:"Moment is right", ok:true},
+  {k:"early", t:"Starts too early"},
+  {k:"late",  t:"Starts too late"},
+  {k:"short", t:"Ends too soon"},
+  {k:"long",  t:"Runs too long"},
+  {k:"wrong", t:"Wrong moment entirely"},
+  {k:"notech",t:"Not a technique"}
+];
+const QT=Object.fromEntries(QUICK.map(q=>[q.k,q.t]));
+const KEY="vb_review_2026_09_18";
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* st: segment_key -> {technique, is_best, note, flags}  — DEV swaps the loader and save() */
+/* ---- storage (MWM hosting, DEV): every change is queued on the phone AND posted.
+   The server is the authority; anything not yet sent is merged back on load. ---- */
+const TOKEN=(location.pathname.match(/^\/(?:r\/)?([A-Za-z0-9_\-]{20,80})\//)||[])[1]||'';
+const API='/api/'+TOKEN;
+const LKEY=KEY+'_cut_'+TOKEN.slice(0,10), QKEY=LKEY+'_queue';
+let st={}, queue=[];
+try{ st=JSON.parse(localStorage.getItem(LKEY)||'{}')||{}; }catch(e){ st={}; }
+try{ queue=JSON.parse(localStorage.getItem(QKEY)||'[]')||[]; }catch(e){ queue=[]; }
+queue.forEach(o=>{ delete o.fl; });
+function persist(){ try{
+  localStorage.setItem(LKEY,JSON.stringify(st,(k,v)=>k&&k[0]==='_'?undefined:v));
+  localStorage.setItem(QKEY,JSON.stringify(queue)); }catch(e){} }
+let failing=false, busy=false, backoff=2000, retryT=null, lastPull=0;
+function syncUI(){
+  const el=document.getElementById('saveind'); if(!el) return;
+  const n=queue.length;
+  if(!n){ el.textContent='Saved'; return; }
+  el.classList.add('on');
+  el.textContent = failing ? ('No signal — '+n+' waiting, will send by itself') : 'Saving…';
+}
+function enqueue(k,f,v){
+  queue=queue.filter(o=>!(o.k===k&&o.f===f&&!o.fl));   /* keep only the newest unsent value */
+  queue.push({k:k,f:f,v:v,ts:Date.now()});
+  persist(); syncUI(); flush();
+}
+function pending(k){ const p={}; queue.forEach(o=>{ if(o.k===k) p[o.f]=1; }); return p; }
+function applyRow(k,row){
+  const p=pending(k), r=st[k]||{};
+  if(!p.technique){ if(row.technique) r.technique=row.technique; else delete r.technique; }
+  if(!p.note){ if(row.note) r.note=row.note; else delete r.note; }
+  if(!p.flags){ if(row.flags&&row.flags.length) r.flags=row.flags.slice(); else delete r.flags; }
+  if(row.is_best) r.is_best=true; else delete r.is_best;
+  if(Object.keys(r).filter(x=>x[0]!=='_').length) st[k]=r; else delete st[k];
+}
+async function flush(){
+  if(busy||!queue.length){ syncUI(); return; }
+  busy=true; const op=queue[0]; op.fl=1;
+  try{
+    const body={segment_key:op.k, ts:op.ts}; body[op.f]=op.v;
+    const r=await fetch(API+'/answer',{method:'POST',cache:'no-store',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.status===400||r.status===404){ queue.shift(); }          /* refused for good: do not loop */
+    else if(!r.ok){ throw new Error('http '+r.status); }
+    else{
+      const d=await r.json(); queue.shift();
+      const ch=d.changed||{};
+      Object.keys(ch).forEach(k=>{ applyRow(k,ch[k]); if(k!==op.k) paint(k); });
+      flash();
+    }
+    failing=false; backoff=2000; busy=false; persist(); syncUI();
+    if(queue.length) flush();
+  }catch(e){
+    delete op.fl; busy=false; failing=true; persist(); syncUI();
+    clearTimeout(retryT); retryT=setTimeout(flush,backoff); backoff=Math.min(backoff*2,60000);
+  }
+}
+async function pull(){
+  try{
+    const r=await fetch(API+'/answers',{cache:'no-store'}); if(!r.ok) throw 0;
+    const d=await r.json(); if(!d.ok) throw 0;
+    const srv=d.answers||{}, keys={};
+    Object.keys(srv).forEach(k=>keys[k]=1); Object.keys(st).forEach(k=>keys[k]=1);
+    Object.keys(keys).forEach(k=>applyRow(k, srv[k]||{technique:null,is_best:false,note:''}));
+    lastPull=Date.now(); persist();
+    const a=document.activeElement;
+    if(!(a&&a.matches&&a.matches('textarea,input'))){ if(!document.querySelector('.seg video')) render(); else { DATA.forEach(d=>paint(d.k)); tally(); } }
+  }catch(e){}
+  syncUI(); flush();
+}
+window.addEventListener('online',()=>{ backoff=2000; flush(); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible'){
+  backoff=2000; if(!queue.length&&Date.now()-lastPull>30000) pull(); else flush(); } });
+let filter="all", sheetFor=null;
+
+function flash(){
+  const el=document.getElementById("saveind");
+  el.classList.add("on"); clearTimeout(flash._t);
+  flash._t=setTimeout(()=>el.classList.remove("on"),1100);
+}
+function save(){ persist(); }
+
+function rec(k){ return st[k]=st[k]||{}; }
+function named(k){ return !!(st[k]||{}).technique; }
+function reviewed(k){
+  const r=st[k]||{};
+  return !!(r.technique || r.is_best || (r.note||"").trim() || (r.flags||[]).length);
+}
+
+/* One best take per technique. Kept local for instant feedback; the server is the authority
+   and its response wins. While a segment has no technique, scope exclusivity to its clip. */
+function setBest(k,on){
+  const r=rec(k), seg=DATA.find(d=>d.k===k);
+  r.is_best=!!on;
+  if(on){
+    DATA.forEach(d=>{
+      if(d.k===k) return;
+      const o=st[d.k]; if(!o||!o.is_best) return;
+      const sameTech = r.technique && o.technique===r.technique;
+      const sameClip = !r.technique && !o.technique && d.clip===seg.clip;
+      if(sameTech||sameClip){ o.is_best=false; paint(d.k); }
+    });
+  }
+  paint(k); save(); tally();
+}
+
+function tally(){
+  const n=DATA.filter(d=>named(d.k)).length;
+  document.getElementById("cnt").textContent=n;
+  document.getElementById("tot").textContent=DATA.length;
+  document.getElementById("fill").style.width=(DATA.length?n/DATA.length*100:0)+"%";
+}
+
+/* Repaint ONE card in place — never re-render the list, so a playing clip keeps playing. */
+function paint(k){
+  const el=document.querySelector('.seg[data-k="'+CSS.escape(k)+'"]');
+  if(!el) return;
+  const r=st[k]||{};
+  el.classList.toggle("done",reviewed(k));
+  el.classList.toggle("best",!!r.is_best);
+  const p=el.querySelector(".pick");
+  if(p){ p.innerHTML=r.technique?"<b>"+esc(r.technique)+"</b>":"Choose the technique";
+         p.classList.toggle("empty",!r.technique); }
+  const s=el.querySelector(".star");
+  if(s) s.setAttribute("aria-pressed",!!r.is_best);
+  el.querySelectorAll("[data-flag]").forEach(b=>
+    b.setAttribute("aria-pressed",(r.flags||[]).includes(b.dataset.flag)));
+}
+
+function pass(d){
+  const r=st[d.k]||{};
+  if(filter==="todo")   return !r.technique;
+  if(filter==="nobest") return !r.is_best;
+  if(filter==="flagged")return (r.flags||[]).some(f=>f!=="ok");
+  return true;
+}
+function card(d,i){
+  const r=st[d.k]||{};
+  const prev=i>0?DATA[i-1]:null;
+  const prevTech=prev?(st[prev.k]||{}).technique:null;
+  const el=document.createElement("article");
+  el.className="seg"+(reviewed(d.k)?" done":"")+(r.is_best?" best":"");
+  el.dataset.k=d.k;
+  el.innerHTML=`
+    <div class="vidwrap">
+      <img id="p_${esc(d.k)}" src="p/${esc(d.k)}.jpg" alt="" loading="lazy">
+      <span class="num">${esc(d.wall||"")}${d.of>1?" &middot; take "+d.n+" of "+d.of:""}</span>
+      ${d.w?'<span class="wtag">'+esc(d.w)+'</span>':''}
+      <button class="play" data-play="${esc(d.k)}" aria-label="Play this clip">
+        <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></span>
+      </button>
+    </div>
+    <div class="body">
+      <div class="meta">${d.dur?d.dur+"s":""}</div>
+      <button class="pick ${r.technique?"":"empty"}" data-pick="${esc(d.k)}">${
+        r.technique?"<b>"+esc(r.technique)+"</b>":"Choose the technique"}</button>
+      <div class="row">
+        ${prevTech?'<button class="same" data-same="'+esc(d.k)+'">Same as the one before</button>':''}
+      </div>
+      <div class="quick">${QUICK.map(q=>
+        `<button class="q${q.ok?" ok":""}" data-flag="${q.k}" data-k="${esc(d.k)}"
+          aria-pressed="${(r.flags||[]).includes(q.k)}">${q.t}</button>`).join("")}</div>
+      <label class="f"><span>Notes</span>
+        <textarea data-note="${esc(d.k)}" placeholder="Anything we should change?">${esc(r.note||"")}</textarea></label>
+    </div>`;
+  return el;
+}
+function render(){
+  const g=document.getElementById("grid");
+  g.textContent="";
+  DATA.forEach((d,i)=>{ if(pass(d)) g.appendChild(card(d,i)); });
+  tally();
+}
+
+/* ── the picker sheet ── */
+function openSheet(k){
+  sheetFor=k;
+  document.getElementById("q").value="";
+  paintSheet("");
+  document.getElementById("sheet").hidden=false;
+  setTimeout(()=>document.getElementById("q").focus(),30);
+}
+function closeSheet(){ document.getElementById("sheet").hidden=true; sheetFor=null; }
+function paintSheet(term){
+  const cur=(st[sheetFor]||{}).technique||"";
+  const t=term.trim().toLowerCase();
+  const list=document.getElementById("sheetlist");
+  let html="";
+  GROUPS.forEach(([g,opts])=>{
+    const hits=opts.filter(o=>!t||o.toLowerCase().includes(t));
+    if(!hits.length) return;
+    html+='<div class="gh">'+esc(g)+"</div>";
+    hits.forEach(o=>{ html+='<button class="opt'+(o===cur?" sel":"")+'" data-opt="'+esc(o)+'">'+esc(o)+"</button>"; });
+  });
+  if(cur) html+='<div class="gh">Clear</div><button class="opt" data-opt="">Remove the name</button>';
+  list.innerHTML=html||'<div class="gh">Nothing matches</div>';
+}
+
+document.addEventListener("click",e=>{
+  const play=e.target.closest("[data-play]");
+  if(play){
+    const k=play.dataset.play, img=document.getElementById("p_"+k);
+    if(!img) return;
+    const v=document.createElement("video");
+    v.src="c/"+k+".mp4"; v.poster="p/"+k+".jpg";
+    v.playsInline=true; v.loop=true; v.muted=true; v.controls=false; v.id="p_"+k;
+    img.replaceWith(v);                 /* replaces ONLY the thumbnail, never the card */
+    v.play().then(()=>{ play.style.display="none"; }).catch(()=>{});
+    v.addEventListener("pause",()=>{ play.style.display=""; },{once:true});
+    return;
+  }
+  const pick=e.target.closest("[data-pick]"); if(pick){ openSheet(pick.dataset.pick); return; }
+  const star=e.target.closest("[data-star]");
+  if(star){ const k=star.dataset.star; setBest(k,!(st[k]||{}).is_best); return; }
+  const same=e.target.closest("[data-same]");
+  if(same){
+    const k=same.dataset.same, i=DATA.findIndex(d=>d.k===k);
+    const pt=i>0?(st[DATA[i-1].k]||{}).technique:null;
+    if(pt){ rec(k).technique=pt; paint(k); save(); tally(); enqueue(k,'technique',pt); }
+    return;
+  }
+  const fl=e.target.closest("[data-flag]");
+  if(fl){
+    const k=fl.dataset.k, r=rec(k); r.flags=r.flags||[];
+    const j=r.flags.indexOf(fl.dataset.flag);
+    if(j>=0) r.flags.splice(j,1); else r.flags.push(fl.dataset.flag);
+    paint(k); save(); enqueue(k,'flags',r.flags.slice()); return;
+  }
+  const opt=e.target.closest("[data-opt]");
+  if(opt){
+    const k=sheetFor, val=opt.dataset.opt;
+    if(k){ const r=rec(k); r.technique=val||null; if(!val) r.is_best=false; paint(k); save(); tally(); enqueue(k,'technique',val||null); }
+    closeSheet(); return;
+  }
+  const chip=e.target.closest(".chip");
+  if(chip){
+    filter=chip.dataset.f;
+    document.querySelectorAll(".chip").forEach(x=>x.setAttribute("aria-pressed",x===chip));
+    render(); return;
+  }
+  if(e.target.id==="sheetclose" || e.target.id==="sheet") closeSheet();
+});
+document.addEventListener("input",e=>{
+  if(e.target.id==="q"){ paintSheet(e.target.value); return; }
+  const nt=e.target.closest("[data-note]");
+  if(nt){
+    const k=nt.dataset.note, r=rec(k);
+    r.note=nt.value;
+    clearTimeout(r._t);
+    r._t=setTimeout(()=>{ save(); enqueue(k,'note',nt.value); const c=document.querySelector('.seg[data-k="'+CSS.escape(k)+'"]');
+                          if(c) c.classList.toggle("done",reviewed(k)); },600);
+  }
+});
+document.addEventListener("keydown",e=>{ if(e.key==="Escape" && sheetFor) closeSheet(); });
+document.addEventListener("change",e=>{ const nt=e.target.closest&&e.target.closest("[data-note]"); if(!nt) return;
+  const k=nt.dataset.note, r=rec(k); clearTimeout(r._t); r.note=nt.value; save(); enqueue(k,'note',nt.value); });
+
+render(); syncUI(); pull();
+</script>
+</body>
+</html>

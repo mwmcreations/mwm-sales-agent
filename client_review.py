@@ -53,6 +53,12 @@ KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{20,80}$")
 MAX_TECH = 300
 MAX_NOTE = 2000
+# PATCH #142 (Valente cut review, 30 Sep): per-segment timing flags, stored beside
+# technique and note. Canonical order = the page's button order.
+FLAGS = ("ok", "early", "late", "short", "long", "wrong", "notech")
+FLAG_TEXT = {"ok": "moment is right", "early": "starts too early", "late": "starts too late",
+             "short": "ends too soon", "long": "runs too long", "wrong": "wrong moment entirely",
+             "notech": "not a technique"}
 MEDIA_LIMITS = {"poster": (500, 400_000, b"\xff\xd8"), "clip": (5_000, 4_000_000, None)}
 
 DDL = [
@@ -78,6 +84,7 @@ DDL = [
            ua          TEXT
        )""",
     "CREATE INDEX IF NOT EXISTS cr_event_review ON cr_event (review_id, at DESC)",
+    "ALTER TABLE cr_answer ADD COLUMN IF NOT EXISTS flags TEXT NOT NULL DEFAULT ''",   # PATCH #142
     """CREATE TABLE IF NOT EXISTS cr_media (
            review_id   TEXT NOT NULL,
            segment_key TEXT NOT NULL,
@@ -99,6 +106,7 @@ class Review:
         self.review_id = d["review_id"]
         self.title = d.get("title", self.review_id)
         self.slack_channel = d.get("slack_channel", "")
+        self.best_take = bool(d.get("best_take", True))   # PATCH #142: the cut review has no star
         self.reviewers = {r["token_sha256"]: r.get("label", "reviewer") for r in d.get("reviewers", [])}
         with open(os.path.join(folder, "segments.json"), encoding="utf-8") as f:
             segs = json.load(f)
@@ -166,6 +174,13 @@ def clean_fields(body):
         if not isinstance(n, str):
             raise ValueError("bad note")
         f["note"] = n[:MAX_NOTE]
+    if "flags" in body:
+        fl = body["flags"]
+        if fl is None:
+            fl = []
+        if not isinstance(fl, list) or any(not isinstance(x, str) or x not in FLAGS for x in fl):
+            raise ValueError("bad flags")
+        f["flags"] = [x for x in FLAGS if x in fl]      # deduped, canonical order
     if not f:
         raise ValueError("nothing to save")
     return k, f
@@ -211,6 +226,18 @@ def apply_answer(rows, clip_of, key, fields):
     return changed
 
 
+def flags_of(row):
+    return list((row or {}).get("flags") or [])
+
+
+def flags_db(flags):
+    return ",".join(x for x in FLAGS if x in (flags or []))
+
+
+def flags_from_db(txt):
+    return [x for x in str(txt or "").split(",") if x in FLAGS]
+
+
 def progress(review, rows_by_token):
     """Counts for the admin page, per reviewer."""
     out = []
@@ -223,7 +250,10 @@ def progress(review, rows_by_token):
                     "named": len(named), "of": len(review.order),
                     "best": sum(1 for k in review.order if (rows.get(k) or {}).get("is_best")),
                     "techniques": len(techs),
-                    "techniques_without_best": sum(1 for v in techs.values() if not any(v))})
+                    "techniques_without_best": sum(1 for v in techs.values() if not any(v)),
+                    "flagged": sum(1 for k in review.order if [x for x in flags_of(rows.get(k)) if x != "ok"]),
+                    "flag_ok": sum(1 for k in review.order if flags_of(rows.get(k)) == ["ok"]),
+                    "best_take": review.best_take})
     return out
 
 
@@ -232,13 +262,14 @@ def to_csv(review, answers):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["reviewer", "segment_key", "clip", "rep", "wall_clock", "duration_s",
-                "weapon_seen", "technique", "best", "note", "updated_at"])
+                "weapon_seen", "technique", "best", "flags", "flags_text", "note", "updated_at"])
     for a in answers:
         s = review.seg.get(a["segment_key"], {})
         w.writerow([a.get("label", ""), a["segment_key"], s.get("clip", ""),
                     "%s of %s" % (s.get("rep_n", ""), s.get("rep_of", "")),
                     s.get("wall_clock", ""), s.get("duration_s", ""), s.get("weapon", ""),
                     a.get("technique") or "", "BEST" if a.get("is_best") else "",
+                    " ".join(flags_of(a)), "; ".join(FLAG_TEXT[x] for x in flags_of(a)),
                     (a.get("note") or "").replace("\n", " "), a.get("updated_at", "")])
     return buf.getvalue()
 
@@ -299,9 +330,14 @@ def init_schema():
 
 
 def db_rows(review_id, token_hash, cur):
-    cur.execute("""SELECT segment_key, technique, is_best, note FROM cr_answer
+    cur.execute("""SELECT segment_key, technique, is_best, note, flags FROM cr_answer
                     WHERE review_id=%s AND token_hash=%s""", (review_id, token_hash))
-    return {k: {"technique": t, "is_best": bool(b), "note": n or ""} for k, t, b, n in cur.fetchall()}
+    out = {}
+    for k, t, b, n, fl in cur.fetchall():
+        out[k] = {"technique": t, "is_best": bool(b), "note": n or ""}
+        if flags_from_db(fl):
+            out[k]["flags"] = flags_from_db(fl)
+    return out
 
 
 def db_answer(review, token_hash, key, fields, client_ts=None, ua=""):
@@ -319,18 +355,20 @@ def db_answer(review, token_hash, key, fields, client_ts=None, ua=""):
             for k, r in changed.items():
                 cur.execute(
                     """INSERT INTO cr_answer (review_id, token_hash, segment_key, technique,
-                                              is_best, note, updated_at)
-                            VALUES (%s,%s,%s,%s,%s,%s, now())
+                                              is_best, note, flags, updated_at)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s, now())
                        ON CONFLICT (review_id, token_hash, segment_key) DO UPDATE SET
                             technique=EXCLUDED.technique, is_best=EXCLUDED.is_best,
-                            note=EXCLUDED.note, updated_at=now()""",
-                    (review.review_id, token_hash, k, r["technique"], r["is_best"], r["note"]))
+                            note=EXCLUDED.note, flags=EXCLUDED.flags, updated_at=now()""",
+                    (review.review_id, token_hash, k, r.get("technique"), bool(r.get("is_best")),
+                     r.get("note") or "", flags_db(r.get("flags"))))
             for name, val in fields.items():
                 cur.execute(
                     """INSERT INTO cr_event (review_id, token_hash, segment_key, field, value,
                                              client_ts, ua) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                     (review.review_id, token_hash, key, name,
-                     None if val is None else str(val), client_ts, (ua or "")[:200]))
+                     None if val is None else (",".join(val) if isinstance(val, list) else str(val)),
+                     client_ts, (ua or "")[:200]))
         return changed
     except Exception as e:
         print("[CR] db_answer failed: %r" % (e,))
@@ -356,12 +394,13 @@ def db_all(review_id):
         return None
     try:
         with _Conn(pg) as c, c.cursor() as cur:
-            cur.execute("""SELECT token_hash, segment_key, technique, is_best, note, updated_at
+            cur.execute("""SELECT token_hash, segment_key, technique, is_best, note, updated_at, flags
                              FROM cr_answer WHERE review_id=%s ORDER BY updated_at DESC""",
                         (review_id,))
             ans = [{"token_hash": h, "segment_key": k, "technique": t, "is_best": bool(b),
-                    "note": n or "", "updated_at": u.isoformat() if u else ""}
-                   for h, k, t, b, n, u in cur.fetchall()]
+                    "note": n or "", "updated_at": u.isoformat() if u else "",
+                    "flags": flags_from_db(fl)}
+                   for h, k, t, b, n, u, fl in cur.fetchall()]
             cur.execute("""SELECT token_hash, max(at), count(*) FROM cr_event
                             WHERE review_id=%s GROUP BY token_hash""", (review_id,))
             touch = {h: {"last": a.isoformat() if a else "", "events": n} for h, a, n in cur.fetchall()}
@@ -430,7 +469,7 @@ th{background:#f0f0f0;position:sticky;top:0}.best{color:#b8860b;font-weight:600}
 .k{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 14px}.k div{background:#fff;border:1px solid #ddd;padding:8px 12px;border-radius:6px}
 .k b{font-size:20px;display:block}a{color:#0645ad}.muted{color:#888}</style></head><body>
 <h1>%(title)s</h1><div class="sub">Live — refreshes every 15 s · <a id="csv" href="#">CSV export</a> · <span id="at" class="muted"></span></div>
-<div class="k" id="kpis"></div><h2 style="font-size:15px">Best takes by technique</h2><table id="bytech"></table>
+<div class="k" id="kpis"></div><h2 style="font-size:15px" id="bth">Best takes by technique</h2><table id="bytech"></table>
 <h2 style="font-size:15px">All answers, newest change first</h2><table id="all"></table>
 <script>
 const Q=location.search;document.getElementById('csv').href=location.pathname+'.csv'+Q;
@@ -438,12 +477,20 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;',
 async function go(){
  try{const r=await fetch(location.pathname+'.json'+Q,{cache:'no-store'});const d=await r.json();
  if(!d.ok){document.getElementById('at').textContent=d.error||'error';return;}
- document.getElementById('kpis').innerHTML=d.reviewers.map(p=>'<div><span class="muted">'+esc(p.label)+'</span><b>'+p.named+' / '+p.of+'</b>named · '+p.best+' starred · '+p.techniques_without_best+' of '+p.techniques+' techniques without a best take<br><span class="muted">last touch '+esc(p.last||'—')+'</span></div>').join('')||'<div>No answers yet.</div>';
- let h='<tr><th>technique</th><th>reviewer</th><th>best take</th><th>other takes</th></tr>';
+ const FT=d.flag_text||{};const ft=a=>(a.flags||[]).map(x=>FT[x]||x).join(', ');
+ document.getElementById('kpis').innerHTML=d.reviewers.map(p=>'<div><span class="muted">'+esc(p.label)+'</span><b>'+p.named+' / '+p.of+'</b>named · '+(d.best_take?p.best+' starred · '+p.techniques_without_best+' of '+p.techniques+' techniques without a best take':p.flagged+' flagged as mistimed / wrong · '+p.flag_ok+' marked right')+'<br><span class="muted">last touch '+esc(p.last||'—')+'</span></div>').join('')||'<div>No answers yet.</div>';
+ let h;
+ if(d.best_take){
+ h='<tr><th>technique</th><th>reviewer</th><th>best take</th><th>other takes</th></tr>';
  d.by_technique.forEach(t=>{h+='<tr><td>'+esc(t.technique)+'</td><td>'+esc(t.label)+'</td><td class="best">'+esc(t.best||'(not chosen)')+'</td><td>'+esc(t.others.join(', '))+'</td></tr>';});
+ }else{
+ document.getElementById('bth').textContent='Flagged clips (timing or content)';
+ h='<tr><th>segment</th><th>reviewer</th><th>technique</th><th>flags</th><th>note</th></tr>';
+ d.answers.filter(a=>(a.flags||[]).some(x=>x!=='ok')).sort((x,y)=>x.segment_key<y.segment_key?-1:1).forEach(a=>{h+='<tr><td>'+esc(a.segment_key)+'</td><td>'+esc(a.label)+'</td><td>'+esc(a.technique||'')+'</td><td class="best">'+esc(ft(a))+'</td><td>'+esc(a.note)+'</td></tr>';});
+ }
  document.getElementById('bytech').innerHTML=h;
- h='<tr><th>updated</th><th>reviewer</th><th>segment</th><th>clip · rep · time</th><th>technique</th><th>best</th><th>note</th></tr>';
- d.answers.forEach(a=>{h+='<tr><td>'+esc(a.updated_at.replace('T',' ').slice(0,19))+'</td><td>'+esc(a.label)+'</td><td>'+esc(a.segment_key)+'</td><td>'+esc(a.where)+'</td><td>'+esc(a.technique||'')+'</td><td class="best">'+(a.is_best?'★':'')+'</td><td>'+esc(a.note)+'</td></tr>';});
+ h='<tr><th>updated</th><th>reviewer</th><th>segment</th><th>clip · rep · time</th><th>technique</th>'+(d.best_take?'<th>best</th>':'')+'<th>flags</th><th>note</th></tr>';
+ d.answers.forEach(a=>{h+='<tr><td>'+esc(a.updated_at.replace('T',' ').slice(0,19))+'</td><td>'+esc(a.label)+'</td><td>'+esc(a.segment_key)+'</td><td>'+esc(a.where)+'</td><td>'+esc(a.technique||'')+'</td>'+(d.best_take?'<td class="best">'+(a.is_best?'★':'')+'</td>':'')+'<td>'+esc(ft(a))+'</td><td>'+esc(a.note)+'</td></tr>';});
  document.getElementById('all').innerHTML=h;document.getElementById('at').textContent='updated '+new Date().toLocaleTimeString();
  }catch(e){document.getElementById('at').textContent='offline — retrying';}}
 go();setInterval(go,15000);
@@ -685,6 +732,7 @@ def register(app, admin_ok, report_error=None, notify=None, session_ok=None, rev
                 bytech.append({"technique": t, "label": rv.reviewers.get(h, "?"), "best": best,
                                "others": [k for k, b in techs[t] if not b]})
         return {"ok": True, "review_id": rv.review_id, "title": rv.title, "reviewers": prog,
+                "best_take": rv.best_take, "flag_text": FLAG_TEXT,
                 "answers": rows, "by_technique": bytech, "media": db_media_count(rv.review_id)}
 
     @app.route("/admin/review/<review_id>", methods=["GET"])

@@ -1,0 +1,16 @@
+{
+ "review_id": "valente-2026-09-18-cut",
+ "title": "Valente Brothers — the cut (64 techniques), classes of 18 Sep 2026",
+ "slack_channel": "C0BM0EETDLL",
+ "best_take": false,
+ "reviewers": [
+  {
+   "label": "Guilherme Valente",
+   "token_sha256": "c1ff90fa38195a2fb8e88bc510fc09fc0c30cc6c404363fcbb2383f1fe5ee9e1"
+  },
+  {
+   "label": "MWM test (internal)",
+   "token_sha256": "e9307a85e72d6f2a55929a00f972015d0ce954f1bba5129592a3a727aa97b5c4"
+  }
+ ]
+}
