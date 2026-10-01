@@ -50,6 +50,7 @@ import icp as _icp            # S31 — who we are for
 import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
+import meta_capi as _capi     # Patch #145 — Lead / Schedule / Purchase back to Meta
 import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -5699,6 +5700,17 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                         print(f"[book_appointment] Backfilled lead email: {_book_email}")
                     if _book_biz and not lead_data[sender].get("business"):
                         lead_data[sender]["business"] = _book_biz
+                    # PATCH #145 — a booked visit is the Schedule event.
+                    try:
+                        _capi_send_async(_capi.schedule_event(
+                            name=lead_data[sender].get("name", ""),
+                            email=lead_data[sender].get("email", ""),
+                            phone=lead_data[sender].get("phone", "") or sender,
+                            lead_id=lead_data[sender].get("leadgen_id", ""),
+                            when=str(tool_input.get("slot_id", "")), kind=appt_type,
+                            event_id=f"schedule-{event_id}" if event_id else None))
+                    except Exception as _cpx:
+                        print(f"[CAPI] schedule hook failed (non-fatal): {_cpx}")
                 fire_hub_event(
                     event_type  = hub_event,
                     lead_name   = tool_input.get("lead_name"),
@@ -18372,6 +18384,8 @@ def stripe_webhook():
             print(f"[STRIPE] {ev.get('type')} ({ev.get('id')}) -> {_sw_res}")
         except Exception as _sw_e:
             _report_error("stripe_webhook.process", _sw_e, f"event={ev.get('id')}")
+        finally:
+            _on_payment(ev)          # PATCH #145 — whatever the product, money stops the chase
 
     threading.Thread(target=_sw_process, args=(_sw_event,), daemon=True).start()
     return jsonify({"received": True}), 200
@@ -19064,6 +19078,7 @@ def health_check():
         # PATCH #143 — the form rail and the chase chain, provable from here.
         "lead_form": dict(_LEAD_FORM_LAST),
         "lead_chase": dict(_LEAD_CHASE_LAST),
+        "capi": _capi.status(),                    # PATCH #145
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         "approvals": {                             # PATCH #125
             "total": len(approval_requests),
@@ -19723,6 +19738,10 @@ def _meta_lead_intake(value, lead_meta=None):
                 chans.append(_chase.SMS)
             lr["chase"] = _chase.arm(now, channels=chans, verdict=verdict)
             lead_data[sender_key] = lr
+            # PATCH #145 — tell Meta this one qualified (dark until configured).
+            _capi_send_async(_capi.lead_event(
+                name=name, email=email, phone=e164 or "", lead_id=leadgen_id,
+                ad_id=ad_id, qualified=verdict, business=rec["business"]))
         _LEAD_FORM_LAST.update({"verdict": verdict, "sms": sms_note, "email": email_note,
                                 "count": _LEAD_FORM_LAST["count"] + 1})
         _TALLY.bump("lead_form.intake", verdict)
@@ -19799,6 +19818,9 @@ def _chase_aware(dt):
 
 
 def _chase_is_client(sender_key):
+    rec = lead_data.get(sender_key) or {}
+    if rec.get("paid_at") or str(rec.get("outcome") or "").lower() == "won":
+        return True
     try:
         hit, why, _ = _known_client_lookup(sender_key)
         return bool(hit) or why == "already_marked"
@@ -19886,10 +19908,15 @@ def _chase_pass(now=None):
                     rec["chase"] = state
                     lead_data[key] = rec
                     continue
-                subj, html, _ = _sv.chase_email(copy_step, rec.get("name"),
-                                                rec.get("business"),
-                                                rec.get("must_understand"),
-                                                ai=bool(rec.get("ai_interest")))
+                if state.get("kind") == _chase.KIND_POST_VISIT:
+                    subj, html, _ = _sv.post_visit_email(copy_step, rec.get("name"),
+                                                         rec.get("business"),
+                                                         state.get("agreed_next", ""))
+                else:
+                    subj, html, _ = _sv.chase_email(copy_step, rec.get("name"),
+                                                    rec.get("business"),
+                                                    rec.get("must_understand"),
+                                                    ai=bool(rec.get("ai_interest")))
                 state.setdefault("sent", {})[key_s] = now.isoformat()   # stamp BEFORE send
                 rec["chase"] = state
                 lead_data[key] = rec
@@ -19918,15 +19945,22 @@ def _chase_pass(now=None):
                     rec["chase"] = state
                     lead_data[key] = rec
                     continue
+                slots = []
+                if state.get("kind") != _chase.KIND_POST_VISIT:
+                    try:
+                        slots = (get_available_slots() or [])[:2]
+                    except Exception:
+                        slots = []
                 try:
-                    slots = (get_available_slots() or [])[:2]
-                except Exception:
-                    slots = []
-                try:
-                    body = _sms_body_that_fits((
-                        lambda: _sv.chase_sms(copy_step, rec.get("name"), slots),
-                        lambda: _sv.chase_sms(copy_step, rec.get("name"), None),
-                        lambda: _sv.chase_sms(copy_step, "", None)))
+                    if state.get("kind") == _chase.KIND_POST_VISIT:
+                        body = _sms_body_that_fits((
+                            lambda: _sv.post_visit_sms(rec.get("name")),
+                            lambda: _sv.post_visit_sms("")))
+                    else:
+                        body = _sms_body_that_fits((
+                            lambda: _sv.chase_sms(copy_step, rec.get("name"), slots),
+                            lambda: _sv.chase_sms(copy_step, rec.get("name"), None),
+                            lambda: _sv.chase_sms(copy_step, "", None)))
                 except ValueError as _bx:
                     state.setdefault("skipped", {})[key_s] = "copy did not fit"
                     rec["chase"] = state
@@ -23678,6 +23712,164 @@ def booking_form_submit():
     }), 200
 
 
+OUTCOME_SHEET_STATUS = {
+    "client_won": "Client Won", "follow_up": "Visited — Follow-up",
+    "studio_package_pitched": "Studio Package — Pitched", "completed": "Completed",
+    "not_interested": "Lost — Not Interested", "no_show": "No-Show — Reschedule",
+}
+
+
+def _deal_value_from(service):
+    """'$1,200/month' -> 1200.0; nothing readable -> 0.0."""
+    m = re.search(r"\$\s*([\d,]+(?:\.\d+)?)", str(service or ""))
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
+def _chase_stop(key, rec, reason):
+    """Stop a lead's chase chain now (idempotent)."""
+    st = (rec or {}).get("chase")
+    if isinstance(st, dict) and st.get("armed_at") and not st.get("stopped"):
+        st["stopped"] = reason
+        st["stopped_at"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+        rec["chase"] = st
+        lead_data[key] = rec
+        _TALLY.bump("lead_chase.stopped", reason)
+        return True
+    return False
+
+
+def _report_drives_record(outcome, key, rec, email, name, service, notes, next_steps,
+                          plan, test_mode, test_log):
+    """PATCH #145. Returns the (possibly replaced) plan."""
+    import sms_consent as _sc
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    if not key or rec is None or not isinstance(rec, dict) or not lead_data.get(key):
+        if not test_mode:
+            print(f"[P145] no lead record for {name!r} — sheet by name only")
+        return plan
+    if test_mode:
+        test_log.append({"action": "P145 record/chain/sheet", "lead": key, "outcome": outcome})
+        return plan
+    rec["last_outcome"] = outcome
+    rec["last_outcome_at"] = now.isoformat()
+    if outcome == "client_won":
+        rec["relationship"] = "new_client"
+        rec["won_at"] = now.isoformat()
+        if service:
+            rec["product"] = service
+        _chase_stop(key, rec, _chase.STOP_CLIENT)
+        try:
+            _record_win(key, deal_value=_deal_value_from(service), service=service, notes=notes)
+        except Exception as _rwx:
+            _report_error("p145.record_win", _rwx, key)
+        _label = rec.get("utm_campaign") or rec.get("ad_id") or "organic"
+        _post_to_slack_async(SLACK_ERIC_CHANNEL,
+            f":trophy: *AD → WON* {name}" + (f" ({rec.get('business')})" if rec.get("business") else "") +
+            f" · source {rec.get('source', '?')} · ad {_label}" +
+            (f" · {service}" if service else "") + " · from Michael's event report")
+    elif outcome == "follow_up":
+        chans = []
+        if email and not email_is_suppressed(email)[0]:
+            chans.append(_chase.EMAIL)
+        e164 = _sc.to_e164(rec.get("phone") or key)
+        consent = _sms_consent_get(e164) if e164 else {}
+        if e164 and consent.get("status") == "yes" and consent.get("marketing"):
+            chans.append(_chase.SMS)
+        st = _chase.arm(now, channels=chans, verdict="post_visit", kind=_chase.KIND_POST_VISIT)
+        st["agreed_next"] = str(next_steps or "").strip()[:300]
+        rec["chase"] = st
+        plan = {"steps": [], "close_after_days": 14, "suppress": False, "editing": False,
+                "internal_only": False, "owner": "MAYA",
+                "why": ("post-visit chain armed (Patch #145): email +2h (thank-you + the plan), "
+                        "text day 2" + ("" if _chase.SMS in chans else " (skipped — no marketing SMS consent)") +
+                        ", email day 6 (what month one looks like), email day 14 (door stays open). "
+                        "Stops on a reply, a booking, a payment or a client match. "
+                        f"Rails: {', '.join(chans) or 'NONE — no sendable email and no SMS consent'}")}
+    elif outcome == "not_interested":
+        _chase_stop(key, rec, _chase.STOP_DISQUALIFIED)
+    elif outcome == "no_show":
+        _chase_stop(key, rec, "no_show")
+    lead_data[key] = rec
+    try:
+        _upd = {"Status": OUTCOME_SHEET_STATUS.get(outcome, outcome),
+                "Last Contact Date": now.strftime("%Y-%m-%d")}
+        if outcome == "client_won":
+            _upd["Lead Temperature"] = "Client"
+        update_lead_columns(key, _upd)
+    except Exception as _sx:
+        _report_error("p145.sheet", _sx, key)
+    return plan
+
+
+# ── PATCH #145 — money stops every chase, and Meta hears about it ──────────
+def _on_payment(ev):
+    """Any paid Stripe event: find the lead, mark paid, stop the chase, tell
+    Meta (Purchase). Runs after the product handlers; never raises."""
+    import sms_consent as _sc
+    try:
+        et = str(ev.get("type") or "")
+        if et not in ("checkout.session.completed", "invoice.paid"):
+            return
+        obj = (ev.get("data") or {}).get("object") or {}
+        cd = obj.get("customer_details") or {}
+        email = (cd.get("email") or obj.get("customer_email") or "").strip().lower()
+        phone = (cd.get("phone") or (obj.get("metadata") or {}).get("phone") or "").strip()
+        name = (cd.get("name") or obj.get("customer_name") or "").strip()
+        amount = obj.get("amount_total") if et == "checkout.session.completed" else obj.get("amount_paid")
+        value = (amount or 0) / 100.0
+        currency = str(obj.get("currency") or "usd").upper()
+        product = ((obj.get("metadata") or {}).get("sku") or (obj.get("metadata") or {}).get("product")
+                   or ("invoice" if et == "invoice.paid" else "checkout"))
+        key = rec = None
+        e164 = _sc.to_e164(phone)
+        if e164:
+            key, rec = _find_lead_by_phone(e164)
+        if not key and email:
+            key, rec = _find_lead_by_email(email)
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        if key and rec is not None:
+            rec["paid_at"] = now.isoformat()
+            rec["paid_value"] = value
+            rec["paid_product"] = str(product)
+            if rec.get("relationship") not in ("client", "existing_client"):
+                rec["relationship"] = "new_client"
+            _chase_stop(key, rec, _chase.STOP_CLIENT)
+            lead_data[key] = rec
+            try:
+                update_lead_columns(key, {"Status": "Paid — Client", "Lead Temperature": "Client",
+                                          "Last Contact Date": now.strftime("%Y-%m-%d")})
+            except Exception as _sx:
+                _report_error("p145.paid_sheet", _sx, key)
+            print(f"[P145] payment {ev.get('id')} -> {key}: paid, chase stopped")
+        else:
+            print(f"[P145] payment {ev.get('id')}: no lead matched ({email or 'no email'})")
+        _capi_send_async(_capi.purchase_event(
+            name=name or (rec or {}).get("name", ""), email=email,
+            phone=e164 or "", lead_id=(rec or {}).get("leadgen_id", ""),
+            value=value, currency=currency, product=str(product), stripe_id=str(obj.get("id") or ev.get("id"))))
+    except Exception as _px:
+        _report_error("p145.on_payment", _px, str(ev.get("id")))
+
+
+def _capi_send_async(event):
+    """Send one Conversions API event in the background. Dark until the two
+    Railway variables exist; counts either way, so /health can say which."""
+    def _go():
+        try:
+            ok, why = _capi.send([event])
+            _TALLY.bump("capi." + str(event.get("event_name", "?")), "sent" if ok else why.split(":")[0][:40])
+            if ok or why != "unconfigured":
+                print(f"[CAPI] {event.get('event_name')}: {why}")
+        except Exception as _cx:
+            _report_error("capi.send", _cx, str(event.get("event_name")))
+    threading.Thread(target=_go, daemon=True).start()
+
+
 @app.route('/meeting-report', methods=['GET'])
 def meeting_report_page():
     """Serve the meeting report form."""
@@ -23893,6 +24085,18 @@ def meeting_report_submit():
     except Exception:
         _p39_hours = None
     _plan = outcome_plan(outcome, _p39_channel, bool(_p39_email), _p39_hours)
+
+    # ── PATCH #145 — the report is the record of truth (ERIC items 3, 4, 5) ──
+    # client_won: the record says Won/client, every chase stops, ERIC sees
+    # "ad -> won". follow_up ("visited, not closed"): the post-visit chain
+    # (3 emails + 1 text over 14 days) replaces the old 48h/day-7 plan.
+    # not_interested / no_show: the form chain stops; the rebook plan owns
+    # a no-show. Every outcome lands on the phone-keyed sheet row.
+    try:
+        _plan = _report_drives_record(outcome, _p39_key, _p39_rec, _p39_email, name,
+                                      service, notes, next_steps, _plan, test_mode, test_log)
+    except Exception as _p145x:
+        _report_error("p145.report", _p145x, f"lead={name}")
 
     et = pytz.timezone("US/Eastern")
     now = datetime.now(et)
@@ -24355,7 +24559,10 @@ def _update_lead_sheet_status(name, outcome, notes="", service="", next_steps=""
     fixed and the next one written wrong. Three fields that are optional in
     the sheet should have been optional in the signature.
     """
-    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    # PATCH #145 — GOOGLE_SHEETS_ID was retired in S31 and is NOT set on
+    # brilliant-success, so this returned silently on every report since: no
+    # event report has reached the sheet. The live id is SHEETS_LEADS_ID.
+    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "") or SHEETS_LEADS_ID
     if not sheet_id:
         return
 
@@ -24503,7 +24710,7 @@ def _lookup_lead_phone(name):
     """Look up a lead's phone number from Google Sheets by name.
     Returns the phone number string or None if not found.
     """
-    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "")
+    sheet_id = os.getenv("GOOGLE_SHEETS_ID", "") or SHEETS_LEADS_ID   # PATCH #145 (see _update_lead_sheet_status)
     if not sheet_id:
         return None
 

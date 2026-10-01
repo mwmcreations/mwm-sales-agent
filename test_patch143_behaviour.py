@@ -7,7 +7,7 @@ import pytz
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import studio_visit as _sv, lead_form as _lf, lead_chase as _chase, sms_copy as _sms_copy
-import ai_studio as _ai, icp as _icp, event_rail
+import ai_studio as _ai, icp as _icp, event_rail, meta_capi as _capi
 
 PASS = FAIL = 0
 def ok(c, label):
@@ -19,7 +19,9 @@ SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 tree = ast.parse(SRC)
 want = {"_meta_lead_intake", "_meta_lead_fetch", "_chase_pass", "_chase_aware",
         "_chase_is_client", "_sms_body_that_fits", "_first_touch_sms_body",
-        "email_ok", "_chase_mask", "_sms_lead_context"}
+        "email_ok", "_chase_mask", "_sms_lead_context",
+        "_report_drives_record", "_chase_stop", "_deal_value_from", "_on_payment",
+        "_capi_send_async"}
 fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 ok(len(fns) == len(want), "functions found (%d/%d)" % (len(fns), len(want)))
 
@@ -91,7 +93,13 @@ G = dict(
     _known_client_lookup=lambda key, cand=None: (False, "no_match", None),
     SMS_KIND_TRANSACTIONAL="transactional", SMS_KIND_MARKETING="marketing",
     _heartbeat=lambda n: None,
+    _capi=_capi, re=__import__("re"),
+    _sms_consent_get=lambda e164: {"status": "yes", "marketing": True, "transactional": True} if e164 else {},
+    _record_win=lambda key, deal_value=0, service="", notes="": calls["wins"].append((key, deal_value, service)),
+    OUTCOME_SHEET_STATUS={"client_won": "Client Won", "follow_up": "Visited — Follow-up",
+                          "not_interested": "Lost — Not Interested", "no_show": "No-Show — Reschedule"},
 )
+calls["wins"] = []; calls["capi"] = []
 sys.modules["pg_store"] = pg
 import sms_consent as _real_sc
 sys.modules["sms_consent"] = _real_sc
@@ -284,6 +292,60 @@ G["_chase_pass"](at(10, 11, 0))
 ok("s2" in rec["chase"]["sent"] and len(calls["sms"]) == 1 and not calls["email"], "the chain resumes at the next step still on time (s2, one step per pass)")
 G["_chase_pass"](at(10, 11, 5))
 ok("e3" in rec["chase"]["sent"] and len(calls["email"]) == 1 and "three videos" in calls["email"][0][1], "next pass: e3")
+
+# ── 7 · the daily report drives the record, the chain and the sheet (#145) ──
+print("\n== 7 · event report (Patch #145)")
+G["_capi_send_async"] = lambda ev: calls["capi"].append(ev)
+rec = armed_lead("L12")
+plan0 = {"steps": [(48, "WhatsApp", "nudge")], "why": "old", "close_after_days": 14}
+plan = G["_report_drives_record"]("follow_up", "whatsapp:+14075551234", rec, "ana@smiledental.com",
+                                  "Ana Souza", "", "great visit", "start in October", plan0, False, [])
+ok(rec["chase"]["kind"] == "post_visit" and rec["chase"]["channels"] == ["email", "sms"] and rec["chase"]["agreed_next"] == "start in October",
+   "follow_up: post-visit chain armed on email + sms, agreed next step kept")
+ok(plan["steps"] == [] and "post-visit chain armed" in plan["why"], "the old 48h/day-7 plan is replaced (no double touch)")
+ok(calls["sheet_updates"] and calls["sheet_updates"][-1][1]["Status"] == "Visited — Follow-up", "sheet row says Visited — Follow-up")
+T1 = datetime.fromisoformat(rec["chase"]["armed_at"]); calls["email"].clear(); calls["sms"].clear()
+rec["last_message_time"] = T1 - timedelta(hours=1)      # their last message came before the report
+def at_h(h):
+    """The first 11:00 local at or after T1 + h hours (inside the send window)."""
+    t = (T1 + timedelta(hours=h)).replace(hour=11, minute=0, second=0, microsecond=0)
+    return t if t >= T1 + timedelta(hours=h) else t + timedelta(days=1)
+G["_chase_pass"](at_h(2))
+ok(len(calls["email"]) == 1 and "thank you for coming in" in calls["email"][0][1] and "start in October" in calls["email"][0][2], "+2h: thank-you email with the agreed next step")
+G["_chase_pass"](at_h(48))
+ok(len(calls["sms"]) == 1 and "Michael here" in calls["sms"][0][1] and calls["sms"][0][2] == "marketing", "day 2: Michael's text (marketing kind)")
+G["_chase_pass"](at_h(24 * 6)); G["_chase_pass"](at_h(24 * 14))
+ok(len(calls["email"]) == 3 and "first month" in calls["email"][1][1] and "door stays open" in calls["email"][2][1], "day 6 + day 14 emails")
+G["_chase_pass"](T1 + timedelta(days=16))
+ok(rec["chase"]["stopped"] == "closed", "post-visit chain closes after four steps")
+# payment stops a running post-visit chain
+rec = armed_lead("L13")
+G["_report_drives_record"]("follow_up", "whatsapp:+14075551234", rec, "ana@smiledental.com", "Ana Souza", "", "", "", plan0, False, [])
+rec["last_message_time"] = datetime.fromisoformat(rec["chase"]["armed_at"]) - timedelta(hours=1)
+G["_on_payment"]({"id": "evt_1", "type": "checkout.session.completed", "data": {"object": {
+    "id": "cs_1", "amount_total": 120000, "currency": "usd",
+    "customer_details": {"email": "ana@smiledental.com", "phone": "+14075551234", "name": "Ana Souza"},
+    "metadata": {"sku": "studio_subscription"}}}})
+ok(rec.get("paid_at") and rec["relationship"] == "new_client" and rec["chase"]["stopped"] == "client", "a Stripe payment marks paid, client, and stops the chain")
+ok(calls["sheet_updates"][-1][1]["Status"] == "Paid — Client", "sheet row says Paid — Client")
+ok(calls["capi"] and calls["capi"][-1]["event_name"] == "Purchase" and calls["capi"][-1]["custom_data"]["value"] == 1200.0
+   and "em" in calls["capi"][-1]["user_data"], "Purchase event built for Meta (hashed email, $1,200)")
+# client_won from the report
+rec = armed_lead("L14")
+G["_report_drives_record"]("client_won", "whatsapp:+14075551234", rec, "ana@smiledental.com", "Ana Souza", "Studio Subscription $1,200/month", "", "", dict(plan0), False, [])
+ok(rec["relationship"] == "new_client" and rec["chase"]["stopped"] == "client" and calls["wins"][-1] == ("whatsapp:+14075551234", 1200.0, "Studio Subscription $1,200/month"), "client_won: record Won, chain stopped, _record_win with the deal value")
+ok(any(c == "#eric" and "AD → WON" in t for c, t in calls["slack"]), "ERIC hears ad -> won")
+ok(calls["sheet_updates"][-1][1]["Status"] == "Client Won" and calls["sheet_updates"][-1][1]["Lead Temperature"] == "Client", "sheet row says Client Won")
+rec = armed_lead("L15")
+G["_report_drives_record"]("not_interested", "whatsapp:+14075551234", rec, "", "Ana", "", "", "", dict(plan0), False, [])
+ok(rec["chase"]["stopped"] == "disqualified", "not_interested stops the form chain")
+# CAPI Lead on a qualified form lead
+reset(); LEAD_JSON.clear(); LEAD_JSON.update(meta_lead(id="123456789012345"))
+G["_meta_lead_intake"]({"leadgen_id": "123456789012345", "form_id": "1093985030009769"})
+ok(calls["capi"] and calls["capi"][-1]["event_name"] == "Lead" and calls["capi"][-1]["user_data"].get("lead_id") == 123456789012345
+   and calls["capi"][-1]["custom_data"]["qualified"] == "yes", "a qualified form lead becomes a Lead event keyed by leadgen id")
+ok(_capi.send([calls["capi"][-1]], post=lambda u, j: (200, {"events_received": 1}), dataset_id="1", token="t")[0]
+   and _capi.send([calls["capi"][-1]], dataset_id="", token="")[1] == "unconfigured", "CAPI send: ok when configured, named skip when dark")
 
 print("\n%d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

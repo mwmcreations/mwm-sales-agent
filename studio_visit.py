@@ -458,6 +458,74 @@ def chase_sms(step, name, slots=None):
             f"Strategy Visit. Reply with a day that works, or 'later'.")
 
 
+# ── the post-visit chain (PATCH #145 — ERIC item 4, 30 Sep) ────────────────
+# Michael met them at the studio and they did not close in the room. He logs
+# "follow-up needed" on the daily report; the machine takes it from there.
+# First person, one CTA, no pressure: the visit already happened, so the
+# next step is the subscription — or an honest "not now".
+
+CTA_POST_VISIT = ("Reply to this email, or text Maya at " + MAYA_WA +
+                  ", and we start your first session.")
+
+
+def post_visit_email(step, name, business="", agreed_next=""):
+    """(subject, html, text) for post-visit email 1..3."""
+    fn = first_name(name)
+    biz = str(business or "").strip()
+    agreed = str(agreed_next or "").strip()
+    if step == 1:
+        subject = f"{fn}, thank you for coming in - the plan in one paragraph"
+        body = [
+            f"Hi {fn},", "",
+            "Michael Moraes here. Thank you for coming to the studio - I enjoyed "
+            "the conversation" + (f" about {biz}" if biz else "") + ".",
+            "Here is the plan in one paragraph: your customers need to understand "
+            "something before they buy, so the first month is about the three "
+            "videos that do that work - the problem, the process and the proof. "
+            "One studio session a month; we plan it, write it, shoot it and cut it.",
+            (f"We agreed: {agreed}." if agreed else
+             "If it makes sense, the Studio Subscription is $1,200 a month: four "
+             "studio hours - up to 8 short videos an hour, or a podcast episode "
+             "and ten cuts - plus strategy, scripts and editing."),
+            CTA_POST_VISIT,
+        ]
+    elif step == 2:
+        subject = "What your first month would look like"
+        body = [
+            f"Hi {fn},", "",
+            "A week on from your visit, here is what month one looks like in "
+            "practice, so there are no surprises.",
+            "Week 1: we write the three scripts together (30 minutes of your "
+            "time). Week 2: one studio session, about an hour. Week 3: the edits "
+            "land in your portal. Week 4: your videos are in front of customers, "
+            "and we plan month two from what they did.",
+            "$1,200 a month, four studio hours, strategy, scripts and editing "
+            "included. Nothing else to buy.",
+            CTA_POST_VISIT,
+        ]
+    else:
+        subject = "I'll leave this with you - the door stays open"
+        body = [
+            f"Hi {fn},", "",
+            "Two weeks since your visit, so this is my last note about it. I "
+            "would rather not keep writing if the timing is wrong.",
+            "The door stays open. When your customers need to understand you "
+            "better than they do today, the plan we talked about is ready, and "
+            "Maya can book your first session the same week.",
+            CTA_POST_VISIT,
+        ]
+    body += ["", "Michael Moraes", "MWM Creations & Studios - Orlando"]
+    return subject, _as_html(body), "\n".join(body)
+
+
+def post_visit_sms(name):
+    """Core of the day-2 post-visit text (wrapped by sms_copy.compose)."""
+    fn = first_name(name)
+    return (f"Hi {fn}, Michael here. Thanks again for coming by the studio. If "
+            f"you'd like to start, reply YES and Maya books your first session; "
+            f"if the timing is off, just say so.")
+
+
 # ── html ───────────────────────────────────────────────────────────────────
 
 def _as_html(lines):

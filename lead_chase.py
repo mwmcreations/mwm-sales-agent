@@ -55,6 +55,24 @@ STEPS = (
 )
 STEP_BY_KEY = {s[0]: s for s in STEPS}
 
+# PATCH #145 — the post-visit chain (ERIC item 4, 30 Sep): Michael met the
+# person, they did not close in the room, he logs "follow-up needed" on the
+# daily report. Three emails and one text over 14 days, Michael's first
+# person, the same stop rules, and a payment stops it (the lead becomes a
+# client). Hours count from the report, not the visit.
+KIND_FORM = "form"
+KIND_POST_VISIT = "post_visit"
+STEPS_POST_VISIT = (
+    ("e1", EMAIL, 2, 1),        # +2h  thanks, the plan in one paragraph
+    ("s1", SMS, 24 * 2, 1),     # day 2  one text, one question
+    ("e2", EMAIL, 24 * 6, 2),   # day 6  what month one looks like
+    ("e3", EMAIL, 24 * 14, 3),  # day 14 the door stays open
+)
+
+
+def steps_for(state):
+    return STEPS_POST_VISIT if (state or {}).get("kind") == KIND_POST_VISIT else STEPS
+
 # A step older than this past its due time is skipped, not sent late.
 MAX_LATE_H = 72
 
@@ -71,13 +89,15 @@ STOP_CLOSED = "closed"
 STOP_MANUAL = "manual"
 
 
-def arm(now, channels=("email", "sms"), verdict="yes"):
+def arm(now, channels=("email", "sms"), verdict="yes", kind=KIND_FORM):
     """A fresh chain state. `channels` says which rails this lead can use:
-    no email -> no email steps; no SMS consent -> no text steps."""
+    no email -> no email steps; no SMS consent -> no text steps.
+    `kind` picks the step table: the form chain or the post-visit chain."""
     return {
         "armed_at": now.isoformat(),
         "channels": sorted(set(channels)),
         "verdict": verdict,
+        "kind": kind,
         "sent": {},          # key -> iso time
         "skipped": {},       # key -> reason
         "stopped": "",       # reason, once stopped
@@ -110,7 +130,8 @@ def stop_reason(state, lead, now, last_inbound=None, is_client=False,
         return state["stopped"]
     lead = lead or {}
     if is_client or str(lead.get("relationship") or "") in (
-            "client", "existing_client", "new_client", "known"):
+            "client", "existing_client", "new_client", "known") \
+            or lead.get("paid_at") or str(lead.get("outcome") or "").lower() == "won":
         return STOP_CLIENT
     if lead.get("booked") or lead.get("appointment_booked"):
         return STOP_BOOKED
@@ -140,7 +161,7 @@ def next_step(state, now, max_late_h=MAX_LATE_H):
     sent = state.get("sent") or {}
     skipped = state.get("skipped") or {}
     chans = set(state.get("channels") or ())
-    for key, chan, due_h, copy_step in STEPS:
+    for key, chan, due_h, copy_step in steps_for(state):
         if key in sent or key in skipped:
             continue
         if chan not in chans:
@@ -158,7 +179,7 @@ def remaining(state):
     sent = (state or {}).get("sent") or {}
     skipped = (state or {}).get("skipped") or {}
     chans = set((state or {}).get("channels") or ())
-    return [s for s in STEPS if s[0] not in sent and s[0] not in skipped
+    return [s for s in steps_for(state) if s[0] not in sent and s[0] not in skipped
             and s[1] in chans]
 
 
@@ -180,5 +201,6 @@ def summary(state, now):
     wait = due_h - h
     when = ("due now" if wait <= 0 else
             f"in {wait:.0f}h" if wait < 48 else f"in {wait / 24:.0f}d")
-    return (f"next {key} ({chan}) {when}; sent {len(state.get('sent') or {})}, "
+    kind = state.get("kind") or KIND_FORM
+    return (f"{kind}: next {key} ({chan}) {when}; sent {len(state.get('sent') or {})}, "
             f"skipped {len(state.get('skipped') or {})}")

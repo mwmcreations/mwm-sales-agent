@@ -209,6 +209,35 @@ ok("_sv.opener((rec or {}).get(\"name\", \"\"), ai=_ai_on)" in SRC and '"ig.no_t
 ok("CHASE_TEST_EMAILS" in SRC and "if e in CHASE_TEST_EMAILS:" in SRC, "CHASE_TEST_EMAILS lets a named internal address receive the test (never overrides DNC)")
 ok("AI_AD_IDS_DEFAULT" in open(os.path.join(HERE, "ai_studio.py"), encoding="utf-8").read(), "AD_19 default in ai_studio")
 
+# ── Patch #145: post-visit chain, payment stop, CAPI, the report writes ──
+print("\n== Patch #145")
+import meta_capi as capi
+ok(lc.steps_for({"kind": "post_visit"}) == lc.STEPS_POST_VISIT and lc.steps_for({}) == lc.STEPS, "step table by kind")
+pv = lc.arm(NOW, channels=("email", "sms"), verdict="post_visit", kind=lc.KIND_POST_VISIT)
+ok(lc.next_step(pv, NOW + timedelta(hours=1)) is None and lc.next_step(pv, NOW + timedelta(hours=2)) == ("e1", "email", 1), "post-visit e1 at +2h")
+ok(lc.stop_reason(pv, {"paid_at": "2026-10-01"}, NOW) == lc.STOP_CLIENT and lc.stop_reason(pv, {"outcome": "Won"}, NOW) == lc.STOP_CLIENT, "a payment or a Won record stops any chain")
+ok("post_visit: next e1" in lc.summary(pv, NOW), "summary names the kind")
+for st in (1, 2, 3):
+    su, h, t = sv.post_visit_email(st, "Ana", "Smile Dental", "start in October")
+    ok(su and "Michael Moraes" in t and sv.CTA_POST_VISIT in t and sv.contains_banned(t) is None, "post-visit email %d: Michael's voice, one CTA, clean" % st)
+ok("start in October" in sv.post_visit_email(1, "Ana", "", "start in October")[2] and "$1,200 a month" in sv.post_visit_email(1, "Ana", "", "")[2], "email 1 carries the agreed next step, else the price line")
+ok(sc.segments(sc.compose(sv.post_visit_sms("Ana"))) <= 2 and "Michael here" in sv.post_visit_sms("Ana"), "post-visit text fits")
+ud = capi.user_data("Ana@Example.com ", "(407) 555-1234", "Ana", "Souza", lead_id="123")
+ok(ud["em"] == [capi._sha("ana@example.com")] and ud["ph"] == [capi._sha("14075551234")] and ud["lead_id"] == 123 and "fn" in ud, "CAPI user_data: hashed, normalised, lead_id as int")
+ev = capi.lead_event("Ana Souza", "ana@example.com", "+14075551234", lead_id="123", ad_id="9", qualified="yes", business="Smile")
+ok(ev["event_name"] == "Lead" and ev["action_source"] == "system_generated" and ev["event_id"] == "lead-123" and ev["custom_data"]["qualified"] == "yes", "Lead event shape")
+pe = capi.purchase_event("Ana", "ana@example.com", "", value=1200, product="sub", stripe_id="cs_1")
+ok(pe["event_name"] == "Purchase" and pe["action_source"] == "website" and pe["custom_data"]["value"] == 1200.0 and pe["custom_data"]["currency"] == "USD" and pe["event_id"] == "purchase-cs_1", "Purchase event shape")
+ok(capi.send([ev], post=lambda u, j: (200, {"events_received": 1}), dataset_id="D", token="T", test_code="TEST1")[0] and capi.send([ev], dataset_id="", token="")[1] == "unconfigured", "send: ok when configured, named skip when dark")
+ok(capi.send([ev], post=lambda u, j: (400, {"error": {"message": "bad token"}}), dataset_id="D", token="T", test_code="")[1].startswith("HTTP 400"), "send: a Meta error is reported, never raised")
+ok(not capi.configured() and capi.status()["configured"] is False, "dark by default")
+ok('sheet_id = os.getenv("GOOGLE_SHEETS_ID", "") or SHEETS_LEADS_ID' in SRC and SRC.count("or SHEETS_LEADS_ID") == 2, "the two dead sheet readers fall back to the live sheet id")
+ok("def _report_drives_record(" in SRC and "_plan = _report_drives_record(outcome, _p39_key" in SRC, "the event report drives the record, the chain and the sheet")
+ok('kind=_chase.KIND_POST_VISIT' in SRC and 'rec["won_at"] = now.isoformat()' in SRC and "*AD → WON*" in SRC, "follow_up arms the post-visit chain; client_won marks Won and tells ERIC")
+ok("def _on_payment(ev)" in SRC and "_on_payment(ev)          # PATCH #145" in SRC and '"invoice.paid"' in SRC, "every paid Stripe event (checkout or invoice) stops the chase")
+ok("_capi.lead_event(" in SRC and "_capi.schedule_event(" in SRC and "_capi.purchase_event(" in SRC and '"capi": _capi.status()' in SRC, "Lead / Schedule / Purchase hooks + /health capi")
+ok("_sv.post_visit_email(copy_step" in SRC and "_sv.post_visit_sms(rec.get(\"name\"))" in SRC, "the chase loop sends post-visit copy for post-visit chains")
+
 # ── the behaviour suite runs as part of this gate ────────────────────────
 print("\n== behaviour suite (test_patch143_behaviour.py)")
 import subprocess, re as _re
