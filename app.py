@@ -7626,6 +7626,9 @@ You are replying by text message to a lead's phone. Rules for this channel:
    30-minute Studio Strategy Visit and offer two concrete times.
 4. BOOKING works exactly as on other channels: use the pre-loaded slots and
    book_appointment. Confirm the booked time back in one line.
+   The LEAD CONTEXT below already carries what the form gave us. When it has
+   the name, email and business, book with those — never ask the lead to
+   type them again. Ask only for a field that is missing, one at a time.
 5. Never mention WhatsApp or Instagram as "better" channels. Text is fine.
 6. If they say STOP or ask not to be texted, say "Understood, no more texts."
    and nothing else.
@@ -9097,6 +9100,8 @@ def _sms_lead_context(rec):
     bits = []
     if rec.get("name"):
         bits.append(f"Name: {rec['name']}")
+    if rec.get("email"):
+        bits.append(f"Email: {rec['email']}")
     if rec.get("business"):
         bits.append(f"Business: {rec['business']}")
     if rec.get("role_raw"):
