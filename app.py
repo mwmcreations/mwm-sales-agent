@@ -19494,8 +19494,13 @@ def _meta_lead_fetch(leadgen_id):
     return r.json()
 
 
-def _meta_lead_intake(value):
-    """One form submission, start to finish. Never raises past this frame."""
+def _meta_lead_intake(value, lead_meta=None):
+    """One form submission, start to finish. Never raises past this frame.
+
+    `lead_meta` (PATCH #144) is a pre-fetched lead object — the synthetic
+    test from /admin/lead-form-test — so the rail can be proven end to end
+    without Meta's Testing Tool, which only sends dummy values and cannot
+    put Michael's own number on the lead."""
     import pg_store as _pg
     import sms_consent as _sc
     leadgen_id = str(value.get("leadgen_id") or "")
@@ -19523,7 +19528,8 @@ def _meta_lead_intake(value):
                 _report_error("lead_form.seen_key", _kx, leadgen_id)
         # ── fetch ──
         try:
-            lead_meta = _meta_lead_fetch(leadgen_id)
+            if lead_meta is None:
+                lead_meta = _meta_lead_fetch(leadgen_id)
         except Exception as e:
             _TALLY.bump("lead_form.fetch_FAILED", str(e)[:60])
             _report_error("lead_form.fetch", e, f"leadgen={leadgen_id}")
@@ -19983,6 +19989,155 @@ def _lead_chase_loop():
 
 
 threading.Thread(target=_lead_chase_loop, daemon=True, name="lead_chase").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #144 — the page was never subscribed. ERIC's test lead (30 Sep
+# 21:50 ET) went nowhere: Meta's Testing Tool said "Selected page has no app
+# associated with it". The app-level webhook field (leadgen) was switched on
+# in June; the PAGE-level installation (POST /{page}/subscribed_apps) is a
+# separate step, and the ads now run from a page the June work never saw.
+# This route does that step with the tokens the machine already holds and
+# reports exactly what it could and could not do. Tokens never leave it.
+# ══════════════════════════════════════════════════════════════════════
+_META_GRAPH = "https://graph.facebook.com/v21.0"
+
+
+def _meta_token_candidates():
+    """(label, token) pairs, de-duplicated, secrets never logged."""
+    out, seen = [], set()
+    for label, tok in (("META_PAGE_ACCESS_TOKEN", os.getenv("META_PAGE_ACCESS_TOKEN", "")),
+                       ("META_ACCESS_TOKEN", os.getenv("META_ACCESS_TOKEN", "")),
+                       ("META_ADS_TOKEN", os.getenv("META_ADS_TOKEN", ""))):
+        tok = (tok or "").strip()
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append((label, tok))
+    return out
+
+
+def _meta_get(path, token, params=None):
+    p = dict(params or {}); p["access_token"] = token
+    r = http_requests.get(f"{_META_GRAPH}/{path}", params=p, timeout=20)
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": (r.text or "")[:300]}
+    return r.status_code, body
+
+
+def _meta_post(path, token, data=None):
+    d = dict(data or {}); d["access_token"] = token
+    r = http_requests.post(f"{_META_GRAPH}/{path}", data=d, timeout=20)
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": (r.text or "")[:300]}
+    return r.status_code, body
+
+
+def _meta_err(body):
+    e = (body or {}).get("error") or {}
+    if not e:
+        return ""
+    return f"({e.get('code')}/{e.get('error_subcode', '')}) {e.get('message', '')}"[:200]
+
+
+@app.route("/admin/meta-leads-subscribe", methods=["GET", "POST"])
+def admin_meta_leads_subscribe():
+    """Inspect and (POST with apply=1) repair the page -> app leadgen
+    subscription. GET only reads. Output never contains a token."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    apply = request.method == "POST" and str(request.values.get("apply", "")) in ("1", "true", "yes")
+    want_page = str(request.values.get("page_id", "") or "").strip()
+    report = {"apply": apply, "tokens": [], "pages": {}, "note": ""}
+    page_tokens = {}      # page_id -> (token, via)
+    for label, tok in _meta_token_candidates():
+        entry = {"label": label}
+        code, me = _meta_get("me", tok, {"fields": "id,name"})
+        entry["me"] = {"status": code, "id": me.get("id"), "name": me.get("name"),
+                       "error": _meta_err(me)}
+        code, acc = _meta_get("me/accounts", tok, {"fields": "id,name,access_token", "limit": 50})
+        pages = []
+        for pg_ in (acc.get("data") or []) if code == 200 else []:
+            pages.append({"id": pg_.get("id"), "name": pg_.get("name"),
+                          "has_page_token": bool(pg_.get("access_token"))})
+            if pg_.get("access_token") and pg_.get("id") not in page_tokens:
+                page_tokens[pg_["id"]] = (pg_["access_token"], label + " -> me/accounts")
+        entry["accounts"] = {"status": code, "pages": pages, "error": _meta_err(acc)}
+        # A token that IS a page token answers /me with the page itself.
+        if code != 200 or not pages:
+            mid = str(me.get("id") or "")
+            if mid and mid not in page_tokens:
+                c2, sub = _meta_get(f"{mid}/subscribed_apps", tok, {"fields": "id,name,subscribed_fields"})
+                if c2 == 200:
+                    page_tokens[mid] = (tok, label + " (page token)")
+                    entry["is_page_token_for"] = mid
+        report["tokens"].append(entry)
+    if want_page and want_page not in page_tokens:
+        report["note"] = (f"page {want_page} is not reachable with any token the machine holds "
+                          f"(the system user is not assigned to it, or the token lacks pages_show_list)")
+    for pid, (ptok, via) in page_tokens.items():
+        if want_page and pid != want_page:
+            continue
+        row = {"via": via}
+        code, sub = _meta_get(f"{pid}/subscribed_apps", ptok, {"fields": "id,name,subscribed_fields"})
+        row["before"] = {"status": code, "apps": sub.get("data"), "error": _meta_err(sub)}
+        if apply:
+            fields = set()
+            for a in (sub.get("data") or []):
+                fields.update(a.get("subscribed_fields") or [])
+            fields.add("leadgen")
+            code, res = _meta_post(f"{pid}/subscribed_apps", ptok,
+                                   {"subscribed_fields": ",".join(sorted(fields))})
+            row["apply"] = {"status": code, "result": res if code == 200 else _meta_err(res),
+                            "fields_sent": sorted(fields)}
+            code, sub2 = _meta_get(f"{pid}/subscribed_apps", ptok, {"fields": "id,name,subscribed_fields"})
+            row["after"] = {"status": code, "apps": sub2.get("data"), "error": _meta_err(sub2)}
+        report["pages"][pid] = row
+    if not page_tokens:
+        report["note"] = (report["note"] + " " if report["note"] else "") + \
+            "no page token obtainable: subscribe via Graph API Explorer with a page token " \
+            "that has pages_manage_metadata (POST /{page-id}/subscribed_apps?subscribed_fields=leadgen)"
+    return jsonify(report)
+
+
+@app.route("/admin/lead-form-test", methods=["POST"])
+def admin_lead_form_test():
+    """A synthetic form submission through the real rail (PATCH #144).
+    Params: name, email, phone, business, website, role, revenue, must,
+    consent (1/0), ad_id, ad_name, form_id. Nothing is fetched from Meta."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    v = request.values
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    leadgen_id = "synthetic-" + now.strftime("%Y%m%d-%H%M%S")
+    form_id = str(v.get("form_id") or "1093985030009769")
+    ad_id = str(v.get("ad_id") or "")
+    def fd(name, key):
+        val = str(v.get(key) or "").strip()
+        return {"name": name, "values": [val]} if val else None
+    field_data = [f for f in (
+        fd("full_name", "name"), fd("email", "email"), fd("phone_number", "phone"),
+        fd("business_name", "business"), fd("website_or_instagram", "website"),
+        fd("role", "role"), fd("monthly_revenue", "revenue"),
+        fd("what_customers_must_understand", "must")) if f]
+    lead_meta = {
+        "id": leadgen_id, "created_time": now.isoformat(), "ad_id": ad_id,
+        "ad_name": str(v.get("ad_name") or ""), "form_id": form_id,
+        "is_organic": not ad_id, "platform": "synthetic",
+        "field_data": field_data,
+        "custom_disclaimer_responses": (
+            [{"checkbox_key": "optional_1", "is_checked": "1"}]
+            if str(v.get("consent", "0")) in ("1", "true", "yes") else []),
+    }
+    threading.Thread(target=_meta_lead_intake,
+                     args=({"leadgen_id": leadgen_id, "form_id": form_id, "ad_id": ad_id},),
+                     kwargs={"lead_meta": lead_meta}, daemon=True).start()
+    return jsonify({"ok": True, "leadgen_id": leadgen_id,
+                    "note": "running in the background; watch #dev for the :inbox_tray: line, "
+                            "then /admin/chase"})
 
 
 @app.route("/admin/chase", methods=["GET"])
