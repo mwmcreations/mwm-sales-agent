@@ -20137,6 +20137,111 @@ def admin_meta_leads_subscribe():
     return jsonify(report)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #146 — Twilio never delivered the reply. Michael answered the first
+# real text ("Mon oct 5", 08:06 ET Oct 1) and nothing came back: the Railway
+# log has the outbound ("accepted ... sid=a6304961") and no [SMS-INBOUND]
+# line at all, so the Messaging Service's inbound webhook was not pointed at
+# /webhook/sms-inbound. The console needs Michael's login; the machine holds
+# the account credentials, so it sets the webhook itself and reports what it
+# found and what it changed. Credentials never appear in the output.
+# ══════════════════════════════════════════════════════════════════════
+SMS_INBOUND_WEBHOOK_URL = (os.getenv("SMS_INBOUND_WEBHOOK_URL", "").strip()
+                           or "https://mwm-sales-agent-production.up.railway.app/webhook/sms-inbound")
+_TWILIO_MSG_API = "https://messaging.twilio.com/v1"
+_TWILIO_REST_API = "https://api.twilio.com/2010-04-01"
+
+
+def _twilio_call(method, url, data=None):
+    """One Twilio REST call with the account credentials. Returns
+    (status_code, body_dict). Never raises; never logs the auth."""
+    try:
+        r = http_requests.request(method, url, data=data or None,
+                                  auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=20)
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": (r.text or "")[:300]}
+        return r.status_code, body
+    except Exception as exc:
+        return 0, {"error": str(exc)[:200]}
+
+
+def _sms_inbound_service_view(body):
+    """The fields that decide where an inbound text goes."""
+    body = body or {}
+    return {"sid": body.get("sid"), "friendly_name": body.get("friendly_name"),
+            "inbound_request_url": body.get("inbound_request_url"),
+            "inbound_method": body.get("inbound_method"),
+            "fallback_url": body.get("fallback_url"),
+            "use_inbound_webhook_on_number": body.get("use_inbound_webhook_on_number")}
+
+
+def _sms_inbound_number_view(body):
+    body = body or {}
+    return {"sid": body.get("sid"), "phone_number": body.get("phone_number"),
+            "sms_url": body.get("sms_url"), "sms_method": body.get("sms_method"),
+            "sms_fallback_url": body.get("sms_fallback_url")}
+
+
+def sms_inbound_config(apply, want_url=None, call=None):
+    """Inspect and (apply) repair the Twilio inbound routing for the main
+    line. Pure enough to test: `call` is injectable (method, url, data) ->
+    (code, body). Returns the report dict."""
+    call = call or _twilio_call
+    want_url = (want_url or SMS_INBOUND_WEBHOOK_URL).strip()
+    report = {"apply": bool(apply), "want_url": want_url, "service": {}, "numbers": [], "note": ""}
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_MESSAGING_SERVICE_SID):
+        report["note"] = "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_MESSAGING_SERVICE_SID not all set"
+        return report
+    svc_url = f"{_TWILIO_MSG_API}/Services/{TWILIO_MESSAGING_SERVICE_SID}"
+    code, svc = call("GET", svc_url)
+    before = _sms_inbound_service_view(svc) if code == 200 else {"error": (svc or {}).get("message") or (svc or {}).get("error") or f"HTTP {code}"}
+    report["service"]["before"] = before
+    svc_ok = code == 200 and (svc.get("inbound_request_url") or "") == want_url \
+        and (svc.get("inbound_method") or "POST").upper() == "POST" \
+        and not svc.get("use_inbound_webhook_on_number")
+    report["service"]["correct_before"] = bool(svc_ok)
+    if apply and code == 200 and not svc_ok:
+        c2, res = call("POST", svc_url, {"InboundRequestUrl": want_url, "InboundMethod": "POST",
+                                         "UseInboundWebhookOnNumber": "false"})
+        report["service"]["apply"] = {"status": c2,
+                                      "result": _sms_inbound_service_view(res) if c2 == 200
+                                      else ((res or {}).get("message") or (res or {}).get("error") or f"HTTP {c2}")}
+        c3, svc2 = call("GET", svc_url)
+        report["service"]["after"] = _sms_inbound_service_view(svc2) if c3 == 200 else {"error": f"HTTP {c3}"}
+    # The numbers in the sender pool: their own SmsUrl is what Twilio uses when
+    # the service defers to the number, so it is set to the same place.
+    c4, pool = call("GET", f"{svc_url}/PhoneNumbers")
+    for pn in (pool.get("phone_numbers") or []) if c4 == 200 else []:
+        row = {"phone_number": pn.get("phone_number"), "sid": pn.get("sid")}
+        num_url = f"{_TWILIO_REST_API}/Accounts/{TWILIO_ACCOUNT_SID}/IncomingPhoneNumbers/{pn.get('sid')}.json"
+        c5, num = call("GET", num_url)
+        row["before"] = _sms_inbound_number_view(num) if c5 == 200 else {"error": f"HTTP {c5}"}
+        if apply and c5 == 200 and (num.get("sms_url") or "") != want_url:
+            c6, res = call("POST", num_url, {"SmsUrl": want_url, "SmsMethod": "POST"})
+            row["apply"] = {"status": c6, "result": _sms_inbound_number_view(res) if c6 == 200
+                            else ((res or {}).get("message") or f"HTTP {c6}")}
+        report["numbers"].append(row)
+    if c4 != 200:
+        report["note"] = (report["note"] + " " if report["note"] else "") + f"sender pool unreadable: HTTP {c4}"
+    return report
+
+
+@app.route("/admin/sms-inbound-config", methods=["GET", "POST"])
+def admin_sms_inbound_config():
+    """GET = inspect where Twilio sends inbound texts; POST apply=1 = point the
+    Messaging Service (and every number in its pool) at /webhook/sms-inbound.
+    Output never contains credentials."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    apply = request.method == "POST" and str(request.values.get("apply", "")) in ("1", "true", "yes")
+    want = (request.values.get("url", "") or "").strip() or None
+    report = sms_inbound_config(apply, want_url=want)
+    _TALLY.bump("sms.inbound_config", "apply" if apply else "inspect")
+    return jsonify(report)
+
+
 @app.route("/admin/lead-form-test", methods=["POST"])
 def admin_lead_form_test():
     """A synthetic form submission through the real rail (PATCH #144).
