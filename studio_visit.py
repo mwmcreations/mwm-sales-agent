@@ -526,6 +526,195 @@ def post_visit_sms(name):
             f"if the timing is off, just say so.")
 
 
+# ── the studio-hour track (PATCH #148 — ERIC spec 1 Oct, Michael's GO) ─────
+# An owner under $50K a month is not a dead lead: a studio hour or a smaller
+# package. Same speed, same gates, same 30-minute visit as the close; the copy
+# never names the $1,200 subscription, never a price, never "send us photos",
+# never an AI Wall claim. Michael's three corrections stand (30-minute, "in
+# projects with", "we plan it, write it, shoot it and cut it").
+
+STUDIO_HOUR_RULE = """
+STUDIO HOUR TRACK — this lead is an owner under $50K a month (the form said so).
+They are a studio-hour or smaller-package candidate, NOT a Studio Subscription
+candidate. Rules for this lead, on every channel:
+1. Studio first. The free 30-minute Studio Strategy Visit is still the close:
+   they walk the studio, we map the one or two videos their buyers need to see
+   first, and we size it to a studio hour or a small package - never a program.
+2. Never pitch the Studio Subscription. If THEY ask about it, answer once with
+   the price line and come back to the visit.
+3. Prices only when asked, said once: studio time starts at $249/hour
+   (production only) or $349/hour with editing; the Hybrid AI Pack if they ask
+   about AI. Then: "the visit is where Michael sizes it to what you need."
+4. Never say they are too small, never mention revenue, never "send us
+   photos", no AI Wall claims. Warm, short, two real slots.
+"""
+
+
+def sh_first_touch_sms(name, business="", ai=False, slots=None):
+    """Core of the first text to a studio-hour lead (wrapped by
+    sms_copy.compose). Two segments: ~240 characters is the ceiling."""
+    fn = first_name(name)
+    when = _slot_phrase(slots)
+    who = "Michael (20+ yrs in projects with Disney, Universal)"
+    lead_in = ("One studio shoot and we put your business in any scene." if ai
+               else "One session can do a lot for a business your size.")
+    if when:
+        return (f"Hi {fn}, Maya from Michael Moraes' team. {lead_in} {who} has "
+                f"{when} for your free 30-minute Studio Visit. Which works?")
+    return (f"Hi {fn}, Maya from Michael Moraes' team. {lead_in} {who} offers a "
+            f"free 30-minute Studio Visit to map it. Which day this week works?")
+
+
+def sh_first_touch_email(name, business="", must_understand="", ai=False,
+                         slots=None, sms_sent=False):
+    """(subject, html, text) — the studio-hour opener as an email."""
+    fn = first_name(name)
+    biz = str(business or "").strip()
+    mu = str(must_understand or "").strip()
+    when = _slot_phrase(slots)
+    subject = f"{fn}, your {VISIT_NAME} with Michael Moraes"
+    lines = [f"Hi {fn},", ""]
+    lines.append("Maya here from Michael Moraes' team at MWM Studios. Thanks for "
+                 "applying for the Studio Strategy Visit.")
+    if ai:
+        lines.append("You asked about the AI side: one shoot in our studio and your "
+                     "business appears in any scene - a rooftop, your restaurant, a "
+                     "stage, the city at night. You stay real; only the world around "
+                     "you is AI.")
+    if biz and mu:
+        lines.append(f"{biz} does not need a big program to start. You wrote: "
+                     f"\"{mu[:240]}\". One well-planned studio session can put that "
+                     f"in front of your customers.")
+    elif biz:
+        lines.append(f"{biz} does not need a big program to start - one well-planned "
+                     "studio session can do a lot.")
+    else:
+        lines.append("You do not need a big program to start - one well-planned "
+                     "studio session can do a lot.")
+    lines.append(f"The next step is a free {VISIT_MINUTES}-minute {VISIT_NAME}: you "
+                 "walk the studio, we map the one or two videos your buyers need to "
+                 "see first, and we size it to a studio hour or a small package - "
+                 "whatever fits. Michael has been " + CREDITS + "; " + WE_DO + ".")
+    if when:
+        lines.append(f"Michael has {when}. Which works? Reply to this email with the "
+                     f"one you want, or a better time, and I will book it.")
+    else:
+        lines.append("Reply to this email with a day that works this week and I will "
+                     "book it.")
+    if sms_sent:
+        lines.append("I also sent you a text, so you can answer wherever is easier.")
+    else:
+        lines.append(f"If you would rather text, Maya answers at {MAYA_WA}.")
+    lines += ["", "Maya", "Michael Moraes' team - MWM Creations & Studios",
+              "1500 Park Center Dr, Suite 230, Orlando, FL"]
+    text = "\n".join(lines)
+    return subject, _as_html(lines), text
+
+
+CTA_SH = ("Reply to this email with a day that works, or text Maya at "
+          + MAYA_WA + ", and she will book your " + VISIT_NAME + ".")
+
+
+def sh_chase_email(step, name, business="", must_understand="", ai=False):
+    """(subject, html, text) for studio-hour chase email 1..5. Michael's
+    first person; the same cadence as the main chain; no price, no program."""
+    fn = first_name(name)
+    biz = str(business or "").strip()
+    ind = industry_word(biz)
+    client, story = case_study_for(biz, must_understand)
+    if step == 1:
+        subject = f"What a {VISIT_MINUTES}-minute Studio Strategy Visit looks like"
+        body = [
+            f"Hi {fn},", "",
+            "Michael Moraes here. You applied for a Studio Strategy Visit, so let "
+            "me tell you exactly what happens in those 30 minutes.",
+            "You walk the studio. We sit down and I map the one or two videos your "
+            "buyers need to see first - the question they always ask, the doubt "
+            "that costs you the sale. Then we size it to what you actually need: "
+            "a studio hour, a small package. Not a program. You leave with a plan "
+            "on one page.",
+            ("If you came in through the AI ad: yes, that is real. One shoot in "
+             "our studio, and your business appears in any scene. We show you "
+             "how at the visit." if ai else
+             "I have been " + CREDITS + ". The work is simple: " + WE_DO + "."),
+            CTA_SH,
+        ]
+    elif step == 2:
+        subject = f"How {client} uses the studio"
+        body = [
+            f"Hi {fn},", "",
+            "A quick story, because it is closer to your situation than it looks.",
+            story,
+            "You do not need a monthly program to get that. One well-planned "
+            "session - we plan it, write it, shoot it and cut it - and your "
+            "customers arrive already understanding you.",
+            CTA_SH,
+        ]
+    elif step == 3:
+        subject = f"The three videos every {ind} needs before the customer buys"
+        body = [
+            f"Hi {fn},", "",
+            "Every business whose customers must understand something before "
+            "they buy needs the same three videos.",
+            "1. The problem video - what goes wrong when people choose badly, in "
+            "your words.",
+            "2. The process video - what working with you actually looks like, "
+            "step by step.",
+            "3. The proof video - a customer who understood, bought, and is glad "
+            "they did.",
+            "One studio hour makes up to eight short videos, so a single session "
+            "can cover all three. At the visit we decide which one you shoot "
+            "first.",
+            CTA_SH,
+        ]
+    elif step == 4:
+        subject = f"Your {VISIT_NAME}, still open"
+        body = [
+            f"Hi {fn},", "",
+            "Two weeks ago you applied for a Studio Strategy Visit. The offer has "
+            "not changed, so here it is in one paragraph.",
+            f"A free {VISIT_MINUTES}-minute visit: you walk the studio, we map the "
+            "videos your buyers need to see first, you leave with a plan. If it "
+            "makes sense to continue, we size it to a studio hour or a small "
+            "package - nothing bigger than you need.",
+            CTA_SH,
+        ]
+    else:
+        subject = "I'll stop here - the door stays open"
+        body = [
+            f"Hi {fn},", "",
+            "This is my last email about the Studio Strategy Visit. I would "
+            "rather not keep writing if the timing is wrong.",
+            "The door stays open. When your customers need to understand you "
+            "better than they do today, the visit is still free, still 30 "
+            "minutes, and Maya still books it.",
+            CTA_SH, "",
+            "Michael Moraes", "MWM Creations & Studios - Orlando",
+        ]
+    if step != 5:
+        body += ["", "Michael Moraes", "MWM Creations & Studios - Orlando"]
+    return subject, _as_html(body), "\n".join(body)
+
+
+def sh_chase_sms(step, name, slots=None):
+    """Core of the studio-hour day-2 / day-9 texts (wrapped by sms_copy.compose)."""
+    fn = first_name(name)
+    when = _slot_phrase(slots)
+    if step == 1:
+        if when:
+            return (f"Hi {fn}, Maya from Michael Moraes' team. Still happy to book "
+                    f"your free 30-minute Studio Visit - one session can do a lot. "
+                    f"Michael has {when}. Which works?")
+        return (f"Hi {fn}, Maya from Michael Moraes' team. Still happy to book your "
+                f"free 30-minute Studio Visit - one session can do a lot. Which "
+                f"day this week works?")
+    if when:
+        return (f"Hi {fn}, Michael has {when} open for your 30-minute Studio "
+                f"Visit. Want one? Reply with the time, or 'later'.")
+    return (f"Hi {fn}, Michael has time this week for your 30-minute Studio Visit. "
+            f"Reply with a day that works, or 'later'.")
+
+
 # ── html ───────────────────────────────────────────────────────────────────
 
 def _as_html(lines):

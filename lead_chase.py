@@ -62,6 +62,9 @@ STEP_BY_KEY = {s[0]: s for s in STEPS}
 # client). Hours count from the report, not the visit.
 KIND_FORM = "form"
 KIND_POST_VISIT = "post_visit"
+# PATCH #148 — the studio-hour track: the form chain's cadence and stops,
+# studio-hour copy (studio_visit.sh_chase_email / sh_chase_sms).
+KIND_STUDIO_HOUR = "studio_hour"
 STEPS_POST_VISIT = (
     ("e1", EMAIL, 2, 1),        # +2h  thanks, the plan in one paragraph
     ("s1", SMS, 24 * 2, 1),     # day 2  one text, one question
@@ -71,6 +74,7 @@ STEPS_POST_VISIT = (
 
 
 def steps_for(state):
+    # KIND_STUDIO_HOUR walks the same table as the form chain.
     return STEPS_POST_VISIT if (state or {}).get("kind") == KIND_POST_VISIT else STEPS
 
 # A step older than this past its due time is skipped, not sent late.

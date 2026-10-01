@@ -28,6 +28,13 @@ import re
 Q_YES = "yes"        # qualified — opener + visit + chase chain
 Q_REVIEW = "review"  # opener + visit + chain, flagged for a human read
 Q_NO = "no"          # polite disqualify, no chain
+# PATCH #148 (ERIC spec 1 Oct 13:14 ET, Michael: "I don't want to totally
+# disqualify if they make less than 50K a month"): an owner under $50K is a
+# studio-hour / smaller-package candidate — same gates and speed as the main
+# track, different copy, its own chain, counted as its own pipeline.
+Q_STUDIO_HOUR = "studio-hour"
+TRACK_SUBSCRIPTION = "subscription"
+TRACK_STUDIO_HOUR = "studio-hour"
 
 ROLE_OWNER = "owner"
 ROLE_MARKETING = "marketing_lead"
@@ -187,12 +194,14 @@ def qualify(role_raw, revenue_raw):
     band = revenue_band(revenue_raw)
     if role == ROLE_CREATOR:
         return Q_NO, "role: creator/freelancer/artist/student"
-    if band is not None and band < BAND_20_50:
-        return Q_NO, "revenue under $20K/month"
     if role == ROLE_OWNER and band is not None and band >= BAND_50_150:
         return Q_YES, f"owner + ${band}K+/month"
-    if role == ROLE_OWNER and band == BAND_20_50:
-        return Q_REVIEW, "owner + $20-50K/month (industry fit is a human call)"
+    if role == ROLE_OWNER and band is not None and band < BAND_50_150:
+        # PATCH #148 — both sub-$50K bands, owner only: the studio-hour track.
+        label = "under $20K/month" if band < BAND_20_50 else "$20-50K/month"
+        return Q_STUDIO_HOUR, f"owner + {label}: studio-hour track"
+    if band is not None and band < BAND_20_50:
+        return Q_NO, "revenue under $20K/month"
     if role == ROLE_OWNER and band is None:
         return Q_REVIEW, "owner, revenue not given"
     if band is not None and band >= BAND_50_150:
@@ -226,12 +235,29 @@ def is_ai_ad(ad_id, ad_name="", ai_ids=None):
 
 
 def temperature(verdict):
-    return {Q_YES: "Hot", Q_REVIEW: "Warm", Q_NO: "Cold"}.get(verdict, "")
+    return {Q_YES: "Hot", Q_REVIEW: "Warm", Q_STUDIO_HOUR: "Warm",
+            Q_NO: "Cold"}.get(verdict, "")
 
 
 def status_label(verdict):
     return {Q_YES: "Qualified", Q_REVIEW: "Qualified (review)",
+            Q_STUDIO_HOUR: "Qualified (studio-hour)",
             Q_NO: "Disqualified"}.get(verdict, "New Lead")
+
+
+def track_for(verdict):
+    """Which pipeline ERIC's scorecard counts this lead in. '' for a
+    disqualified lead."""
+    if verdict == Q_STUDIO_HOUR:
+        return TRACK_STUDIO_HOUR
+    if verdict in (Q_YES, Q_REVIEW):
+        return TRACK_SUBSCRIPTION
+    return ""
+
+
+def service_interest(verdict):
+    return ("Studio Hour (ad form)" if verdict == Q_STUDIO_HOUR
+            else "Studio Strategy Visit (ad form)")
 
 
 def notes_line(rec, consent, consent_ts_iso, verdict, reason):
@@ -249,6 +275,9 @@ def notes_line(rec, consent, consent_ts_iso, verdict, reason):
     parts.append("sms_consent: " + ("yes/lead_form " + str(consent_ts_iso or "")
                                     if consent else "no"))
     parts.append(f"qualified: {verdict} ({reason})")
+    track = track_for(verdict)
+    if track:
+        parts.append(f"track: {track}")
     for k, v in sorted((rec.get("extra") or {}).items()):
         parts.append(f"{k}: {str(v)[:120]}")
     return " · ".join(parts)
@@ -258,7 +287,7 @@ def sheet_updates(rec, consent, consent_ts_iso, verdict, reason):
     """Column header -> value for update_lead_columns."""
     out = {
         "Status": status_label(verdict),
-        "Service Interest": "Studio Strategy Visit (ad form)",
+        "Service Interest": service_interest(verdict),
         "Lead Temperature": temperature(verdict),
         "Notes": notes_line(rec, consent, consent_ts_iso, verdict, reason),
     }
