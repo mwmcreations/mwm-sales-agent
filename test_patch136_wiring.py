@@ -32,7 +32,7 @@ def fn_src(name):
 
 print("\n== static wiring")
 ok("import attribution_sheet as _attr_sheet" in SRC, "module imported")
-ok(SRC.count("_stamp_attribution_async(") == 3, "stamp called from WA + IG (plus its def)")
+ok(SRC.count("_stamp_attribution_async(") == 4, "stamp called from WA + IG + the lead form (Patch #143), plus its def")
 wa_first = SRC.index("log_new_contact_to_sheets(sender)\n            except Exception as e:\n                print(f\"\\u26a0")
 wa_ref = SRC.index("_stamp_attribution_async(sender)   # PATCH #136")
 ok(wa_ref > wa_first, "WA: stamp runs AFTER the first-contact row is written")

@@ -47,6 +47,9 @@ import client_roster as _roster_mod  # Patch #111 — the portal roster, cached
 import sms_copy as _sms_copy         # Patch #113 — every word we send by text
 import sms_promises as _sms_promises  # Patch #117 — what the website promises
 import icp as _icp            # S31 — who we are for
+import studio_visit as _sv    # Patch #143 — one script, every door
+import lead_form as _lf       # Patch #143 — what a Meta form submission means
+import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
 import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
@@ -2518,10 +2521,13 @@ def _get_conversion_report():
 
 MAYA_SHARED_KNOWLEDGE = """
 """ + _icp.ICP_RULE + """
+""" + _sv.SCRIPT_RULE + """
 
 
-STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. ALWAYS mention the $196/month savings when offering the package. Purchase page: mwmcreations.com/studio-package/
+STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026; for EXISTING package
+clients and portal questions — the sales script above decides what is sold
+to a new lead):
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — the Studio Strategy Visit script above decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
 - Package clients can add a Hybrid AI video to any session: $397 per video (up to 30 s, up to 3 AI scenes). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
@@ -7594,6 +7600,24 @@ You are responding to a lead who messaged you on Instagram DM. Adjust your behav
 8. QUALIFICATION STILL APPLIES (CRITICAL): Even though IG DM is more casual and concise, you MUST still follow the full Step 1 → Step 2 → Step 3 qualification flow from YOUR CONVERSATION APPROACH before offering a studio visit or booking. Do NOT skip straight to offering time slots or a studio tour. Ask about their business first, understand their role and needs, THEN route to Path A (studio tour), Path B (free call), or Path C (HOA). Being concise does NOT mean being hasty — qualify first, book second. This is the single most important rule for IG DM.
 9. BOOKING: When they're qualified and ready to book, use the book_appointment tool as you normally would. The booking flow is the same regardless of channel.
 """
+    # ── PATCH #143: SMS is a conversation now, not an alert. ──
+    if channel == "sms":
+        _sys += """
+
+--- CHANNEL: SMS (TEXT MESSAGE) ---
+You are replying by text message to a lead's phone. Rules for this channel:
+1. SHORT. One or two sentences, under 280 characters. One question at a time.
+2. PLAIN TEXT ONLY: no emoji, no markdown, no bullet points, no links unless
+   the lead asks for one (then the bare address, e.g. mwmcreations.com).
+3. The person applied through our ad form or texted us first, so you already
+   know their business — do not re-ask the two opening questions. Move to the
+   30-minute Studio Strategy Visit and offer two concrete times.
+4. BOOKING works exactly as on other channels: use the pre-loaded slots and
+   book_appointment. Confirm the booked time back in one line.
+5. Never mention WhatsApp or Instagram as "better" channels. Text is fine.
+6. If they say STOP or ask not to be texted, say "Understood, no more texts."
+   and nothing else.
+"""
     if lead_context:
         _sys += f"\n\n--- LEAD CONTEXT ---\nThis person has prior history with MWM Creations. Here is what we know about them:\n{lead_context}\nUse this context to personalize your greeting and conversation. Reference their name, interests, or prior contact naturally. Do NOT treat them as a cold stranger."
     if not is_owner:
@@ -9026,7 +9050,7 @@ def sms_inbound_webhook():
                     pass
             print(f"[SMS-OPTOUT] STOP from {tail}")
             _post_to_slack_async("#dev", f":no_bell: SMS opt-out from {tail}")
-        elif opt == "START" or kw in ("START", "UNSTOP", "YES"):
+        elif opt == "START" or kw in ("START", "UNSTOP"):
             if _pg.enabled():
                 try:
                     _pg.save_state(f"do_not_sms:{frm}", False)
@@ -9034,38 +9058,128 @@ def sms_inbound_webhook():
                     pass
             print(f"[SMS-OPTIN] START from {tail}")
         else:
-            # PATCH #113 — this used to drop a passive line into #dev and stop.
-            # Our own reminder copy now says "Need to change it? Just reply",
-            # so an inbound message is a promise coming due, not a curiosity.
-            # It names a human, carries a deadline and quotes the client
-            # verbatim — the same contract every other unreachable-client path
-            # in this machine already honours.
+            # PATCH #143 — Maya answers texts. Until tonight this branch filed
+            # an assignment for Michael ("nothing answers SMS automatically"),
+            # which made SMS the one door with a human behind it. A "YES" is
+            # also the in-conversation consent ERIC's B3 asked for, so it is
+            # recorded before Maya replies — and it still goes to her, because
+            # "YES" is usually also the answer to "Thursday at 10?".
+            if kw in ("YES", "Y", "YES PLEASE", "SIM", "SI"):
+                try:
+                    _sms_consent_set(frm, "yes", "maya",
+                                     context="replied YES by SMS",
+                                     marketing=True, transactional=True)
+                except Exception as _cx:
+                    print(f"[SMS-INBOUND] consent write failed (non-fatal): {_cx}")
             print(f"[SMS-INBOUND] {tail}: {body[:120]!r}")
-            _who = tail
-            try:
-                _row = None
-                if frm:
-                    _m, _why, _row = _CLIENT_ROSTER.find({"phone": frm})
-                if _row:
-                    _who = f"{_row.get('name') or tail} ({tail})"
-            except Exception:
-                pass
-            try:
-                _post_assignment(
-                    SLACK_LARA_CHANNEL,
-                    f"Inbound SMS from {_who}",
-                    owner="MICHAEL",
-                    deadline=(datetime.now(pytz.timezone(TIMEZONE))
-                              + timedelta(hours=2)).strftime("%A %I:%M %p ET"),
-                    exact_text=body[:400],
-                    why="the client replied to a text; nothing answers SMS automatically",
-                )
-            except Exception as _ax:
-                print(f"[SMS-INBOUND] assignment failed (non-fatal): {_ax}")
-            _post_to_slack_async("#dev", f":speech_balloon: Inbound SMS from {tail}: {body[:200]}")
+            threading.Thread(target=_handle_incoming_sms, args=(frm, body),
+                             daemon=True).start()
     except Exception as _wx:
         _report_error("sms_inbound_webhook", _wx)
     return ("<Response></Response>", 200, {"Content-Type": "text/xml"})
+
+
+def _sms_lead_context(rec):
+    """What Maya should know about a texting lead, from the record."""
+    rec = rec or {}
+    bits = []
+    if rec.get("name"):
+        bits.append(f"Name: {rec['name']}")
+    if rec.get("business"):
+        bits.append(f"Business: {rec['business']}")
+    if rec.get("role_raw"):
+        bits.append(f"Role: {rec['role_raw']}")
+    if rec.get("revenue_raw"):
+        bits.append(f"Monthly revenue band: {rec['revenue_raw']}")
+    if rec.get("must_understand"):
+        bits.append("What their customers must understand before buying: "
+                    + str(rec["must_understand"])[:300])
+    if rec.get("qualified"):
+        bits.append(f"Qualified: {rec['qualified']} ({rec.get('qualified_reason', '')})")
+    if rec.get("source"):
+        bits.append(f"Source: {rec['source']}")
+    if rec.get("ai_interest"):
+        bits.append("Came in through the AI 'film once' ad — the AI opener applies.")
+    return "\n".join(bits)
+
+
+def _handle_incoming_sms(frm, body):
+    """PATCH #143 — one inbound text, answered by Maya over SMS.
+
+    Same brain as WhatsApp and Instagram (get_claude_reply with the booking
+    tools), a channel layer that keeps her short and plain, and the reply
+    goes out through _send_sms as TRANSACTIONAL: it answers a message the
+    person just sent. Every failure falls back to the old behaviour — a human
+    assignment — so a text is never left unanswered silently."""
+    import sms_consent as _sc
+    e164 = _sc.to_e164(frm)
+    tail = ("..." + e164[-4:]) if e164 else "?"
+    text = (body or "").strip()
+    if not e164 or not text:
+        return
+    try:
+        key, rec = _find_lead_by_phone(e164)
+        if not key:
+            key = f"whatsapp:{e164}"
+            lead_data[key] = {"source": "SMS", "phone": e164,
+                              "first_contact_time": datetime.now(pytz.timezone(TIMEZONE))}
+            rec = lead_data[key]
+            try:
+                log_new_contact_to_sheets(key)
+            except Exception as _lx:
+                print(f"[SMS-MAYA] first-contact row failed (non-fatal): {_lx}")
+        # The reply itself is what stops the chase chain (lead_chase reads it).
+        lead_data[key]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
+        lead_data[key]["channel"] = "SMS"
+        if key not in conversation_history:
+            conversation_history[key] = []
+        conversation_history[key].append({"role": "user", "content": text})
+        if len(conversation_history[key]) > 20:
+            conversation_history[key] = conversation_history[key][-20:]
+        ident = {"phone": e164, "name": (rec or {}).get("name", ""),
+                 "channel": "SMS"}
+        try:
+            _mirror_to_maya_shadow_async(ident, "inbound", f"[SMS] {text}")
+        except Exception:
+            pass
+        ctx = _sms_lead_context(rec)
+        snap = list(conversation_history[key])
+        reply, updated = get_claude_reply(snap, key, lead_context=ctx,
+                                          is_owner=False, channel="sms")
+        conversation_history[key] = updated
+        clean = _sms_copy.ascii_fold(reply or "")
+        if not clean:
+            raise RuntimeError("empty reply")
+        res = _send_sms(e164, _sms_copy.compose_reply(clean),
+                        kind=SMS_KIND_TRANSACTIONAL)
+        _TALLY.bump("sms.maya_reply", "sent" if res.get("ok") else res.get("reason", "refused"))
+        if res.get("ok"):
+            try:
+                _mirror_to_maya_shadow_async(ident, "outbound", f"[SMS] {clean}")
+            except Exception:
+                pass
+            print(f"[SMS-MAYA] replied to {tail}")
+            return
+        print(f"[SMS-MAYA] reply REFUSED to {tail}: {res.get('reason')}")
+        _why = f"Maya's text reply was refused: {res.get('reason')}"
+    except Exception as _mx:
+        _report_error("sms_maya_reply", _mx, tail)
+        _why = f"Maya could not answer by text ({str(_mx)[:80]})"
+    # Fallback — the pre-#143 contract: a human, a deadline, the exact words.
+    try:
+        _post_assignment(
+            SLACK_LARA_CHANNEL,
+            f"Inbound SMS from {tail}",
+            owner="MICHAEL",
+            deadline=(datetime.now(pytz.timezone(TIMEZONE))
+                      + timedelta(hours=2)).strftime("%A %I:%M %p ET"),
+            exact_text=text[:400],
+            why=_why,
+        )
+    except Exception as _ax:
+        print(f"[SMS-INBOUND] assignment failed (non-fatal): {_ax}")
+    _post_to_slack_async("#dev", f":speech_balloon: Inbound SMS from {tail} "
+                                 f"(unanswered — {_why}): {text[:200]}")
 
 
 # ── S16: Maya humanized pacing (John's feature) — dark until MAYA_PACING=on ──
@@ -10169,6 +10283,15 @@ def webhook_instagram():
 
             print(f"[IG DM] Message from {sender_id}: {incoming_msg!r}")
 
+            # PATCH #143 — the organic "Film Once" Reel ends with DM "SCENE".
+            # Michael answers those himself for the first days (ERIC, 30 Sep):
+            # no Maya opener, no canned line — a mirror to #maya-shadow with a
+            # ping so he sees it, and nothing else.
+            if _ig_is_scene_dm(incoming_msg, f"instagram:{sender_id}"):
+                threading.Thread(target=_ig_scene_handoff,
+                                 args=(sender_id, incoming_msg), daemon=True).start()
+                continue
+
             # Route to Maya handler in background thread
             threading.Thread(
                 target=_handle_incoming_instagram,
@@ -10246,13 +10369,63 @@ def _ig_attachment_only(sender_id, att_type):
                 lead_data.setdefault(sender, rec)   # identity for the shadow thread
             _ig_stay_quiet(sender, sender_id, text, kind, why)
             return
-        send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+        # PATCH #143 (ERIC A3): a share, a reel, a photo with no words is a
+        # first message. It gets the qualifying opener — never "Thanks for
+        # sharing!" — and the opener is remembered so Maya does not say it
+        # twice when the person answers.
+        _ai_on = bool((lead_data.get(sender) or {}).get("ad_referral")) and \
+            _ai.ai_lead((lead_data.get(sender) or {}).get("ad_id", ""), [],
+                        (lead_data.get(sender) or {}).get("utm_campaign", ""))[0]
+        _open = _sv.opener((rec or {}).get("name", ""), ai=_ai_on)
+        send_instagram_dm(sender_id, body=_open)
+        if sender not in ig_conversation_history:
+            ig_conversation_history[sender] = []
+        ig_conversation_history[sender].append({"role": "assistant", "content": _open})
+        _TALLY.bump("ig.no_text_opener", "ai" if _ai_on else "standard")
     except Exception as _ax:
-        print(f"[Relationship] attachment path failed, old reply sent: {_ax}")
+        print(f"[Relationship] attachment path failed, opener sent plain: {_ax}")
         try:
-            send_instagram_dm(sender_id, body="Thanks for sharing! How can I help you today? 😊")
+            send_instagram_dm(sender_id, body=_sv.opener(""))
         except Exception:
             pass
+
+
+_SCENE_RE = re.compile(r"(?<![a-z])scene(?![a-z])", re.IGNORECASE)
+
+
+def _ig_is_scene_dm(text, sender_key=None):
+    """True for a DM that is the Reel's keyword ("SCENE", alone or inside a
+    short first message). Once a conversation is Maya's — i.e. she has
+    already replied — the word no longer diverts it."""
+    t = (text or "").strip()
+    if not t or len(t) > 120 or not _SCENE_RE.search(t):
+        return False
+    hist = ig_conversation_history.get(sender_key) or []
+    if any(m.get("role") == "assistant" for m in hist):
+        return False
+    return True
+
+
+def _ig_scene_handoff(sender_id, text):
+    sender = f"instagram:{sender_id}"
+    try:
+        rec = lead_data.get(sender)
+        if rec is None:
+            lead_data[sender] = {"source": "Instagram DM", "channel": "Instagram DM",
+                                 "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
+                                 "scene_dm": True}
+        else:
+            rec["scene_dm"] = True
+        lead_data[sender]["last_message_time"] = datetime.now(pytz.timezone(TIMEZONE))
+        ident = _build_ig_sender_identity(sender_id)
+        _mirror_to_maya_shadow_async(
+            ident, "inbound",
+            f"[IG DM] {text}\n:film_frames: *SCENE keyword — Michael answers this one "
+            f"personally* <@{MICHAEL_SLACK_USER_ID}> (Maya stays quiet; reply in this thread)")
+        _TALLY.bump("ig.scene_dm", str(sender_id))
+        print(f"[IG DM] SCENE from {sender_id} — handed to Michael, Maya quiet")
+    except Exception as _sx:
+        _report_error("ig_scene_handoff", _sx, str(sender_id))
 
 
 def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
@@ -12914,6 +13087,11 @@ INTERNAL_EMAILS = {
               "michael@mwmcreations.com,yasminfmoraes@icloud.com").split(",")
     if e.strip()
 }
+# PATCH #143 — internal addresses allowed to receive LEAD mail, for tests only.
+CHASE_TEST_EMAILS = {
+    e.strip().lower() for e in os.getenv("CHASE_TEST_EMAILS", "").split(",")
+    if e.strip()
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PATCH #38 — DO NOT CONTACT, ENFORCED SERVER-SIDE.
@@ -12951,6 +13129,12 @@ def email_is_suppressed(addr):
         return True, "unparseable address"
     if e in EMAIL_DNC:
         return True, "do-not-contact list"
+    # PATCH #143 — ERIC's acceptance test fires a form lead with Michael's own
+    # address, which the next line refuses as internal. CHASE_TEST_EMAILS
+    # (Railway, comma list, unset by default) lets a NAMED internal address
+    # receive lead mail for a test. It never overrides the DNC list above.
+    if e in CHASE_TEST_EMAILS:
+        return False, ""
     if e in INTERNAL_EMAILS or e.endswith("@mwmcreations.com"):
         return True, "internal address"
     # pg-backed dynamic list so an address can be suppressed WITHOUT a deploy.
@@ -14909,7 +15093,7 @@ Therefore:
 You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. ALWAYS mention the $196/month savings when offering the package. Purchase page: mwmcreations.com/studio-package/
+- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — Maya's Studio Strategy Visit script decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
 - Package clients can add a Hybrid AI video to any session: $397 per video (up to 30 s, up to 3 AI scenes). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
@@ -18877,6 +19061,9 @@ def health_check():
         # Patch #111: who the machine believes already pays us.
         "client_roster": _CLIENT_ROSTER.summary(),
         "sms_consent": dict(_SMS_CONSENT_LAST),   # PATCH #124
+        # PATCH #143 — the form rail and the chase chain, provable from here.
+        "lead_form": dict(_LEAD_FORM_LAST),
+        "lead_chase": dict(_LEAD_CHASE_LAST),
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         "approvals": {                             # PATCH #125
             "total": len(approval_requests),
@@ -19243,6 +19430,10 @@ def meta_leads_webhook():
         return "Forbidden", 403
 
     # ── POST: Incoming lead from Meta Lead Ad ──
+    # PATCH #143 — fast ACK. Meta retries a webhook that does not answer
+    # quickly, and the old handler fetched the lead, wrote the sheet and sent
+    # the first touch INSIDE the request. Each lead is now handled in its own
+    # thread, de-duplicated by leadgen_id so a retry cannot text twice.
     data = request.get_json(force=True, silent=True) or {}
 
     # Meta Lead Ads send object="page" with field="leadgen"
@@ -19253,229 +19444,585 @@ def meta_leads_webhook():
         for change in entry.get("changes", []):
             if change.get("field") != "leadgen":
                 continue
-
-            leadgen_value = change.get("value", {})
-            leadgen_id = leadgen_value.get("leadgen_id")
-            form_id = leadgen_value.get("form_id", "")
-            page_id = leadgen_value.get("page_id", "")
-            ad_id = leadgen_value.get("ad_id", "")
-            adgroup_id = leadgen_value.get("adgroup_id", "")
-            created_time = leadgen_value.get("created_time", "")
-
-            if not leadgen_id:
+            leadgen_value = change.get("value", {}) or {}
+            if not leadgen_value.get("leadgen_id"):
                 print("[Meta Leads] No leadgen_id in webhook — skipping")
                 continue
-
-            print(f"[Meta Leads] New lead ad submission: leadgen_id={leadgen_id}, form_id={form_id}, ad_id={ad_id}")
-
-            # Fetch full lead data from Meta Graph API
-            try:
-                lead_url = f"https://graph.facebook.com/v19.0/{leadgen_id}"
-                lead_resp = http_requests.get(
-                    lead_url,
-                    params={"access_token": META_PAGE_ACCESS_TOKEN},
-                    timeout=15,
-                )
-                lead_resp.raise_for_status()
-                lead_data_meta = lead_resp.json()
-            except Exception as e:
-                print(f"[Meta Leads] Error fetching lead data: {e}")
-                _post_to_slack_async(SLACK_DEV_CHANNEL,
-                    f"Meta Lead Ad error: could not fetch lead `{leadgen_id}`: {e}")
-                continue
-
-            # Parse the field_data array into a dict
-            # Meta returns: {"field_data": [{"name": "email", "values": ["user@example.com"]}, ...]}
-            field_data = lead_data_meta.get("field_data", [])
-            fields = {}
-            for field in field_data:
-                fname = field.get("name", "").lower().replace(" ", "_")
-                fvalues = field.get("values", [])
-                fields[fname] = fvalues[0] if fvalues else ""
-
-            # Extract standard fields (Meta form fields can have varying names)
-            name = fields.get("full_name") or fields.get("name") or fields.get("first_name", "")
-            if not name and fields.get("first_name"):
-                name = fields.get("first_name", "")
-                if fields.get("last_name"):
-                    name += " " + fields["last_name"]
-            email = fields.get("email", "").strip().lower()
-            phone_raw = fields.get("phone_number") or fields.get("phone") or fields.get("cell_phone", "")
-            company = fields.get("company_name") or fields.get("company") or fields.get("business", "")
-            # Custom fields Eric might add to the form
-            service_interest = fields.get("service") or fields.get("interest") or fields.get("what_service_are_you_interested_in", "")
-            city = fields.get("city", "")
-            state = fields.get("state", "")
-
-            print(f"[Meta Leads] Parsed: name={name}, email={email}, phone={phone_raw}, biz={company}")
-
-            # Normalize phone
-            phone_digits = re.sub(r"\D", "", phone_raw)
-            if phone_digits and len(phone_digits) == 10:
-                phone_digits = "1" + phone_digits
-            sender_key = f"whatsapp:+{phone_digits}" if phone_digits else email or name or f"meta_lead_{leadgen_id}"
-
-            # Dedup check
-            existing_key, existing_data = None, None
-            if phone_digits:
-                existing_key, existing_data = _find_lead_by_phone(phone_digits)
-            if not existing_key and email:
-                existing_key, existing_data = _find_lead_by_email(email)
-
-            if existing_key:
-                # Update existing lead
-                if name:
-                    lead_data[existing_key]["name"] = name
-                if email:
-                    lead_data[existing_key]["email"] = email
-                if company:
-                    lead_data[existing_key]["business"] = company
-                lead_data[existing_key]["meta_lead_ad"] = True
-                lead_data[existing_key]["ad_id"] = ad_id
-                lead_data[existing_key]["form_id"] = form_id
-                sender_key = existing_key
-                print(f"[Meta Leads] Existing lead updated: {name} ({sender_key})")
-            else:
-                # New lead
-                lead_data[sender_key] = {
-                    "name": name,
-                    "email": email,
-                    "phone": phone_raw,
-                    "business": company,
-                    "service_interest": service_interest,
-                    "source": "Meta Lead Ad",
-                    "meta_lead_ad": True,
-                    "leadgen_id": leadgen_id,
-                    "ad_id": ad_id,
-                    "form_id": form_id,
-                    "adgroup_id": adgroup_id,
-                    "city": city,
-                    "state": state,
-                    "first_contact_time": datetime.now(pytz.timezone(TIMEZONE)),
-                    "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
-                }
-                print(f"[Meta Leads] New lead registered: {name} ({sender_key})")
-
-            # Log to Google Sheets
-            try:
-                log_new_contact_to_sheets(sender_key)
-            except Exception as e:
-                print(f"[Meta Leads] Sheets log error (non-fatal): {e}")
-
-            # Calculate lead score
-            try:
-                _calculate_lead_score(sender_key, service_interest or company)
-            except Exception as _sx:
-                _report_error("meta_leads_webhook:L11895", _sx)  # S6.5 silent-except sweep
-
-            # Pipeline event
-            _post_pipeline_event(
-                "NEW_LEAD",
-                lead_name=name,
-                lead_phone=sender_key,
-                source="Meta Lead Ad",
-                new_stage="New",
-                assigned_agents=["Maya", "Susan", "Eric", "LARA"] if email else ["Maya", "Eric"],
-                context=f"Lead Ad form submission. Interest: {service_interest or 'General'}. Business: {company or 'N/A'}",
-                extra_fields={
-                    "Email": email or "N/A",
-                    "Business": company or "N/A",
-                    "Ad ID": ad_id or "N/A",
-                    "City": city or "N/A",
-                },
-            )
-
-            # ── Notify agents via Slack ──
-
-            # Maya — she'll initiate WhatsApp outreach
-            _lead_loc = f"{city}, {state}" if city else ""
-            maya_msg = (
-                f"*NEW LEAD — Meta Lead Ad*\n"
-                f"Name: {name}\n"
-                f"Phone: {phone_raw}\n"
-                f"Email: {email or 'N/A'}\n"
-                f"Business: {company or 'N/A'}\n"
-                f"Interest: {service_interest or 'N/A'}\n"
-            )
-            if _lead_loc:
-                maya_msg += f"Location: {_lead_loc}\n"
-            maya_msg += f"Source: Facebook/Instagram Lead Ad"
-            _post_to_slack_async(SLACK_MAYA_CHANNEL, maya_msg)
-
-            # Susan — email nurture (if email provided) + auto welcome email
-            if email:
-                # Auto-send welcome email immediately
-                _send_welcome_email_async(email, name, source="Meta Lead Ad")
-                # Notify Susan for personalized follow-up
-                _post_to_slack_async(SLACK_SUSAN_CHANNEL,
-                    f"*NEW LEAD — Meta Ad Email Track*\n"
-                    f"Name: {name}\n"
-                    f"Email: {email}\n"
-                    f"Business: {company or 'N/A'}\n"
-                    f"Interest: {service_interest or 'N/A'}\n"
-                    f"Welcome email: Sent automatically\n"
-                    f"⏳ *TIMING RULE: Wait at least 24 HOURS before sending your personalized follow-up.* "
-                    f"The welcome email was just sent — sending another email immediately looks spammy. "
-                    f"Save your draft and send it tomorrow.\n"
-                    f"Action: Send a personalized follow-up based on their form answers (after 24hr wait)"
-                )
-
-            # LARA — CRM (if email provided)
-            if email:
-                _post_to_slack_async(SLACK_LARA_CHANNEL,
-                    f"*NEW LEAD — Meta Ad CRM Entry*\n"
-                    f"Name: {name}\n"
-                    f"Email: {email}\n"
-                    f"Phone: {phone_raw}\n"
-                    f"Business: {company or 'N/A'}\n"
-                    f"Source: Meta Lead Ad\n"
-                    f"Action: Create CRM record"
-                )
-
-            # Eric — ad performance tracking (always)
-            _post_to_slack_async(SLACK_ERIC_CHANNEL,
-                f"*LEAD CAPTURED — Meta Ad*\n"
-                f"Name: {name}\n"
-                f"Ad ID: {ad_id or 'N/A'}\n"
-                f"Form ID: {form_id or 'N/A'}\n"
-                f"Interest: {service_interest or 'N/A'}\n"
-                f"Location: {_lead_loc or 'N/A'}\n"
-                f"Lead entered pipeline. Track conversion in /api/conversions"
-            )
-
-            # Matt — brief notification
-            _post_to_slack_async(SLACK_MATT_CHANNEL,
-                f"New Meta Lead Ad: *{name}* ({service_interest or company or 'General inquiry'}). "
-                f"Full track activated." if email else
-                f"New Meta Lead Ad: *{name}* ({service_interest or company or 'General inquiry'}). "
-                f"Maya + Eric track (no email)."
-            )
-
-            # Auto-send WhatsApp greeting if we have a phone number
-            if phone_digits and len(phone_digits) >= 10:
-                first_name = event_rail.greeting_name(name)
-                wa_target = f"whatsapp:+{phone_digits}"
-                greeting = (
-                    f"Hi {first_name}! Thanks for your interest in MWM Creations & Studios! "
-                    f"I'm Maya, and I'd love to learn more about what you're looking for. "
-                )
-                if service_interest:
-                    greeting += f"I see you're interested in {service_interest} — great choice! "
-                greeting += "What's the best time for a quick chat about your vision?"
-
-                try:
-                    _greet_result = send_whatsapp_meta(wa_target, body=greeting)  # S2.4
-                    if not _greet_result:
-                        _post_to_slack_async(SLACK_MATT_CHANNEL, f"\u26a0\ufe0f *Lead not reached on WhatsApp:* {name} ({wa_target}) — first-touch greeting failed (no open session; Meta blocks business-initiated free-form). Manual first touch needed until an approved template exists.")
-                        _report_error("Lead first-touch WhatsApp (S2.4)", Exception("send returned None"), f"lead={name}")
-                    if wa_target not in conversation_history:
-                        conversation_history[wa_target] = []
-                    conversation_history[wa_target].append({"role": "assistant", "content": greeting})
-                    print(f"[Meta Leads] Auto-greeting sent to {wa_target}")
-                except Exception as e:
-                    print(f"[Meta Leads] WhatsApp greeting error (non-fatal): {e}")
+            threading.Thread(target=_meta_lead_intake,
+                             args=(dict(leadgen_value),), daemon=True).start()
 
     return "OK", 200
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #143 — THE FORM LEAD RAIL
+# form submission → full lead record → sheet row (A..W) → SMS consent
+# → qualified flag → first touch (SMS + email) within seconds → chase
+# chain armed. ERIC's spec of 26 Sep, Michael's corrections of 28 Sep,
+# Michael's standard of 30 Sep: "automated all the way to the end".
+# ══════════════════════════════════════════════════════════════════════
+META_LEAD_FIELDS = ("id,created_time,ad_id,ad_name,adset_id,adset_name,"
+                    "campaign_id,campaign_name,form_id,is_organic,platform,"
+                    "field_data,custom_disclaimer_responses")
+# Optional allow-list. Empty = every form on the page is processed, which is
+# the safe default: editing a form creates a NEW id, and a lead from a form
+# we have not heard of is still a lead.
+META_LEAD_FORM_IDS = {x.strip() for x in os.getenv("META_LEAD_FORM_IDS", "").split(",")
+                      if x.strip()}
+_LEAD_FORM_LAST = {"at": None, "leadgen_id": "", "verdict": "", "sms": "",
+                   "email": "", "sheet": "", "count": 0, "errors": 0}
+
+
+def _meta_lead_fetch(leadgen_id):
+    """GET /{leadgen_id} with every field the rail needs. The old call asked
+    for the default fields, which do NOT include custom_disclaimer_responses
+    — the SMS consent box — nor ad_name."""
+    r = http_requests.get(
+        f"https://graph.facebook.com/v21.0/{leadgen_id}",
+        params={"access_token": META_PAGE_ACCESS_TOKEN, "fields": META_LEAD_FIELDS},
+        timeout=15)
+    if r.status_code != 200:
+        # Some tokens refuse ad_name/campaign_name; retry with the core set
+        # rather than lose the lead over a label.
+        r = http_requests.get(
+            f"https://graph.facebook.com/v21.0/{leadgen_id}",
+            params={"access_token": META_PAGE_ACCESS_TOKEN,
+                    "fields": "id,created_time,ad_id,form_id,field_data,"
+                              "custom_disclaimer_responses,is_organic,platform"},
+            timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def _meta_lead_intake(value):
+    """One form submission, start to finish. Never raises past this frame."""
+    import pg_store as _pg
+    import sms_consent as _sc
+    leadgen_id = str(value.get("leadgen_id") or "")
+    form_id = str(value.get("form_id") or "")
+    ad_id = str(value.get("ad_id") or "")
+    adgroup_id = str(value.get("adgroup_id") or "")
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    _LEAD_FORM_LAST.update({"at": now.isoformat(), "leadgen_id": leadgen_id})
+    try:
+        if META_LEAD_FORM_IDS and form_id and form_id not in META_LEAD_FORM_IDS:
+            _TALLY.bump("lead_form.ignored_form", form_id)
+            print(f"[Lead Form] form {form_id} not in META_LEAD_FORM_IDS — ignored")
+            return
+        # ── once per leadgen_id, ever (Meta retries; so does the test tool) ──
+        seen_key = f"meta_lead_seen:{leadgen_id}"
+        if _pg.enabled():
+            try:
+                if _pg.load_state(seen_key, False):
+                    _TALLY.bump("lead_form.duplicate_webhook", leadgen_id)
+                    print(f"[Lead Form] leadgen {leadgen_id} already handled — skipping")
+                    return
+                _pg.save_state(seen_key, now.isoformat())
+            except Exception as _kx:
+                _report_error("lead_form.seen_key", _kx, leadgen_id)
+        # ── fetch ──
+        try:
+            lead_meta = _meta_lead_fetch(leadgen_id)
+        except Exception as e:
+            _TALLY.bump("lead_form.fetch_FAILED", str(e)[:60])
+            _report_error("lead_form.fetch", e, f"leadgen={leadgen_id}")
+            _post_to_slack_async(SLACK_DEV_CHANNEL,
+                f":rotating_light: Meta Lead Ad: could not fetch lead `{leadgen_id}` "
+                f"(form {form_id}, ad {ad_id}): {str(e)[:160]}. The lead is in Meta's "
+                f"Leads Center; nothing was sent.")
+            if _pg.enabled():
+                try:
+                    _pg.save_state(seen_key, False)   # let a retry through
+                except Exception:
+                    pass
+            return
+        fields = _lf.parse_field_data(lead_meta.get("field_data"))
+        rec = _lf.extract(fields)
+        consent = _lf.consent_checked(lead_meta.get("custom_disclaimer_responses"), fields)
+        ad_id = str(lead_meta.get("ad_id") or ad_id or "")
+        form_id = str(lead_meta.get("form_id") or form_id or "")
+        ad_name = str(lead_meta.get("ad_name") or "")
+        label = _lf.ad_label(ad_id, ad_name, os.getenv("META_AD_LABELS", ""))
+        ai = _lf.is_ai_ad(ad_id, ad_name, _ai.ai_ad_ids() or None)
+        verdict, reason = _lf.qualify(rec["role_raw"], rec["revenue_raw"])
+        e164 = _sc.to_e164(rec["phone"])
+        dialable = bool(e164 and e164.startswith("+1") and len(e164) == 12)
+        email = rec["email"] if (rec["email"] and "@" in rec["email"]) else ""
+        name = rec["name"]
+        internal = bool(e164 and _is_internal_number(e164))
+        print(f"[Lead Form] {leadgen_id}: name={name!r} biz={rec['business']!r} "
+              f"role={rec['role_raw']!r} rev={rec['revenue_raw']!r} consent={consent} "
+              f"ad={ad_id} ({label}) ai={ai} -> {verdict} ({reason})")
+
+        # ── the lead record ──
+        existing_key = None
+        if e164 and not internal:
+            existing_key, _ = _find_lead_by_phone(e164)
+        if not existing_key and email and not internal:
+            existing_key, _ = _find_lead_by_email(email)
+        if existing_key:
+            sender_key = existing_key
+        elif e164 and not internal:
+            sender_key = f"whatsapp:{e164}"
+        else:
+            # Michael's own line (the acceptance test) or no phone: a record of
+            # its own, so the Command Mode record is never overwritten.
+            sender_key = f"meta_lead_{leadgen_id}"
+        if sender_key not in lead_data:
+            lead_data[sender_key] = {"first_contact_time": now}
+        lr = lead_data[sender_key]
+        upd = {
+            "name": name or lr.get("name", ""),
+            "email": email or lr.get("email", ""),
+            "phone": e164 or rec["phone"] or lr.get("phone", ""),
+            "business": rec["business"] or lr.get("business", ""),
+            "website": rec["website"],
+            "role_raw": rec["role_raw"], "revenue_raw": rec["revenue_raw"],
+            "must_understand": rec["must_understand"],
+            "form_extra": rec["extra"],
+            "qualified": verdict, "qualified_reason": reason,
+            "source": "Meta Lead Ad", "channel": "Lead Form",
+            "meta_lead_ad": True, "leadgen_id": leadgen_id, "form_id": form_id,
+            "ad_id": ad_id, "ad_name": ad_name, "utm_campaign": label,
+            "utm_source": "meta_lead_form",
+            "adgroup_id": str(lead_meta.get("adset_id") or adgroup_id or ""),
+            "campaign_id": str(lead_meta.get("campaign_id") or ""),
+            "platform": str(lead_meta.get("platform") or ""),
+            "is_organic": bool(lead_meta.get("is_organic")),
+            "sms_consent_form": consent,
+            "last_message_time": now,
+            "lead_form_at": now.isoformat(),
+            "test_lead": internal,
+        }
+        if ai:
+            upd["ai_interest"] = "ad_id"
+        lr.update(upd)
+        if verdict == _lf.Q_NO:
+            _icp.mark_disqualified(lr, _icp.REASON_NOT_TARGET_MARKET,
+                                   at=now.isoformat(), by="lead_form", note=reason)
+            lead_data[sender_key] = lr
+
+        # ── SMS consent: the form's checkbox, written exactly as B3 says ──
+        consent_ts = ""
+        if consent and e164:
+            consent_ts = now.isoformat()
+            if _pg.enabled() and verdict != _lf.Q_NO:
+                # The first-touch text carries the brand and the opt-out, so
+                # the separate "you are signed up" confirmation is not sent.
+                try:
+                    _pg.save_state(f"sms_optin_confirm_sent:{e164}", True)
+                except Exception:
+                    pass
+            _sms_consent_set(e164, "yes", "lead_form",
+                             context=f"meta form {form_id} lead {leadgen_id} consent checkbox",
+                             marketing=True, transactional=True)
+
+        # ── the sheet: first-contact row (A..N + U/V/W) then the answers ──
+        sheet_note = "skipped"
+        # The sheet is keyed by phone; a test lead on Michael's line keeps its
+        # own record above but must still land on a phone-keyed row.
+        sheet_key = f"whatsapp:{e164}" if (e164 and internal) else sender_key
+        try:
+            log_new_contact_to_sheets(sheet_key)
+            update_lead_columns(sheet_key,
+                                _lf.sheet_updates(rec, consent, consent_ts, verdict, reason))
+            _stamp_attribution_async(sender_key)      # PATCH #136, existing rows
+            sheet_note = "ok"
+        except Exception as _shx:
+            sheet_note = f"FAILED: {str(_shx)[:80]}"
+            _report_error("lead_form.sheet", _shx, sender_key)
+        _LEAD_FORM_LAST["sheet"] = sheet_note
+
+        try:
+            _calculate_lead_score(sender_key, rec["business"] or rec["must_understand"])
+        except Exception as _sx:
+            _report_error("lead_form.score", _sx)
+        _post_pipeline_event(
+            "NEW_LEAD", lead_name=name, lead_phone=sender_key, source="Meta Lead Ad",
+            new_stage=("Disqualified" if verdict == _lf.Q_NO else "New"),
+            assigned_agents=["Maya", "Eric"],
+            context=(f"Instant Form. Business: {rec['business'] or 'N/A'}. Role: "
+                     f"{rec['role_raw'] or 'N/A'}. Revenue: {rec['revenue_raw'] or 'N/A'}. "
+                     f"Qualified: {verdict} ({reason})."),
+            extra_fields={"Email": email or "N/A", "Business": rec["business"] or "N/A",
+                          "Ad ID": ad_id or "N/A", "Ad": label or "N/A",
+                          "SMS consent": "yes" if consent else "no"},
+        )
+
+        # ── first touch ──
+        slots = []
+        sms_note, email_note = "not applicable", "not applicable"
+        if verdict == _lf.Q_NO:
+            # The polite disqualify, once, on one channel. No chain.
+            if email:
+                subj, html, _ = _sv.disqualify_email(name)
+                res = _email_send(email, subj, html, via="lead_form_disqualify",
+                                  lead_key=sender_key)
+                email_note = "sent" if email_ok(res) else f"refused ({res.get('error', '')[:60]})"
+            elif consent and dialable:
+                res = _send_sms(e164, _sms_copy.compose(_sv.disqualify_text()),
+                                kind=SMS_KIND_TRANSACTIONAL)
+                sms_note = "sent" if res.get("ok") else f"refused ({res.get('reason')})"
+            lr["chase"] = {"stopped": _chase.STOP_DISQUALIFIED,
+                           "stopped_at": now.isoformat(), "armed_at": now.isoformat(),
+                           "channels": [], "sent": {}, "skipped": {}, "verdict": verdict}
+            lead_data[sender_key] = lr
+        else:
+            try:
+                slots = (get_available_slots() or [])[:2]
+            except Exception as _slx:
+                print(f"[Lead Form] slots unavailable (non-fatal): {_slx}")
+            plan = _lf.first_touch_plan(verdict, consent, dialable, bool(email))
+            for chan, why in plan:
+                if chan == "sms":
+                    try:
+                        body = _first_touch_sms_body(name, rec["business"], ai, slots)
+                    except ValueError as _bx:
+                        _report_error("lead_form.sms_copy", _bx, sender_key)
+                        sms_note = "refused (copy)"
+                        continue
+                    core = body[len(_sms_copy.PREFIX):-len(_sms_copy.SUFFIX)]
+                    res = _send_sms(e164, body, kind=SMS_KIND_TRANSACTIONAL)
+                    if res.get("ok"):
+                        sms_note = "sent"
+                        lr["first_touch_sms_at"] = now.isoformat()
+                    elif res.get("reason") in ("quiet_hours", "monthly_cap",
+                                               "touch_state_check_failed", "exception") \
+                            or str(res.get("reason", "")).startswith("api_"):
+                        # Not now is not never: the chase loop retries inside the
+                        # sending window, for up to FIRST_TOUCH_SMS_MAX_WAIT_H.
+                        sms_note = f"queued ({res.get('reason')})"
+                        lr["first_touch_sms_pending"] = {"since": now.isoformat(),
+                                                          "core": core,
+                                                          "reason": res.get("reason")}
+                    else:
+                        sms_note = f"refused ({res.get('reason')})"
+                    _TALLY.bump("lead_form.first_touch_sms", sms_note.split(" ")[0])
+                elif chan == "email":
+                    subj, html, _ = _sv.form_first_touch_email(
+                        name, rec["business"], rec["must_understand"], ai, slots,
+                        sms_sent=(sms_note == "sent"))
+                    res = _email_send(email, subj, html, via="lead_form_first_touch",
+                                      lead_key=sender_key)
+                    email_note = "sent" if email_ok(res) else f"refused ({str(res.get('error', ''))[:60]})"
+                    _TALLY.bump("lead_form.first_touch_email", email_note.split(" ")[0])
+                    if email_ok(res):
+                        lr["first_touch_email_at"] = now.isoformat()
+            # ── arm the chain ──
+            chans = []
+            if email and not email_is_suppressed(email)[0]:
+                chans.append(_chase.EMAIL)
+            if consent and dialable:
+                chans.append(_chase.SMS)
+            lr["chase"] = _chase.arm(now, channels=chans, verdict=verdict)
+            lead_data[sender_key] = lr
+        _LEAD_FORM_LAST.update({"verdict": verdict, "sms": sms_note, "email": email_note,
+                                "count": _LEAD_FORM_LAST["count"] + 1})
+        _TALLY.bump("lead_form.intake", verdict)
+
+        # ── tell the room (this is ERIC's evidence line) ──
+        _slot_txt = ", ".join(s.get("display", "") for s in slots) if slots else "none offered"
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+            f":inbox_tray: *Form lead* `{leadgen_id}` → {name or '?'} · "
+            f"{rec['business'] or 'no business'} · {rec['role_raw'] or '?'} / "
+            f"{rec['revenue_raw'] or '?'} · ad {label or ad_id or 'organic'}\n"
+            f"qualified: *{verdict}* ({reason}) · sms_consent: {'yes/lead_form ' + consent_ts if consent else 'no'}\n"
+            f"sheet: {sheet_note} · SMS: {sms_note} · email: {email_note} · "
+            f"slots: {_slot_txt} · chain: {_chase.summary(lr.get('chase'), now)}"
+            + (" · *TEST (internal number)*" if internal else ""))
+        _post_to_slack_async(SLACK_MAYA_CHANNEL,
+            f"*NEW LEAD — Instant Form* ({label or 'organic'})\n"
+            f"Name: {name or 'N/A'} · Business: {rec['business'] or 'N/A'}\n"
+            f"Role: {rec['role_raw'] or 'N/A'} · Revenue: {rec['revenue_raw'] or 'N/A'}\n"
+            f"Must understand: {(rec['must_understand'] or 'N/A')[:200]}\n"
+            f"Qualified: {verdict} ({reason}) · SMS consent: {'yes' if consent else 'no'}\n"
+            f"First touch: SMS {sms_note}, email {email_note}. Chase chain armed; "
+            f"replies on any channel stop it. Nothing manual needed.")
+        _post_to_slack_async(SLACK_ERIC_CHANNEL,
+            f"*LEAD CAPTURED — Instant Form*\n"
+            f"Ad: {label or 'N/A'} ({ad_id or 'organic'}) · Form: {form_id}\n"
+            f"Name: {name or 'N/A'} · Qualified: {verdict} · SMS consent: {'yes' if consent else 'no'}\n"
+            f"First touch: SMS {sms_note} / email {email_note}. Row: {sheet_note}.")
+    except Exception as _ix:
+        _LEAD_FORM_LAST["errors"] += 1
+        _report_error("lead_form.intake", _ix, f"leadgen={leadgen_id}")
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+            f":rotating_light: Form lead `{leadgen_id}` intake failed: {str(_ix)[:200]}. "
+            f"The lead is in Meta's Leads Center.")
+
+
+# ── the chase loop ────────────────────────────────────────────────────────
+LEAD_CHASE_CYCLE_S = int(os.getenv("LEAD_CHASE_CYCLE_S", "300"))
+_LEAD_CHASE_LAST = {"at": None, "armed": 0, "active": 0, "due_now": 0,
+                    "sent_total": 0, "stopped": {}, "pending_first_touch": 0,
+                    "last_send": "", "passes": 0, "errors": 0}
+
+
+def _sms_body_that_fits(builders):
+    """The first candidate that sms_copy.compose() accepts (two segments,
+    GSM-7). A long first name must shorten the message, never lose it."""
+    last = None
+    for b in builders:
+        try:
+            return _sms_copy.compose(b())
+        except ValueError as _vx:
+            last = _vx
+    raise last or ValueError("no SMS body fits")
+
+
+def _first_touch_sms_body(name, business, ai, slots):
+    return _sms_body_that_fits((
+        lambda: _sv.form_first_touch_sms(name, business, ai, slots),
+        lambda: _sv.form_first_touch_sms(name, business, ai, slots[:1] if slots else None),
+        lambda: _sv.form_first_touch_sms(name, business, ai, None),
+        lambda: _sv.form_first_touch_sms("", business, ai, None),
+    ))
+
+
+def _chase_aware(dt):
+    """A tz-aware datetime or None. Lead records hold aware datetimes once
+    revived, but a value written by an older path may be naive or a string."""
+    if isinstance(dt, str):
+        dt = _chase._parse(dt)
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return pytz.timezone(TIMEZONE).localize(dt)
+    return dt
+
+
+def _chase_is_client(sender_key):
+    try:
+        hit, why, _ = _known_client_lookup(sender_key)
+        return bool(hit) or why == "already_marked"
+    except Exception:
+        return False
+
+
+def _chase_pass(now=None):
+    """One pass over every armed lead. Returns the counts it saw."""
+    import sms_consent as _sc
+    tz = pytz.timezone(TIMEZONE)
+    now = now or datetime.now(tz)
+    counts = {"armed": 0, "active": 0, "due_now": 0, "sent": 0,
+              "stopped": {}, "pending_first_touch": 0}
+    for key, rec in list(lead_data.items()):
+        if not isinstance(rec, dict):
+            continue
+        # ── the first-touch text that had to wait for the window ──
+        pend = rec.get("first_touch_sms_pending")
+        if isinstance(pend, dict) and pend.get("core"):
+            counts["pending_first_touch"] += 1
+            since = _chase_aware(pend.get("since"))
+            e164 = _sc.to_e164(rec.get("phone"))
+            waited_h = ((now - since).total_seconds() / 3600.0 if since else 999)
+            inbound = _chase_aware(rec.get("last_message_time"))
+            replied = bool(inbound and since and inbound > since + timedelta(minutes=1))
+            if not e164 or waited_h > _chase.FIRST_TOUCH_SMS_MAX_WAIT_H or replied \
+                    or rec.get("booked") or isinstance(rec.get("disqualified"), dict):
+                rec["first_touch_sms_dropped"] = ("replied" if replied else
+                                                  f"waited {waited_h:.0f}h")
+                rec.pop("first_touch_sms_pending", None)
+                lead_data[key] = rec
+            else:
+                res = _send_sms(e164, _sms_copy.compose(pend["core"]),
+                                kind=SMS_KIND_TRANSACTIONAL)
+                if res.get("ok"):
+                    rec["first_touch_sms_at"] = now.isoformat()
+                    rec.pop("first_touch_sms_pending", None)
+                    lead_data[key] = rec
+                    counts["sent"] += 1
+                    _TALLY.bump("lead_form.first_touch_sms", "sent_late")
+        # ── the chain ──
+        state = rec.get("chase")
+        if not isinstance(state, dict) or not state.get("armed_at"):
+            continue
+        counts["armed"] += 1
+        if state.get("stopped"):
+            counts["stopped"][state["stopped"]] = counts["stopped"].get(state["stopped"], 0) + 1
+            continue
+        inbound = _chase_aware(rec.get("last_message_time"))
+        reason = _chase.stop_reason(state, rec, now, last_inbound=inbound,
+                                    is_client=_chase_is_client(key))
+        if not reason and _chase.is_finished(state):
+            reason = _chase.STOP_CLOSED
+        if reason:
+            state["stopped"] = reason
+            state["stopped_at"] = now.isoformat()
+            rec["chase"] = state
+            lead_data[key] = rec
+            counts["stopped"][reason] = counts["stopped"].get(reason, 0) + 1
+            _TALLY.bump("lead_chase.stopped", reason)
+            print(f"[Chase] {key}: stopped ({reason})")
+            continue
+        counts["active"] += 1
+        # Walk past anything too late to send, then send at most ONE step per
+        # lead per pass — two emails in one minute is a sequence nobody wanted.
+        for _ in range(len(_chase.STEPS)):
+            step = _chase.next_step(state, now)
+            if step is None:
+                break
+            if step[0] == "skip":
+                state.setdefault("skipped", {})[step[1]] = step[2]
+                rec["chase"] = state
+                lead_data[key] = rec
+                _TALLY.bump("lead_chase.skipped", step[1])
+                continue
+            key_s, chan, copy_step = step
+            counts["due_now"] += 1
+            if chan == _chase.EMAIL:
+                if not event_rail.within_send_window(now):
+                    break
+                email = str(rec.get("email") or "").strip()
+                if not email or email_is_suppressed(email)[0]:
+                    state.setdefault("skipped", {})[key_s] = "no sendable email"
+                    rec["chase"] = state
+                    lead_data[key] = rec
+                    continue
+                subj, html, _ = _sv.chase_email(copy_step, rec.get("name"),
+                                                rec.get("business"),
+                                                rec.get("must_understand"),
+                                                ai=bool(rec.get("ai_interest")))
+                state.setdefault("sent", {})[key_s] = now.isoformat()   # stamp BEFORE send
+                rec["chase"] = state
+                lead_data[key] = rec
+                res = _email_send(email, subj, html, via=f"lead_chase_{key_s}", lead_key=key)
+                if email_ok(res):
+                    counts["sent"] += 1
+                    _TALLY.bump("lead_chase.sent", key_s)
+                    _LEAD_CHASE_LAST["last_send"] = f"{key_s} to {_chase_mask(email)} at {now.strftime('%H:%M')}"
+                    print(f"[Chase] {key}: {key_s} sent")
+                else:
+                    # A refusal that will not change (suppressed) is a skip; a
+                    # transport error gives the stamp back for the next pass.
+                    if res.get("suppressed"):
+                        state["sent"].pop(key_s, None)
+                        state.setdefault("skipped", {})[key_s] = str(res.get("error", ""))[:80]
+                    else:
+                        state["sent"].pop(key_s, None)
+                    rec["chase"] = state
+                    lead_data[key] = rec
+                    _TALLY.bump("lead_chase.email_FAILED", key_s)
+                break
+            else:   # SMS
+                e164 = _sc.to_e164(rec.get("phone"))
+                if not e164:
+                    state.setdefault("skipped", {})[key_s] = "no dialable phone"
+                    rec["chase"] = state
+                    lead_data[key] = rec
+                    continue
+                try:
+                    slots = (get_available_slots() or [])[:2]
+                except Exception:
+                    slots = []
+                try:
+                    body = _sms_body_that_fits((
+                        lambda: _sv.chase_sms(copy_step, rec.get("name"), slots),
+                        lambda: _sv.chase_sms(copy_step, rec.get("name"), None),
+                        lambda: _sv.chase_sms(copy_step, "", None)))
+                except ValueError as _bx:
+                    state.setdefault("skipped", {})[key_s] = "copy did not fit"
+                    rec["chase"] = state
+                    lead_data[key] = rec
+                    continue
+                state.setdefault("sent", {})[key_s] = now.isoformat()
+                rec["chase"] = state
+                lead_data[key] = rec
+                res = _send_sms(e164, body, kind=SMS_KIND_MARKETING)
+                if res.get("ok"):
+                    counts["sent"] += 1
+                    _TALLY.bump("lead_chase.sent", key_s)
+                    _LEAD_CHASE_LAST["last_send"] = f"{key_s} to ...{e164[-4:]} at {now.strftime('%H:%M')}"
+                    print(f"[Chase] {key}: {key_s} sent")
+                else:
+                    state["sent"].pop(key_s, None)
+                    if res.get("reason") in ("no_consent", "no_consent_marketing",
+                                             "do_not_sms", "twilio_env_missing"):
+                        state.setdefault("skipped", {})[key_s] = str(res.get("reason"))
+                    rec["chase"] = state
+                    lead_data[key] = rec
+                    _TALLY.bump("lead_chase.sms_refused", str(res.get("reason")))
+                break
+    return counts
+
+
+def _chase_mask(email):
+    e = str(email or "")
+    if "@" not in e:
+        return e[:3] + "…"
+    a, b = e.split("@", 1)
+    return a[:2] + "…@" + b
+
+
+def _lead_chase_loop():
+    import time as _t
+    print(f"[Chase] loop started (every {LEAD_CHASE_CYCLE_S}s)")
+    _heartbeat("lead_chase")
+    _t.sleep(90)
+    while True:
+        try:
+            counts = _chase_pass()
+            _LEAD_CHASE_LAST.update({
+                "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+                "armed": counts["armed"], "active": counts["active"],
+                "due_now": counts["due_now"],
+                "sent_total": _LEAD_CHASE_LAST["sent_total"] + counts["sent"],
+                "stopped": counts["stopped"],
+                "pending_first_touch": counts["pending_first_touch"],
+                "passes": _LEAD_CHASE_LAST["passes"] + 1,
+            })
+        except Exception as _e:
+            _LEAD_CHASE_LAST["errors"] += 1
+            try:
+                _report_error("lead_chase", _e)
+            except Exception:
+                pass
+        _heartbeat("lead_chase")          # after the work, never before
+        _t.sleep(LEAD_CHASE_CYCLE_S)
+
+
+threading.Thread(target=_lead_chase_loop, daemon=True, name="lead_chase").start()
+
+
+@app.route("/admin/chase", methods=["GET"])
+def admin_chase():
+    """PATCH #143 — what is armed on every lead, and when it fires. Read-only.
+    ERIC's acceptance test asks to 'show the queue entry'; this is it."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    rows = []
+    for key, rec in list(lead_data.items()):
+        if not isinstance(rec, dict):
+            continue
+        st = rec.get("chase")
+        pend = rec.get("first_touch_sms_pending")
+        if not st and not pend:
+            continue
+        rows.append({
+            "lead": key if str(key).startswith("meta_lead_") else _chase_mask_key(key),
+            "name": rec.get("name", ""), "business": rec.get("business", ""),
+            "qualified": rec.get("qualified", ""),
+            "armed_at": (st or {}).get("armed_at", ""),
+            "channels": (st or {}).get("channels", []),
+            "sent": (st or {}).get("sent", {}),
+            "skipped": (st or {}).get("skipped", {}),
+            "stopped": (st or {}).get("stopped", ""),
+            "next": _chase.summary(st, now),
+            "first_touch_sms_at": rec.get("first_touch_sms_at", ""),
+            "first_touch_email_at": rec.get("first_touch_email_at", ""),
+            "first_touch_sms_pending": bool(pend),
+        })
+    rows.sort(key=lambda r: r.get("armed_at", ""), reverse=True)
+    return jsonify({"now": now.isoformat(), "count": len(rows),
+                    "loop": dict(_LEAD_CHASE_LAST), "last_form_lead": dict(_LEAD_FORM_LAST),
+                    "leads": rows[:200]})
+
+
+def _chase_mask_key(key):
+    k = str(key or "")
+    return k[:-4].rstrip("0123456789") + "…" + k[-4:] if len(k) > 8 else k
 
 
 # ══════════════════════════════════════════════════════════════════════

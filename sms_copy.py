@@ -130,6 +130,38 @@ def _require(value, label):
     return v
 
 
+# Carriers want the brand and the opt-out on the FIRST message of a
+# programme and periodically after; they do not want them on every line of
+# a two-way conversation. A reply inside a conversation the person started
+# therefore carries neither — only the ASCII fold and the segment ceiling.
+REPLY_MAX_SEGMENTS = 2
+
+
+def compose_reply(core):
+    """PATCH #143 — a conversational reply (Maya answering a text).
+
+    No brand prefix, no opt-out suffix, GSM-7 only, at most two segments;
+    anything longer is cut at the last sentence end that fits, so a long
+    answer is shortened rather than refused or split into a third segment."""
+    body = ascii_fold(core).rstrip()
+    if not body:
+        raise ValueError("refusing to send an empty SMS reply")
+    limit = SEGMENT_CONCAT * REPLY_MAX_SEGMENTS
+    if len(body) > limit:
+        cut = body[:limit]
+        for mark in (". ", "? ", "! "):
+            idx = cut.rfind(mark)
+            if idx > limit // 3:
+                cut = cut[:idx + 1]
+                break
+        else:
+            cut = cut[:limit - 3].rstrip() + "..."
+        body = cut
+    if not is_gsm7(body):
+        raise ValueError("SMS reply is not GSM-7 after folding: %r" % body[:80])
+    return body
+
+
 # ── THE MESSAGES ───────────────────────────────────────────────────────────
 
 def opt_in_confirmation(first_name=None, marketing=False):

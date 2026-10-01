@@ -64,7 +64,9 @@ class _Roster:
         if (cand.get("ig_username") or "") == "victorymartialarts":
             return True, "instagram", {"name": "Victory Martial Arts", "package": "Studio Package"}
         return False, "no_match", None
+import studio_visit as _sv, ai_studio as _ai   # Patch #143: the opener replaces the canned line
 G = {"lead_data": {}, "_kc": _kc, "_rel": _rel, "time": __import__("time"),
+     "_sv": _sv, "_ai": _ai, "ig_conversation_history": {},
      "_TALLY": _Tally(), "_CLIENT_ROSTER": _Roster(), "MICHAEL_SLACK_USER_ID": "UMICH",
      "send_instagram_dm": lambda sid, body=None, **k: sent.append((sid, body)),
      "_mirror_to_maya_shadow_async": lambda ident, d, t: mirrored.append((ident, d, t)),
@@ -89,7 +91,8 @@ ok(rec.get("relationship") == _rel.KNOWN and "last_message_time" not in rec,
 # 2 · a stranger shares a reel -> exactly the old reply, nothing recorded
 reset(); profiles["222"] = {"name": "Some One", "username": "someone", "we_follow": False}
 G["_ig_attachment_only"]("222", "share")
-ok(sent == [("222", "Thanks for sharing! How can I help you today? 😊")], "stranger: the old reply, unchanged")
+ok(len(sent) == 1 and sent[0][0] == "222" and sent[0][1].startswith("Hi Some, Maya here from Michael Moraes' team") and "Two quick questions" in sent[0][1],
+   "stranger: the qualifying opener (Patch #143, ERIC A3), not 'Thanks for sharing'")
 ok("instagram:222" not in G["lead_data"] and mirrored == [], "stranger: no record left behind (as before)")
 
 # 3 · a client (roster, by handle) shares -> quiet + ping, even if we do not follow them
@@ -114,7 +117,7 @@ reset()
 def _boom(sid): raise RuntimeError("graph down")
 G["_fetch_ig_profile"] = _boom
 G["_ig_attachment_only"]("666", "share")
-ok(sent == [("666", "Thanks for sharing! How can I help you today? 😊")], "graph failure: behaves exactly as before #138")
+ok(len(sent) == 1 and sent[0][0] == "666" and "Two quick questions" in sent[0][1], "graph failure: fail open, the opener still goes out (Patch #143)")
 
 print("\n%d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

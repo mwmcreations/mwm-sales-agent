@@ -35,9 +35,17 @@ AI_PAGE_PATH = "/ai-studio"
 def page_live():
     return str(os.getenv("AI_STUDIO_PAGE_LIVE", "0")).strip().lower() in ("1", "true", "yes", "on")
 
+# PATCH #143 — ERIC posted the C1 ad ids on 30 Sep. AD_19 is the AI ad, and it
+# is live from Thu 1 Oct, so the branch cannot wait for a Railway variable.
+# AI_AD_IDS (comma list) ADDS to this; it does not have to repeat it.
+AI_AD_IDS_DEFAULT = ("120251320140730738",)   # AD_19 | Film once | AI | Oct 2026
+
+
 def ai_ad_ids():
-    """AD_19 "Film once" and later AI ads: Railway var AI_AD_IDS (comma list)."""
-    return {x.strip() for x in str(os.getenv("AI_AD_IDS", "")).split(",") if x.strip()}
+    """AD_19 "Film once" and later AI ads: the built-in default plus the
+    Railway var AI_AD_IDS (comma list)."""
+    ids = {x.strip() for x in str(os.getenv("AI_AD_IDS", "")).split(",") if x.strip()}
+    return ids | set(AI_AD_IDS_DEFAULT)
 
 # What a lead's OWN words look like when they are asking about AI video.
 # Deliberately narrow: "AI" alone is too common ("ai" inside words, "AI" chatbots).
