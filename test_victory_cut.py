@@ -602,6 +602,10 @@ class TestRoundFourOfTheEditingRoom(unittest.TestCase):
                        % (i, i * 4800, i / 10.0) for i in range(30))
         self.assertIsNone(vq.hit_from_text(flat))
         self.assertIsNone(vq.hit_from_text(""))
+        # sound that starts after silence is a file beginning, not a hit
+        start = "".join("frame:%d pts:%d pts_time:%.1f\nlavfi.astats.Overall.RMS_level=%s\n"
+                        % (i, i * 4800, i / 10.0, "-inf" if i < 8 else "-29.0") for i in range(30))
+        self.assertIsNone(vq.hit_from_text(start))
 
     def test_still_pictures_go_behind_live_ones_on_an_action_ask(self):
         still = {"id": "S", "title": "boards on mat", "category": "Board breaks", "priority": "hero",

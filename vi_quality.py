@@ -225,13 +225,17 @@ def hit_from_text(text):
     if len(levels) < 8:
         return None
     best, best_i = None, None
-    for i in range(3, len(levels)):
+    for i in range(5, len(levels)):
+        if times[i] < 0.5:
+            continue
         before = sorted(levels[max(0, i - 10):i])
         base = before[len(before) // 2]          # the median of the second before
+        if base < -55.0:
+            continue                             # sound starting after silence is not a hit
         rise = levels[i] - base
         if best is None or rise > best:
             best, best_i = rise, i
-    if best is None or best < 6.0:                # nothing sudden: a steady room, music, silence
+    if best is None or best < 4.5:                # nothing sudden: a steady room, music
         return None
     return round(times[best_i], 2), round(best, 1)
 
