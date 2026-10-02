@@ -46,7 +46,9 @@ SCENE_GAP = 300.0       # two moments this close in one long recording are one s
 SPEECH_MAX = 12.0       # an interview moment, at most (ends on a line boundary)
 SPEECH_MIN = 4.0        # never a sound bite shorter than this
 SPEECH_MUSIC = 0.12     # music under someone talking
-BROLL_NAT = 0.25        # natural sound under music elsewhere
+BROLL_NAT = 0.0         # natural sound under music elsewhere: NONE (Michael, round 4, #87:
+                        # "do not use the original audio of the clips. only music... unless
+                        # we want a testimonial, or someone talking to the camera")
 
 FONT_CANDIDATES = [
     os.environ.get("VI_FONT", ""),
@@ -90,8 +92,8 @@ PAYOFF = ("Board breaks", "Winning moments", "Belt & rank presentation", "Candle
 SPECTACLE_RE = re.compile(r"perform|flip|kick|routine|takedown|spar|break|weapon|sword|staff|trick|"
                           r"cartwheel|aerial|jump|throw|strike|demo\b|demonstrat|form\b|forms\b")
 SETUP_RE = re.compile(r"set[- ]?up|sets up|carries|carry|holds? (?:a |the )?boards?|holding (?:a |the )?boards?|"
-                      r"line[- ]?up|lined|lines up|walk|walks|standing|stands|waiting|seated|sit\b|sits|"
-                      r"kneel|bows?\b|pans|announc")
+                      r"line[- ]?up|lined|lines up|walk|walks|standing|stands|waiting|waits|seated|sit\b|sits|"
+                      r"kneel|bows?\b|pans|announc|boards? on (?:the )?mat|on-mat|looking|poses|posing")
 
 
 ACTION_KINDS = ("Board breaks", "Competition", "Winning moments", "Training & seminar", "Instructor training")
@@ -268,6 +270,11 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         bump(c)
     taken = set(x["id"] for x in chosen)
     pool = [c for c in cands if c["id"] not in taken]
+    # Michael, round 4 (#85, #86): "good shots for Victory are always the
+    # ones that have action, energy, techniques being performed." On any ask
+    # that is not calm, a still picture goes behind every live one of its tier.
+    def still(c):
+        return 1 if (action or peak) and spectacle_score(c) == 0 else 0
     while len(chosen) < n and pool:
         if by_search:      # the ask's own footage leads (weight 10 = a hit or a named
             # kind) — before rotation: someone who asked for candlelight would
@@ -277,7 +284,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # a clip that carries the ask's own word is never held back for
             # rotation: someone who asked for candles gets the best candles
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
-                                     shaky[c["id"]], turn(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
+                                     shaky[c["id"]], turn(c), still(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
                                      -(c.get("category") in subject), -strength(c), -named[c["id"]],
                                      # among clips that carry the ask's word, the hero shots lead
                                      -(min(2, PRIORITY.get(c.get("priority"), 0)) if named[c["id"]] else 0),
@@ -287,7 +294,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
                                      fam.get(c.get("category"), 0),
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
-            pool.sort(key=lambda c: (shaky[c["id"]], turn(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
+            pool.sort(key=lambda c: (shaky[c["id"]], turn(c), still(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
                                      -(c.get("category") in subject), -strength(c), -named[c["id"]],
                                      (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
@@ -683,6 +690,12 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             # (the applause, the break): centre the shot on it
             hi = max(0.0, (have or 99.0) - dur - 0.05)
             fixed = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
+        elif c.get("hit") is not None and c.get("category") in ACTION_KINDS:
+            # the quality pass heard where the action lands (the crack of the
+            # board, the kick on the pad): the hit sits just past the middle
+            # of the shot, so the wind-up and the hit are both on screen
+            hi = max(0.0, (have or 99.0) - dur - 0.05)
+            fixed = max(0.0, min(float(c["hit"]) - dur * 0.55, hi))
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur, fixed_in=fixed)
         t1, steady = steady_in(c.get("stable"), t0, dur, have or None, passable=c.get("stable_ok"))
         if fixed is None and c.get("category") in ACTION_KINDS and abs(t1 - t0) > 1.0:

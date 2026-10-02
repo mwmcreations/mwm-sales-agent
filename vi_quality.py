@@ -189,6 +189,53 @@ def measure(path):
             "stable": stable_windows(per, dur)}
 
 
+# ── the hit ────────────────────────────────────────────────────────────────
+# Michael, editing room rounds 3 and 4: "we need to see the exact moment where
+# the boards are being broken", "you are missing the right moments, when
+# action happens". The picture's busiest second was not it. The SOUND is: a
+# board cracks, a pad is kicked, a crowd erupts — the loudest sudden rise in
+# the clip's own audio is where the action lands. Measured once per file,
+# in 0.1 s steps, kept as the time of the sharpest onset.
+HIT_STEP = 0.1
+
+
+def hit_profile(path):
+    """(hit_seconds, onset_db) for the sharpest rise in loudness, or None when
+    the file has no usable sound."""
+    r = run([FFMPEG, "-v", "info", "-i", path, "-vn",
+             "-af", "asetnsamples=n=4800:p=0,astats=metadata=1:reset=1,"
+                    "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
+             "-f", "null", "-"], timeout=110)
+    return hit_from_text(r.stdout or "")
+
+
+def hit_from_text(text):
+    times, levels, t = [], [], None
+    for ln in (text or "").splitlines():
+        m = re.search(r"pts_time:([\d.]+)", ln)
+        if m:
+            t = float(m.group(1))
+            continue
+        m = re.search(r"RMS_level=(-?[\d.]+|-inf|inf)", ln)
+        if m and t is not None:
+            v = m.group(1)
+            levels.append(-90.0 if "inf" in v else max(-90.0, float(v)))
+            times.append(t)
+            t = None
+    if len(levels) < 8:
+        return None
+    best, best_i = None, None
+    for i in range(3, len(levels)):
+        before = sorted(levels[max(0, i - 10):i])
+        base = before[len(before) // 2]          # the median of the second before
+        rise = levels[i] - base
+        if best is None or rise > best:
+            best, best_i = rise, i
+    if best is None or best < 6.0:                # nothing sudden: a steady room, music, silence
+        return None
+    return round(times[best_i], 2), round(best, 1)
+
+
 # ── colour ─────────────────────────────────────────────────────────────────
 def on_this_machine(src):
     """A source path as the Mini sees it: the first batches were listed from
@@ -326,6 +373,10 @@ def step():
                 done_measure += 1
             else:
                 entry["stable"] = None
+        if "hit" not in entry:
+            h = hit_profile(path)
+            entry["hit"], entry["hit_db"] = (h if h else (None, None))
+            done_measure += 1
         q[cid] = entry
         jsave(OUT, q)
     jsave(OUT, q)

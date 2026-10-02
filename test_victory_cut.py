@@ -505,8 +505,8 @@ class TestRoundOneOfTheEditingRoom(unittest.TestCase):
         got = vc.story_order(breaks)
         self.assertEqual(got[0]["id"], "B2", "the strongest opens")
         self.assertEqual(got[-1]["id"], "B4", "the next strongest pays it off")
-        self.assertEqual([c["id"] for c in got[1:-1]], ["B3", "B1"], "the middle builds; a setup shot sits lowest")
-        self.assertTrue(vc.is_setup(breaks[2]) and not vc.is_setup(breaks[1]))
+        self.assertEqual(set(c["id"] for c in got[1:-1]), {"B1", "B3"}, "the still pictures sit in the middle")
+        self.assertTrue(vc.is_setup(breaks[2]) and vc.is_setup(breaks[0]) and not vc.is_setup(breaks[1]))
         # a named thing counts as strength: the ask's own word opens the reel
         got = vc.story_order(breaks, stems={"stanc"})
         self.assertEqual(got[0]["id"], "B4")
@@ -576,6 +576,47 @@ class TestRoundOneOfTheEditingRoom(unittest.TestCase):
         # the crowd itself, named: more, but still never the dish (one in three)
         got = vc.pick_shots(pool, 9, seed=2, uncapped=(vc.REACTION,), max_per_family=9, max_per_session=9)
         self.assertEqual([c["category"] for c in got].count(vc.REACTION), 3)
+
+
+class TestRoundFourOfTheEditingRoom(unittest.TestCase):
+    """Round 4 (2 Oct): 3 of 8. "Besides the very last take, you missed the exact
+    breaking-board moment"; "the girl looking away doing nothing"; "do not use
+    the original audio of the clips, only music"."""
+
+    def test_the_shot_lands_on_the_hit_the_sound_found(self):
+        c = dict(CLIPS[0], id="HIT1", category="Board breaks", seconds=8.0, hit=5.0, stable=None)
+        p = vc.plan("board breaks, fast", [c], ["HIT1"], LIBRARY, {}, 15)
+        s = p["shots"][0]                        # a 5 s pick: the crack at 55 % -> starts at 2.25
+        self.assertAlmostEqual(s["in"], 2.25, places=2)
+        self.assertLessEqual(s["in"] + s["dur"], 8.0)
+        # a calm kind ignores the hit (nothing to hit in a candle ceremony)
+        c2 = dict(c, id="HIT2", category="Candlelight ceremony")
+        self.assertNotAlmostEqual(vc.plan("candles", [c2], ["HIT2"], LIBRARY, {}, 15)["shots"][0]["in"], 2.25, places=2)
+
+    def test_the_hit_is_read_from_the_sound(self):
+        import vi_quality as vq
+        text = "".join("frame:%d pts:%d pts_time:%.1f\nlavfi.astats.Overall.RMS_level=%s\n"
+                       % (i, i * 4800, i / 10.0, "-29.0" if i != 15 else "-12.0") for i in range(30))
+        self.assertEqual(vq.hit_from_text(text), (1.5, 17.0))
+        flat = "".join("frame:%d pts:%d pts_time:%.1f\nlavfi.astats.Overall.RMS_level=-29.0\n"
+                       % (i, i * 4800, i / 10.0) for i in range(30))
+        self.assertIsNone(vq.hit_from_text(flat))
+        self.assertIsNone(vq.hit_from_text(""))
+
+    def test_still_pictures_go_behind_live_ones_on_an_action_ask(self):
+        still = {"id": "S", "title": "boards on mat", "category": "Board breaks", "priority": "hero",
+                 "weight": 10, "session": "X", "day": 1, "seconds": 12}
+        live = {"id": "L", "title": "hammer fist break", "category": "Board breaks", "priority": "standard",
+                "weight": 10, "session": "X", "day": 1, "seconds": 12}
+        self.assertEqual(vc.pick_shots([still, live], 1, by_search=True, stems={"board", "break"}, action=True)[0]["id"], "L")
+        quiet = dict(still, title="candles glow on the floor")      # not a setup, just still
+        self.assertEqual(vc.pick_shots([quiet, live], 1, by_search=True, action=False)[0]["id"], "S")   # calm ask: the hero leads
+        self.assertEqual(vc.pick_shots([quiet, live], 1, by_search=True, action=True)[0]["id"], "L")    # action ask: the live one
+        self.assertEqual(vc.spectacle_score(still), 0)
+        self.assertEqual(vc.spectacle_score(live), 2)
+
+    def test_no_natural_sound_under_the_music(self):
+        self.assertEqual(vc.BROLL_NAT, 0.0)
 
 
 class TestSteadyShots(unittest.TestCase):
@@ -853,7 +894,7 @@ class TestInterviewMoments(unittest.TestCase):
         self.assertIn("loudnorm", fc)
         # without speech the mix is what shipped before
         cmd0 = vc.final_cmd("f", "body.mp4", "m.wav", "out.mp4", 30.0, ("A", "B"), ("C", "D"), None)
-        self.assertIn("[0:a]volume=0.25:eval=frame[nat]", cmd0[cmd0.index("-filter_complex") + 1])
+        self.assertIn("[0:a]volume=0.00:eval=frame[nat]", cmd0[cmd0.index("-filter_complex") + 1])
 
 
 class TestWhatTheEditorUnderstood(unittest.TestCase):

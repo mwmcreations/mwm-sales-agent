@@ -214,13 +214,14 @@ def load_sources():
         try:
             if os.path.exists(qpath):
                 for k, v in json.load(open(qpath)).items():
-                    if v and v.get("stable") is not None:
-                        quality[k] = v
+                    if v and (v.get("stable") is not None or v.get("hit") is not None):
+                        quality.setdefault(k, {}).update(v)
         except Exception as e:
             log("quality: could not read %s: %r" % (name, e))
     if quality:
         import victory_cut as vc
         n = 0
+        hits = 0
         for c in clips:
             q = quality.get(c["id"])
             if q and q.get("stable") is not None:
@@ -230,7 +231,10 @@ def load_sources():
                 else:
                     c["stable"] = q["stable"]
                 n += 1
-        log("quality: steady stretches for %d of %d clips" % (n, len(clips)))
+            if q and q.get("hit") is not None:
+                c["hit"] = float(q["hit"])          # where the sound says the action lands
+                hits += 1
+        log("quality: steady stretches for %d of %d clips, a hit for %d" % (n, len(clips), hits))
     library = json.load(open(library_path)) if os.path.exists(library_path) else {"tracks": []}
     qm_path = os.path.join(src, "quote_moments.json")
     moments = json.load(open(qm_path)) if os.path.exists(qm_path) else {}
