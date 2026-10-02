@@ -935,7 +935,8 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
         if sess and _is_mwm(sess):
             return sess
         if or_admin and _is_admin():
-            return {"email": "admin", "role": va.ROLE_MWM, "school": ""}
+            # the Mac's daemon, acting for DEV: its cuts belong to the test account
+            return {"email": "dev@mwmcreations.com", "role": va.ROLE_MWM, "school": ""}
         return None
 
     def _review_rows(rnd):
@@ -982,7 +983,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
     def vi_review_round():
         """Open a round: answers with the number the next items should carry."""
         try:
-            if not _review_only():
+            if not _review_only(or_admin=True):
                 return jsonify({"ok": False, "error": "not found"}), 404
             vs.init_schema()
             return jsonify({"ok": True, "round": vs.review_next_round()}), 200
@@ -990,16 +991,55 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
             _err("vi_review_round", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
-    @app.route("/vi/review/item", methods=["POST"])
-    def vi_review_item():
+    def _review_item(sess, rnd, slot, ask):
         """One ask into a round, through the same door a school would use:
         the helper reads the sentence and writes the lines and the end card,
         then the request goes to the queue like any other."""
+        import victory_index as vi
+        import victory_helper as vh
+        import victory_cut as _vc
+        if vi.corpus_size() == 0:
+            vi.load_corpus()
+        client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
+        msgs = [{"role": "user", "text": ask}]
+        out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or {}
+        if not out.get("ask") and not out.get("plan"):
+            # the helper asked a question (round 1, #66: "which school, what
+            # price?"). A person would answer; the room answers the way a
+            # busy owner does, once, so the round keeps the same eight asks.
+            import json as _json
+            msgs += [{"role": "bot", "text": vh.as_answer(_json.dumps(out)) if out else "?"},
+                     {"role": "user", "text": "Go with what you have and leave out anything I did not say."}]
+            out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or out
+        # a business question comes back as a plan: its first step is the video
+        step = (out.get("plan") or [{}])[0] if not out.get("ask") else out
+        final_ask = str(step.get("ask") or out.get("ask") or ask)[:300]
+        lines = [str(x)[:60] for x in (step.get("lines") or out.get("lines") or [])][:4]
+        cta = str(step.get("cta") or out.get("cta") or "")[:60]
+        text = {"lines": lines, "cta": cta, "review": {"round": rnd, "slot": slot}}
+        vs.init_schema()
+        rid = vs.create_request(sess["email"], sess["role"], sess.get("school", ""),
+                                final_ask, [], length_s=_vc.STANDARD, text=text)
+        if not rid:
+            return {"ok": False, "error": "could not save the request"}
+        item = vs.review_add_item(rnd, slot, ask, rid, lines, cta)
+        print("[VI-REVIEW] round %d slot %d -> request #%s" % (rnd, slot, rid))
+        return {"ok": True, "item": item, "request": rid, "ask": final_ask,
+                "lines": lines, "cta": cta, "helper_said": (out.get("say") or "")[:300]}
+
+    def _review_body():
+        body = request.get_json(force=True, silent=True)
+        if not isinstance(body, dict):
+            body = dict(request.form or {})
+        return body
+
+    @app.route("/vi/review/item", methods=["POST"])
+    def vi_review_item():
         try:
-            sess = _review_only()
+            sess = _review_only(or_admin=True)
             if not sess:
                 return jsonify({"ok": False, "error": "not found"}), 404
-            body = request.get_json(force=True, silent=True) or {}
+            body = _review_body()
             ask = str(body.get("ask") or "").strip()[:300]
             try:
                 rnd = int(body.get("round") or 0)
@@ -1008,39 +1048,47 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
                 rnd, slot = 0, 0
             if not ask or rnd < 1 or slot < 1:
                 return jsonify({"ok": False, "error": "round, slot and ask are needed"}), 400
-            import victory_index as vi
-            import victory_helper as vh
-            import victory_cut as _vc
-            if vi.corpus_size() == 0:
-                vi.load_corpus()
-            client = app.config.get("VI_HELPER_CLIENT") or app.config.get("VI_DESCRIBE_CLIENT")
-            msgs = [{"role": "user", "text": ask}]
-            out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or {}
-            if not out.get("ask") and not out.get("plan"):
-                # the helper asked a question (round 1, #66: "which school, what
-                # price?"). A person would answer; the room answers the way a
-                # busy owner does, once, so the round keeps the same eight asks.
-                import json as _json
-                msgs += [{"role": "bot", "text": vh.as_answer(_json.dumps(out)) if out else "?"},
-                         {"role": "user", "text": "Go with what you have and leave out anything I did not say."}]
-                out = vh.chat(msgs, vi.snapshot(), client=client, person=_person(sess)) or out
-            # a business question comes back as a plan: its first step is the video
-            step = (out.get("plan") or [{}])[0] if not out.get("ask") else out
-            final_ask = str(step.get("ask") or out.get("ask") or ask)[:300]
-            lines = [str(x)[:60] for x in (step.get("lines") or out.get("lines") or [])][:4]
-            cta = str(step.get("cta") or out.get("cta") or "")[:60]
-            text = {"lines": lines, "cta": cta, "review": {"round": rnd, "slot": slot}}
-            vs.init_schema()
-            rid = vs.create_request(sess["email"], sess["role"], sess.get("school", ""),
-                                    final_ask, [], length_s=_vc.STANDARD, text=text)
-            if not rid:
-                return jsonify({"ok": False, "error": "could not save the request"}), 500
-            item = vs.review_add_item(rnd, slot, ask, rid, lines, cta)
-            print("[VI-REVIEW] round %d slot %d -> request #%s" % (rnd, slot, rid))
-            return jsonify({"ok": True, "item": item, "request": rid, "ask": final_ask,
-                            "lines": lines, "cta": cta, "helper_said": (out.get("say") or "")[:300]}), 200
+            out = _review_item(sess, rnd, slot, ask)
+            return jsonify(out), (200 if out.get("ok") else 500)
         except Exception as e:
             _err("vi_review_item", e)
+            return jsonify({"ok": False, "error": "exception"}), 500
+
+    @app.route("/vi/review/items", methods=["POST"])
+    def vi_review_items():
+        """Several asks into a round in one call (the Mac's daemon sends four
+        at a time; each takes the helper ~15 s). `asks` is a JSON list, or a
+        string holding one; `start` is the first slot number."""
+        try:
+            sess = _review_only(or_admin=True)
+            if not sess:
+                return jsonify({"ok": False, "error": "not found"}), 404
+            body = _review_body()
+            asks = body.get("asks")
+            if isinstance(asks, str):
+                import json as _json
+                try:
+                    asks = _json.loads(asks)
+                except Exception:
+                    asks = [asks]
+            asks = [str(a).strip()[:300] for a in (asks or []) if str(a).strip()][:8]
+            try:
+                rnd = int(body.get("round") or 0)
+                start = int(body.get("start") or 1)
+            except (TypeError, ValueError):
+                rnd, start = 0, 1
+            if not asks or rnd < 1:
+                return jsonify({"ok": False, "error": "round and asks are needed"}), 400
+            out = []
+            for k, a in enumerate(asks):
+                try:
+                    out.append(_review_item(sess, rnd, start + k, a))
+                except Exception as e:
+                    _err("vi_review_items", e, a)
+                    out.append({"ok": False, "error": "exception", "ask": a})
+            return jsonify({"ok": all(o.get("ok") for o in out), "items": out}), 200
+        except Exception as e:
+            _err("vi_review_items", e)
             return jsonify({"ok": False, "error": "exception"}), 500
 
     @app.route("/vi/review/verdict", methods=["POST"])

@@ -1854,6 +1854,25 @@ class TestTheEditingRoom(VICase):
         self.assertEqual(self.c.post("/vi/review/verdict?secret=" + SECRET,
                                      json={"item": 1, "pass": True}).status_code, 404)
 
+    def test_the_daemon_can_open_a_round_for_dev_with_the_admin_key(self):
+        """2 Oct: DEV's sign-in had expired; the Mac's daemon opens rounds in
+        its place, four asks per call, owned by the test account."""
+        self.c.get("/vi/logout")
+        r = self._j(self.c.post("/vi/review/round?secret=" + SECRET))
+        self.assertEqual(r["round"], 1)
+        r = self._j(self.c.post("/vi/review/items", data={"secret": SECRET, "round": "1", "start": "1",
+                                                          "asks": json.dumps(["board breaks", "candlelight"])}))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual([i["request"] for i in r["items"]], [1, 2])
+        self.assertEqual(self.store.requests[0]["email"], "dev@mwmcreations.com")
+        self.assertEqual(self.store.review[1]["slot"], 2)
+        r = self._j(self.c.post("/vi/review/items", data={"secret": SECRET, "round": "1", "start": "3",
+                                                          "asks": json.dumps(["sparring"])}))
+        self.assertEqual(r["items"][0]["item"], 3)
+        self.assertEqual(self.store.review[2]["slot"], 3)
+        # without the key, nothing
+        self.assertEqual(self.c.post("/vi/review/items", data={"round": "1", "asks": "[\"x\"]"}).status_code, 404)
+
     def test_an_empty_room_says_so(self):
         body = self.c.get("/vi/review").data.decode("utf-8")
         self.assertIn("Nothing to judge yet", body)
