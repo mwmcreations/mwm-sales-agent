@@ -1840,6 +1840,20 @@ class TestTheEditingRoom(VICase):
         self.assertEqual(self.c.post("/vi/review/verdict", json={"item": 1, "pass": True}).status_code, 404)
         self.assertEqual(self.c.get("/vi/review/summary").status_code, 404)
 
+    def test_the_summary_opens_to_the_admin_key_too(self):
+        """2 Oct: DEV's own sign-in expires every two weeks; the Mac's daemon
+        carries the admin key and can fetch the verdicts for it."""
+        self._open_round(["board breaks"])
+        self.c.get("/vi/logout")
+        self.assertEqual(self.c.get("/vi/review/summary").status_code, 404)
+        r = self.c.get("/vi/review/summary?secret=" + SECRET)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._j(r)["round"], 1)
+        # the page and the writes still need a real MWM person
+        self.assertEqual(self.c.get("/vi/review?secret=" + SECRET).status_code, 404)
+        self.assertEqual(self.c.post("/vi/review/verdict?secret=" + SECRET,
+                                     json={"item": 1, "pass": True}).status_code, 404)
+
     def test_an_empty_room_says_so(self):
         body = self.c.get("/vi/review").data.decode("utf-8")
         self.assertIn("Nothing to judge yet", body)

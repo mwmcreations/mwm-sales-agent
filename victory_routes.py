@@ -927,11 +927,16 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
     # what is doing wrong ... until I'm satisfied". A round is the same set
     # of asks cut again after a fix; he judges each cut with six taps and a
     # pass/fail. MWM eyes only; to anyone else these pages do not exist.
-    def _review_only():
+    def _review_only(or_admin=False):
+        """An MWM session — or, for the read-only summary, the app's admin key
+        (so DEV can read a round's verdicts from the Mac's daemon when its own
+        sign-in has expired; 2 Oct)."""
         sess = _session()
-        if not sess or not _is_mwm(sess):
-            return None
-        return sess
+        if sess and _is_mwm(sess):
+            return sess
+        if or_admin and _is_admin():
+            return {"email": "admin", "role": va.ROLE_MWM, "school": ""}
+        return None
 
     def _review_rows(rnd):
         rows = []
@@ -1066,7 +1071,7 @@ def register(app, admin_ok, report_error=None, send_email=None, notify=None, dri
     def vi_review_summary():
         """The round as numbers: what failed most, and every note. For DEV."""
         try:
-            if not _review_only():
+            if not _review_only(or_admin=True):
                 return jsonify({"ok": False, "error": "not found"}), 404
             try:
                 rnd = int(request.args.get("round") or 0)
