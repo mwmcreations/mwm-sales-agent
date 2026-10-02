@@ -3515,23 +3515,18 @@ def is_expo_lead(sender: str) -> bool:
 
 
 def notify_michael_expo_interest(sender: str, empresa: str, interesse: str, last_msg: str):
-    """Notify Michael via WhatsApp when an Expo lead shows interest."""
-    michael_phone = os.getenv("MICHAEL_PHONE")
-    if not michael_phone or not META_ACCESS_TOKEN:
-        return
+    """Tell Michael an Expo lead shows interest. PATCH #149: SMS + #eric, never WhatsApp."""
     try:
-        clean_phone = sender.replace("whatsapp:", "")
-        body = (
-            f"ð§ð· *Expo Brazil — Lead Interessado!*\n\n"
-            f"ð± Telefone: {clean_phone}\n"
-            f"ð¢ Empresa: {empresa or 'Não informado'}\n"
-            f"ð¯ Interesse: {interesse or 'Não especificado'}\n\n"
-            f"ð¬ Mensagem:\n_{last_msg[:300]}_"
-        )
-        send_whatsapp_meta(michael_phone, body=body)
-        print(f"â Michael notificado — Expo lead: {clean_phone}")
+        clean_phone = (sender or "").replace("whatsapp:", "")
+        _operator_alert.alert(
+            "expo",
+            f"Expo Brazil lead interested\n{clean_phone}\n"
+            f"Company: {empresa or 'not given'}\nInterest: {interesse or 'not given'}\n"
+            f"Said: {(last_msg or '')[:200]}",
+            eric_text=f":flag-br: *Expo Brazil lead interested* \u2014 {empresa or 'company not given'}"
+                      f" \u00b7 {interesse or 'interest not given'}")
     except Exception as e:
-        print(f"â ï¸ Falha ao notificar Michael (Expo): {e}")
+        _report_error("operator_alert_expo", e)
 
 
 def extract_expo_interest(text: str):
@@ -4611,34 +4606,32 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         print(f"ð Calendar: {used_calendar} | Attendees included: {used_attendees}")
         print(f"ð Event link: {event_link}")
 
-        # ââ WhatsApp notification to Michael ââââââââââââââââââ
-        michael_phone = os.getenv("MICHAEL_PHONE")
-
-        if michael_phone and META_ACCESS_TOKEN:
-            try:
-                if used_attendees and used_send_updates == "all":
-                    invite_note = "\u2709\ufe0f Calendar invite sent to lead."
-                elif used_attendees:
-                    invite_note = "\u2709\ufe0f Lead added as attendee (no email invite)."
-                else:
-                    invite_note = "\u26a0\ufe0f Calendar invite NOT sent (DWD not configured — see setup guide)."
-                phone_line = ""
-                if lead_phone:
-                    clean_phone = lead_phone.replace("whatsapp:", "")
-                    phone_line = f"📱 Phone: {clean_phone}\n"
-                notification = (
-                    f"🎉 *New Studio Visit Booked via Maya!*\n\n"
-                    f"👤 Name: {lead_name}\n"
-                    f"🏢 Business: {lead_business}\n"
-                    f"📧 Email: {lead_email}\n"
-                    f"{phone_line}"
-                    f"🕐 Time: {start_dt.strftime('%A, %B %d at %I:%M %p %Z')}\n\n"
-                    f"{invite_note}"
-                )
-                send_whatsapp_meta(michael_phone, body=notification)
-                print(f"\u2705 Michael notified via WhatsApp at {michael_phone}")
-            except Exception as notify_err:
-                print(f"\u26a0\ufe0f Could not notify Michael via WhatsApp: {notify_err}")
+        # ── PATCH #149: the booking alert goes to Michael by SMS + #eric ──
+        # It went by WhatsApp until 2 Oct. On 1 Oct the first real ad-form
+        # booking (Michael Sessa, Tue 6 Oct 3 PM) was refused by Meta's
+        # 24-hour window and Michael never heard. Never WhatsApp on this path.
+        try:
+            if used_attendees and used_send_updates == "all":
+                invite_note = "Calendar invite sent to lead."
+            elif used_attendees:
+                invite_note = "Lead added as attendee (no email invite)."
+            else:
+                invite_note = "Calendar invite NOT sent (check DWD)."
+            _when = start_dt.strftime("%a %b %d, %I:%M %p").replace(" 0", " ") + " ET"
+            _ph = (lead_phone or "").replace("whatsapp:", "")
+            _sms = (f"New studio visit booked: {lead_name or 'Prospect'}"
+                    + (f" ({lead_business})" if lead_business else "")
+                    + f", {_when}."
+                    + (f"\nPhone {_ph}" if _ph else "")
+                    + (f"\nEmail {lead_email}" if lead_email else "")
+                    + f"\nVia {_true_channel}. {invite_note}")
+            _eric = (f":calendar: *New studio visit booked* \u2014 {lead_name or 'Prospect'}"
+                     + (f" ({lead_business})" if lead_business else "")
+                     + f" \u00b7 {_when} \u00b7 via {_true_channel}")
+            _oa = _operator_alert.alert("booking", _sms, eric_text=_eric)
+            print(f"[OPERATOR] booking alert: sms={_oa.get('sms')} eric={_oa.get('eric')}")
+        except Exception as notify_err:
+            _report_error("operator_alert_booking", notify_err)
 
         return created.get("id")
 
@@ -5324,23 +5317,17 @@ def cancel_appointment(sender=None, lead_name="", cancel_reason="", event_date="
         except Exception as sheet_err:
             print(f"⚠️ Sheet cancellation update failed (non-fatal): {sheet_err}")
 
-        # Notify Michael via WhatsApp
-        michael_phone = os.getenv("MICHAEL_PHONE")
-        if michael_phone and META_ACCESS_TOKEN:
-            try:
-                clean_sender = (sender or "").replace("whatsapp:", "")
-                notification = (
-                    f"❌ *Appointment Cancelled*\n\n"
-                    f"👤 Lead: {lead_name}\n"
-                    f"📱 Phone: {clean_sender}\n"
-                    f"📅 Event: {event_summary}\n"
-                    f"💬 Reason: {cancel_reason}\n\n"
-                    f"Maya handled the cancellation automatically."
-                )
-                send_whatsapp_meta(michael_phone, body=notification)
-                print(f"✅ Michael notified of cancellation via WhatsApp")
-            except Exception as notify_err:
-                print(f"⚠️ Could not notify Michael of cancellation: {notify_err}")
+        # PATCH #149: tell Michael by SMS + #eric, never WhatsApp
+        try:
+            clean_sender = (sender or "").replace("whatsapp:", "")
+            _operator_alert.alert(
+                "cancel",
+                f"Visit cancelled: {lead_name}\n{clean_sender}\n{event_summary}\n"
+                f"Reason: {cancel_reason}\nMaya handled it.",
+                eric_text=f":x: *Visit cancelled* \u2014 {lead_name} \u00b7 {event_summary}"
+                          f" \u00b7 reason: {cancel_reason}")
+        except Exception as notify_err:
+            _report_error("operator_alert_cancel", notify_err)
 
         return {
             "success": True,
@@ -7429,21 +7416,16 @@ def update_booking_in_sheets(sender: str, appointment_type: str, slot_id: str,
 # âââââââââââââââââââââââââââââââââââââââââââââ
 
 def notify_michael_maya_lead(lead_info: str, sender: str):
-    """Notify Michael via WhatsApp when Maya captures a new lead."""
-    michael_phone = os.getenv("MICHAEL_PHONE")
-    if not michael_phone or not META_ACCESS_TOKEN:
-        return
+    """Tell Michael Maya captured a lead. PATCH #149: SMS + #eric, never WhatsApp."""
     try:
-        clean_phone = sender.replace("whatsapp:", "")
-        body = (
-            f"ð¥ *New Lead Captured by Maya!*\n\n"
-            f"ð± WhatsApp: {clean_phone}\n\n"
-            f"{lead_info.strip()}"
-        )
-        send_whatsapp_meta(michael_phone, body=body)
-        print(f"â Michael notified — Maya lead: {clean_phone}")
+        clean_phone = (sender or "").replace("whatsapp:", "")
+        _info = (lead_info or "").strip()
+        _operator_alert.alert(
+            "lead",
+            f"New lead captured by Maya\n{clean_phone}\n{_info}",
+            eric_text=":busts_in_silhouette: *New lead captured by Maya*\n" + _info[:600])
     except Exception as e:
-        print(f"â ï¸ Could not notify Michael (Maya lead): {e}")
+        _report_error("operator_alert_lead", e)
 
 
 def log_lead(lead_info, sender=None, history=None):
@@ -8295,6 +8277,9 @@ SMS_MONTHLY_CAP_MARKETING = int(os.getenv("SMS_MONTHLY_CAP_MARKETING", "4"))
 
 SMS_KIND_TRANSACTIONAL = "transactional"
 SMS_KIND_MARKETING     = "marketing"
+# PATCH #149: alerts to the operator himself (MICHAEL_PHONE) and to no one
+# else. Not a lead, so no lead consent box, quiet window or monthly cap.
+SMS_KIND_OPERATOR      = "operator"
 
 # Transactional messages answer something the customer just did, so the window
 # is wider than the promotional one — but never overnight.
@@ -8539,7 +8524,10 @@ def _send_sms(lead_phone, body, kind=SMS_KIND_MARKETING):
     which counter this send lands on. Default is marketing, the stricter
     path."""
     import pg_store as _pg
-    ok, reason = _sms_gates(lead_phone, kind)
+    if kind == SMS_KIND_OPERATOR:                 # PATCH #149
+        ok, reason = _operator_sms_gates(lead_phone)
+    else:
+        ok, reason = _sms_gates(lead_phone, kind)
     if not ok:
         print(f"[SMS] REFUSED to ...{lead_phone[-4:]} kind={kind}: {reason}")
         return {"ok": False, "reason": reason}
@@ -8557,7 +8545,7 @@ def _send_sms(lead_phone, body, kind=SMS_KIND_MARKETING):
             return {"ok": False, "reason": f"api_{resp.status_code}"}
         sid = data.get("sid", "")
         print(f"[SMS] accepted for ...{lead_phone[-4:]} kind={kind} sid={sid[-8:]}")
-        if _pg.enabled():
+        if _pg.enabled() and kind != SMS_KIND_OPERATOR:   # the owner is not a lead
             try:
                 now = datetime.now(pytz.timezone(TIMEZONE))
                 month = now.strftime("%Y-%m")
@@ -8582,6 +8570,65 @@ def _send_sms(lead_phone, body, kind=SMS_KIND_MARKETING):
     except Exception as _sx:
         _report_error("sms_send_exception", _sx, f"to=...{lead_phone[-4:]}")
         return {"ok": False, "reason": "exception"}
+
+
+# ═══ PATCH #149 · OPERATOR ALERTS BY SMS + #eric, NEVER WHATSAPP ═══
+# Michael's booking / lead / cancellation alerts and the 1-h visit brief went
+# by WhatsApp. Meta refuses a free-form send >24 h after he last wrote to
+# Maya's number, so on 1 Oct three alerts died, one of them the first real
+# ad-form booking. These now go by transactional SMS to MICHAEL_PHONE, and
+# booking/lead lines also post to #eric with the delivery outcome on them.
+import operator_alert as _operator_alert
+
+
+def _operator_sms_gates(to):
+    """PATCH #149: the gates for SMS_KIND_OPERATOR. The ONLY number that passes
+    is MICHAEL_PHONE, so this kind can never be used to text a lead around
+    their consent. A do_not_sms mark on his number is still honoured."""
+    import pg_store as _pg
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_MESSAGING_SERVICE_SID):
+        return False, "twilio_env_missing"
+    op = _operator_alert.normalize(os.getenv("MICHAEL_PHONE", ""))
+    if not op or _operator_alert.normalize(to) != op:
+        return False, "not_operator"
+    if _pg.enabled():
+        try:
+            if _pg.load_state(f"do_not_sms:{to}", False):
+                return False, "do_not_sms"
+        except Exception:
+            pass   # an alert to the owner fails OPEN on a read error
+    return True, "ok"
+
+
+def _send_operator_sms(to, body):
+    """operator_alert's sender: the one gated _send_sms, operator kind."""
+    return _send_sms(to, body, kind=SMS_KIND_OPERATOR)
+
+
+def _operator_pg_load(key, default):
+    import pg_store as _pg
+    if not _pg.enabled():
+        raise RuntimeError("pg disabled")
+    return _pg.load_state(key, default)
+
+
+def _operator_pg_save(key, value):
+    import pg_store as _pg
+    if _pg.enabled():
+        _pg.save_state(key, value)
+
+
+_operator_alert.configure(
+    sms_post=_send_operator_sms,
+    post_slack=_post_to_slack_async,
+    report_error=_report_error,
+    operator_phone=lambda: os.getenv("MICHAEL_PHONE", "") or "",
+    eric_channel=SLACK_ERIC_CHANNEL,
+    daily_cap=int(os.getenv("OPERATOR_SMS_DAILY_CAP", "40") or 40),
+    pg_load=_operator_pg_load,
+    pg_save=_operator_pg_save,
+    today=lambda: datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d"),
+)
 
 
 # ── PATCH #111 — know who already pays us ─────────────────────────────────
@@ -11537,7 +11584,7 @@ threading.Thread(target=_update_profile_photo_once, daemon=True).start()
 _briefing_sent = set()  # event IDs already briefed
 
 def _pre_meeting_briefer():
-    """Background thread: send Michael a WhatsApp briefing 1 hour before each studio visit."""
+    """Background thread: text Michael a briefing 1 hour before each studio visit (SMS since PATCH #149)."""
     import time
     print("📋 Pre-meeting briefer started (polls every 15 min)")
     time.sleep(900)  # First check after 15 min
@@ -11637,9 +11684,8 @@ def _pre_meeting_briefer():
 
                     briefing += "\nGood luck! 🎬"
 
-                    # Send to Michael via WhatsApp
-                    michael_wa = michael_phone if michael_phone.startswith("whatsapp:") else f"whatsapp:+{michael_phone.replace('+', '')}"
-                    send_whatsapp_meta(michael_wa, body=briefing)
+                    # PATCH #149: by SMS, never WhatsApp (the 24-h window ate these)
+                    _operator_alert.alert("briefing", briefing)
                     print(f"📋 [Pre-meeting] Briefing sent to Michael for {_lead_name} at {time_str}")
 
         except Exception as e:
@@ -19094,6 +19140,7 @@ def health_check():
                       "studio_hour_track_live": _studio_hour_track_live()},
         "lead_chase": dict(_LEAD_CHASE_LAST),
         "capi": _capi.status(),                    # PATCH #145
+        "operator_alert": _operator_alert.status(),  # PATCH #149
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         "approvals": {                             # PATCH #125
             "total": len(approval_requests),
@@ -20319,6 +20366,22 @@ def admin_sms_inbound_config():
     report = sms_inbound_config(apply, want_url=want)
     _TALLY.bump("sms.inbound_config", "apply" if apply else "inspect")
     return jsonify(report)
+
+
+@app.route("/admin/operator-alert-test", methods=["POST"])
+def admin_operator_alert_test():
+    """PATCH #149 — prove the operator channel: one test text to MICHAEL_PHONE.
+    Posts the outcome to #dev. Never texts anyone else."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    stamp = datetime.now(pytz.timezone(TIMEZONE)).strftime("%a %b %d %I:%M %p ET")
+    res = _operator_alert.alert(
+        "test", f"MWM test: booking and lead alerts now come to you by text, not WhatsApp. ({stamp})")
+    _post_to_slack_async(SLACK_DEV_CHANNEL,
+        f":white_check_mark: *OPERATOR SMS SELF-TEST* \u2014 text to Michael: `{res.get('sms')}` (Patch #149)"
+        if res.get("sms") == "sent" else
+        f":rotating_light: *OPERATOR SMS SELF-TEST FAILED* \u2014 `{res.get('sms')}` (Patch #149)")
+    return jsonify({"result": res, "status": _operator_alert.status()})
 
 
 @app.route("/admin/lead-form-test", methods=["POST"])
