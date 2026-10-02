@@ -94,6 +94,29 @@ SETUP_RE = re.compile(r"set[- ]?up|sets up|carries|carry|holds? (?:a |the )?boar
                       r"kneel|bows?\b|pans|announc")
 
 
+ACTION_KINDS = ("Board breaks", "Competition", "Winning moments", "Training & seminar", "Instructor training")
+# words that mean the picture is the action itself, in two grades
+SPECTACLE_STRONG_RE = re.compile(r"flip|kick|takedown|sword|weapon|trick|cartwheel|aerial|throw|strike|break|"
+                                 r"spar|punch|jump|hammer")
+# a slow, emotional ask is the one place a still picture is the point
+CALM_WORDS = {"emotional", "slow", "quiet", "calm", "gentle", "tender", "cinematic", "moody", "soft"}
+
+
+def spectacle_score(c):
+    """2: the action word itself (a kick, a break, a flip); 1: a performance,
+    a form, a drill; 0: anything else."""
+    t = (c.get("title") or "").lower()
+    if SETUP_RE.search(t):
+        return 0
+    if SPECTACLE_STRONG_RE.search(t):
+        return 2
+    return 1 if SPECTACLE_RE.search(t) else 0
+
+
+def is_calm_ask(ask):
+    return bool(CALM_WORDS & set(re.findall(r"[a-z]+", (ask or "").lower())))
+
+
 def is_setup(c):
     """"instructors hold boards for breaking" is a setup, whatever it is for."""
     return bool(SETUP_RE.search((c.get("title") or "").lower()))
@@ -155,7 +178,8 @@ def named_hits(clip, stems):
 
 
 def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_search=False,
-               avoid=(), seed=0, uncapped=(), stems=(), peak=False, subject=()):
+               avoid=(), seed=0, uncapped=(), stems=(), peak=False, subject=(), action=False,
+               side_stems=(), side_cap=None):
     """Choose n clips. Requested ids always go in, in the order given. Then
     hero > high > the rest, but never more than max_per_family of one kind of
     shot or max_per_session from one session, and the kinds and days are
@@ -191,15 +215,24 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
     subject = set(subject or ())
     # a reaction shot is a seasoning: at most one in four, unless the ask
     # named the crowd itself (round 1, #61: a parents reel that was all parents)
-    reaction_cap = max(1, n // 3) if REACTION in uncapped else max(1, n // 4)
+    reaction_cap = max(1, n // 3) if REACTION in uncapped else (0 if peak else max(1, n // 4))
     # a peak ask ("highlights", "the best"): hero moments lead, whatever their kind
     def strength(c):
-        if not peak:
-            return 0
         # a highlights reel is made of performances first (#63: "amazing
-        # flips, moves... done on the stage by the teams"), then the strongest
-        # of whatever else; trophies and announcements are one closer at most
-        return (2 if is_spectacle(c) else 0) + min(3, PRIORITY.get(c.get("priority"), 0)) / 4.0
+        # flips, moves... done on the stage by the teams"); any ask that is
+        # not calm wants the action itself before people standing (round 3,
+        # #82: "avoid moments where there's no action"); trophies and
+        # announcements are one closer at most
+        if peak:
+            return spectacle_score(c) + min(3, PRIORITY.get(c.get("priority"), 0)) / 4.0
+        if action:
+            return spectacle_score(c)
+        return 0
+    # "instructors teaching kids": the kids are the picture, a few instructors
+    # the seasoning (round 3, #80: "we need mostly small kids shots and only a
+    # few instructors") — side_stems name the seasoning, side_cap how much
+    side_stems = set(side_stems or ())
+    side = {c["id"]: named_hits(c, side_stems) > 0 for c in cands} if side_stems else {}
     # an ask that names several kinds ("belts, board breaks and the
     # candlelight") shares the reel between them (round 1, #61 came back as
     # four board breaks and nothing else)
@@ -245,7 +278,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
             # rotation: someone who asked for candles gets the best candles
             pool.sort(key=lambda c: (-round(float(c.get("weight") or 0)),
                                      shaky[c["id"]], turn(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
-                                     -strength(c), -(c.get("category") in subject), -named[c["id"]],
+                                     -(c.get("category") in subject), -strength(c), -named[c["id"]],
                                      # among clips that carry the ask's word, the hero shots lead
                                      -(min(2, PRIORITY.get(c.get("priority"), 0)) if named[c["id"]] else 0),
                                      -round(float(c.get("weight") or 0), 1),
@@ -255,7 +288,7 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
                                      day.get(c.get("day"), 0), jitter[c["id"]]))
         else:              # hero and high are one class here: the weekend's variety comes first
             pool.sort(key=lambda c: (shaky[c["id"]], turn(c), -(named[c["id"]] > 0), same_scene(c), is_setup(c),
-                                     -strength(c), -(c.get("category") in subject), -named[c["id"]],
+                                     -(c.get("category") in subject), -strength(c), -named[c["id"]],
                                      (c["id"] in avoid and not named[c["id"]]), short[c["id"]],
                                      -min(2, PRIORITY.get(c.get("priority"), 0)),
                                      fam.get(c.get("category"), 0),
@@ -266,6 +299,9 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
                     and fam.get(REACTION, 0) >= reaction_cap:
                 continue
             if peak and c.get("category") == "Winning moments" and fam.get("Winning moments", 0) >= 1:
+                continue
+            if side and side_cap is not None and side.get(c["id"]) \
+                    and sum(1 for x in chosen if side.get(x["id"])) >= side_cap:
                 continue
             if c.get("category") in uncapped:
                 if share_cap and fam.get(c.get("category"), 0) >= share_cap:
@@ -285,6 +321,14 @@ def pick_shots(cands, n, requested=(), max_per_family=2, max_per_session=3, by_s
         chosen.append(pick)
         bump(pick)
         pool.remove(pick)
+    if side and side_cap and chosen and not any(side.get(x["id"]) for x in chosen):
+        # "a few instructors" means at least one: the best of them replaces
+        # the last machine pick (never a person's own pick)
+        extra = [c for c in pool if side.get(c["id"])]
+        if extra and chosen[-1]["id"] not in set(requested or ()):
+            best = max(extra, key=lambda c: (not shaky[c["id"]], PRIORITY.get(c.get("priority"), 0),
+                                              float(c.get("weight") or 0)))
+            chosen[-1] = best
     return story_order(chosen, stems=stems)
 
 
@@ -430,8 +474,12 @@ def window_for(clip_id, reframe, t0, dur, fixed_in=None):
     if fixed_in is not None:
         start = float(max(0.0, min(fixed_in, last_ok)))
     else:
-        start = max(cands, key=lambda w: (w.get("energy") or 0))["t"]
-        start = float(max(0.0, min(start, last_ok)))
+        # the busiest second is the strike, the landing, the break: start a
+        # little BEFORE it so the wind-up and the hit are both in the shot
+        # (round 3, #75: "we need to see the exact moment where the boards
+        # are being broken... there's none")
+        peak = max(cands, key=lambda w: (w.get("energy") or 0))["t"]
+        start = float(max(0.0, min(peak - min(0.7, dur * 0.35), last_ok)))
     seg = [w for w in wins if start <= w["t"] < start + dur] or cands[:1]
     faces = sum(w.get("faces") or 0 for w in seg)
     fxs = [(w["fx"], w["faces"]) for w in seg if w.get("fx") is not None and w.get("faces")]
@@ -636,7 +684,12 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
             hi = max(0.0, (have or 99.0) - dur - 0.05)
             fixed = max(0.0, min(float(c["best_in"]) - dur / 2.0, hi))
         x, how, t0 = window_for(c["id"], reframe, 1.0, dur, fixed_in=fixed)
-        t0, steady = steady_in(c.get("stable"), t0, dur, have or None, passable=c.get("stable_ok"))
+        t1, steady = steady_in(c.get("stable"), t0, dur, have or None, passable=c.get("stable_ok"))
+        if fixed is None and c.get("category") in ACTION_KINDS and abs(t1 - t0) > 1.0:
+            # a steadier second elsewhere in the clip is not worth losing the
+            # action for (round 3, #75): the strike stays in the shot
+            t1, steady, how = t0, True, how + "-peak"
+        t0 = t1
         if not steady:
             how = "shaky"
         return {"id": c["id"], "drive_id": c.get("drive_id"), "file": c.get("file"),
@@ -654,10 +707,19 @@ def plan(ask, cands, requested_ids, library, reframe, length_s=30, recent_music=
         if not n_fill + extra or not pool:
             break
         # a narrow ask is narrow on purpose: the kind-of-moment cap loosens with the length
+        stems = named_words(ask)
+        side_stems, side_cap = (), None
+        kids_words = {"kids", "kid", "children", "students", "student"}
+        if stems & {"instr", "maste", "teach"} and kids_words & set(re.findall(r"[a-z]+", (ask or "").lower())):
+            # "instructors teaching kids": the instructors are the seasoning
+            side_stems = stems & {"instr", "maste", "teach"}
+            stems = stems - side_stems
+            side_cap = max(1, (n_fill + extra) // 3)
         chosen = pick_shots(pool, n_fill + extra, by_search=by_search, avoid=avoid, seed=seed,
                             max_per_family=max(2, (n_fill + extra) // 3) if by_search else 2,
-                            uncapped=focus, stems=named_words(ask), peak=is_peak_ask(ask),
-                            subject=subject_for(ask) if not focus else ())
+                            uncapped=focus, stems=stems, peak=is_peak_ask(ask),
+                            subject=subject_for(ask) if not focus else (),
+                            action=not is_calm_ask(ask), side_stems=side_stems, side_cap=side_cap)
         fill = [shot(f, shot_s, False) for f in chosen]
         if remaining - sum(x["dur"] for x in fill) < 1.5 or len(chosen) < n_fill + extra:
             break
@@ -1218,6 +1280,11 @@ def ask_categories(ask):
         (soft if hit <= SOFT_WORDS else firm).append(cat)
     if not firm and ("ceremony" in words or "ceremonies" in words):
         firm = list(CEREMONIES)                  # "the ceremony" alone: both of them
+    if "Instructor training" in firm and words & {"kids", "kid", "children", "students", "student"}:
+        # "instructors teaching kids" is a kids' class with an instructor in it,
+        # not the instructors' own seminar (round 3, #80)
+        firm = [("Training & seminar" if c == "Instructor training" else c) for c in firm]
+        firm = list(dict.fromkeys(firm))
     if firm:
         return firm, False
     return soft, bool(soft)

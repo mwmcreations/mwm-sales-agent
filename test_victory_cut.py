@@ -540,19 +540,31 @@ class TestRoundOneOfTheEditingRoom(unittest.TestCase):
         self.assertEqual(len(got), 3)
 
     def test_instructors_are_a_subject_not_an_audience(self):
-        """#64: "I couldn't see a lot of instructors footage. It was a lot of students"."""
-        stems = vc.named_words("Instructors teaching kids, warm and encouraging")
+        """Round 1, #64: "I couldn't see a lot of instructors footage. It was a
+        lot of students." Round 3, #80, the other way: "there's only instructors
+        shots. we need mostly small kids shots and only a few instructors."
+        So: "instructors" alone is the subject; "instructors teaching KIDS" is
+        the kids' class with an instructor or two in it."""
+        stems = vc.named_words("Instructors on the floor, powerful")
         self.assertIn("instr", stems)
-        self.assertIn("teach", stems)
         a = self._clip("S1", "students drill on the mats", "Training & seminar", "hero")
         b = self._clip("I1", "instructor teaching a kids class", "Training & seminar", "standard")
         c = self._clip("I2", "instructors hold boards for breaking", "Board breaks", "standard")
         got = vc.pick_shots([a, b, c], 2, stems=stems)
         self.assertEqual({x["id"] for x in got}, {"I1", "I2"})
-        # and in the candidate pool, an instructor clip of ANOTHER kind joins the front
-        pool, by_search, focus = vc.candidates("Instructors teaching kids, warm and encouraging",
-                                               [a, b, c], 3, None)
-        self.assertEqual([x["id"] for x in pool[:2]], ["I1", "I2"])
+        # an instructor clip of ANOTHER kind joins the front of the pool, behind the named kind
+        pool, by_search, focus = vc.candidates("Instructors on the floor, powerful", [a, b, c], 3, None)
+        self.assertEqual(focus, ("Instructor training",))
+        self.assertEqual({pool[0]["id"], pool[1]["id"]}, {"I1", "I2"})   # named-word clips ahead of the rest
+        # with kids in the sentence, the kind becomes the kids' class and instructors are the seasoning
+        self.assertEqual(vc.ask_categories("Instructors teaching kids, warm and encouraging"),
+                         (["Training & seminar"], False))
+        kids = [self._clip("K%d" % k, "kids kick on the mats %d" % k, "Training & seminar", "high") for k in range(6)]
+        inst = [self._clip("J%d" % k, "instructor teaching kids %d" % k, "Training & seminar", "hero") for k in range(6)]
+        p = vc.plan("Instructors teaching kids, warm and encouraging", kids + inst, [], LIBRARY, {}, 15, seed=3)
+        ids = [x["id"] for x in p["shots"]]
+        self.assertGreaterEqual(sum(1 for i in ids if i.startswith("K")), len(ids) - max(1, len(ids) // 3), ids)
+        self.assertGreaterEqual(sum(1 for i in ids if i.startswith("J")), 1, ids)
 
     def test_reactions_are_a_seasoning(self):
         """#61: a parents reel that was all parents."""
@@ -616,7 +628,7 @@ class TestTheWindow(unittest.TestCase):
         x, how, t0 = vc.window_for("clipA", self.REFRAME, 1.0, 3.0)
         self.assertEqual(how, "faces")
         self.assertAlmostEqual(x, (0.8 * 4 + 0.8 * 4 + 0.7 * 3) / 11, places=3)
-        self.assertEqual(t0, 1.0)         # the busiest second that still fits
+        self.assertAlmostEqual(t0, 0.3)   # 0.7 s before the busiest second, so the hit lands inside the shot (round 3, #75)
 
     def test_action_when_faces_are_few(self):
         rf = {"c": {"duration": 8.0, "windows": [

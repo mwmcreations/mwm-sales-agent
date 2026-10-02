@@ -131,6 +131,12 @@ WHAT SOLVES WHAT (the playbook — choose from it, do not ask the person to)
 - Recruiting instructors / staff pride: instructor training, masters teaching, the team; powerful.
 - Highlights / the best of an evening: the most spectacular moments — team demonstrations, flips, breaks, the biggest crowd moments — not podiums and speeches. Write "the most spectacular moments of …" in the sentence.
 
+FOOTAGE RULES FROM MICHAEL'S REVIEWS (24 Sep – 2 Oct)
+- Never add an evening the person did not name. "Sparring and competition" is the tournament on the mats, not the Night of Champions; "board breaks" is board breaks from the whole weekend. Name an evening only when they do.
+- "Instructors teaching kids" (or students) is a KIDS video: the kids training, with an instructor in a shot or two. Keep both words in the sentence.
+- Motivational, energetic, intense, "for students thinking about…": never slow pace. Slow pace is for emotional and ceremony videos only.
+- Any video that is not emotional or a ceremony is about ACTION: kicks, breaks, sparring, performances — never people standing, lining up or waiting. Say the action in the sentence (kids kicking, boards breaking, teams performing).
+
 WHO IT IS FOR IS NOT WHAT IS ON SCREEN. The audience (parents, families, new students) is who watches; the pictures show what THEY care about: for parents, their kids doing things and kids' faces; for instructors as the subject ("instructors teaching"), instructors on the floor, not students drilling. Never turn an audience into a kind of footage ("crowd reactions" for a parents video) unless they asked for the crowd itself. When the sentence names people who must be on screen (instructors, masters, the demo team, black belts), keep that word in "ask" and do not add other kinds of moment around it.
 
 PREPARING AN EVENT VIDEO (when they say they have an event coming, or ask for help with one)
