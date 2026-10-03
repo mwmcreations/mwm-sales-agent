@@ -98,13 +98,19 @@ and editing. The visit is where Michael maps what your month looks like."
 Do NOT volunteer the minimum term. If asked directly, never deny it: "there's
 a three-month minimum; Michael walks you through it at the visit."
 
-DISQUALIFIED (creator, artist, musician, writer, podcaster-as-hobby,
+UNDER BUDGET (creator, artist, musician, writer, podcaster-as-hobby,
 actor/model, photographer/videographer, student, under $20K a month,
-outside Florida):
-"Thanks for reaching out. We work with established businesses on a monthly
-subscription, so we're probably not the right fit. If you ever need studio
-hours on their own, mwmcreations.com/book-studio has the calendar."
-No follow-up chain. No retargeting. Be warm, be brief.
+outside Florida) — Michael, 3 Oct 2026: never "not the right fit", never
+"established businesses", never mention the subscription. These people do
+not get the free visit; they get a warm invitation to book their first
+studio hour so we get to know each other:
+"{Business} sounds great. The best next step for you is to book your first
+studio hour with us - you get to know the studio and the team, we get to
+know you, and you leave with something you can use. The booking page is
+mwmcreations.com/book-studio. Want me to tell you what to bring?"
+Do NOT offer the 30-minute visit. No follow-up chain. No retargeting. If
+they ask the price: studio time starts at $249 an hour, $349 with editing.
+Be warm, be brief.
 
 AI AD LEADS (the "Film once, go anywhere" ad): open on the AI sets instead of
 the education line — one shoot in our studio, your business in any scene:
@@ -277,18 +283,43 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
     return subject, _as_html(lines), text
 
 
-def disqualify_text():
-    return ("Thanks for reaching out. We work with established businesses on a "
-            "monthly subscription, so we're probably not the right fit. If you "
-            "ever need studio hours on their own, " + BOOK_STUDIO_URL +
-            " has the calendar.")
+# ── under budget: the first-hour invitation (Michael, 3 Oct 2026) ──────────
+# "I don't like 'probably not the right fit just yet' - not rude, but not
+# warm. Say the best way from now is to check our booking page and book your
+# first hour with us. No 30-minute visit for them; one studio hour so they
+# get to know us." Same functions the rail already calls; new words.
 
-
-def disqualify_email(name):
+def disqualify_text(name="", business=""):
+    """Core of the under-budget text (wrapped by sms_copy.compose). Warm,
+    one next step, no 'fit', no subscription."""
     fn = first_name(name)
-    lines = [f"Hi {fn},", "", disqualify_text(), "", "Maya",
-             "Michael Moraes' team - MWM Creations & Studios"]
-    return ("Thanks for reaching out to MWM Studios", _as_html(lines),
+    biz = str(business or "").strip()
+    lead = f"{biz} sounds great. " if biz else ""
+    return (f"Hi {fn}, Maya from Michael Moraes' team. {lead}The best next step "
+            f"for you is to book your first studio hour with us and get to know "
+            f"the studio: {BOOK_STUDIO_URL}. Questions? Just reply.")
+
+
+def disqualify_email(name, business=""):
+    """(subject, html, text) — the under-budget email: an invitation to the
+    first studio hour, not a goodbye."""
+    fn = first_name(name)
+    biz = str(business or "").strip()
+    lines = [f"Hi {fn},", "",
+             "Maya here from Michael Moraes' team at MWM Studios. Thanks for "
+             "applying.",
+             (f"{biz} sounds great. " if biz else "") +
+             "The best next step for you is to book your first studio hour with "
+             "us: you get to know the studio and the team, we get to know you, "
+             "and you leave with something you can use. Michael has been " +
+             CREDITS + "; " + WE_DO + ".",
+             f"The booking page is {BOOK_STUDIO_URL}. Pick the hour that suits "
+             "you and it is yours.",
+             f"Questions before you book? Reply to this email or text Maya at "
+             f"{MAYA_WA}.",
+             "", "Maya", "Michael Moraes' team - MWM Creations & Studios",
+             "1500 Park Center Dr, Suite 230, Orlando, FL"]
+    return (f"{fn}, your first studio hour at MWM Studios", _as_html(lines),
             "\n".join(lines))
 
 

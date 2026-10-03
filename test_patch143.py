@@ -31,7 +31,7 @@ ok("in projects with Disney, Universal, Amazon and TV Globo for over 20 years" i
 ok("we plan it, write it, shoot it and cut it" in R, "'we' do the work")
 ok("$1,200 a month: four studio hours" in R and "up to 8 short videos an hour" in R, "price line is Michael's numbers")
 ok("Do NOT volunteer the minimum term" in R and "never deny it" in R, "minimum term: not volunteered, never denied")
-ok("mwmcreations.com/book-studio has the calendar" in R, "polite disqualify in the rule")
+ok("book your first studio hour with us" in R and "mwmcreations.com/book-studio" in R and 'never "not the right fit"' in R, "under budget = first-hour invitation in the rule (Michael 3 Oct)")
 ok("No Calendly" in R and "book_appointment" in R, "no Calendly; books on MWM CREATIONS")
 ok("Film once" in R and "rooftop, restaurant, stage, city at night" in R, "AI ad branch in the rule")
 ok(sv.contains_banned(R) is None, "rule carries none of the banned wordings (%r)" % sv.contains_banned(R))
@@ -60,9 +60,7 @@ ok("Studio Strategy Visit" in subj and "30-minute" in text and "in projects with
 ok("that implants are safe" in text and "Smile Dental" in text, "email quotes the form answers")
 ok("I also sent you a text" in text, "email mentions the text when one went")
 ok("<p " in html and "&" not in text.replace("MWM Creations & Studios", ""), "html built, text plain")
-ok(sv.disqualify_text() == ("Thanks for reaching out. We work with established businesses on a monthly "
-                            "subscription, so we're probably not the right fit. If you ever need studio "
-                            "hours on their own, mwmcreations.com/book-studio has the calendar."), "disqualify text is ERIC's, word for word")
+ok("book your first studio hour" in sv.disqualify_text("Ana", "Lima Dental") and "not the right fit" not in sv.disqualify_text("Ana", "Lima Dental") and "subscription" not in sv.disqualify_text("Ana", "Lima Dental"), "under budget = first-hour invitation (Michael 3 Oct), never 'not the right fit'")
 ok(sc.segments(sc.compose(sv.disqualify_text())) <= 2, "disqualify fits as an SMS")
 for step in range(1, 6):
     s, h, t = sv.chase_email(step, "Ana", "Smile Dental", "implants are safe")
@@ -193,7 +191,7 @@ ok('_lf.sheet_updates(rec, consent, consent_ts, verdict, reason)' in SRC and "lo
 ok("_first_touch_sms_body(name, rec[\"business\"], ai, slots)" in SRC and "def _sms_body_that_fits(" in SRC and "kind=SMS_KIND_TRANSACTIONAL" in SRC, "first-touch SMS through _send_sms (every gate applies); copy shortened until it fits")
 ok('"first_touch_sms_pending"' in SRC and "FIRST_TOUCH_SMS_MAX_WAIT_H" in SRC, "a text refused by quiet hours waits for the window, then is dropped")
 ok("_ft_email = _sv.sh_first_touch_email if sh else _sv.form_first_touch_email" in SRC and '"lead_form_first_touch_sh" if sh else "lead_form_first_touch"' in SRC, "first-touch email through _email_send (suppression applies; #148 picks the copy by track)")
-ok("_sv.disqualify_email(name)" in SRC and "_icp.mark_disqualified(lr, _icp.REASON_NOT_TARGET_MARKET" in SRC, "disqualified: polite email, reversible mark, no chain")
+ok("_sv.disqualify_email(name, rec[\"business\"])" in SRC and "_icp.mark_disqualified(lr, _icp.REASON_NOT_TARGET_MARKET" in SRC, "disqualified: polite email, reversible mark, no chain")
 ok('lr["chase"] = _chase.arm(now, channels=chans, verdict=verdict,' in SRC and "kind=(_chase.KIND_STUDIO_HOUR if sh else _chase.KIND_FORM)" in SRC, "chain armed on every qualified/review/studio-hour lead (#148: kind by track)")
 ok("def _lead_chase_loop()" in SRC and 'name="lead_chase"' in SRC and "_heartbeat(\"lead_chase\")" in SRC, "chase loop thread with heartbeat")
 ok("stamp BEFORE send" in SRC and "_sv.chase_email(copy_step" in SRC and "_sv.chase_sms(copy_step" in SRC, "chain sends the five emails + two texts")

@@ -19757,14 +19757,18 @@ def _meta_lead_intake(value, lead_meta=None):
                            "kind": _chase.KIND_STUDIO_HOUR, "note": "held: track not live"}
             lead_data[sender_key] = lr
         elif verdict == _lf.Q_NO:
-            # The polite disqualify, once, on one channel. No chain.
+            # Under budget: the first-hour invitation (Michael, 3 Oct), once,
+            # on one channel. No visit, no chain.
             if email:
-                subj, html, _ = _sv.disqualify_email(name)
+                subj, html, _ = _sv.disqualify_email(name, rec["business"])
                 res = _email_send(email, subj, html, via="lead_form_disqualify",
                                   lead_key=sender_key)
                 email_note = "sent" if email_ok(res) else f"refused ({res.get('error', '')[:60]})"
             elif consent and dialable:
-                res = _send_sms(e164, _sms_copy.compose(_sv.disqualify_text()),
+                res = _send_sms(e164, _sms_body_that_fits((
+                                    lambda: _sv.disqualify_text(name, rec["business"]),
+                                    lambda: _sv.disqualify_text(name),
+                                    lambda: _sv.disqualify_text())),
                                 kind=SMS_KIND_TRANSACTIONAL)
                 sms_note = "sent" if res.get("ok") else f"refused ({res.get('reason')})"
             lr["chase"] = {"stopped": _chase.STOP_DISQUALIFIED,
