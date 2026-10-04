@@ -19142,6 +19142,18 @@ def health_check():
         "capi": _capi.status(),                    # PATCH #145
         "operator_alert": _operator_alert.status(),  # PATCH #149
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
+        # PATCH #151 — the leads table's connection health. `conn.retries`
+        # climbing with `conn.recovered` is the private network blinking and
+        # the retry absorbing it; `conn.gave_up` or `requeued.upsert` climbing
+        # is Postgres actually unreachable (records wait in memory, not lost).
+        "leads_db": {
+            "enabled": _leads_db.enabled(),
+            "host": _leads_db.db_host(),
+            "private_network": _leads_db.db_host().endswith(".railway.internal"),
+            "attempts": _leads_db.CONN_ATTEMPTS,
+            "requeued": _leads_db.requeue_stats(),
+            "conn": _leads_db.conn_stats(),
+        },
         "approvals": {                             # PATCH #125
             "total": len(approval_requests),
             "open": sum(1 for _r in approval_requests.values()
@@ -25557,6 +25569,65 @@ def admin_attribution_backfill():
     except Exception as e:
         _report_error("admin_attribution_backfill (PATCH #136)", e, f"tab={tab}")
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
+
+
+@app.route('/admin/pg-lead', methods=['GET'])
+def admin_pg_lead():
+    """PATCH #151 — read-only: is this lead's row in the leads TABLE, and is
+    it current? /admin/pg-lead?secret=<UPLOAD_SECRET>&q=<key|phone|email>[,<more>]
+
+    Written for ERIC's 4 Oct ask — "for each failed save, confirm the lead
+    row exists" — because until now the only way to answer that was to
+    compare /health's memory count with its table count and infer. This
+    reads the row itself and puts the in-memory record next to it, so a
+    missing or stale row is a fact, not a deduction. Up to 10 terms a call.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _raw = (request.args.get("q") or "").strip()
+    _terms = [t.strip() for t in _raw.split(",") if t.strip()][:10]
+    if not _terms:
+        return jsonify({"ok": False, "error": "q is required (lead key, phone or email; comma-separated)"}), 400
+    if not _leads_db.enabled():
+        return jsonify({"ok": False, "error": "DATABASE_URL not set — no leads table"}), 503
+
+    _found = _leads_db.find_rows(_terms)
+    _out = []
+    for _t in _terms:
+        _rows = _found.get(_t)
+        _digits_t = re.sub(r"\D", "", _t)
+        _mem = []
+        for _k, _r in list(lead_data.items()):
+            if not isinstance(_r, dict):
+                continue
+            _kd = re.sub(r"\D", "", str(_k))
+            if _k == _t or (_digits_t and _kd == _digits_t) \
+                    or ("@" in _t and str(_r.get("email") or "").lower() == _t.lower()):
+                _lmt = _r.get("last_message_time")
+                _mem.append({
+                    "lead_key": mask_contact(_k),
+                    "name": _r.get("name") or "",
+                    "business": _r.get("business") or "",
+                    "status": _r.get("status") or _r.get("whatsapp_status") or "",
+                    "last_message_time": _lmt.isoformat() if hasattr(_lmt, "isoformat") else str(_lmt or ""),
+                })
+        _entry = {
+            "q": mask_contact(_t),
+            "table": "unreachable" if _rows is None else "row present" if _rows else "NO ROW",
+            "rows": [dict(_row, lead_key=mask_contact(_row.get("lead_key"))) for _row in (_rows or [])],
+            "memory": _mem,
+        }
+        if _rows is not None:
+            _entry["verdict"] = ("OK — row present and in memory" if _rows and _mem else
+                                 "row present, not in memory (restored on next boot)" if _rows else
+                                 "MISSING — in memory, no row: the next flush/sweep writes it" if _mem else
+                                 "unknown lead — neither in the table nor in memory")
+        _out.append(_entry)
+    _TALLY.bump("leads_db.pg_lead_checked", f"{len(_terms)} term(s)")
+    return jsonify({"ok": True, "as_of": _get_current_time_edt(), "checked": _out,
+                    "leads_db": {"host": _leads_db.db_host(),
+                                 "conn": _leads_db.conn_stats(),
+                                 "requeued": _leads_db.requeue_stats()}}), 200
 
 
 @app.route('/admin/lead-seq', methods=['GET'])
