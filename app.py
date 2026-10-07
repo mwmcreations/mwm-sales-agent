@@ -25744,6 +25744,13 @@ def admin_lead_form_restore():
                 _fields = _lf.record_from_sheet_row(_cells, _notes)
                 if not _fields:
                     continue
+                # Never Michael's own line (his Command Mode record is not a
+                # lead) and never Meta's Testing Tool dummies.
+                if (_digits and _is_internal_number(f"+{_digits}")) or _fields["name"].startswith("<test") \
+                        or _raw.startswith("meta_lead_") or (_digits and _digits == "4593113990973865"):
+                    _out.append({"tab": _tab, "lead_key": mask_contact(_key), "name": _fields["name"],
+                                 "needs_restore": False, "skipped": "internal number or test row"})
+                    continue
                 _is_form = bool(_cur and _cur.get("meta_lead_ad"))
                 _entry = {"tab": _tab, "lead_key": mask_contact(_key), "name": _fields["name"],
                           "business": _fields["business"], "qualified": _fields["qualified"],

@@ -97,6 +97,8 @@ check("wire.disqualify_under_budget", "_icp.mark_disqualified(_lr, _icp.REASON_N
 check("wire.keeps_live_name_email", 'if _lr.get("name"):\n                        _upd["name"] = _lr["name"]' in rt)
 check("wire.masks", rt.count("mask_contact(") >= 1)
 check("wire.no_record_untouched", "no record in memory at all — not touched" in rt)
+check("wire.skips_internal_and_test", '_is_internal_number(f"+{_digits}")' in rt and '_fields["name"].startswith("<test")' in rt
+      and "internal number or test row" in rt)
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 
