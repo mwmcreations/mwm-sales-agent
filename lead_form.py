@@ -20,6 +20,25 @@ text, so matching is tolerant: a key is normalised and matched by what it
 contains. A key we cannot place is kept verbatim in `extra` and never
 dropped — the sheet's Notes column carries it.
 
+PATCH #152 (ERIC, 7 Oct 2026 — Duncan Wardle's email opened with
+"owner_/_founder_/_partner does not need a big program to start"). The live
+form's keys, in order, are full_name · email · phone_number ·
+what_is_your_role_in_the_business? · company_name ·
+what_is_your_business's_monthly_revenue? · your_website_or_instagram? ·
+what_do_customers_need_to_understand_before_they_buy_from_you?. The old
+matcher took the FIRST key containing any needle, so the role question —
+which merely mentions "the business" — was read as the business name, the
+role was read again from the same key, and `company_name` (the real name)
+fell through to `extra`. Every form lead since 1 Oct carried the role's
+choice value as its business. Now: (1) needles are tried in PRIORITY order
+(`business_name`/`company_name` beat a key that only contains "business");
+(2) a key already placed in one slot is never placed in another; (3) the
+enum-shaped slots (role, revenue) are placed BEFORE the free-text ones;
+(4) a multiple-choice value (lowercase, underscores, no spaces — Meta's
+shape) is never accepted as a business name; (5) `pretty()` turns a choice
+value into words for anything a human reads, and `recover_business()`
+repairs a record that was built by the old matcher from its `extra`.
+
 PURE: no network, no clock, no Flask.
 """
 
@@ -115,13 +134,49 @@ def _truthy(v):
         "1", "true", "yes", "y", "on", "checked")
 
 
-def _pick(fields, *needles, exclude=()):
-    """First value whose key contains any needle (and none of exclude)."""
-    for k, v in fields.items():
-        if any(n in k for n in needles) and not any(x in k for x in exclude):
-            if v:
+def _pick(fields, *needles, exclude=(), used=()):
+    """The value for the first NEEDLE that any key contains — needles are
+    tried in priority order, every key for the first needle before any key
+    for the second — skipping keys in `exclude` (substrings) and `used`
+    (already placed in another slot). Returns (value, key)."""
+    for n in needles:
+        for k, v in fields.items():
+            if k in used or not v:
+                continue
+            if n in k and not any(x in k for x in exclude):
                 return v, k
     return "", None
+
+
+# Words in a key that mean "this question is NOT the business name".
+_NOT_BUSINESS = ("role", "position", "title", "revenue", "sales", "turnover",
+                 "income", "website", "instagram", "site", "url", "understand",
+                 "describe", "email", "phone", "type_of", "kind_of", "industry",
+                 "how_many", "what_do", "why", "goal", "budget")
+BUSINESS_NEEDLES = ("business_name", "company_name", "name_of_your_business",
+                    "name_of_the_business", "name_of_your_company", "company",
+                    "brand_name", "business", "brand")
+
+
+def looks_like_choice(value):
+    """True when a value has the shape Meta gives a multiple-choice answer:
+    lowercase, words joined by underscores, no spaces — `owner_/_founder_/_partner`,
+    `under_$20k`, `marketing_lead`. A typed business name does not look like
+    that, so this is the guard that keeps a choice value out of a name slot."""
+    s = str(value or "").strip()
+    if not s or " " in s or "_" not in s:
+        return False
+    return s == s.lower()
+
+
+def pretty(value):
+    """A choice value as words, for anything a human reads: `owner_/_founder_/_partner`
+    -> `owner / founder / partner`, `under_$20k` -> `under $20k`. Free text and
+    names pass through untouched."""
+    s = str(value or "").strip()
+    if not looks_like_choice(s):
+        return s
+    return " ".join(s.replace("_", " ").split())
 
 
 def extract(fields):
@@ -130,7 +185,7 @@ def extract(fields):
     used = set()
 
     def take(*needles, exclude=()):
-        v, k = _pick(fields, *needles, exclude=exclude)
+        v, k = _pick(fields, *needles, exclude=exclude, used=used)
         if k:
             used.add(k)
         return v
@@ -144,17 +199,46 @@ def extract(fields):
         used.update(k for k in ("first_name", "last_name") if k in fields)
     email = take("email").lower()
     phone = take("phone", "mobile", "cell", "whatsapp")
-    business = take("business_name", "company", "business", exclude=("website",))
-    website = take("website", "instagram", "site", "url")
-    role = take("role", "position", "title")
-    revenue = take("revenue", "sales", "turnover")
+    # PATCH #152 — the choice questions first, so a question that merely
+    # mentions "the business" is placed as what it is before the business
+    # name is looked for; then the free-text ones; the name last, by priority.
+    role = take("role", "position", "job_title", "title", exclude=("business_name", "company_name"))
+    revenue = take("revenue", "sales", "turnover", "income")
+    website = take("website", "instagram", "site", "url", exclude=("business_name", "company_name"))
     must = take("understand", "customers_must", "before_they_buy", "explain")
+    business = take(*BUSINESS_NEEDLES, exclude=_NOT_BUSINESS)
+    if looks_like_choice(business):
+        # a choice value is an answer to some other question, never a name:
+        # leave it in `extra` for the sheet, keep the slot clean.
+        bk = next((k for k in used if fields.get(k) == business and
+                   any(n in k for n in BUSINESS_NEEDLES)), None)
+        if bk:
+            used.discard(bk)
+        business = ""
     extra = {k: v for k, v in fields.items() if k not in used and v}
     return {
         "name": name, "email": email, "phone": phone, "business": business,
         "website": website, "role_raw": role, "revenue_raw": revenue,
         "must_understand": must, "extra": extra,
     }
+
+
+def recover_business(rec):
+    """PATCH #152 — the business name a record built by the old matcher
+    should have had: its own `business` when that is a real name, otherwise
+    the name hiding in `form_extra` (where `company_name` landed), otherwise
+    ''. Pure; the caller decides whether to write it."""
+    rec = rec or {}
+    cur = str(rec.get("business") or "").strip()
+    if cur and not looks_like_choice(cur):
+        return cur
+    extra = rec.get("form_extra") or rec.get("extra") or {}
+    if isinstance(extra, dict):
+        v, _ = _pick({k: str(v or "").strip() for k, v in extra.items()},
+                     *BUSINESS_NEEDLES, exclude=_NOT_BUSINESS)
+        if v and not looks_like_choice(v):
+            return v
+    return ""
 
 
 def role_kind(raw):
@@ -265,9 +349,9 @@ def notes_line(rec, consent, consent_ts_iso, verdict, reason):
     readable line, so the row answers ERIC's questions without a lookup."""
     parts = []
     if rec.get("role_raw"):
-        parts.append("role: " + rec["role_raw"])
+        parts.append("role: " + pretty(rec["role_raw"]))
     if rec.get("revenue_raw"):
-        parts.append("revenue: " + rec["revenue_raw"])
+        parts.append("revenue: " + pretty(rec["revenue_raw"]))
     if rec.get("website"):
         parts.append("site/IG: " + rec["website"])
     if rec.get("must_understand"):

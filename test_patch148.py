@@ -94,7 +94,7 @@ for ai in (False, True):
             check(f"sms.not_banned ai={ai}", not sv.contains_banned(core), core)
 
 for ai in (False, True):
-    subj, html, text = sv.sh_first_touch_email("Ana Lima", "Lima Dental", "why implants beat dentures", ai=ai, slots=slots, sms_sent=True)
+    subj, html, text = sv.sh_first_touch_email("Ana Lima", "Lima Dental", "why implants beat dentures for anyone over fifty.", ai=ai, slots=slots, sms_sent=True)
     low = text.lower()
     check(f"email.first_touch_clean ai={ai}", not any(b.lower() in low for b in BANNED_SH), text)
     check(f"email.first_touch_script ai={ai}", "30-minute" in text and sv.CREDITS in text and sv.WE_DO in text)

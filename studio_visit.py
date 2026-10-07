@@ -133,6 +133,56 @@ def first_name(name, fallback="there"):
     return s[:1].upper() + s[1:]
 
 
+# PATCH #152 (ERIC, 7 Oct 2026 — "owner_/_founder_/_partner does not need a
+# big program to start. You wrote: \"we can talk this\"."): nothing that
+# reaches a lead prints a raw form value. Every template takes the business
+# through clean_business() and the free-text answer through quotable().
+
+_NOT_A_NAME = {"owner", "founder", "partner", "ceo", "president", "marketing",
+               "marketing lead", "employee", "staff", "creator", "freelancer",
+               "freelance", "artist", "student", "n/a", "na", "none", "no",
+               "yes", "test", "-", "."}
+
+
+def clean_business(business):
+    """A business name we are willing to print, or ''. A multiple-choice
+    value (`owner_/_founder_/_partner`, `under_$20k`), a bare role word, an
+    email, a URL, or anything over 60 characters is not a name."""
+    b = " ".join(str(business or "").split())
+    if not b or len(b) > 60:
+        return ""
+    if "_" in b and " " not in b and b == b.lower():
+        return ""                      # Meta's choice-value shape
+    low = b.lower().strip(" .!?")
+    if low in _NOT_A_NAME or "@" in b or low.startswith(("http", "www.")):
+        return ""
+    return b
+
+
+QUOTE_MIN_WORDS = 6
+
+
+def quotable(must_understand, limit=240):
+    """The lead's own answer, only when quoting it back reads well: at least
+    QUOTE_MIN_WORDS words, free text (not a choice value, URL or email), and
+    either a finished sentence or long enough to stand as one (ten words
+    or more). "we can talk this" and "the products" are not quoted; the
+    template falls back to the line without the quote."""
+    s = " ".join(str(must_understand or "").split())
+    if not s or ("_" in s and " " not in s):
+        return ""
+    if "@" in s or s.lower().startswith(("http", "www.")):
+        return ""
+    words = s.split()
+    if len(words) < QUOTE_MIN_WORDS:
+        return ""
+    if len(s) > limit:
+        s = s[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "..."
+    if not (s[-1] in ".!?" or s.endswith("...") or len(words) >= 10):
+        return ""
+    return s
+
+
 def contains_banned(text):
     """The banned wording found in `text`, or None."""
     low = str(text or "").lower()
@@ -245,8 +295,8 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
     consent / no dialable mobile, or alongside the text when the text had to
     wait for the sending window."""
     fn = first_name(name)
-    biz = str(business or "").strip()
-    mu = str(must_understand or "").strip()
+    biz = clean_business(business)
+    mu = quotable(must_understand)
     when = _slot_phrase(slots)
     subject = f"{fn}, your {VISIT_NAME} with Michael Moraes"
     lines = [f"Hi {fn},", ""]
@@ -260,9 +310,12 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
     if biz and mu:
         lines.append(f"{biz} is exactly what we build for - a business whose customers "
                      f"need to understand something before they buy. You wrote: "
-                     f"\"{mu[:240]}\". That is the video we would start with.")
+                     f"\"{mu}\". That is the video we would start with.")
     elif biz:
         lines.append(f"{biz} is exactly what we build for.")
+    else:
+        lines.append("Your business is exactly what we build for - customers who "
+                     "need to understand something before they buy.")
     lines.append(f"The next step is a free {VISIT_MINUTES}-minute {VISIT_NAME}: you "
                  "walk the studio, we map the videos your buyers need to see, and "
                  "you leave with a 90-day plan. Michael has been " + CREDITS +
@@ -293,7 +346,7 @@ def disqualify_text(name="", business=""):
     """Core of the under-budget text (wrapped by sms_copy.compose). Warm,
     one next step, no 'fit', no subscription."""
     fn = first_name(name)
-    biz = str(business or "").strip()
+    biz = clean_business(business)
     lead = f"{biz} sounds great. " if biz else ""
     return (f"Hi {fn}, Maya from Michael Moraes' team. {lead}The best next step "
             f"for you is to book your first studio hour with us and get to know "
@@ -304,7 +357,7 @@ def disqualify_email(name, business=""):
     """(subject, html, text) — the under-budget email: an invitation to the
     first studio hour, not a goodbye."""
     fn = first_name(name)
-    biz = str(business or "").strip()
+    biz = clean_business(business)
     lines = [f"Hi {fn},", "",
              "Maya here from Michael Moraes' team at MWM Studios. Thanks for "
              "applying.",
@@ -382,7 +435,7 @@ def case_study_for(business, must_understand=""):
 def industry_word(business):
     """A short noun for '[industry]' in the day-10 subject. Falls back to
     'business' rather than guessing."""
-    b = str(business or "").strip()
+    b = clean_business(business)
     if not b or len(b) > 40:
         return "business"
     return b
@@ -394,7 +447,7 @@ def chase_email(step, name, business="", must_understand="", ai=False):
     First person — Michael — because the corrected first-person email is what
     converted Todd Berger (ERIC, 26 Sep)."""
     fn = first_name(name)
-    biz = str(business or "").strip()
+    biz = clean_business(business)
     ind = industry_word(biz)
     client, story = case_study_for(biz, must_understand)
     if step == 1:
@@ -502,7 +555,7 @@ CTA_POST_VISIT = ("Reply to this email, or text Maya at " + MAYA_WA +
 def post_visit_email(step, name, business="", agreed_next=""):
     """(subject, html, text) for post-visit email 1..3."""
     fn = first_name(name)
-    biz = str(business or "").strip()
+    biz = clean_business(business)
     agreed = str(agreed_next or "").strip()
     if step == 1:
         subject = f"{fn}, thank you for coming in - the plan in one paragraph"
@@ -600,8 +653,8 @@ def sh_first_touch_email(name, business="", must_understand="", ai=False,
                          slots=None, sms_sent=False):
     """(subject, html, text) — the studio-hour opener as an email."""
     fn = first_name(name)
-    biz = str(business or "").strip()
-    mu = str(must_understand or "").strip()
+    biz = clean_business(business)
+    mu = quotable(must_understand)
     when = _slot_phrase(slots)
     subject = f"{fn}, your {VISIT_NAME} with Michael Moraes"
     lines = [f"Hi {fn},", ""]
@@ -614,7 +667,7 @@ def sh_first_touch_email(name, business="", must_understand="", ai=False,
                      "you is AI.")
     if biz and mu:
         lines.append(f"{biz} does not need a big program to start. You wrote: "
-                     f"\"{mu[:240]}\". One well-planned studio session can put that "
+                     f"\"{mu}\". One well-planned studio session can put that "
                      f"in front of your customers.")
     elif biz:
         lines.append(f"{biz} does not need a big program to start - one well-planned "
@@ -650,7 +703,7 @@ def sh_chase_email(step, name, business="", must_understand="", ai=False):
     """(subject, html, text) for studio-hour chase email 1..5. Michael's
     first person; the same cadence as the main chain; no price, no program."""
     fn = first_name(name)
-    biz = str(business or "").strip()
+    biz = clean_business(business)
     ind = industry_word(biz)
     client, story = case_study_for(biz, must_understand)
     if step == 1:

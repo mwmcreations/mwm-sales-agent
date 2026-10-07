@@ -7160,8 +7160,8 @@ def lookup_lead_in_sheets(sender: str) -> str:
                             parts = []
                             if data.get("Name"):
                                 parts.append(f"Name: {data['Name']}")
-                            if data.get("Business"):
-                                parts.append(f"Business: {data['Business']}")
+                            if data.get("Business") and not _lf.looks_like_choice(data["Business"]):
+                                parts.append(f"Business: {data['Business']}")   # PATCH #152: never a choice value
                             if data.get("Service Interest"):
                                 parts.append(f"Interested in: {data['Service Interest']}")
                             if data.get("Status"):
@@ -9155,15 +9155,18 @@ def _sms_lead_context(rec):
         bits.append(f"Name: {rec['name']}")
     if rec.get("email"):
         bits.append(f"Email: {rec['email']}")
-    if rec.get("business"):
-        bits.append(f"Business: {rec['business']}")
+    # PATCH #152 — never a raw form value: a choice value is not a business
+    # name, and role/revenue read as words.
+    if _sv.clean_business(rec.get("business")):
+        bits.append(f"Business: {_sv.clean_business(rec.get('business'))}")
     if rec.get("role_raw"):
-        bits.append(f"Role: {rec['role_raw']}")
+        bits.append(f"Role: {_lf.pretty(rec['role_raw'])}")
     if rec.get("revenue_raw"):
-        bits.append(f"Monthly revenue band: {rec['revenue_raw']}")
+        bits.append(f"Monthly revenue band: {_lf.pretty(rec['revenue_raw'])}")
     if rec.get("must_understand"):
-        bits.append("What their customers must understand before buying: "
-                    + str(rec["must_understand"])[:300])
+        bits.append("What their customers must understand before buying (their "
+                    "words, may be a fragment — do not quote it back unless it "
+                    "reads as a sentence): " + str(rec["must_understand"])[:300])
     if rec.get("qualified"):
         bits.append(f"Qualified: {rec['qualified']} ({rec.get('qualified_reason', '')})")
     if rec.get("track"):
@@ -10045,7 +10048,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 )
                 if _re_name:
                     _re_ctx.append(f"Name: {_re_name}")
-                if _re_biz:
+                if _re_biz and not _lf.looks_like_choice(_re_biz):
                     _re_ctx.append(f"Business: {_re_biz}")
                 if _re_score:
                     _re_ctx.append(f"Lead Score: {_re_score}/100")
@@ -19857,16 +19860,16 @@ def _meta_lead_intake(value, lead_meta=None):
         _slot_txt = ", ".join(s.get("display", "") for s in slots) if slots else "none offered"
         _post_to_slack_async(SLACK_DEV_CHANNEL,
             f":inbox_tray: *Form lead* `{leadgen_id}` → {name or '?'} · "
-            f"{rec['business'] or 'no business'} · {rec['role_raw'] or '?'} / "
-            f"{rec['revenue_raw'] or '?'} · ad {label or ad_id or 'organic'}\n"
+            f"{_sv.clean_business(rec['business']) or 'no business'} · {_lf.pretty(rec['role_raw']) or '?'} / "
+            f"{_lf.pretty(rec['revenue_raw']) or '?'} · ad {label or ad_id or 'organic'}\n"
             f"qualified: *{verdict}* ({reason}){track_txt} · sms_consent: {'yes/lead_form ' + consent_ts if consent else 'no'}\n"
             f"sheet: {sheet_note} · SMS: {sms_note} · email: {email_note} · "
             f"slots: {_slot_txt} · chain: {_chase.summary(lr.get('chase'), now)}"
             + (" · *TEST (internal number)*" if internal else ""))
         _post_to_slack_async(SLACK_MAYA_CHANNEL,
             f"*NEW LEAD — Instant Form* ({label or 'organic'})\n"
-            f"Name: {name or 'N/A'} · Business: {rec['business'] or 'N/A'}\n"
-            f"Role: {rec['role_raw'] or 'N/A'} · Revenue: {rec['revenue_raw'] or 'N/A'}\n"
+            f"Name: {name or 'N/A'} · Business: {_sv.clean_business(rec['business']) or 'N/A'}\n"
+            f"Role: {_lf.pretty(rec['role_raw']) or 'N/A'} · Revenue: {_lf.pretty(rec['revenue_raw']) or 'N/A'}\n"
             f"Must understand: {(rec['must_understand'] or 'N/A')[:200]}\n"
             f"Qualified: {verdict} ({reason}){track_txt} · SMS consent: {'yes' if consent else 'no'}\n"
             + (f"HELD — the studio-hour track is not live yet; Michael reaches out himself."
@@ -25569,6 +25572,90 @@ def admin_attribution_backfill():
     except Exception as e:
         _report_error("admin_attribution_backfill (PATCH #136)", e, f"tab={tab}")
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
+
+
+@app.route('/admin/lead-form-repair', methods=['GET'])
+def admin_lead_form_repair():
+    """PATCH #152 — repair the form-lead records the old matcher built.
+
+    /admin/lead-form-repair?secret=<UPLOAD_SECRET>[&apply=1][&stop_chase=<key|email>[&note=...]]
+
+    Until 7 Oct the business slot took the FIRST form key containing
+    "business" — the role question — so every Instant Form lead since 1 Oct
+    carries `owner_/_founder_/_partner` (or `marketing_lead`) as its business
+    and the real name sits in `form_extra["company_name"]`. The chase emails
+    read the record, so the day-10 subject would have been "The three videos
+    every owner_/_founder_/_partner needs". This walks every Meta form lead,
+    recovers the name with lead_form.recover_business(), and with apply=1
+    writes it to the record and the sheet's Business cell (best effort).
+    Without apply=1 it only reports. `stop_chase` stops one lead's chain as
+    "manual" — the standing move when a human has taken the lead over, so
+    Michael's personal follow-up and the machine's "Michael Moraes here"
+    emails never land in the same inbox.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _apply = str(request.args.get("apply") or "") in ("1", "true", "yes")
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz)
+    _rows, _fixed = [], 0
+    for _k, _r in list(lead_data.items()):
+        if not isinstance(_r, dict) or not _r.get("meta_lead_ad"):
+            continue
+        _old = str(_r.get("business") or "")
+        _new = _lf.recover_business(_r)
+        _bad = _lf.looks_like_choice(_old)
+        _row = {"lead_key": mask_contact(_k), "name": _r.get("name") or "",
+                "business_was": _old, "business_now": _new,
+                "needs_fix": bool(_bad or (_new and _new != _old)),
+                "chase": _chase.summary(_r.get("chase"), _now)}
+        if _row["needs_fix"] and _apply:
+            _r["business"] = _new
+            _fx = _r.get("form_extra")
+            if isinstance(_fx, dict):
+                for _fk in [k for k, v in _fx.items() if str(v or "").strip() == _new
+                            and any(n in k for n in _lf.BUSINESS_NEEDLES)]:
+                    _fx.pop(_fk, None)
+                _r["form_extra"] = _fx
+            _r["business_repaired_at"] = _now.isoformat()
+            lead_data[_k] = _r
+            try:
+                update_lead_columns(_k, {"Business": _new or ""})
+                _row["sheet"] = "Business cell updated"
+            except Exception as _sx:
+                _row["sheet"] = f"sheet not updated: {str(_sx)[:80]}"
+            _fixed += 1
+            _row["fixed"] = True
+        _rows.append(_row)
+    _stop = (request.args.get("stop_chase") or "").strip().lower()
+    _stopped = None
+    if _stop:
+        for _k, _r in list(lead_data.items()):
+            if not isinstance(_r, dict):
+                continue
+            if _k.lower() == _stop or str(_r.get("email") or "").lower() == _stop:
+                _st = _r.get("chase")
+                if isinstance(_st, dict) and not _st.get("stopped"):
+                    if _apply:
+                        _st["stopped"] = _chase.STOP_MANUAL
+                        _st["stopped_at"] = _now.isoformat()
+                        _st["note"] = (request.args.get("note") or "a human took the lead over")[:200]
+                        _r["chase"] = _st
+                        lead_data[_k] = _r
+                    _stopped = {"lead_key": mask_contact(_k), "name": _r.get("name") or "",
+                                "was": _chase.summary(_st, _now) if not _apply else "stopped: manual",
+                                "applied": _apply}
+                else:
+                    _stopped = {"lead_key": mask_contact(_k), "name": _r.get("name") or "",
+                                "was": _chase.summary(_st, _now), "applied": False,
+                                "note": "no armed chain to stop"}
+                break
+        if _stopped is None:
+            _stopped = {"error": "no lead matched stop_chase"}
+    _TALLY.bump("lead_form.repair", f"{_fixed} fixed" if _apply else "report")
+    return jsonify({"ok": True, "as_of": _get_current_time_edt(), "applied": _apply,
+                    "form_leads": len(_rows), "needing_fix": sum(1 for r in _rows if r["needs_fix"]),
+                    "fixed": _fixed, "leads": _rows, "stop_chase": _stopped}), 200
 
 
 @app.route('/admin/pg-lead', methods=['GET'])
