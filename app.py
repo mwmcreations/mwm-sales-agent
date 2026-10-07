@@ -732,6 +732,14 @@ lara_history = {}
 # DATABASE_URL it behaves exactly like the plain dict it replaced.
 import leads_db as _leads_db
 lead_data = _leads_db.LeadData()
+# PATCH #153 — set once the Postgres restore has run. The Sheets repopulation
+# thread (started at import, below) must wait for it: on 7 Oct 19:04 ET the
+# sheet read finished 22 s BEFORE the restore, inserted three slim rows
+# (name, email, last-contact date) under keys the table held full records
+# for, the restore skipped those keys as "already present", and the next
+# five-minute sweep wrote the slim rows back over the table. Duncan Wardle's
+# form record — business, role, revenue, chain state — was lost that way.
+_PG_RESTORED = threading.Event()
 
 # Google Calendar config
 CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "c_03s30bthurplevpk6a264h7n34@group.calendar.google.com")
@@ -11027,6 +11035,11 @@ def _repopulate_lead_data_from_sheets():
     """
     if not SHEETS_LEADS_ID:
         print("[Startup] SHEETS_LEADS_ID not set — skipping lead_data repopulation")
+        return
+    # PATCH #153 — never run ahead of the Postgres restore (see _PG_RESTORED).
+    if not _PG_RESTORED.wait(timeout=300):
+        print("[Startup] Postgres restore not finished after 300s — sheet repopulation "
+              "skipped so it cannot shadow table rows")
         return
     try:
         svc = get_sheets_service()
@@ -21648,7 +21661,10 @@ def _restore_state_from_pg():
     except Exception as _e:
         print(f"[PG] restore failed (non-fatal): {_e}")
 
-_restore_state_from_pg()
+try:
+    _restore_state_from_pg()
+finally:
+    _PG_RESTORED.set()   # PATCH #153 — the sheet repopulation may run now
 
 # S4.1: write-through flusher — dirty leads upserted every 15s, full sweep
 # every 5 min (catches deeply-nested mutations). New heartbeat: leads_flush
@@ -25656,6 +25672,134 @@ def admin_lead_form_repair():
     return jsonify({"ok": True, "as_of": _get_current_time_edt(), "applied": _apply,
                     "form_leads": len(_rows), "needing_fix": sum(1 for r in _rows if r["needs_fix"]),
                     "fixed": _fixed, "leads": _rows, "stop_chase": _stopped}), 200
+
+
+@app.route('/admin/lead-form-restore', methods=['GET'])
+def admin_lead_form_restore():
+    """PATCH #153 — rebuild a form lead's record from its sheet row.
+
+    /admin/lead-form-restore?secret=<UPLOAD_SECRET>[&apply=1][&q=<key|email|digits>]
+
+    For the records the 7 Oct startup race flattened (see _PG_RESTORED):
+    the sheet row still carries everything the rail wrote — Name, Email,
+    Business, and a Notes line with role, revenue, site, must-understand,
+    consent, verdict, track and any unplaced answer. This reads the newest
+    two monthly tabs, finds rows the form rail wrote (Notes has
+    "qualified:") whose in-memory record is not a form record any more
+    (no `meta_lead_ad`), and with apply=1 writes the fields back. The chase
+    chain is NOT re-armed: what was already sent is unknown, so the rebuilt
+    chain is stopped "manual" (an under-budget lead is marked disqualified,
+    as the rail would). Without apply=1 it only reports.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _apply = str(request.args.get("apply") or "") in ("1", "true", "yes")
+    _q = (request.args.get("q") or "").strip().lower()
+    if not SHEETS_LEADS_ID:
+        return jsonify({"ok": False, "error": "GOOGLE_SHEETS_LEADS_ID not set"}), 503
+    _tz = pytz.timezone(TIMEZONE)
+    _now = datetime.now(_tz)
+    _out, _restored = [], 0
+    try:
+        _svc = get_sheets_service()
+        _meta = _svc.spreadsheets().get(spreadsheetId=SHEETS_LEADS_ID).execute(num_retries=3)
+        _month = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                  "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+
+        def _tab_key(t):
+            _p = t.split()
+            return (int(_p[1]), _month[_p[0]]) if len(_p) == 2 and _p[0] in _month and _p[1].isdigit() else (0, 0)
+
+        _tabs = sorted([s_["properties"]["title"] for s_ in _meta["sheets"] if _tab_key(s_["properties"]["title"]) != (0, 0)],
+                       key=_tab_key, reverse=True)[:2]
+        for _tab in _tabs:
+            _rows = _svc.spreadsheets().values().get(
+                spreadsheetId=SHEETS_LEADS_ID, range=f"'{_tab}'!A1:W").execute(num_retries=3).get("values", [])
+            if len(_rows) < 2:
+                continue
+            _hdr = _rows[0]
+            for _row in _rows[1:]:
+                _cells = {_hdr[i]: (_row[i] if i < len(_row) else "") for i in range(len(_hdr))}
+                _notes = str(_cells.get("Notes") or "")
+                if "qualified:" not in _notes.split("\n", 1)[0]:
+                    continue
+                _raw = str(_cells.get("Phone") or "").strip()
+                _digits = re.sub(r"\D", "", _raw)
+                if _raw.startswith("meta_lead_"):
+                    _key = _raw
+                elif _raw.lower().startswith("instagram:") or (len(_digits) >= 15):
+                    _key = f"instagram:{_digits}"
+                elif len(_digits) >= 7:
+                    _key = f"whatsapp:+{_digits}"
+                else:
+                    continue
+                _cur = lead_data.get(_key) if isinstance(lead_data.get(_key), dict) else None
+                if _cur is None and _digits:
+                    _k2, _cur = _find_lead_by_phone(_digits)
+                    if _k2:
+                        _key = _k2
+                _email = str(_cells.get("Email") or "").strip().lower()
+                if _q and not (_q in _key.lower() or (_email and _q == _email) or (_digits and _q == _digits)):
+                    continue
+                _fields = _lf.record_from_sheet_row(_cells, _notes)
+                if not _fields:
+                    continue
+                _is_form = bool(_cur and _cur.get("meta_lead_ad"))
+                _entry = {"tab": _tab, "lead_key": mask_contact(_key), "name": _fields["name"],
+                          "business": _fields["business"], "qualified": _fields["qualified"],
+                          "in_memory": _cur is not None, "still_a_form_record": _is_form,
+                          "needs_restore": _cur is not None and not _is_form}
+                if _cur is None:
+                    _entry["note"] = "no record in memory at all — not touched (a lead with no record is created by the next message, not by this route)"
+                if _entry["needs_restore"] and _apply:
+                    _lr = lead_data[_key]
+                    _upd = dict(_fields)
+                    if _lr.get("name"):
+                        _upd["name"] = _lr["name"]
+                    if _lr.get("email"):
+                        _upd["email"] = _lr["email"]
+                    _when = f"{str(_cells.get('Date') or '').strip()} {str(_cells.get('Time') or '').strip()}".strip()
+                    try:
+                        _lf_at = _tz.localize(datetime.strptime(_when, "%Y-%m-%d %I:%M %p"))
+                        _upd["lead_form_at"] = _lf_at.isoformat()
+                        _lmt = _lr.get("last_message_time")
+                        if (hasattr(_lmt, "hour") and _lmt.hour == 0 and _lmt.minute == 0) or not _lmt:
+                            _upd["last_message_time"] = _lf_at
+                        if not _lr.get("first_contact_time"):
+                            _upd["first_contact_time"] = _lf_at
+                    except Exception:
+                        pass
+                    _upd["restored_from_sheet_at"] = _now.isoformat()
+                    _upd["restored_note"] = ("record rebuilt from the sheet row after the 7 Oct startup "
+                                             "race flattened it; chain state before that is unknown")
+                    _lr.update(_upd)
+                    if _fields["qualified"] == _lf.Q_NO:
+                        _icp.mark_disqualified(_lr, _icp.REASON_NOT_TARGET_MARKET, at=_now.isoformat(),
+                                               by="lead_form_restore", note=_fields["qualified_reason"])
+                        _lr["chase"] = {"stopped": _chase.STOP_DISQUALIFIED, "stopped_at": _now.isoformat(),
+                                        "armed_at": _now.isoformat(), "channels": [], "sent": {}, "skipped": {},
+                                        "verdict": _fields["qualified"], "kind": _chase.KIND_FORM,
+                                        "note": "rebuilt from the sheet (#153): under budget, nothing sends"}
+                    elif not (isinstance(_lr.get("chase"), dict) and _lr["chase"].get("stopped")):
+                        _lr["chase"] = {"stopped": _chase.STOP_MANUAL, "stopped_at": _now.isoformat(),
+                                        "armed_at": _now.isoformat(), "channels": [], "sent": {}, "skipped": {},
+                                        "verdict": _fields["qualified"],
+                                        "kind": (_chase.KIND_STUDIO_HOUR if _fields.get("track") == _lf.TRACK_STUDIO_HOUR
+                                                 else _chase.KIND_FORM),
+                                        "note": "rebuilt from the sheet (#153): what was sent before is unknown, "
+                                                "so nothing more sends from the machine"}
+                    lead_data[_key] = _lr
+                    _restored += 1
+                    _entry["restored"] = True
+                    _entry["chase"] = _chase.summary(_lr.get("chase"), _now)
+                _out.append(_entry)
+    except Exception as _e:
+        _report_error("admin_lead_form_restore (PATCH #153)", _e)
+        return jsonify({"ok": False, "error": str(_e)[:300], "leads": _out}), 500
+    _TALLY.bump("lead_form.restore", f"{_restored} restored" if _apply else "report")
+    return jsonify({"ok": True, "as_of": _get_current_time_edt(), "applied": _apply, "tabs": _tabs,
+                    "form_rows": len(_out), "needing_restore": sum(1 for r in _out if r["needs_restore"]),
+                    "restored": _restored, "leads": _out}), 200
 
 
 @app.route('/admin/pg-lead', methods=['GET'])

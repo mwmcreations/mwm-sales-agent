@@ -401,3 +401,91 @@ def first_touch_plan(verdict, consent, dialable, has_email):
     if not plan:
         plan.append(("none", "no consented mobile and no email"))
     return plan
+
+
+# ── PATCH #153 — reading a form row back from the sheet ─────────────────────
+# The Notes cell is written by notes_line() above, so it can be read back when
+# the record itself is gone (7 Oct: the startup race wrote three slim sheet
+# rows over the table). Pure: a row in, a record's fields out.
+
+def parse_notes_line(notes):
+    """notes_line() in reverse -> {role_raw, revenue_raw, website, must_understand,
+    sms_consent_form, sms_consent_ts, qualified, qualified_reason, track, extra}.
+    Only the first line is read (hand-written lines are appended below it)."""
+    first = str(notes or "").split("\n", 1)[0].strip()
+    out = {"role_raw": "", "revenue_raw": "", "website": "", "must_understand": "",
+           "sms_consent_form": False, "sms_consent_ts": "", "qualified": "",
+           "qualified_reason": "", "track": "", "extra": {}}
+    if "qualified:" not in first:
+        return out
+    for part in first.split(" · "):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if k == "role":
+            out["role_raw"] = v
+        elif k == "revenue":
+            out["revenue_raw"] = v
+        elif k == "site/IG":
+            out["website"] = v
+        elif k == "must understand":
+            out["must_understand"] = v
+        elif k == "sms_consent":
+            out["sms_consent_form"] = v.startswith("yes")
+            out["sms_consent_ts"] = v.split(" ", 1)[1].strip() if v.startswith("yes") and " " in v else ""
+        elif k == "qualified":
+            m = re.match(r"([a-z\-]+)\s*(?:\((.*)\))?$", v)
+            if m:
+                out["qualified"] = m.group(1)
+                out["qualified_reason"] = (m.group(2) or "").strip()
+            else:
+                out["qualified"] = v
+        elif k == "track":
+            out["track"] = v
+        else:
+            out["extra"][k] = v
+    return out
+
+
+def record_from_sheet_row(row_cells, notes):
+    """The record fields a form row stands for. `row_cells` is the sheet row
+    as {header: value}; `notes` its Notes cell. Returns {} when the row was
+    not written by the form rail (no 'qualified:' in Notes)."""
+    n = parse_notes_line(notes)
+    if not n["qualified"]:
+        return {}
+    biz_cell = str(row_cells.get("Business") or "").strip()
+    business = biz_cell if (biz_cell and not looks_like_choice(biz_cell)
+                            and not biz_cell.startswith("<test")) else ""
+    extra = dict(n["extra"])
+    if not business:
+        v, k = _pick({k: v for k, v in extra.items()}, *BUSINESS_NEEDLES, exclude=_NOT_BUSINESS)
+        if v and not looks_like_choice(v) and not v.startswith("<test"):
+            business = v
+    for k in [k for k, v in extra.items() if v == business and any(x in k for x in BUSINESS_NEEDLES)]:
+        extra.pop(k, None)
+    rec = {
+        "name": str(row_cells.get("Name") or "").strip(),
+        "email": str(row_cells.get("Email") or "").strip().lower(),
+        "business": business,
+        "website": n["website"],
+        "role_raw": n["role_raw"], "revenue_raw": n["revenue_raw"],
+        "must_understand": n["must_understand"],
+        "form_extra": extra,
+        "qualified": n["qualified"], "qualified_reason": n["qualified_reason"],
+        "source": "Meta Lead Ad", "channel": "Lead Form",
+        "meta_lead_ad": True,
+        "sms_consent_form": n["sms_consent_form"],
+    }
+    track = n["track"] or track_for(n["qualified"])
+    if track:
+        rec["track"] = track
+    ad = str(row_cells.get("Ad ID") or "").strip()
+    if ad:
+        rec["ad_id"] = ad
+    camp = str(row_cells.get("Ad Campaign") or "").strip()
+    if camp:
+        rec["utm_campaign"] = camp
+    return rec
