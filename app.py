@@ -9890,7 +9890,20 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     f"First message: {incoming_msg[:200]}",
                     _assigned, lead_name=_ld.get("name", ""))
                 # ── Auto-route to Susan + send welcome email when lead has email (form fill) ──
-                if _has_email:
+                # PATCH #154 — not for an Instant Form lead. Meta's thank-you
+                # page hands the form answers to WhatsApp as the lead's first
+                # message, and on 7 Oct 17:40 that fired this block ON TOP of
+                # the form rail: Duncan Wardle got the rail's first-touch
+                # email at 17:40:30 and a second "welcome" email at 17:40:51,
+                # plus Susan and LARA were told about a lead the rail had
+                # already told the room about. The rail owns a form lead's
+                # first touch; Maya still answers the WhatsApp message.
+                _is_form_lead = bool(_ld.get("meta_lead_ad"))
+                if _has_email and _is_form_lead:
+                    print(f"[Routing] {_ld.get('name', 'lead')} is an Instant Form lead — "
+                          f"the form rail already sent the first touch; no second welcome email")
+                    _TALLY.bump("lead_form.wa_handoff_skipped_welcome", str(_ld.get("name", "")))
+                if _has_email and not _is_form_lead:
                     _lead_name = _ld.get("name", "Unknown")
                     _lead_email = _ld.get("email", "")
                     _lead_biz = _ld.get("business", "N/A")
