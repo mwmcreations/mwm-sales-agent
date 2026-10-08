@@ -13483,7 +13483,7 @@ def _run_operator_boot_check():
 
 
 def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
-                lead_key=None, transactional=False):
+                lead_key=None, transactional=False, thread=None):
     """PATCH #44A/#44C — the ONE sender every automated path goes through.
 
     Three jobs the individual call sites kept getting wrong:
@@ -13519,16 +13519,21 @@ def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
             return {"ok": False, "suppressed": True,
                     "error": f"transactional refused: {_twhy}"}
     if _tdec != "allow":
-        _sup, _reason = email_is_suppressed(_to)
-        if _sup:
-            print(f"[EMAIL] suppressed ({_reason}) — not sending to {_to}")
-            return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}"}
+        # PATCH #155 — TO may carry several addresses; each faces the guard.
+        for _one in [a.strip() for a in re.split(r"[,;]+", _to) if a.strip()] or [_to]:
+            _sup, _reason = email_is_suppressed(_one)
+            if _sup:
+                print(f"[EMAIL] suppressed ({_reason}) — not sending to {_one}")
+                return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}",
+                        "blocked_address": _one}
     try:
         _kw = {}
         if cc:
             _kw["cc"] = cc
         if transactional:
             _kw["transactional"] = True
+        if thread:
+            _kw["thread"] = thread
         result = send_gmail(_to, subject, html, drive_file_id, **_kw)
     except Exception as _se:
         _report_error("_email_send", _se, f"to={_to} via={via}")
@@ -13541,9 +13546,10 @@ def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
             import pg_store as _fp
             if _fp.enabled():
                 _now_iso = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
-                _fp.save_state("followup_sent:" + _to.lower(), {
-                    "at": _now_iso, "via": via, "subject": str(subject)[:120],
-                })
+                for _one in [a.strip().lower() for a in re.split(r"[,;]+", _to) if a.strip()] or [_to.lower()]:
+                    _fp.save_state("followup_sent:" + _one, {
+                        "at": _now_iso, "via": via, "subject": str(subject)[:120],
+                    })
                 _fp.save_state("followup_last_send_at", _now_iso)
                 if lead_key:
                     _fp.save_state("last_send_lead:" + str(lead_key), _now_iso)
@@ -18037,16 +18043,26 @@ def api_send_email():
     then call this endpoint to deliver from info@mwmcreations.com.
 
     JSON body:
-        to: recipient email (required)
-        subject: email subject (required)
+        to: recipient email (required) — PATCH #155: a string OR a list of addresses
+        cc: (optional) a string or a list — PATCH #155: it was read by nobody before,
+            so a cc'd address never received anything while the API said 200
+        subject: email subject (required for a new conversation; optional for a
+            reply, where the thread's subject with "Re: " is used)
         html_body: full HTML email content (required) — agents design this however they want
         body: plain text fallback (optional)
         attachment_filename: filename to search in _AGENTS > UPLOADS Drive folder (optional)
         attachment_drive_id: explicit Drive file ID (optional, overrides filename search)
         token: auth token (required)
+        PATCH #155 — reply inside an existing conversation (any ONE of):
+        thread_id: Gmail thread id, with mailbox ("info" default, or "michael")
+        reply_to_message_id: Gmail message id, with mailbox (same)
+        in_reply_to: the RFC Message-ID header of the message being answered
+            (plus optional references) — no lookup, no mailbox threading
+        Find the ids with GET /api/find-thread?email=<client>&mailbox=info.
 
     Returns:
-        {"success": true, "message_id": "..."} or {"success": false, "error": "..."}
+        {"success": true, "message_id": "...", "thread_id": "...", "to": [...], "cc": [...]}
+        or {"success": false, "error": "..."}
     """
     try:
         data = request.get_json(force=True)
@@ -18062,43 +18078,76 @@ def api_send_email():
             return jsonify({"success": False, "error": "Invalid or missing token"}), 401
 
         # Required fields
-        to_email = data.get("to", "").strip()
-        subject = data.get("subject", "").strip()
-        html_body = data.get("html_body", "").strip()
-        plain_body = data.get("body", "").strip()
+        def _addr_list(v):
+            if isinstance(v, (list, tuple)):
+                parts = [str(x or "") for x in v]
+            else:
+                parts = re.split(r"[,;]+", str(v or ""))
+            seen, out = set(), []
+            for a in parts:
+                a = a.strip()
+                if a and a.lower() not in seen:
+                    seen.add(a.lower())
+                    out.append(a)
+            return out
 
-        if not to_email:
+        to_list = _addr_list(data.get("to", ""))
+        cc_list = _addr_list(data.get("cc", ""))
+        subject = str(data.get("subject", "") or "").strip()
+        html_body = str(data.get("html_body", "") or "").strip()
+        plain_body = str(data.get("body", "") or "").strip()
+
+        # PATCH #155 — a reply inside an existing conversation
+        _thread = None
+        _mailbox = str(data.get("mailbox", "") or "info").strip().lower()
+        if data.get("thread_id"):
+            _thread = {"mailbox": _mailbox, "thread_id": str(data["thread_id"]).strip()}
+        elif data.get("reply_to_message_id"):
+            _thread = {"mailbox": _mailbox, "message_id": str(data["reply_to_message_id"]).strip()}
+        elif data.get("in_reply_to"):
+            _thread = {"in_reply_to": str(data["in_reply_to"]).strip(),
+                       "references": str(data.get("references", "") or "").strip()}
+        if _thread and _mailbox not in ("info", "michael"):
+            return jsonify({"success": False, "error": "mailbox must be 'info' or 'michael'"}), 400
+
+        if not to_list:
             return jsonify({"success": False, "error": "Missing 'to' field"}), 400
-        if not subject:
+        if not subject and not (_thread and (_thread.get("thread_id") or _thread.get("message_id"))):
             return jsonify({"success": False, "error": "Missing 'subject' field"}), 400
         if not html_body and not plain_body:
             return jsonify({"success": False, "error": "Missing 'html_body' or 'body' field"}), 400
 
         # PATCH #38 — DNC gate. Before auth-adjacent work, before Drive, before
         # send. 409 is the documented suppression code in SUSAN's playbook.
-        _sup, _sup_reason = email_is_suppressed(to_email)
-        if _sup:
-            print(f"[SEND-EMAIL API] SUPPRESSED {to_email} — {_sup_reason} (via={_via})")
-            _report_error("email_send_suppressed",
-                          f"send to {to_email} refused: {_sup_reason}",
-                          f"via={_via} subject={subject[:80]!r} — PREVENTED, not burned")
-            return jsonify({"success": False, "error": f"suppressed: {_sup_reason}",
-                            "suppressed": True, "to": to_email}), 409
+        # PATCH #155 — every address, TO and CC alike; one refusal stops the send.
+        for _addr in to_list + cc_list:
+            _sup, _sup_reason = email_is_suppressed(_addr)
+            if _sup:
+                print(f"[SEND-EMAIL API] SUPPRESSED {_addr} — {_sup_reason} (via={_via})")
+                _report_error("email_send_suppressed",
+                              f"send to {_addr} refused: {_sup_reason}",
+                              f"via={_via} subject={subject[:80]!r} — PREVENTED, not burned")
+                return jsonify({"success": False, "error": f"suppressed: {_sup_reason}",
+                                "suppressed": True, "to": _addr}), 409
 
         # PATCH #38 — an address that cannot be delivered must fail LOUDLY here,
         # not silently bounce hours later. Live case: Anderson Brito Baez,
         # recorded as `AndersonbritoBaez@gmail.com` with an accented a. Gmail
         # rejects non-ASCII local parts, so every send to him was guaranteed to
         # bounce and nothing ever said so.
-        _folded, _addr_ok, _addr_note = ascii_email(to_email)
-        if not _addr_ok:
-            _report_error("email_address_invalid", f"{to_email!r} is not deliverable",
-                          f"{_addr_note} — refused before send (via={_via})")
-            return jsonify({"success": False, "error": f"invalid recipient address: {_addr_note}",
-                            "to": to_email}), 400
-        if _folded != to_email.strip():
-            print(f"[SEND-EMAIL API] non-ASCII address folded: {to_email!r} -> {_folded!r}")
-            to_email = _folded
+        for _lst in (to_list, cc_list):
+            for _i, _addr in enumerate(_lst):
+                _folded, _addr_ok, _addr_note = ascii_email(_addr)
+                if not _addr_ok:
+                    _report_error("email_address_invalid", f"{_addr!r} is not deliverable",
+                                  f"{_addr_note} — refused before send (via={_via})")
+                    return jsonify({"success": False, "error": f"invalid recipient address: {_addr_note}",
+                                    "to": _addr}), 400
+                if _folded != _addr:
+                    print(f"[SEND-EMAIL API] non-ASCII address folded: {_addr!r} -> {_folded!r}")
+                    _lst[_i] = _folded
+        to_email = ", ".join(to_list)
+        cc_email = ", ".join(cc_list)
 
         # If only plain text provided, use it as HTML too
         if not html_body:
@@ -18124,29 +18173,80 @@ def api_send_email():
         # PATCH #44C — goes through the shared sender so the follow-up stamps
         # are written in exactly ONE place for every rail, manual or automatic.
         result = _email_send(to_email, subject, html_body, drive_file_id,
-                             via=_via)
+                             cc=(cc_email or None), via=_via, thread=_thread)
 
         if result.get("ok"):
-            print(f"[SEND-EMAIL API] Sent to {to_email} — msgId: {result['message_id']}")
+            print(f"[SEND-EMAIL API] Sent to {to_email} cc={cc_email or '-'} — msgId: {result['message_id']}")
             # PATCH #44C — the stamping that used to live inline here now lives
             # in _email_send(), so the automated rails stamp it too. Removing it
             # from this branch is the whole point: one writer, not two.
+            _TALLY.bump("send_email.api", f"{len(to_list)} to, {len(cc_list)} cc"
+                        + (", reply" if _thread else ""))
             return jsonify({
                 "success": True,
                 "message_id": result["message_id"],
+                "thread_id": result.get("thread_id", ""),
+                "replied_in": result.get("replied_in"),
                 "from": SUSAN_SEND_AS,
-                "to": to_email,
-                "subject": subject,
+                "to": to_list,
+                "cc": cc_list,
+                "subject": subject or (result.get("replied_in") or {}).get("subject", ""),
                 "attachment": attachment_filename or (drive_file_id if drive_file_id else None),
             })
         else:
             print(f"[SEND-EMAIL API] Failed: {result['error']}")
+            if result.get("suppressed"):
+                return jsonify({"success": False, "error": result["error"], "suppressed": True,
+                                "to": result.get("blocked_address", "")}), 409
             return jsonify({"success": False, "error": result["error"]}), 500
 
     except Exception as e:
         print(f"[SEND-EMAIL API] Error: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)[:500]}), 500
+
+
+@app.route('/api/find-thread', methods=['GET', 'POST'])
+def api_find_thread():
+    """PATCH #155 — the conversations with one address, so an agent can reply
+    in the right thread from info@ without a connector on that mailbox.
+
+    GET  /api/find-thread?email=<client>&mailbox=info&limit=5   (token in the
+         Authorization: Bearer header or ?token=)
+    POST {"email": ..., "mailbox": "info"|"michael", "limit": 5, "token": ...}
+
+    Read-only (metadata only; nothing is marked read). Returns newest first:
+    {"threads": [{"thread_id", "last_message_id", "subject", "from", "to",
+                  "date", "message_id_header"}]}
+    Pass thread_id (and the same mailbox) to /api/send-email to answer it.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        if request.method == "GET" or not data:
+            data = {k: v for k, v in request.args.items()}
+        if not SEND_EMAIL_TOKEN and not LARA_SEND_TOKEN and not SUSAN_SEND_TOKEN:
+            return jsonify({"success": False, "error": "disabled: no server token configured"}), 503
+        _auth_ok, _via = _api_auth_token(data)
+        if not _auth_ok:
+            return jsonify({"success": False, "error": "Invalid or missing token"}), 401
+        _email = str(data.get("email", "") or "").strip()
+        _mailbox = str(data.get("mailbox", "") or "info").strip().lower()
+        if not _email or "@" not in _email:
+            return jsonify({"success": False, "error": "email is required"}), 400
+        if _mailbox not in ("info", "michael"):
+            return jsonify({"success": False, "error": "mailbox must be 'info' or 'michael'"}), 400
+        try:
+            _limit = int(data.get("limit", 5) or 5)
+        except (TypeError, ValueError):
+            _limit = 5
+        _threads = _susan_gmail_mod.find_threads(_email, mailbox=_mailbox, limit=_limit)
+        _TALLY.bump("send_email.find_thread", f"{len(_threads)} in {_mailbox}")
+        return jsonify({"success": True, "email": _email, "mailbox": _mailbox,
+                        "threads": _threads,
+                        "note": "pass thread_id + mailbox to /api/send-email to reply in that conversation"}), 200
+    except Exception as e:
+        print(f"[FIND-THREAD API] Error: {e}")
+        return jsonify({"success": False, "error": str(e)[:300]}), 500
 
 
 # ══════════════════════════════════════════════════════════════════════

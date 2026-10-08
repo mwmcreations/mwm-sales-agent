@@ -32,7 +32,15 @@ SUSAN_SEND_AS = os.getenv("SUSAN_GMAIL_SEND_AS", "info@mwmcreations.com")
 TIMEZONE = "America/New_York"
 
 SCOPES_GMAIL = ["https://www.googleapis.com/auth/gmail.send"]
+# PATCH #155 — a threaded reply has to READ the thread it answers (the
+# Message-ID of the last message), so the reply path asks for readonly as
+# well. The DWD grant has carried gmail.readonly since before Aug 21 (see
+# info_inbox.py); only the code ever asked for less.
+SCOPES_GMAIL_THREAD = ["https://www.googleapis.com/auth/gmail.send",
+                       "https://www.googleapis.com/auth/gmail.readonly"]
 SCOPES_DRIVE = ["https://www.googleapis.com/auth/drive"]
+MICHAEL_MAILBOX = "michael@mwmcreations.com"
+INFO_MAILBOX = os.getenv("INFO_INBOX_ADDRESS", "info@mwmcreations.com")
 
 # Central agent uploads folder on Google Drive: My Drive > _AGENTS > UPLOADS
 # ALL agents save documents here; Susan (and others) grab files from here for email attachments.
@@ -292,11 +300,12 @@ def _recipients(to, cc):
 
     A DNC address in CC is still a DNC address receiving mail.
     """
-    out = [str(to or "").strip()]
-    for part in re.split(r"[,;]+", str(cc or "")):
-        part = part.strip()
-        if part:
-            out.append(part)
+    out = []
+    for field in (to, cc):            # PATCH #155 — TO may hold several addresses too
+        for part in re.split(r"[,;]+", str(field or "")):
+            part = part.strip()
+            if part:
+                out.append(part)
     return [a for a in out if a]
 
 
@@ -367,20 +376,150 @@ def _apply_always_cc(to, cc):
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #155 · SEVERAL RECIPIENTS, A WORKING CC, AND REPLIES IN THE THREAD
+#
+# Michael, 8 Oct 2026 (via LARA, #dev): every client delivery goes out from
+# info@, not michael@. LARA's only info@ door was /api/send-email, which took
+# ONE recipient, dropped cc on the floor (the endpoint never read the field
+# — this file always honoured it), and started a new conversation every
+# time because nothing here ever set In-Reply-To / References or passed a
+# threadId. The Gmail connector she also has sends from michael@ and has no
+# "from" field at all, so "Send mail as" on michael@'s account (already in
+# place — that is how this file sends From: info@ while impersonating
+# michael@) does not help an agent.
+#
+# What changed: TO accepts a list; CC flows through; a reply names the
+# message or thread it answers and the machine looks the thread up in the
+# mailbox that holds it (info@ by default — a real Workspace user with its
+# own Inbox, so it can be impersonated), copies the Message-ID into
+# In-Reply-To / References, keeps the subject, and sends INSIDE that mailbox
+# with threadId so the conversation stays one conversation on both ends.
+# ══════════════════════════════════════════════════════════════════════
+
+def _mailbox_address(mailbox):
+    """'info' / 'michael' / a full address -> the mailbox to impersonate."""
+    m = str(mailbox or "").strip().lower()
+    if not m or m in ("info", INFO_MAILBOX.lower()):
+        return INFO_MAILBOX
+    if m in ("michael", MICHAEL_MAILBOX.lower()):
+        return MICHAEL_MAILBOX
+    if "@" in m and m.endswith("@mwmcreations.com"):
+        return m
+    raise ValueError("unknown mailbox %r (use 'info' or 'michael')" % mailbox)
+
+
+def _header(headers, name):
+    want = name.lower()
+    for h in headers or []:
+        if str(h.get("name", "")).lower() == want:
+            return str(h.get("value", "")).strip()
+    return ""
+
+
+def _thread_service(mailbox_addr):
+    return build("gmail", "v1",
+                 credentials=_get_google_creds(SCOPES_GMAIL_THREAD, subject=mailbox_addr),
+                 cache_discovery=False)
+
+
+_META_HEADERS = ["Message-ID", "Message-Id", "References", "Subject", "From", "To", "Date"]
+
+
+def lookup_thread(mailbox="info", thread_id=None, message_id=None, service=None):
+    """The headers a reply needs, read from the mailbox that holds the
+    conversation. Give a Gmail thread id OR a Gmail message id (both as the
+    Gmail API / connector report them, not RFC Message-IDs).
+    -> {"mailbox", "thread_id", "last_message_id", "message_id_header",
+        "references", "subject", "from", "to", "date"}. Raises on a miss."""
+    addr = _mailbox_address(mailbox)
+    svc = service or _thread_service(addr)
+    if message_id and not thread_id:
+        m = svc.users().messages().get(userId="me", id=message_id, format="metadata",
+                                       metadataHeaders=_META_HEADERS).execute()
+        thread_id = m.get("threadId")
+    if not thread_id:
+        raise ValueError("thread_id or message_id required")
+    t = svc.users().threads().get(userId="me", id=thread_id, format="metadata",
+                                  metadataHeaders=_META_HEADERS).execute()
+    msgs = t.get("messages") or []
+    if not msgs:
+        raise ValueError("thread %s has no messages in %s" % (thread_id, addr))
+    last = msgs[-1]
+    if message_id:
+        for m in msgs:
+            if m.get("id") == message_id:
+                last = m
+                break
+    h = last.get("payload", {}).get("headers", [])
+    mid = _header(h, "Message-ID") or _header(h, "Message-Id")
+    refs = _header(h, "References")
+    return {"mailbox": addr, "thread_id": thread_id, "last_message_id": last.get("id", ""),
+            "message_id_header": mid,
+            "references": (refs + " " + mid).strip() if mid else refs,
+            "subject": _header(h, "Subject"), "from": _header(h, "From"),
+            "to": _header(h, "To"), "date": _header(h, "Date")}
+
+
+def reply_subject(original):
+    """'Re: ' once, never 'Re: Re:'."""
+    s = str(original or "").strip()
+    if not s:
+        return ""
+    return s if re.match(r"^(re|fwd?)\s*:", s, re.I) else "Re: " + s
+
+
+def find_threads(address, mailbox="info", limit=5, service=None):
+    """Recent conversations with one address in a mailbox, newest first —
+    what an agent needs before it can reply in the right thread without a
+    connector on that mailbox. -> [{"thread_id", "last_message_id",
+    "subject", "from", "to", "date", "message_id_header"}]."""
+    addr = _mailbox_address(mailbox)
+    a = str(address or "").strip()
+    if not a or "@" not in a:
+        raise ValueError("a full email address is required")
+    svc = service or _thread_service(addr)
+    listing = svc.users().messages().list(
+        userId="me", q="from:%s OR to:%s OR cc:%s" % (a, a, a),
+        maxResults=max(1, min(int(limit or 5), 10)) * 3).execute()
+    seen, out = set(), []
+    for ref in listing.get("messages") or []:
+        tid = ref.get("threadId")
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        try:
+            info = lookup_thread(addr, thread_id=tid, service=svc)
+        except Exception as _e:
+            print("[GMAIL] find_threads: thread %s unreadable: %s" % (tid, _e))
+            continue
+        out.append({k: info[k] for k in ("thread_id", "last_message_id", "subject", "from",
+                                         "to", "date", "message_id_header")})
+        if len(out) >= max(1, min(int(limit or 5), 10)):
+            break
+    return out
+
+
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
 def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None,
-               operator=False, transactional=False):
+               operator=False, transactional=False, thread=None):
     """
     Send an email via Gmail as info@mwmcreations.com.
 
     Args:
-        to: Recipient email address
-        subject: Email subject line
+        to: Recipient email address — PATCH #155: or several, comma-separated
+        subject: Email subject line (may be '' for a reply: the thread's subject, "Re: ", is used)
         body_html: HTML body content
         drive_file_id: (optional) Google Drive file ID to attach
         filename: (optional) Display filename for the attachment
         cc: (optional) comma-separated CC addresses
+        thread: (optional) PATCH #155 — reply inside an existing conversation:
+            {"mailbox": "info"|"michael", "thread_id": <Gmail thread id>}
+            or {"mailbox": ..., "message_id": <Gmail message id>}
+            or {"in_reply_to": "<rfc Message-ID>", "references": "..."} (no lookup).
+            With a mailbox the message is sent FROM that mailbox with threadId,
+            so it lands in the same conversation there as well as at the client.
 
     Returns:
         dict with 'ok' bool and 'message_id' or 'error' string.
@@ -435,7 +574,36 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
                         "blocked_address": _addr,
                         "error": "suppressed: {}".format(_why)}
     try:
-        gmail = _get_gmail_service()
+        # PATCH #155 — a reply: resolve the conversation first, then send
+        # from the mailbox that holds it.
+        _thread_info, _send_body_extra, _reply_headers = None, {}, {}
+        if thread:
+            if thread.get("thread_id") or thread.get("message_id"):
+                gmail = _thread_service(_mailbox_address(thread.get("mailbox", "info")))
+                _thread_info = lookup_thread(thread.get("mailbox", "info"),
+                                             thread_id=thread.get("thread_id"),
+                                             message_id=thread.get("message_id"),
+                                             service=gmail)
+                if _thread_info["message_id_header"]:
+                    _reply_headers["In-Reply-To"] = _thread_info["message_id_header"]
+                    _reply_headers["References"] = _thread_info["references"]
+                _send_body_extra["threadId"] = _thread_info["thread_id"]
+                if not str(subject or "").strip():
+                    subject = reply_subject(_thread_info["subject"])
+                print("[SUSAN GMAIL] reply in thread %s of %s (In-Reply-To %s)" % (
+                    _thread_info["thread_id"], _thread_info["mailbox"],
+                    _thread_info["message_id_header"] or "unknown"))
+            elif thread.get("in_reply_to"):
+                _reply_headers["In-Reply-To"] = str(thread["in_reply_to"]).strip()
+                _reply_headers["References"] = (str(thread.get("references") or "").strip()
+                                                + " " + _reply_headers["In-Reply-To"]).strip()
+                gmail = _get_gmail_service()
+            else:
+                raise ValueError("thread needs thread_id, message_id or in_reply_to")
+        else:
+            gmail = _get_gmail_service()
+        if not str(subject or "").strip():
+            raise ValueError("subject is required for a new conversation")
 
         if drive_file_id:
             # ── multipart/mixed with attachment ──
@@ -445,6 +613,8 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
                 message["cc"] = cc
             message["from"] = SUSAN_SEND_AS
             message["subject"] = subject
+            for _hk, _hv in _reply_headers.items():
+                message[_hk] = _hv
 
             # HTML body part
             body_part = MIMEText(body_html, "html")
@@ -484,16 +654,25 @@ def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=Non
                 message["cc"] = cc
             message["from"] = SUSAN_SEND_AS
             message["subject"] = subject
+            for _hk, _hv in _reply_headers.items():
+                message[_hk] = _hv
             print(f"[SUSAN GMAIL] Sending to {to} (no attachment)")
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        _body = {"raw": raw}
+        _body.update(_send_body_extra)
         result = gmail.users().messages().send(
-            userId="me", body={"raw": raw}
+            userId="me", body=_body
         ).execute()
 
         msg_id = result.get("id", "")
         print(f"[SUSAN GMAIL] Sent successfully — messageId: {msg_id}")
-        return {"ok": True, "message_id": msg_id}
+        out = {"ok": True, "message_id": msg_id, "thread_id": result.get("threadId", "")}
+        if _thread_info:
+            out["replied_in"] = {"mailbox": _thread_info["mailbox"],
+                                 "thread_id": _thread_info["thread_id"],
+                                 "in_reply_to": _thread_info["message_id_header"]}
+        return out
 
     except Exception as e:
         print(f"[SUSAN GMAIL] Error: {e}")
