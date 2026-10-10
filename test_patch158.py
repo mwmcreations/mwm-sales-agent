@@ -81,7 +81,7 @@ check("wire.send_claims_done_first", rt.index('_pgr.save_state(_rg.DONE_KEY, {"s
       < rt.index("_out = _reengage_send(_now, dry=False, limit=request.args.get(\"limit\"))"))
 check("wire.arm_refuses_after_run", 'if _pgr.load_state(_rg.DONE_KEY, None):\n            return jsonify({"ok": False, "error": "already ran' in rt)
 check("wire.arm_posts_eric", "*reengage-oct12 armed*" in rt)
-sf = SRC[SRC.index("def _reengage_send(now, dry=True, limit=None):"):SRC.index("def _reengage_tick(now=None):")]
+sf = SRC[SRC.index("def _reengage_send(now, dry=True, limit=None, rows=None):"):SRC.index("def _reengage_tick(now=None):")]
 check("wire.send_idempotent", 'if r["_already"]:' in sf and 'rec["reengage_oct12"] = stamp' in sf)
 check("wire.send_email_via", 'via="reengage-oct12"' in sf and "SMS_KIND_MARKETING" in sf)
 check("wire.send_tags_sheet", 'update_lead_columns(key, {"Ad Campaign": _rg.TAG})' in sf)
@@ -95,7 +95,12 @@ check("wire.tick_in_chase_loop", "_reengage_tick()              # PATCH #158" in
       and SRC.index("_reengage_tick()              # PATCH #158") < SRC.index("counts = _chase_pass()"))
 check("wire.health", '"reengage_oct12": dict(_REENGAGE_LAST)' in SRC)
 rows = SRC[SRC.index("def _reengage_rows(now):"):SRC.index("def _reengage_send(")]
-check("wire.rows_one_query", '_pgc.load_prefix("sms_consent:")' in rows and "_sms_consent_get(" not in rows)
+check("wire.rows_one_query", '_pgc.load_prefix("sms_consent:")' in rows and "_sms_consent_get(" not in rows
+      and '_pgc.load_prefix("email_suppressed:")' in rows and "email_is_suppressed(e, dynamic=_dyn)" in rows)
+sup = SRC[SRC.index("def email_is_suppressed(addr, dynamic=None):"):SRC.index("def email_is_suppressed(addr, dynamic=None):") + 1600]
+check("wire.suppressed_dynamic_param", "if dynamic is not None:" in sup and 'return (True, "suppressed (dynamic list)") if e in dynamic else (False, "")' in sup
+      and sup.index("if dynamic is not None:") > sup.index('"internal address"'), "static checks still run before the batch answer")
+check("wire.preview_one_pass", "_out = _reengage_send(_now, dry=True, rows=_rows)" in SRC)
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 

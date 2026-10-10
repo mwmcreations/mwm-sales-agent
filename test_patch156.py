@@ -144,7 +144,7 @@ check("wire.count_secret", '_admin_secret_ok(request.args.get("secret"))' in rt)
 _cnt = rt[rt.index("if _mode == \"count\":"):rt.index("if _mode == \"preview\":")] if "if _mode == \"count\":" in rt else rt
 check("wire.count_readonly", "lead_data[" not in _cnt and "upsert" not in _cnt and "_email_send" not in _cnt and "_send_sms" not in _cnt)
 check("wire.count_uses_module", ("_rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed" in rt
-                                  or "_rg.classify(_k, _r, now, consent=_consent, email_suppressed=email_is_suppressed" in rt)
+                                  or "_rg.classify(_k, _r, now, consent=_consent, email_suppressed=_sup" in rt)
       and "_rg.summarize(_rows)" in rt)
 check("wire.count_masks", "mask_contact(r[\"key\"])" in rt)
 check("wire.count_one_query", '_pgc.load_prefix("sms_consent:")' in rt and "_sms_consent_get(" not in rt, "350 consent reads must be one query (#156b)")

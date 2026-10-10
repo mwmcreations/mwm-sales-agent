@@ -13396,9 +13396,11 @@ EMAIL_DNC = {
 }
 
 
-def email_is_suppressed(addr):
+def email_is_suppressed(addr, dynamic=None):
     """(suppressed: bool, reason: str). Fail CLOSED — anything unparseable
-    is treated as suppressed rather than sent."""
+    is treated as suppressed rather than sent.
+    PATCH #158b: `dynamic` may be a pre-read set of suppressed addresses (one
+    pg query for a whole batch) — None means look the address up itself."""
     e = str(addr or "").strip().lower()
     if not e or "@" not in e:
         return True, "unparseable address"
@@ -13413,6 +13415,8 @@ def email_is_suppressed(addr):
     if e in INTERNAL_EMAILS or e.endswith("@mwmcreations.com"):
         return True, "internal address"
     # pg-backed dynamic list so an address can be suppressed WITHOUT a deploy.
+    if dynamic is not None:
+        return (True, "suppressed (dynamic list)") if e in dynamic else (False, "")
     try:
         import pg_store as _dp
         if _dp.enabled() and _dp.load_state("email_suppressed:" + e, False):
@@ -25906,6 +25910,10 @@ def _reengage_rows(now):
     """Every candidate as reengage.classify sees it (one consent query)."""
     import pg_store as _pgc
     _consents = {k[len("sms_consent:"):]: v for k, v in (_pgc.load_prefix("sms_consent:") or {}).items()}
+    # PATCH #158b — the dynamic do-not-contact list in one query too (58
+    # per-address reads, twice, put the preview past the daemon's 90 s).
+    _dyn = {k[len("email_suppressed:"):].lower() for k, v in (_pgc.load_prefix("email_suppressed:") or {}).items() if v}
+    _sup = lambda e: email_is_suppressed(e, dynamic=_dyn)
     rows = []
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
@@ -25914,7 +25922,7 @@ def _reengage_rows(now):
         if len(_ph) == 10:
             _ph = "1" + _ph
         _consent = (_consents.get("+" + _ph) or _consents.get(_ph) or {}) if len(_ph) == 11 else {}
-        _f = _rg.classify(_k, _r, now, consent=_consent, email_suppressed=email_is_suppressed,
+        _f = _rg.classify(_k, _r, now, consent=_consent, email_suppressed=_sup,
                           is_internal=_is_internal_number)
         if _f:
             _f["_email"] = str(_r.get("email") or "").strip().lower()
@@ -25924,12 +25932,12 @@ def _reengage_rows(now):
     return rows
 
 
-def _reengage_send(now, dry=True, limit=None):
+def _reengage_send(now, dry=True, limit=None, rows=None):
     """PATCH #158 — the one-off send. dry=True renders and counts without
     sending. Idempotent: a record that already carries `reengage_oct12` is
     never sent twice. Returns the summary dict."""
     import time as _t
-    rows = _reengage_rows(now)
+    rows = _reengage_rows(now) if rows is None else rows
     slots = get_available_slots() or []
     out = {"at": now.isoformat(), "dry": dry, "candidates": len(rows), "slots": [s.get("display") for s in slots],
            "email_sent": 0, "sms_sent": 0, "skipped_already": 0, "suppressed": 0, "failed": 0, "sms_refused": 0,
@@ -26060,8 +26068,8 @@ def admin_reengage_oct12():
         _TALLY.bump("reengage.count", str(_sum["candidates"]))
         return jsonify(_out), 200
     if _mode == "preview":
-        _out = _reengage_send(_now, dry=True)
         _rows = _reengage_rows(_now)
+        _out = _reengage_send(_now, dry=True, rows=_rows)
         _out["would_email"] = [{"key": mask_contact(r["key"]), "name": r["name"], "email": mask_contact(r["_email"])}
                                for r in _rows if r["email"] and not r["_already"]]
         _out["would_sms"] = [{"key": mask_contact(r["key"]), "name": r["name"]} for r in _rows if r["sms"] and not r["_already"]]
