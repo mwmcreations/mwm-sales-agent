@@ -216,6 +216,7 @@ def summarize(rows):
 
 SEND_AT_KEY = "reengage_oct12_send_at"      # pg: ISO time the send is armed for
 DONE_KEY = "reengage_oct12_done"            # pg: the summary once it ran
+EXCLUDE_KEY = "reengage_oct12_exclude"      # pg: names / addresses / keys kept out by hand (#158d)
 SUBJECT = "Three studio visit slots this week"
 MAYA_WA = "+1 407-871-6473"
 

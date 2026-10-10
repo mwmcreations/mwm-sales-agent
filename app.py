@@ -25948,7 +25948,12 @@ def _reengage_rows(now):
     # people who had already booked a visit. The roster is the paying-clients
     # table itself; a record that booked has had Michael's attention and
     # "you reached out a while back" is the wrong letter for it.
-    _excl = {"client_record": 0, "client_roster": 0, "booked": 0}
+    _excl = {"client_record": 0, "client_roster": 0, "booked": 0, "active_7d": 0, "manual": 0}
+    # PATCH #158d — a manual exclusion list (pg), for the people the rules
+    # cannot see: Todd Berger paid $349 through the portal on 27 Jul (a
+    # one-off booking, so neither the client roster nor the lead record says
+    # client) and is Michael's alone. mode=exclude&name=… / &q=… adds.
+    _manual = {str(x).strip().lower() for x in (_pgc.load_state(_rg.EXCLUDE_KEY, None) or []) if str(x).strip()}
     rows = []
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
@@ -25973,6 +25978,15 @@ def _reengage_rows(now):
             continue
         if _f.get("booked"):
             _excl["booked"] += 1
+            continue
+        if _f.get("active_7d"):
+            # in Maya's hands already (a form lead in its chase, an open
+            # conversation): "you reached out a while back" is the wrong letter
+            _excl["active_7d"] += 1
+            continue
+        if _manual and (str(_k).lower() in _manual or (_f.get("email_addr") or "") in _manual
+                        or str(_f.get("name") or "").strip().lower() in _manual):
+            _excl["manual"] += 1
             continue
         _f["_email"] = _f.get("email_addr") or ""
         _f["_phone"] = ("+" + _ph) if len(_ph) == 11 else ""
@@ -26104,6 +26118,8 @@ def admin_reengage_oct12():
     &mode=preview            the copy with today's slots + who would get it (no send)
     &mode=arm&at=<ISO ET>    arm the send for that time (Michael's OK first)
     &mode=disarm             clear it
+    &mode=exclude&name=<exact name>|q=<email|key>   keep this person out (pg list; #158d)
+    &mode=include&name=…|q=…                        put them back
     &mode=status             armed time / done summary
     &mode=send&go=1          send NOW (same idempotent path the tick uses)
 
@@ -26128,8 +26144,9 @@ def admin_reengage_oct12():
                           "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
                           "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
                           "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
-                          "excluded": "clients (record or roster), already booked, said no, disqualified, do-not-contact, "
-                                      "internal, test and bot records; role/bounce addresses; one letter per address (#158c)"}}
+                          "excluded": "clients (record or roster), already booked, active in the last 7 days, the manual "
+                                      "exclude list, said no, disqualified, do-not-contact, internal, test and bot records; "
+                                      "role/bounce addresses; one letter per address (#158c/d)"}}
         _sum["excluded"] = dict(_REENGAGE_LAST.get("excluded") or {})
         if str(request.args.get("list") or "") in ("1", "true"):
             _out["sample"] = [{"key": mask_contact(r["key"]), "name": r["name"], "channel": r["channel"],
@@ -26161,6 +26178,23 @@ def admin_reengage_oct12():
         _post_to_slack_async(SLACK_ERIC_CHANNEL, f":alarm_clock: *reengage-oct12 armed* for {_dt.strftime('%A %b %d, %-I:%M %p ET')} — "
                                                  f"email to every deliverable address, SMS only with consent.")
         return jsonify({"ok": True, "armed_for": _dt.isoformat()}), 200
+    if _mode in ("exclude", "include"):
+        # PATCH #158d — add / remove a person by exact name, address or key;
+        # stored lower-cased in pg, honoured by every later count / preview / send
+        _q = str(request.args.get("name") or request.args.get("q") or "").strip().lower()
+        if not _q:
+            return jsonify({"ok": False, "error": "exclude/include needs name= or q="}), 400
+        _cur = [str(x).strip().lower() for x in (_pgr.load_state(_rg.EXCLUDE_KEY, None) or []) if str(x).strip()]
+        if _mode == "exclude" and _q not in _cur:
+            _cur.append(_q)
+        if _mode == "include":
+            _cur = [x for x in _cur if x != _q]
+        _pgr.save_state(_rg.EXCLUDE_KEY, _cur)
+        _hits = [{"key": mask_contact(k), "name": r.get("name", "")} for k, r in list(lead_data.items())
+                 if isinstance(r, dict) and (str(k).lower() == _q or _rg.primary_email(r.get("email")) == _q
+                                             or str(r.get("name") or "").strip().lower() == _q)]
+        return jsonify({"ok": True, "mode": _mode, "entry": _q if "@" not in _q else mask_contact(_q),
+                        "list_size": len(_cur), "matching_records": _hits}), 200
     if _mode == "disarm":
         _pgr.save_state(_rg.SEND_AT_KEY, "")
         _REENGAGE_LAST["armed_for"] = ""

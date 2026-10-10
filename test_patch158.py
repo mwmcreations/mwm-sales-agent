@@ -148,6 +148,12 @@ ga = SRC[SRC.index("def get_available_slots():"):SRC.index("# ─── PATCH #1
 check("wire.c.slots_share_calendar_read", '_calendar_busy_times(now, days=21, who="get_available_slots")' in ga
       and "service.events().list(" not in ga and "service.events().list(" in SRC[SRC.index("def _calendar_busy_times("):SRC.index("def get_week_slots(")])
 check("wire.c.preview_lists_dups", '_out["duplicate_rows"] = ' in rt and 'not r.get("_dup_of")]' in rt)
+# #158d wiring — active leads out, manual exclude list
+check("wire.d.active_out", 'if _f.get("active_7d"):' in rows and '_excl["active_7d"] += 1' in rows)
+check("wire.d.manual_list", rg.EXCLUDE_KEY == "reengage_oct12_exclude" and "_pgc.load_state(_rg.EXCLUDE_KEY, None)" in rows
+      and '_excl["manual"] += 1' in rows and 'str(_f.get("name") or "").strip().lower() in _manual' in rows)
+check("wire.d.exclude_mode", 'if _mode in ("exclude", "include"):' in rt and "_pgr.save_state(_rg.EXCLUDE_KEY, _cur)" in rt
+      and "_email_send" not in rt[rt.index('if _mode in ("exclude", "include"):'):rt.index('if _mode == "disarm":')])
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 
