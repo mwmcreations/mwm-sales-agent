@@ -274,3 +274,24 @@ def policy(kind, split_live, cap_bundled, cap_marketing,
                           else "monthly_count"),
         "split_live": bool(split_live),
     }
+
+
+# ── PATCH #160 — the inbound window ─────────────────────────────────────────
+# A person who texts the line first has opened a conversation; answering it
+# is the one SMS that needs no ticked box (it is their message, not ours).
+# The consent record is still the only thing that lets US start one. Mirrors
+# WhatsApp's own 24-hour customer-service window.
+INBOUND_WINDOW_H = 24
+
+
+def inbound_window_open(inbound_ts, now_ts, hours=INBOUND_WINDOW_H):
+    """True when the person's last inbound text is inside the window.
+    Both are epoch seconds; a missing or unparsable stamp is closed."""
+    try:
+        t = float(inbound_ts)
+        n = float(now_ts)
+    except (TypeError, ValueError):
+        return False
+    if t <= 0:
+        return False
+    return 0 <= (n - t) <= hours * 3600.0

@@ -239,9 +239,26 @@ def _slot_lines(slots):
     return out
 
 
-def email_copy(name, slots):
+SEG_COLD = "cold"
+SEG_PAST_BOOKER = "past-booker"
+_OPENER = {
+    SEG_COLD: "You reached out to us a while back, and I'd like to open the door again, simply: come and see the studio.",
+    # #159 — Michael's YES (ERIC, Sat 10 Oct): the 29 who once had a visit on
+    # the calendar come in as a second segment; one sentence differs.
+    SEG_PAST_BOOKER: "You had a visit on the calendar with us a while back, and I'd like to open the door again, simply: come and see the studio.",
+}
+
+
+def segment_for(flags):
+    """Which letter a candidate gets: past-booker when the record carries
+    the booked flag, cold otherwise."""
+    return SEG_PAST_BOOKER if (flags or {}).get("booked") else SEG_COLD
+
+
+def email_copy(name, slots, segment=SEG_COLD):
     """(subject, html, text). The three slots are named at send time."""
     fn = _first(name)
+    opener = _OPENER.get(segment, _OPENER[SEG_COLD])
     sl = _slot_lines(slots)
     slot_txt = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(sl)) if sl else "  (reply with a day that works)"
     slot_html = "".join(f"<li>{s}</li>" for s in sl) if sl else "<li>Reply with a day that works</li>"
@@ -249,12 +266,11 @@ def email_copy(name, slots):
     n_word = {1: "one slot", 2: "two slots", 3: "three slots"}.get(len(sl), "slots")
     text = (
         f"Hi {fn},\n\n"
-        f"Michael Moraes here, from MWM Creations & Studios in Orlando. You reached out to us a while "
-        f"back, and I'd like to open the door again, simply: come and see the studio.\n\n"
+        f"Michael Moraes here, from MWM Creations & Studios in Orlando. {opener}\n\n"
         f"A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
         f"customers need to see before they buy. No pitch deck.\n\n"
         f"I have {n_word} open this week:\n{slot_txt}\n\n"
-        f"Reply to this email with the one you want, or text Maya on my team at {MAYA_WA}, "
+        f"Reply to this email with the one you want, or text or WhatsApp Maya on my team at {MAYA_WA}, "
         f"and she'll lock it in. If none of them work, send me a time that does.\n\n"
         f"If you'd rather not hear from us, just reply \"stop\" and that's the end of it.\n\n"
         f"Michael Moraes\n"
@@ -263,12 +279,11 @@ def email_copy(name, slots):
     )
     html = (
         f"<p>Hi {fn},</p>"
-        f"<p>Michael Moraes here, from MWM Creations &amp; Studios in Orlando. You reached out to us a while "
-        f"back, and I'd like to open the door again, simply: come and see the studio.</p>"
+        f"<p>Michael Moraes here, from MWM Creations &amp; Studios in Orlando. {opener}</p>"
         f"<p>A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
         f"customers need to see before they buy. No pitch deck.</p>"
         f"<p>I have {n_word} open this week:</p><ol>{slot_html}</ol>"
-        f"<p>Reply to this email with the one you want, or text Maya on my team at "
+        f"<p>Reply to this email with the one you want, or text or WhatsApp Maya on my team at "
         f"<b>{MAYA_WA}</b>, and she'll lock it in. If none of them work, send me a time that does.</p>"
         f"<p style=\"color:#666;font-size:13px\">If you'd rather not hear from us, just reply \"stop\" and that's the end of it.</p>"
         f"<p>Michael Moraes<br>MWM Creations &amp; Studios<br>1500 Park Center Dr, Suite 230, Orlando, FL</p>"

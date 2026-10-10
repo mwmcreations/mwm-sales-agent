@@ -8534,6 +8534,29 @@ def _sms_optin_confirm(lead_phone, rec, previous):
     return bool(res.get("ok")), res.get("reason", "ok")
 
 
+def _sms_inbound_stamp(lead_phone, now=None):
+    """PATCH #160 — remember when this number last texted us (pg)."""
+    import pg_store as _pg
+    if not _pg.enabled() or not lead_phone:
+        return
+    try:
+        _pg.save_state(f"sms_inbound_at:{lead_phone}", (now or datetime.now(pytz.timezone(TIMEZONE))).timestamp())
+    except Exception as _sx:
+        print(f"[SMS-INBOUND] stamp failed (non-fatal): {_sx}")
+
+
+def _sms_inbound_window_open(lead_phone, now=None):
+    import pg_store as _pg
+    import sms_consent as _sc
+    if not _pg.enabled():
+        return False
+    try:
+        ts = _pg.load_state(f"sms_inbound_at:{lead_phone}", None)
+    except Exception:
+        return False
+    return _sc.inbound_window_open(ts, (now or datetime.now(pytz.timezone(TIMEZONE))).timestamp())
+
+
 def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
     """All conditions that must hold before ANY outbound SMS. Returns (ok, reason).
 
@@ -8552,6 +8575,14 @@ def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
         except Exception:
             return False, "do_not_sms_check_failed"   # fail-closed
     consent = _sms_consent_get(lead_phone)
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    # PATCH #160 — a person who texted the line first (inside 24 h) may be
+    # ANSWERED without a ticked box: it is their conversation, not our
+    # campaign. Only the transactional kind, only inside the window; STOP
+    # (do_not_sms, above) still wins. Everything else is unchanged below.
+    _no_box = consent.get("status") != "yes" or not consent.get(pol["consent_field"])
+    if _no_box and kind == SMS_KIND_TRANSACTIONAL and _sms_inbound_window_open(lead_phone, now):
+        return True, "inbound_window"
     if consent.get("status") != "yes":
         return False, "no_consent"
     # The two boxes are two promises. A lead who agreed to booking messages has
@@ -8559,7 +8590,6 @@ def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
     # asked for our reminders either. Absent field = never asked = refuse.
     if not consent.get(pol["consent_field"]):
         return False, f"no_consent_{pol['consent_field']}"
-    now = datetime.now(pytz.timezone(TIMEZONE))
     if not (pol["quiet_start"] <= now.hour < pol["quiet_end"]):
         return False, "quiet_hours"
     if pol["cap"] is not None and _pg.enabled():
@@ -9258,6 +9288,7 @@ def sms_inbound_webhook():
             print(f"[SMS-OPTOUT] STOP from {tail}")
             _post_to_slack_async("#dev", f":no_bell: SMS opt-out from {tail}")
         elif opt == "START" or kw in ("START", "UNSTOP"):
+            _sms_inbound_stamp(frm)                      # PATCH #160
             if _pg.enabled():
                 try:
                     _pg.save_state(f"do_not_sms:{frm}", False)
@@ -9271,6 +9302,7 @@ def sms_inbound_webhook():
             # also the in-conversation consent ERIC's B3 asked for, so it is
             # recorded before Maya replies — and it still goes to her, because
             # "YES" is usually also the answer to "Thursday at 10?".
+            _sms_inbound_stamp(frm)                      # PATCH #160: opens the 24 h reply window
             if kw in ("YES", "Y", "YES PLEASE", "SIM", "SI"):
                 try:
                     _sms_consent_set(frm, "yes", "maya",
@@ -25948,7 +25980,7 @@ def _reengage_rows(now):
     # people who had already booked a visit. The roster is the paying-clients
     # table itself; a record that booked has had Michael's attention and
     # "you reached out a while back" is the wrong letter for it.
-    _excl = {"client_record": 0, "client_roster": 0, "booked": 0, "active_7d": 0, "manual": 0}
+    _excl = {"client_record": 0, "client_roster": 0, "active_7d": 0, "manual": 0}
     # PATCH #158d — a manual exclusion list (pg), for the people the rules
     # cannot see: Todd Berger paid $349 through the portal on 27 Jul (a
     # one-off booking, so neither the client roster nor the lead record says
@@ -25976,9 +26008,8 @@ def _reengage_rows(now):
         if _hit:
             _excl["client_roster"] += 1
             continue
-        if _f.get("booked"):
-            _excl["booked"] += 1
-            continue
+        # #159 — Michael's YES: past bookers are a SEGMENT now, not an exclusion
+        _f["segment"] = _rg.segment_for(_f)
         if _f.get("active_7d"):
             # in Maya's hands already (a form lead in its chase, an open
             # conversation): "you reached out a while back" is the wrong letter
@@ -25995,6 +26026,8 @@ def _reengage_rows(now):
     _rg.dedupe(rows)                     # one letter per address, one text per number
     _excl["duplicate_rows"] = sum(1 for r in rows if r.get("_dup_of"))
     _REENGAGE_LAST["excluded"] = _excl
+    _REENGAGE_LAST["segments"] = {seg: sum(1 for r in rows if r.get("segment") == seg and r["email"] and not r["_already"]
+                                            and not r.get("_dup_of")) for seg in (_rg.SEG_COLD, _rg.SEG_PAST_BOOKER)}
     return rows
 
 
@@ -26009,9 +26042,12 @@ def _reengage_send(now, dry=True, limit=None, rows=None):
            "slots_short": len(slots) < 3,
            "email_sent": 0, "sms_sent": 0, "skipped_already": 0, "suppressed": 0, "failed": 0, "sms_refused": 0,
            "duplicates": 0, "tagged": 0, "unique_emails": len({r["_email"] for r in rows if r["email"] and r["_email"] and not r["_already"]}),
-           "excluded": dict(_REENGAGE_LAST.get("excluded") or {}), "preview": None}
+           "excluded": dict(_REENGAGE_LAST.get("excluded") or {}), "segments": dict(_REENGAGE_LAST.get("segments") or {}),
+           "sent_by_segment": {_rg.SEG_COLD: 0, _rg.SEG_PAST_BOOKER: 0}, "preview": None}
     subj, html, text = _rg.email_copy("", slots)
-    out["preview"] = {"subject": subj, "text": text, "sms": _sms_copy.compose(_rg.sms_copy("", slots))}
+    _, _, text_pb = _rg.email_copy("", slots, segment=_rg.SEG_PAST_BOOKER)
+    out["preview"] = {"subject": subj, "text": text, "text_past_booker": text_pb,
+                      "sms": _sms_copy.compose(_rg.sms_copy("", slots))}
     n = 0
     for r in rows:
         if r["_already"]:
@@ -26039,12 +26075,14 @@ def _reengage_send(now, dry=True, limit=None, rows=None):
         rec = lead_data.get(key)
         if not isinstance(rec, dict):
             continue
-        stamp = {"at": now.isoformat(), "email": "", "sms": ""}
+        seg = r.get("segment") or _rg.SEG_COLD
+        stamp = {"at": now.isoformat(), "email": "", "sms": "", "segment": seg}
         if r["email"] and r["_email"]:
-            s_, h_, _ = _rg.email_copy(r["name"], slots)
+            s_, h_, _ = _rg.email_copy(r["name"], slots, segment=seg)
             res = _email_send(r["_email"], s_, h_, via="reengage-oct12", lead_key=key)
             if email_ok(res):
                 out["email_sent"] += 1
+                out["sent_by_segment"][seg] = out["sent_by_segment"].get(seg, 0) + 1
                 stamp["email"] = "sent"
             elif isinstance(res, dict) and res.get("suppressed"):
                 out["suppressed"] += 1
@@ -26069,9 +26107,12 @@ def _reengage_send(now, dry=True, limit=None, rows=None):
                 stamp["sms"] = f"error ({str(_sx)[:40]})"
         rec["reengage_oct12"] = stamp
         rec["reengage_tag"] = _rg.TAG
+        rec["reengage_segment"] = seg
         lead_data[key] = rec
         try:
-            update_lead_columns(key, {"Ad Campaign": _rg.TAG})
+            # the sheet: Ad Campaign = reengage-oct12, Ad ID = "segment: cold|past-booker"
+            # (these rows carry no ad; ERIC splits the scorecard on it)
+            update_lead_columns(key, {"Ad Campaign": _rg.TAG, "Ad ID": f"segment: {seg}"})
             out["tagged"] += 1
         except Exception:
             pass
@@ -26097,7 +26138,9 @@ def _reengage_tick(now=None):
         _REENGAGE_LAST.update(ran_at=now.isoformat(), sent_email=out["email_sent"], sent_sms=out["sms_sent"],
                               failed=out["failed"], suppressed=out["suppressed"], candidates=out["candidates"])
         _TALLY.bump("reengage.sent", f"{out['email_sent']} email, {out['sms_sent']} sms")
-        line = (f":mailbox_with_mail: *reengage-oct12 went out* — {out['email_sent']} emails, {out['sms_sent']} texts; "
+        _seg = out.get("sent_by_segment") or {}
+        line = (f":mailbox_with_mail: *reengage-oct12 went out* — {out['email_sent']} emails "
+                f"({_seg.get(_rg.SEG_COLD, 0)} cold, {_seg.get(_rg.SEG_PAST_BOOKER, 0)} past-booker), {out['sms_sent']} texts; "
                 f"{out['suppressed']} suppressed, {out['failed']} failed, {out['sms_refused']} texts refused, "
                 f"{out['duplicates']} duplicate rows tagged only; "
                 f"slots offered: {', '.join(out['slots']) or 'none'}"
@@ -26108,6 +26151,63 @@ def _reengage_tick(now=None):
     except Exception as _e:
         _REENGAGE_LAST["last_error"] = str(_e)[:200]
         _report_error("reengage.tick", _e)
+
+
+@app.route('/admin/wa-templates', methods=['GET'])
+def admin_wa_templates():
+    """PATCH #160 — the UTILITY WhatsApp templates for the booking rail
+    (wa_templates.TEMPLATES: mwm_visit_confirm / mwm_visit_today / mwm_visit_rebook).
+
+    ?secret=<UPLOAD_SECRET>&mode=status   (default) Meta's status for ours
+    &mode=list                             every template on the WABA (name, status, category)
+    &mode=submit&go=1[&names=a,b]          POST the definitions to Meta for approval
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    import wa_templates as _wt
+    _mode = str(request.args.get("mode") or "status").strip().lower()
+    if not META_ACCESS_TOKEN:
+        return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
+    _url = f"https://graph.facebook.com/v20.0/{META_WABA_ID}/message_templates"
+    _hdrs = {"Authorization": f"Bearer {META_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    if _mode in ("status", "list"):
+        try:
+            r = http_requests.get(_url, headers=_hdrs, timeout=20,
+                                  params={"fields": "name,status,category,language,rejected_reason", "limit": 200})
+            data = r.json() if r.content else {}
+        except Exception as _e:
+            return jsonify({"ok": False, "error": str(_e)[:200]}), 502
+        rows = data.get("data") or []
+        out = {"ok": r.status_code == 200, "waba": META_WABA_ID, "http": r.status_code,
+               "ours": _wt.status_summary(rows)}
+        if _mode == "list":
+            out["all"] = [{"name": x.get("name"), "status": x.get("status"), "category": x.get("category"),
+                           "language": x.get("language")} for x in rows]
+        if r.status_code != 200:
+            out["error"] = (data.get("error") or {}).get("message", "")[:300]
+        return jsonify(out), 200 if r.status_code == 200 else 502
+    if _mode == "submit":
+        if str(request.args.get("go") or "") != "1":
+            return jsonify({"ok": False, "error": "mode=submit needs go=1"}), 400
+        _names = [n.strip() for n in str(request.args.get("names") or "").split(",") if n.strip()] or list(_wt.TEMPLATES)
+        results = []
+        for n in _names:
+            if n not in _wt.TEMPLATES:
+                results.append({"name": n, "ok": False, "error": "unknown template"})
+                continue
+            try:
+                r = http_requests.post(_url, headers=_hdrs, json=_wt.graph_body(n), timeout=20)
+                data = r.json() if r.content else {}
+                results.append({"name": n, "ok": r.status_code == 200, "http": r.status_code,
+                                "id": data.get("id"), "status": data.get("status"), "category": data.get("category"),
+                                "error": (data.get("error") or {}).get("message", "")[:300]})
+            except Exception as _e:
+                results.append({"name": n, "ok": False, "error": str(_e)[:200]})
+        _TALLY.bump("wa.templates_submitted", str(sum(1 for x in results if x["ok"])))
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":page_facing_up: *WhatsApp utility templates submitted to Meta* — "
+                             + ", ".join(f"{x['name']}: {x.get('status') or x.get('error') or 'ok'}" for x in results))
+        return jsonify({"ok": all(x["ok"] for x in results), "results": results}), 200
+    return jsonify({"ok": False, "error": "unknown mode"}), 400
 
 
 @app.route('/admin/reengage-oct12', methods=['GET'])
@@ -26144,7 +26244,8 @@ def admin_reengage_oct12():
                           "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
                           "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
                           "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
-                          "excluded": "clients (record or roster), already booked, active in the last 7 days, the manual "
+                          "segments": "cold (never booked) | past-booker (record carries the booked flag) — one sentence differs",
+                          "excluded": "clients (record or roster), active in the last 7 days, the manual "
                                       "exclude list, said no, disqualified, do-not-contact, internal, test and bot records; "
                                       "role/bounce addresses; one letter per address (#158c/d)"}}
         _sum["excluded"] = dict(_REENGAGE_LAST.get("excluded") or {})
@@ -26157,7 +26258,8 @@ def admin_reengage_oct12():
     if _mode == "preview":
         _rows = _reengage_rows(_now)
         _out = _reengage_send(_now, dry=True, rows=_rows)
-        _out["would_email"] = [{"key": mask_contact(r["key"]), "name": r["name"], "email": mask_contact(r["_email"])}
+        _out["would_email"] = [{"key": mask_contact(r["key"]), "name": r["name"], "email": mask_contact(r["_email"]),
+                                "segment": r.get("segment")}
                                for r in _rows if r["email"] and not r["_already"] and not r.get("_dup_of")]
         _out["would_sms"] = [{"key": mask_contact(r["key"]), "name": r["name"]} for r in _rows if r["sms"] and not r["_already"] and not r.get("_dup_of")]
         _out["duplicate_rows"] = [{"key": mask_contact(r["key"]), "name": r["name"], "dup_of": mask_contact(r["_dup_of"])}

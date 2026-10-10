@@ -46,7 +46,8 @@ check("email.three_slots", "1. Monday, October 12 at 10:00 AM" in t and "2. Tues
       and "3. Wednesday, October 14 at 11:00 AM" in t and "EST" not in t)
 check("email.html_slots", h.count("<li>") == 3 and "<ol>" in h)
 check("email.no_price", "$" not in t and "$" not in h and "price" not in t.lower())
-check("email.book_via_maya", "text Maya on my team at +1 407-871-6473" in t and "she'll lock it in" in t)
+check("email.book_via_maya", "or text or WhatsApp Maya on my team at +1 407-871-6473, and she'll lock it in" in t
+      and "text or WhatsApp Maya on my team at <b>+1 407-871-6473</b>" in h, "#159: the number answers SMS (Twilio) and WhatsApp; say both")
 check("email.stop", 'reply "stop"' in t and 'reply "stop"' in h)
 check("email.free_visit_30", "30 minutes, free" in t)
 check("email.signature", t.rstrip().endswith("1500 Park Center Dr, Suite 230, Orlando, FL"))
@@ -93,6 +94,15 @@ for _d, _exp_start, _exp_h in ((12, (13, "Tue"), 4), (9, (12, "Mon"), 5), (10, (
     check(f"c.week_window {_d}", (_st.day, _st.strftime("%a")) == _exp_start and _h == _exp_h and _st.hour == 0 and _st.tzinfo is not None
           and _st.utcoffset().total_seconds() == -4 * 3600, (_st, _h))
 _, _, t2 = rg.email_copy("Ana", SLOTS[:2])
+# #159 — the past-booker segment (Michael's YES, Sat 10 Oct)
+_, h_pb, t_pb = rg.email_copy("Silvana Pampu", SLOTS, segment=rg.SEG_PAST_BOOKER)
+check("s.past_booker_sentence", "You had a visit on the calendar with us a while back, and I'd like to open the door again, simply: come and see the studio." in t_pb
+      and "You reached out to us" not in t_pb and "You had a visit on the calendar" in h_pb)
+check("s.cold_default", "You reached out to us a while back, and I'd like to open the door again, simply: come and see the studio." in t
+      and "You had a visit" not in t and rg.email_copy("A", SLOTS)[2] == rg.email_copy("A", SLOTS, segment="cold")[2])
+check("s.rest_identical", t_pb.replace("You had a visit on the calendar with us", "You reached out to us") == t)
+check("s.segment_for", rg.segment_for({"booked": True}) == "past-booker" and rg.segment_for({"booked": False}) == "cold"
+      and rg.segment_for({}) == "cold" and rg.segment_for(None) == "cold")
 check("c.copy_counts_slots", "I have two slots open this week:" in t2 and "I have three slots open this week:" in t)
 check("c.sms_no_slots_reads", "slots open this week. Reply with a time that works" in rg.sms_copy("Ana", []))
 
@@ -117,7 +127,7 @@ check("wire.arm_posts_eric", "*reengage-oct12 armed*" in rt)
 sf = SRC[SRC.index("def _reengage_send(now, dry=True, limit=None, rows=None):"):SRC.index("def _reengage_tick(now=None):")]
 check("wire.send_idempotent", 'if r["_already"]:' in sf and 'rec["reengage_oct12"] = stamp' in sf)
 check("wire.send_email_via", 'via="reengage-oct12"' in sf and "SMS_KIND_MARKETING" in sf)
-check("wire.send_tags_sheet", 'update_lead_columns(key, {"Ad Campaign": _rg.TAG})' in sf)
+check("wire.send_tags_sheet", 'update_lead_columns(key, {"Ad Campaign": _rg.TAG, "Ad ID": f"segment: {seg}"})' in sf)
 check("wire.send_dry_no_send", "if dry:\n            continue" in sf)
 check("wire.send_throttle", "_t.sleep(0.4)" in sf)
 tk = SRC[SRC.index("def _reengage_tick(now=None):"):SRC.index("@app.route('/admin/reengage-oct12'")]
@@ -136,7 +146,14 @@ check("wire.suppressed_dynamic_param", "if dynamic is not None:" in sup and 'ret
 check("wire.preview_one_pass", "_out = _reengage_send(_now, dry=True, rows=_rows)" in SRC)
 # #158c wiring
 check("wire.c.rows_exclude_clients", "_kc.is_client_record(_r)" in rows and "_CLIENT_ROSTER.find(" in rows
-      and 'if _f.get("booked"):' in rows and "_rg.dedupe(rows)" in rows and '_f["_email"] = _f.get("email_addr") or ""' in rows)
+      and "_rg.dedupe(rows)" in rows and '_f["_email"] = _f.get("email_addr") or ""' in rows)
+# #159 wiring — past bookers are a segment, both counted, both tagged
+check("wire.s.segment_rows", '_f["segment"] = _rg.segment_for(_f)' in rows and 'if _f.get("booked"):' not in rows
+      and '_REENGAGE_LAST["segments"] = ' in rows)
+check("wire.s.send_by_segment", '_rg.email_copy(r["name"], slots, segment=seg)' in sf and 'rec["reengage_segment"] = seg' in sf
+      and 'update_lead_columns(key, {"Ad Campaign": _rg.TAG, "Ad ID": f"segment: {seg}"})' in sf
+      and 'out["sent_by_segment"][seg]' in sf and '"text_past_booker": text_pb' in sf)
+check("wire.s.tick_line_segments", "cold, " in tk and "past-booker), " in tk)
 check("wire.c.send_week_slots", "slots = get_week_slots(now) or []" in sf and "get_available_slots()" not in sf)
 check("wire.c.send_dup_tag_only", 'if r.get("_dup_of"):' in sf and sf.index('if r.get("_dup_of"):') < sf.index('if not (r["email"] or r["sms"]):')
       and "_email_send" not in sf[sf.index('if r.get("_dup_of"):'):sf.index('if not (r["email"] or r["sms"]):')])
