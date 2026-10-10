@@ -63,6 +63,39 @@ for nm in ("Maximiliano", "Christopher", "there", ""):
     check(f"sms.fits {nm!r}", sc.segments(body) <= 2 and "STOP" in body.upper(), (len(body), body))
 check("sms.no_slots", "this week" in rg.sms_copy("A", []))
 
+# ── #158c: what the first dry run (10 Oct 00:30 ET) showed ───────────────────
+now = tz.localize(datetime(2026, 10, 12, 10, 0))
+check("c.primary_email", rg.primary_email("kri.x@gmail.com / michael@michaelneeley.com") == "kri.x@gmail.com"
+      and rg.primary_email(" A.B@X.COM, b@y.com") == "a.b@x.com" and rg.primary_email("nope") == "" and rg.primary_email(None) == "")
+check("c.excluded_address", rg.excluded_address("t@meta.com") and rg.excluded_address("noreply@shop.com")
+      and rg.excluded_address("x@mwmcreations.com") and not rg.excluded_address("info@simplysuccessgroup.net")
+      and not rg.excluded_address("ana@x.com") and rg.excluded_address(""))
+check("c.bot_name", rg.looks_like_bot("Success Bot (Simply Success Group)") and rg.looks_like_bot("Auto-Reply")
+      and not rg.looks_like_bot("Abbot Smith") and not rg.looks_like_bot("Bottega Co"))
+_b = {"name": "Ana", "email": "ana@x.com", "last_message_time": "2026-09-01T10:00:00-04:00"}
+check("c.test_name_any_key", rg.classify("whatsapp:+14075550010", dict(_b, name="<test lead: dummy data for full_name>", email="t@meta.com"), now) is None)
+check("c.bot_out", rg.classify("whatsapp:+14075550011", dict(_b, name="Success Bot (Simply Success Group)"), now) is None)
+_r2 = rg.classify("whatsapp:+14075550012", dict(_b, email="kri.x@gmail.com / michael@michaelneeley.com"), now)
+check("c.two_addresses_first_wins", _r2 and _r2["email"] and _r2["email_addr"] == "kri.x@gmail.com", _r2)
+_r3 = rg.classify("whatsapp:+14075550013", dict(_b, email="noreply@shop.com"), now)
+check("c.role_address_not_email", _r3 and not _r3["email"] and _r3["email_addr"] == "")
+_rows = [{"key": "whatsapp:+14075550001", "email": True, "sms": True, "_email": "a@x.com", "_phone": "+14075550001"},
+         {"key": "instagram:1", "email": True, "sms": False, "_email": "A@x.com", "_phone": ""},
+         {"key": "whatsapp:+14075550002", "email": True, "sms": True, "_email": "b@x.com", "_phone": "+14075550001"},
+         {"key": "whatsapp:+14075550003", "email": False, "sms": False, "_email": "", "_phone": ""}]
+rg.dedupe(_rows)
+check("c.dedupe_email", _rows[0]["email"] and _rows[0]["_dup_of"] == "" and not _rows[1]["email"] and _rows[1]["_dup_of"] == "whatsapp:+14075550001"
+      and not _rows[1]["reachable"])
+check("c.dedupe_phone", _rows[2]["email"] and not _rows[2]["sms"] and _rows[2]["_dup_of"] == "whatsapp:+14075550001" and _rows[2]["reachable"])
+check("c.dedupe_untouched", _rows[3]["_dup_of"] == "" and not _rows[3]["reachable"])
+for _d, _exp_start, _exp_h in ((12, (13, "Tue"), 4), (9, (12, "Mon"), 5), (10, (12, "Mon"), 5), (15, (16, "Fri"), 1), (16, (19, "Mon"), 5)):
+    _st, _h = rg.week_window(tz.localize(datetime(2026, 10, _d, 10, 0)))
+    check(f"c.week_window {_d}", (_st.day, _st.strftime("%a")) == _exp_start and _h == _exp_h and _st.hour == 0 and _st.tzinfo is not None
+          and _st.utcoffset().total_seconds() == -4 * 3600, (_st, _h))
+_, _, t2 = rg.email_copy("Ana", SLOTS[:2])
+check("c.copy_counts_slots", "I have two slots open this week:" in t2 and "I have three slots open this week:" in t)
+check("c.sms_no_slots_reads", "slots open this week. Reply with a time that works" in rg.sms_copy("Ana", []))
+
 now = tz.localize(datetime(2026, 10, 12, 10, 0))
 check("due.exact", rg.is_due("2026-10-12T10:00:00-04:00", now))
 check("due.before", not rg.is_due("2026-10-12T10:05:00-04:00", now))
@@ -101,6 +134,20 @@ sup = SRC[SRC.index("def email_is_suppressed(addr, dynamic=None):"):SRC.index("d
 check("wire.suppressed_dynamic_param", "if dynamic is not None:" in sup and 'return (True, "suppressed (dynamic list)") if e in dynamic else (False, "")' in sup
       and sup.index("if dynamic is not None:") > sup.index('"internal address"'), "static checks still run before the batch answer")
 check("wire.preview_one_pass", "_out = _reengage_send(_now, dry=True, rows=_rows)" in SRC)
+# #158c wiring
+check("wire.c.rows_exclude_clients", "_kc.is_client_record(_r)" in rows and "_CLIENT_ROSTER.find(" in rows
+      and 'if _f.get("booked"):' in rows and "_rg.dedupe(rows)" in rows and '_f["_email"] = _f.get("email_addr") or ""' in rows)
+check("wire.c.send_week_slots", "slots = get_week_slots(now) or []" in sf and "get_available_slots()" not in sf)
+check("wire.c.send_dup_tag_only", 'if r.get("_dup_of"):' in sf and sf.index('if r.get("_dup_of"):') < sf.index('if not (r["email"] or r["sms"]):')
+      and "_email_send" not in sf[sf.index('if r.get("_dup_of"):'):sf.index('if not (r["email"] or r["sms"]):')])
+check("wire.c.preview_lowercase_there", '_rg.email_copy("", slots)' in sf)
+wk = SRC[SRC.index("def get_week_slots(now=None):"):SRC.index("def get_available_slots():")]
+check("wire.c.week_slots", "_rg.week_window(now)" in wk and "_slots.compute_slots(start, busy_times, tz" in wk
+      and "horizon_days=horizon" in wk and "max_slots=3" in wk and "_calendar_busy_times(" in wk)
+ga = SRC[SRC.index("def get_available_slots():"):SRC.index("# ─── PATCH #104 — auto-cleanup identity matching")]
+check("wire.c.slots_share_calendar_read", '_calendar_busy_times(now, days=21, who="get_available_slots")' in ga
+      and "service.events().list(" not in ga and "service.events().list(" in SRC[SRC.index("def _calendar_busy_times("):SRC.index("def get_week_slots(")])
+check("wire.c.preview_lists_dups", '_out["duplicate_rows"] = ' in rt and 'not r.get("_dup_of")]' in rt)
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 

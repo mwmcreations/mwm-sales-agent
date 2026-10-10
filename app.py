@@ -4080,6 +4080,57 @@ def get_gmail_service(impersonate=None):
 _SLOTS_FALLBACK_LAST = [0.0]   # PATCH #157 — last #eric 'nothing inside 48 h' line
 
 
+def _calendar_busy_times(now, days=21, who="slots"):
+    """PATCH #158c — the calendar read behind every slot pick, factored out of
+    get_available_slots so the re-engagement letter can pick ACROSS the week
+    from the same busy list. -> list of slots.busy_row rows (all-day events
+    included, PATCH #118)."""
+    service = get_calendar_service()
+    tz = pytz.timezone(TIMEZONE)
+    end_window = now + timedelta(days=days)
+    print(f"[{who}] checking calendar: {CALENDAR_ID}")
+    # Fetch all timed events in the window
+    events_result = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=now.isoformat(),
+        timeMax=end_window.isoformat(),
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute(num_retries=3)
+    # PATCH #118 — one rule for what blocks, shared with check_specific_slot
+    # and book_appointment. This loop used to require dateTime on both ends,
+    # which silently dropped every ALL-DAY event while the public booking
+    # form honoured them. See slots.busy_row for the whole story.
+    busy_times = []
+    for event in events_result.get("items", []):
+        _row = _slots.busy_row(event, tz)
+        if _row:
+            busy_times.append(_row)
+    return busy_times
+
+
+def get_week_slots(now=None):
+    """PATCH #158c — the three slots the re-engagement letter names: one per
+    business day, morning / afternoon / morning, from the day AFTER the send
+    through Friday of that week (reengage.week_window). The 48-hour rule
+    (#157) is Maya's for a lead who is talking to her now; a letter that
+    lands at 10 AM naming 11 AM the same day converts nobody. -> slots list
+    (may be shorter than three; the letter counts what it names)."""
+    try:
+        tz = pytz.timezone(TIMEZONE)
+        now = now or datetime.now(tz)
+        start, horizon = _rg.week_window(now)
+        busy_times = _calendar_busy_times(now, days=horizon + 2, who="get_week_slots")
+        slots = _slots.compute_slots(start, busy_times, tz, count_fn=_count_bookings_on_date,
+                                     max_per_day=MAX_BOOKINGS_PER_DAY, max_slots=3,
+                                     horizon_days=horizon, log=print)
+        print(f"[get_week_slots] {start.date()} +{horizon}d -> {[s['display'] for s in slots]}")
+        return slots
+    except Exception as e:
+        print(f"[get_week_slots] ERROR: {e}")
+        return []
+
+
 def get_available_slots():
     """
     Return up to 3 available slots — one per business day, starting TODAY,
@@ -4091,31 +4142,9 @@ def get_available_slots():
     All-day events are intentionally ignored so they don't block real availability.
     """
     try:
-        service = get_calendar_service()
         tz = pytz.timezone(TIMEZONE)
         now = datetime.now(tz)
-        end_window = now + timedelta(days=21)
-
-        print(f"[get_available_slots] checking calendar: {CALENDAR_ID}")
-
-        # Fetch all timed events in the window
-        events_result = service.events().list(
-            calendarId=CALENDAR_ID,
-            timeMin=now.isoformat(),
-            timeMax=end_window.isoformat(),
-            singleEvents=True,
-            orderBy="startTime"
-        ).execute(num_retries=3)
-
-        # PATCH #118 — one rule for what blocks, shared with check_specific_slot
-        # and book_appointment. This loop used to require dateTime on both ends,
-        # which silently dropped every ALL-DAY event while the public booking
-        # form honoured them. See slots.busy_row for the whole story.
-        busy_times = []
-        for event in events_result.get("items", []):
-            _row = _slots.busy_row(event, tz)
-            if _row:
-                busy_times.append(_row)
+        busy_times = _calendar_busy_times(now, days=21, who="get_available_slots")
 
         # PATCH #157 (ERIC, 9 Oct, Michael's rule): offer only slots inside
         # the next 48 hours; when nothing is open inside 48 h, the two nearest
@@ -25914,6 +25943,12 @@ def _reengage_rows(now):
     # per-address reads, twice, put the preview past the daemon's 90 s).
     _dyn = {k[len("email_suppressed:"):].lower() for k, v in (_pgc.load_prefix("email_suppressed:") or {}).items() if v}
     _sup = lambda e: email_is_suppressed(e, dynamic=_dyn)
+    # PATCH #158c — the first dry run listed a paying client (Todd Berger,
+    # $349 on 27 Jul) whose lead record never got the client mark, and 30
+    # people who had already booked a visit. The roster is the paying-clients
+    # table itself; a record that booked has had Michael's attention and
+    # "you reached out a while back" is the wrong letter for it.
+    _excl = {"client_record": 0, "client_roster": 0, "booked": 0}
     rows = []
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
@@ -25924,11 +25959,28 @@ def _reengage_rows(now):
         _consent = (_consents.get("+" + _ph) or _consents.get(_ph) or {}) if len(_ph) == 11 else {}
         _f = _rg.classify(_k, _r, now, consent=_consent, email_suppressed=_sup,
                           is_internal=_is_internal_number)
-        if _f:
-            _f["_email"] = str(_r.get("email") or "").strip().lower()
-            _f["_phone"] = ("+" + _ph) if len(_ph) == 11 else ""
-            _f["_already"] = bool(_r.get("reengage_oct12"))
-            rows.append(_f)
+        if not _f:
+            continue
+        if _kc.is_client_record(_r):
+            _excl["client_record"] += 1
+            continue
+        try:
+            _hit, _why, _ = _CLIENT_ROSTER.find(dict(_r, phone=_r.get("phone") or _k))
+        except Exception:
+            _hit = False
+        if _hit:
+            _excl["client_roster"] += 1
+            continue
+        if _f.get("booked"):
+            _excl["booked"] += 1
+            continue
+        _f["_email"] = _f.get("email_addr") or ""
+        _f["_phone"] = ("+" + _ph) if len(_ph) == 11 else ""
+        _f["_already"] = bool(_r.get("reengage_oct12"))
+        rows.append(_f)
+    _rg.dedupe(rows)                     # one letter per address, one text per number
+    _excl["duplicate_rows"] = sum(1 for r in rows if r.get("_dup_of"))
+    _REENGAGE_LAST["excluded"] = _excl
     return rows
 
 
@@ -25938,18 +25990,31 @@ def _reengage_send(now, dry=True, limit=None, rows=None):
     never sent twice. Returns the summary dict."""
     import time as _t
     rows = _reengage_rows(now) if rows is None else rows
-    slots = get_available_slots() or []
+    slots = get_week_slots(now) or []        # #158c: across the week, not inside 48 h
     out = {"at": now.isoformat(), "dry": dry, "candidates": len(rows), "slots": [s.get("display") for s in slots],
+           "slots_short": len(slots) < 3,
            "email_sent": 0, "sms_sent": 0, "skipped_already": 0, "suppressed": 0, "failed": 0, "sms_refused": 0,
-           "tagged": 0, "preview": None}
-    subj, html, text = _rg.email_copy("there", slots)
-    out["preview"] = {"subject": subj, "text": text, "sms": _sms_copy.compose(_rg.sms_copy("there", slots))}
+           "duplicates": 0, "tagged": 0, "unique_emails": len({r["_email"] for r in rows if r["email"] and r["_email"] and not r["_already"]}),
+           "excluded": dict(_REENGAGE_LAST.get("excluded") or {}), "preview": None}
+    subj, html, text = _rg.email_copy("", slots)
+    out["preview"] = {"subject": subj, "text": text, "sms": _sms_copy.compose(_rg.sms_copy("", slots))}
     n = 0
     for r in rows:
-        if not (r["email"] or r["sms"]):
-            continue
         if r["_already"]:
             out["skipped_already"] += 1
+            continue
+        if r.get("_dup_of"):
+            # #158c: same address under another key — tag the record so the
+            # scorecard sees it, send nothing (the first row carried the letter)
+            out["duplicates"] += 1
+            if not dry:
+                _dup_rec = lead_data.get(r["key"])
+                if isinstance(_dup_rec, dict):
+                    _dup_rec["reengage_oct12"] = {"at": now.isoformat(), "email": f"duplicate of {mask_contact(r['_dup_of'])}", "sms": ""}
+                    _dup_rec["reengage_tag"] = _rg.TAG
+                    lead_data[r["key"]] = _dup_rec
+            continue
+        if not (r["email"] or r["sms"]):
             continue
         if limit is not None and n >= int(limit):
             break
@@ -26019,8 +26084,11 @@ def _reengage_tick(now=None):
                               failed=out["failed"], suppressed=out["suppressed"], candidates=out["candidates"])
         _TALLY.bump("reengage.sent", f"{out['email_sent']} email, {out['sms_sent']} sms")
         line = (f":mailbox_with_mail: *reengage-oct12 went out* — {out['email_sent']} emails, {out['sms_sent']} texts; "
-                f"{out['suppressed']} suppressed, {out['failed']} failed, {out['sms_refused']} texts refused; "
-                f"slots offered: {', '.join(out['slots']) or 'none'}. Replies go to Maya; sheet column Ad Campaign = {_rg.TAG}.")
+                f"{out['suppressed']} suppressed, {out['failed']} failed, {out['sms_refused']} texts refused, "
+                f"{out['duplicates']} duplicate rows tagged only; "
+                f"slots offered: {', '.join(out['slots']) or 'none'}"
+                f"{' (FEWER THAN THREE — the week is nearly full)' if out.get('slots_short') else ''}. "
+                f"Replies go to Maya; sheet column Ad Campaign = {_rg.TAG}.")
         _post_to_slack_async(SLACK_ERIC_CHANNEL, line)
         _post_to_slack_async(SLACK_DEV_CHANNEL, line)
     except Exception as _e:
@@ -26060,7 +26128,9 @@ def admin_reengage_oct12():
                           "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
                           "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
                           "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
-                          "excluded": "clients, said no, disqualified, do-not-contact, internal and test records"}}
+                          "excluded": "clients (record or roster), already booked, said no, disqualified, do-not-contact, "
+                                      "internal, test and bot records; role/bounce addresses; one letter per address (#158c)"}}
+        _sum["excluded"] = dict(_REENGAGE_LAST.get("excluded") or {})
         if str(request.args.get("list") or "") in ("1", "true"):
             _out["sample"] = [{"key": mask_contact(r["key"]), "name": r["name"], "channel": r["channel"],
                                "email": r["email"], "sms": r["sms"], "wa_open": r["wa_open"],
@@ -26071,8 +26141,10 @@ def admin_reengage_oct12():
         _rows = _reengage_rows(_now)
         _out = _reengage_send(_now, dry=True, rows=_rows)
         _out["would_email"] = [{"key": mask_contact(r["key"]), "name": r["name"], "email": mask_contact(r["_email"])}
-                               for r in _rows if r["email"] and not r["_already"]]
-        _out["would_sms"] = [{"key": mask_contact(r["key"]), "name": r["name"]} for r in _rows if r["sms"] and not r["_already"]]
+                               for r in _rows if r["email"] and not r["_already"] and not r.get("_dup_of")]
+        _out["would_sms"] = [{"key": mask_contact(r["key"]), "name": r["name"]} for r in _rows if r["sms"] and not r["_already"] and not r.get("_dup_of")]
+        _out["duplicate_rows"] = [{"key": mask_contact(r["key"]), "name": r["name"], "dup_of": mask_contact(r["_dup_of"])}
+                                  for r in _rows if r.get("_dup_of")]
         return jsonify({"ok": True, **_out}), 200
     if _mode == "arm":
         _at = str(request.args.get("at") or "").strip()

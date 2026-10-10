@@ -20,6 +20,84 @@ TAG = "reengage-oct12"
 
 _CLIENT_REL = ("client", "existing_client", "new_client", "known")
 
+# PATCH #158c — what the first dry run showed (10 Oct 00:30 ET): Meta's own
+# dummy row (`<test lead …>` under a non-meta key, t…@meta.com), an auto-
+# responder ("Success Bot"), one lead whose email cell holds two addresses
+# ("a@x / b@y"), and the same person listed twice under two keys. None of
+# those may receive, or receive twice, a letter in Michael's first person.
+_NEVER_LOCALS = {"noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "mailer-daemon",
+                 "postmaster", "bounce", "bounces", "notifications", "notification"}
+_NEVER_DOMAINS = {"meta.com", "facebook.com", "facebookmail.com", "example.com", "test.com", "mwmcreations.com"}
+_BOT_WORD = re.compile(r"\b(bot|auto-?reply|autoresponder)\b", re.I)
+_ADDR = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def primary_email(raw):
+    """The first real address in a lead's email cell, lower-cased, or "".
+    Cells like "kri…@gmail.com / michael@…" (two people share one record)
+    and "a@x.com, b@y.com" hold more than one; a send to the literal cell
+    goes nowhere."""
+    m = _ADDR.search(str(raw or ""))
+    return m.group(0).lower() if m else ""
+
+
+def excluded_address(email):
+    """True for an address no first-person letter should ever reach: role
+    and bounce mailboxes, Meta's dummy domain, our own domain."""
+    e = str(email or "").strip().lower()
+    if "@" not in e:
+        return True
+    local, _, dom = e.partition("@")
+    return local in _NEVER_LOCALS or dom in _NEVER_DOMAINS
+
+
+def looks_like_bot(name):
+    return bool(_BOT_WORD.search(str(name or "")))
+
+
+def dedupe(rows):
+    """One letter per address, one text per number. The first row that
+    carries an address keeps it; later rows with the same address get
+    `_dup_of` = that row's key (they are still TAGGED at send time, so the
+    record is marked, but nothing is sent to them). Same for phones on the
+    SMS side. Rows are modified in place and returned."""
+    seen_e, seen_p = {}, {}
+    for r in rows:
+        if not r:
+            continue
+        e = str(r.get("_email") or "").lower()
+        p = str(r.get("_phone") or "")
+        r["_dup_of"] = ""
+        if r.get("email") and e:
+            if e in seen_e:
+                r["_dup_of"] = seen_e[e]
+                r["email"] = False
+            else:
+                seen_e[e] = r.get("key", "")
+        if r.get("sms") and p:
+            if p in seen_p:
+                r["_dup_of"] = r["_dup_of"] or seen_p[p]
+                r["sms"] = False
+            else:
+                seen_p[p] = r.get("key", "")
+        r["reachable"] = bool(r.get("email") or r.get("sms"))
+    return rows
+
+
+def week_window(now):
+    """(start, horizon_days) for the slots the letter names: from the day
+    AFTER the send (a cold lead cannot make 11 AM when the mail lands at
+    10), through Friday of that week. Sent on a Friday or at the weekend
+    the window is the next Monday–Friday. `now` is tz-aware ET."""
+    start_day = (now + timedelta(days=1)).date()
+    while start_day.weekday() >= 5:             # Sat/Sun -> Monday
+        start_day += timedelta(days=1)
+    friday = start_day + timedelta(days=(4 - start_day.weekday()))
+    tz = now.tzinfo
+    naive = datetime(start_day.year, start_day.month, start_day.day)
+    start = tz.localize(naive) if hasattr(tz, "localize") else naive.replace(tzinfo=tz)
+    return start, (friday - start_day).days + 1
+
 
 def _digits(s):
     return re.sub(r"\D", "", str(s or ""))
@@ -56,7 +134,11 @@ def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=Non
     k = str(key or "")
     if not isinstance(rec, dict):
         return None
-    if rec.get("test_lead") or k.startswith("meta_lead_") and str(rec.get("name", "")).startswith("<test"):
+    name = str(rec.get("name") or "").strip()
+    # PATCH #158c: Meta's dummy row turned up under a NON-meta key on the first
+    # dry run; the `<test` name is the tell whatever the key. Auto-responders
+    # ("Success Bot (…)") are not people.
+    if rec.get("test_lead") or name.startswith("<test") or looks_like_bot(name):
         return None
     rel = str(rec.get("relationship") or "")
     if rel in _CLIENT_REL or rec.get("paid_at") or str(rec.get("outcome") or "").lower() in ("won", "client_won"):
@@ -72,8 +154,8 @@ def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=Non
         phone = "1" + phone
     if phone and is_internal and is_internal(phone):
         return None
-    email = str(rec.get("email") or "").strip().lower()
-    email_ok = bool(email and "@" in email)
+    email = primary_email(rec.get("email"))          # #158c: first real address in the cell
+    email_ok = bool(email) and not excluded_address(email)
     if email_ok and email_suppressed:
         try:
             sup, _ = email_suppressed(email)
@@ -90,7 +172,7 @@ def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=Non
     active_7d = bool(hours_since is not None and hours_since < 24 * 7)
     area = phone[1:4] if us_mobile else ""
     return {
-        "key": k, "name": str(rec.get("name") or ""), "channel": (
+        "key": k, "name": name, "email_addr": email if email_ok else "", "channel": (
             "whatsapp" if k.startswith("whatsapp:") else "instagram" if k.startswith("instagram:")
             else str(rec.get("channel") or rec.get("source") or "other")),
         "email": email_ok, "sms": sms_ok, "wa_open": wa_open, "active_7d": active_7d,
@@ -162,13 +244,15 @@ def email_copy(name, slots):
     sl = _slot_lines(slots)
     slot_txt = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(sl)) if sl else "  (reply with a day that works)"
     slot_html = "".join(f"<li>{s}</li>" for s in sl) if sl else "<li>Reply with a day that works</li>"
+    # #158c: the sentence counts what it names (a full Thursday leaves two)
+    n_word = {1: "one slot", 2: "two slots", 3: "three slots"}.get(len(sl), "slots")
     text = (
         f"Hi {fn},\n\n"
         f"Michael Moraes here, from MWM Creations & Studios in Orlando. You reached out to us a while "
         f"back, and I'd like to open the door again, simply: come and see the studio.\n\n"
         f"A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
         f"customers need to see before they buy. No pitch deck.\n\n"
-        f"I have three slots open this week:\n{slot_txt}\n\n"
+        f"I have {n_word} open this week:\n{slot_txt}\n\n"
         f"Reply to this email with the one you want, or text Maya on my team at {MAYA_WA}, "
         f"and she'll lock it in. If none of them work, send me a time that does.\n\n"
         f"If you'd rather not hear from us, just reply \"stop\" and that's the end of it.\n\n"
@@ -182,7 +266,7 @@ def email_copy(name, slots):
         f"back, and I'd like to open the door again, simply: come and see the studio.</p>"
         f"<p>A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
         f"customers need to see before they buy. No pitch deck.</p>"
-        f"<p>I have three slots open this week:</p><ol>{slot_html}</ol>"
+        f"<p>I have {n_word} open this week:</p><ol>{slot_html}</ol>"
         f"<p>Reply to this email with the one you want, or text Maya on my team at "
         f"<b>{MAYA_WA}</b>, and she'll lock it in. If none of them work, send me a time that does.</p>"
         f"<p style=\"color:#666;font-size:13px\">If you'd rather not hear from us, just reply \"stop\" and that's the end of it.</p>"
@@ -196,9 +280,11 @@ def sms_copy(name, slots):
     Two slots at most, so it stays inside two segments."""
     fn = _first(name)
     sl = _slot_lines(slots)[:2]
-    when = (" or ".join(sl)) if sl else "this week"
-    return (f"Hi {fn}, Michael Moraes (MWM Studios). Three free studio-visit slots this week - "
-            f"{when}. Reply with the one you want, or a time that works, and Maya books it.")
+    if not sl:
+        return (f"Hi {fn}, Michael Moraes (MWM Studios). Free studio-visit slots open this week. "
+                f"Reply with a time that works, and Maya books it.")
+    return (f"Hi {fn}, Michael Moraes (MWM Studios). Free studio-visit slots this week - "
+            f"{' or '.join(sl)}. Reply with the one you want, or a time that works, and Maya books it.")
 
 
 def is_due(send_at_iso, now):
