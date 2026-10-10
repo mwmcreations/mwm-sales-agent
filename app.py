@@ -3314,11 +3314,13 @@ def get_system_prompt():
                 [f"  slot_{i+1}_id = {s['id']}" for i, s in enumerate(slots)]
             )
             slots_line = (
-                "- MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded — use these directly when scheduling):\n"
+                "- MICHAEL'S NEXT 3 AVAILABLE TIMES (pre-loaded — use these directly when scheduling; "
+                "they are the soonest open times, inside the next 48 hours whenever any exist):\n"
                 f"{display_lines}\n"
                 f"  Slot IDs for book_appointment: {id_lines}\n"
-                "  When scheduling, present options 1, 2, 3 to the lead exactly as shown above. "
-                "Do NOT ask what day or time they prefer — just show these 3 options.\n"
+                "  When scheduling, present these options to the lead exactly as shown above, soonest first. "
+                "Do NOT ask what day or time they prefer — just show these options. "
+                "Only if the lead says none of them work, ask for a day that does and use check_specific_slot.\n"
             )
         else:
             slots_line = (
@@ -4075,6 +4077,9 @@ def get_gmail_service(impersonate=None):
     return _build("gmail", "v1", credentials=creds)
 
 
+_SLOTS_FALLBACK_LAST = [0.0]   # PATCH #157 — last #eric 'nothing inside 48 h' line
+
+
 def get_available_slots():
     """
     Return up to 3 available slots — one per business day, starting TODAY,
@@ -4112,17 +4117,30 @@ def get_available_slots():
             if _row:
                 busy_times.append(_row)
 
-        # PATCH #94 — the period is a PREFERENCE, not a gate. The old loop
-        # locked each day to one period and skipped the whole day when that
-        # period had passed, so an open afternoon read as "fully booked".
-        slots = _slots.compute_slots(
+        # PATCH #157 (ERIC, 9 Oct, Michael's rule): offer only slots inside
+        # the next 48 hours; when nothing is open inside 48 h, the two nearest
+        # — and #eric hears about it (once per 6 h, not per lead).
+        slots, fallback = _slots.offer_slots(
             now, busy_times, tz,
             count_fn=_count_bookings_on_date,
             max_per_day=MAX_BOOKINGS_PER_DAY,
             log=print,
         )
+        if fallback:
+            _TALLY.bump("slots.no_48h", f"{len(slots)} nearest offered")
+            _t_now = time.time()
+            if _t_now - _SLOTS_FALLBACK_LAST[0] > 6 * 3600:
+                _SLOTS_FALLBACK_LAST[0] = _t_now
+                _post_to_slack_async(SLACK_ERIC_CHANNEL,
+                    ":calendar: *No studio-visit slot inside 48 h* — Maya is offering the "
+                    f"two nearest instead: {', '.join(s['display'] for s in slots) or 'none at all'}. "
+                    "Michael's morning (10/11) and afternoon (3/2) times Mon–Fri are all taken "
+                    "or past inside the window.")
+        else:
+            _TALLY.bump("slots.inside_48h", str(len(slots)))
 
-        print(f"[get_available_slots] returning {len(slots)} slots: {[s['display'] for s in slots]}")
+        print(f"[get_available_slots] returning {len(slots)} slots"
+              f"{' (FALLBACK: none inside 48h)' if fallback else ''}: {[s['display'] for s in slots]}")
         return slots
 
     except Exception as e:
@@ -12535,6 +12553,60 @@ def _lead_reminder_thread():
                         _post_to_slack_async(SLACK_LARA_CHANNEL, _msg)
                         _post_to_slack_async(SLACK_MATT_CHANNEL, _msg)
 
+                # ── PATCH #157 · T-3 h: no reply to the YES ask -> Michael ──
+                # (ERIC, 9 Oct) "no YES by T-3 h -> Michael gets an SMS
+                # 'unconfirmed: {name} {time}'". A reply on any channel after
+                # the T-24 ask counts as the YES (Maya reads the words).
+                try:
+                    if (kind in (event_rail.KIND_STUDIO_VISIT, event_rail.KIND_PORTAL_BOOKING,
+                                 event_rail.KIND_STRATEGY_CALL, event_rail.KIND_CLIENT_CALL)
+                            and event_rail.unconfirmed_due(hours_until)
+                            and f"{event_id}:unconfirmed" not in _lead_reminder_sent):
+                        _lead_reminder_sent.add(f"{event_id}:unconfirmed")
+                        _u_f = event_lead_facts(event)
+                        _u_name = (_u_f.get("lead_name") or "").strip()
+                        _u_phone = re.sub(r"\D", "", _u_f.get("lead_phone", "") or "")
+                        _u_email = _event_rail_client_email(event)
+                        _u_key, _u_rec = (None, None)
+                        if _u_phone:
+                            _u_key, _u_rec = _find_lead_by_phone(_u_phone)
+                        if not _u_rec and _u_email:
+                            _u_key, _u_rec = _find_lead_by_email(_u_email)
+                        if not _u_name and _u_rec:
+                            _u_name = (_u_rec.get("name") or "").strip()
+                        _asked = _pg.load_state(f"confirm_asked:{event_id}", "") if _pg.enabled() else ""
+                        _asked_dt = None
+                        try:
+                            _asked_dt = datetime.fromisoformat(str(_asked)) if _asked else None
+                        except Exception:
+                            _asked_dt = None
+                        _last_in = (_u_rec or {}).get("last_message_time")
+                        if isinstance(_last_in, str):
+                            try:
+                                _last_in = datetime.fromisoformat(_last_in)
+                            except Exception:
+                                _last_in = None
+                        if _last_in is not None and _last_in.tzinfo is None:
+                            _last_in = tz.localize(_last_in)
+                        if _asked_dt is not None and _asked_dt.tzinfo is None:
+                            _asked_dt = tz.localize(_asked_dt)
+                        _confirmed = bool(_asked_dt and _last_in and _last_in > _asked_dt)
+                        if not _confirmed:
+                            _t_str = event_start.strftime("%I:%M %p").lstrip("0")
+                            _why_u = ("no reply since the T-24 ask" if _asked_dt
+                                      else "no T-24 ask went out")
+                            _operator_alert.alert(
+                                "booking",
+                                event_rail.unconfirmed_text(_u_name, _t_str, event_start.strftime("%A, %B %d"))
+                                + f"\n{summary}\n{_why_u}. Call or text them now.",
+                                eric_text=(f":warning: *Unconfirmed visit* — {_u_name or summary} at {_t_str} "
+                                           f"({event_start.strftime('%A, %B %d')}): {_why_u}."))
+                            _TALLY.bump("visit.unconfirmed_T3", _why_u)
+                        else:
+                            _TALLY.bump("visit.confirmed_by_T3", "reply seen")
+                except Exception as _ux:
+                    _report_error("event_rail.unconfirmed_watch", _ux, f"event={event_id}")
+
                 # ── S-3 · which confirmations are due right now ─────
                 for audience, stage_h in due_stages(kind, hours_until):
                     mark = f"{event_id}:{audience}:{stage_h}h"
@@ -12674,6 +12746,25 @@ def _lead_reminder_thread():
                                 _sent_via = "email (WhatsApp unavailable)"
                         except Exception as _mail_err:
                             _report_error("event_rail.email_fallback", _mail_err, f"event={event_id}")
+
+                    # PATCH #157 — an approved template has fixed words: it can
+                    # carry neither the YES ask (T-24) nor the address (T-2).
+                    # When that is all WhatsApp allowed, the email with the real
+                    # words goes too.
+                    if (_sent_via == "WhatsApp (approved template)" and stage_h in (24, 2)
+                            and _email and ascii_email(_email)[1]):
+                        try:
+                            if email_ok(_email_send(ascii_email(_email)[0], _em_subject, _em_html,
+                                                    via=f"confirmation-T{stage_h}h-beside-template",
+                                                    transactional=True)):
+                                _sent_via += " + email"
+                        except Exception as _bx:
+                            _report_error("event_rail.email_beside_template", _bx, f"event={event_id}")
+                    if _sent_via and stage_h == 24 and _pg.enabled():
+                        try:
+                            _pg.save_state(f"confirm_asked:{event_id}", now.isoformat())
+                        except Exception:
+                            pass
 
                     if _sent_via:
                         _post_to_slack_async(SLACK_PIPELINE_CHANNEL, (
@@ -22179,6 +22270,7 @@ _outcome_seq.configure(
         to, subject, html, via="outcome-seq"),
     send_whatsapp=lambda phone, body: send_whatsapp_meta(phone, body),
     send_instagram=lambda igsid, body: send_instagram_dm(igsid, body),
+    slots=lambda: get_available_slots(),     # PATCH #157 — two slots inside 48 h in the rebook
     pg_load=_pg.load_state,
     pg_save=_pg.save_state,
     heartbeat=_heartbeat,

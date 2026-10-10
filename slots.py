@@ -189,3 +189,61 @@ def compute_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
             break                                  # one slot per day
 
     return slots
+
+
+# ── PATCH #157 — only slots inside the next 48 hours (ERIC, 9 Oct, item 2) ──
+# "Maya offers only slots inside the next 48 hours (Michael is opening
+# morning + late-afternoon slots Mon-Fri). If nothing is open inside 48 h,
+# offer the two nearest and tell me in #eric." A lead who can come the day
+# after tomorrow shows up; one offered a slot next week drifts.
+WINDOW_HOURS_DEFAULT = 48
+FALLBACK_SLOTS = 2
+# every house time, chronological, for the window search
+ALL_SLOT_TIMES = sorted({t for v in SLOT_PERIOD_ORDER.values() for t in v})
+
+
+def compute_slots_window(now, busy_times, tz, count_fn=None, max_per_day=4,
+                         within_hours=WINDOW_HOURS_DEFAULT, max_slots=DEFAULT_MAX_SLOTS,
+                         log=None):
+    """Every free house time that STARTS inside the next `within_hours`, in
+    order, up to `max_slots` (more than one per day is fine here — the point
+    is soon). Pure. -> list of {"id", "display"}."""
+    if count_fn is None:
+        def count_fn(_d):
+            return 0
+    limit = now + timedelta(hours=within_hours)
+    out = []
+    day = now.date()
+    while len(out) < max_slots:
+        day_start = tz.localize(datetime(day.year, day.month, day.day, 0, 0, 0))
+        if day_start > limit:
+            break
+        if day.weekday() < 5 and count_fn(day) < max_per_day:
+            for (hour, minute) in ALL_SLOT_TIMES:
+                candidate = tz.localize(datetime(day.year, day.month, day.day, hour, minute, 0))
+                if candidate <= now or candidate > limit:
+                    continue
+                if is_busy(candidate, busy_times, tz):
+                    continue
+                out.append({"id": candidate.isoformat(),
+                            "display": candidate.strftime("%A, %B %d at %I:%M %p EST")})
+                if len(out) >= max_slots:
+                    break
+        elif log and day.weekday() < 5:
+            log("[Capacity] %s has %s+ bookings — skipping" % (day, max_per_day))
+        day += timedelta(days=1)
+    return out
+
+
+def offer_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
+                within_hours=WINDOW_HOURS_DEFAULT, max_slots=DEFAULT_MAX_SLOTS, log=None):
+    """The slots Maya may OFFER: inside the window when any exist, otherwise
+    the FALLBACK_SLOTS nearest (one per business day) with fallback=True so
+    the caller can say so in #eric. -> (slots, fallback: bool)."""
+    inside = compute_slots_window(now, busy_times, tz, count_fn, max_per_day,
+                                  within_hours, max_slots, log)
+    if inside:
+        return inside, False
+    nearest = compute_slots(now, busy_times, tz, count_fn=count_fn, max_per_day=max_per_day,
+                            max_slots=FALLBACK_SLOTS, log=log)
+    return nearest, True

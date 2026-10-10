@@ -2063,23 +2063,46 @@ def confirmation_copy(stage_h, first_name, when_long, time_str, location=""):
     except (TypeError, ValueError):
         h = 24.0
 
+    # PATCH #157 (ERIC, 9 Oct): T-24 asks for the YES with Michael's name and
+    # the time; T-2 carries the address and Michael's name.
     if h < 12:
-        wa = (f"Hi {fn}! See you soon — your session with MWM Creations starts "
-              f"at {time_str} today. Reply here if you need anything!")
-        subject = f"Today at {time_str} — MWM Creations & Studios"
+        where = f" — {location}" if location else ""
+        wa = (f"Hi {fn}! See you at {time_str} today for your visit with Michael "
+              f"Moraes{where}. Reply here if anything changes.")
+        subject = f"Today at {time_str} with Michael — MWM Creations & Studios"
+    elif 12 <= h < 36:
+        wa = (f"Hi {fn}! Maya from MWM Creations here 😊 Reply YES to confirm your "
+              f"visit with Michael tomorrow at {time_str} ({when_long}). Need to "
+              f"move it? Reply here and I'll find another time.")
+        subject = f"Reply YES to confirm — tomorrow at {time_str} with Michael"
     else:
         wa = (f"Hi {fn}! Maya from MWM Creations here 😊 Reminder about your "
               f"session {phrase} — {when_long} at {time_str}. Could you reply "
               f"YES to confirm? Reply here if you need to reschedule.")
         subject = f"Confirming your session — {when_long}"
 
-    html = (f"<p>Hi {fn},</p>"
-            f"<p>Confirming your session with MWM Creations &amp; Studios "
-            f"<b>{phrase}</b> — {when_long} at {time_str}.</p>"
-            + (f"<p>Location: {location}</p>" if location else "")
-            + f"<p>Could you reply to confirm you're coming? If you need to "
-              f"move it, just tell me and I'll find another time.</p>"
-              f"<p>— MWM Creations &amp; Studios</p>")
+    if h < 12:
+        html = (f"<p>Hi {fn},</p>"
+                f"<p>See you <b>today at {time_str}</b> for your visit with Michael Moraes "
+                f"at MWM Creations &amp; Studios.</p>"
+                + (f"<p>Address: {location}</p>" if location else "")
+                + f"<p>Reply here if anything changes.</p>"
+                  f"<p>— Maya, MWM Creations &amp; Studios</p>")
+    elif 12 <= h < 36:
+        html = (f"<p>Hi {fn},</p>"
+                f"<p><b>Reply YES</b> to confirm your visit with Michael tomorrow at "
+                f"<b>{time_str}</b> ({when_long}).</p>"
+                + (f"<p>Location: {location}</p>" if location else "")
+                + f"<p>Need to move it? Reply here and I'll find another time.</p>"
+                  f"<p>— Maya, MWM Creations &amp; Studios</p>")
+    else:
+        html = (f"<p>Hi {fn},</p>"
+                f"<p>Confirming your session with MWM Creations &amp; Studios "
+                f"<b>{phrase}</b> — {when_long} at {time_str}.</p>"
+                + (f"<p>Location: {location}</p>" if location else "")
+                + f"<p>Could you reply to confirm you're coming? If you need to "
+                  f"move it, just tell me and I'll find another time.</p>"
+                  f"<p>— MWM Creations &amp; Studios</p>")
     return wa, subject, html
 
 
@@ -2274,17 +2297,19 @@ def outcome_plan(outcome, channel=CH_UNKNOWN, has_email=False,
     # Speed is the whole value here: a same-day rebook offer converts, a
     # day-3 one does not.
     if outcome == "no_show":
-        plan["close_after_days"] = 5
+        # PATCH #157 (ERIC, 9 Oct): same-day rebook on the lead's channel with
+        # two slots inside 48 h, a second touch 24 h later, then stop.
+        plan["close_after_days"] = 3
         plan["owner"] = "MAYA"
         native = _reachable(channel, has_email, hours_since_inbound)
         plan["steps"] = [(0, native, STEP_REBOOK)]
         if has_email:
-            plan["steps"].append((48, CH_WEB, STEP_REBOOK))
+            plan["steps"].append((24, CH_WEB, STEP_REBOOK))
         elif native != CH_WEB:
-            plan["steps"].append((48, native, STEP_EMAIL_ASK))
-        plan["why"] = ("same-day rebook offer, one more at 48h, closed at day 5. "
-                       "Speed is the value — a same-day offer rebooks, a day-3 "
-                       "offer does not.")
+            plan["steps"].append((24, native, STEP_REBOOK))
+        plan["why"] = ("same-day rebook with two slots inside 48 h, one more at 24 h, "
+                       "closed at day 3. Speed is the value — a same-day offer "
+                       "rebooks, a day-3 offer does not.")
         return plan
 
     # ── FOLLOW-UP — softer and slower than the pitch. Michael talked to them
@@ -2340,10 +2365,38 @@ def _reachable(channel, has_email, hours_since_inbound):
             return CH_INSTAGRAM
         return CH_WEB if has_email else CH_UNKNOWN
     if channel == CH_WHATSAPP:
+        # PATCH #157 — the same trap as Instagram, found on Sessa (6 Oct): his
+        # same-day rebook was armed on WhatsApp with a closed 24h window, the
+        # free-form send was prevented pre-flight, and the only thing he ever
+        # received was the email two days later. A known-closed window with an
+        # email on file goes to email NOW; with no email it stays WhatsApp so
+        # the sender can still try (a reopened window) and escalate honestly.
+        if hours_since_inbound is not None and float(hours_since_inbound) >= 24 and has_email:
+            return CH_WEB
         return CH_WHATSAPP
     if has_email:
         return CH_WEB
     return CH_UNKNOWN
+
+
+# PATCH #157 — the unconfirmed-visit watcher (ERIC, 9 Oct): no reply to the
+# T-24 "Reply YES" by T-3 h -> Michael gets "unconfirmed: {name} {time}".
+UNCONFIRMED_CHECK_H = 3
+
+
+def unconfirmed_due(hours_until, tolerance=0.5):
+    """True inside the T-3 h window (the loop polls every 15 min)."""
+    try:
+        h = float(hours_until)
+    except (TypeError, ValueError):
+        return False
+    return (UNCONFIRMED_CHECK_H - tolerance) <= h <= (UNCONFIRMED_CHECK_H + tolerance)
+
+
+def unconfirmed_text(name, time_str, when_long=""):
+    """The operator line. Short: it is read on a phone between calls."""
+    nm = str(name or "").strip() or "the lead"
+    return f"unconfirmed: {nm} {time_str}" + (f" ({when_long})" if when_long else "")
 
 
 def plan_is_deliverable(plan):

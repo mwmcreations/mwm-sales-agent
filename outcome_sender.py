@@ -135,6 +135,24 @@ def _short_business(business):
     return b
 
 
+def _rebook_slots():
+    """PATCH #157 — up to two slot displays inside 48 h, from the injected
+    `slots` provider (app.py: get_available_slots). [] when none or unset."""
+    fn = _deps.get("slots")
+    if not fn:
+        return []
+    try:
+        out = []
+        for s in (fn() or [])[:2]:
+            d = s.get("display") if isinstance(s, dict) else str(s)
+            if d:
+                out.append(str(d).replace(" EST", "").replace(" EDT", ""))
+        return out
+    except Exception as exc:
+        print(f"[OUTCOME SEQ] slots unavailable: {exc}")
+        return []
+
+
 def _email_copy(kind, first, business="", agreed_next=""):
     """(subject, html) for an email step."""
     biz = f" for {_short_business(business)}" if str(business or "").strip() else ""
@@ -196,12 +214,19 @@ def _email_copy(kind, first, business="", agreed_next=""):
             + sign)
 
     if kind == STEP_REBOOK:
+        # PATCH #157 — two named slots inside 48 h when the caller has them.
+        slots = _rebook_slots()
+        if slots:
+            offer = (f"<p>I have <b>{slots[0]}</b>" + (f" or <b>{slots[1]}</b>" if len(slots) > 1 else "")
+                     + " — reply with the one that works and I'll lock it in.</p>")
+        else:
+            offer = (f"<p>Pick any time that suits you here and I'll be there: "
+                     f"<a href=\"{BOOK_URL}\">{BOOK_URL}</a></p>")
         return (
             f"{first} — want to grab another time?",
             f"<p>Hi {first},</p>"
             f"<p>We missed each other today — no problem at all, it happens.</p>"
-            f"<p>Pick any time that suits you here and I'll be there: "
-            f"<a href=\"{BOOK_URL}\">{BOOK_URL}</a></p>"
+            + offer +
             f"<p>Or just reply with a couple of times that work and I'll set it up.</p>"
             + sign)
 
@@ -257,6 +282,11 @@ def _short_copy(kind, first, business="", agreed_next=""):
                 f"where things stand — no pressure either way. If the timing isn't "
                 f"right, tell me and I'll stop following up 🙂")
     if kind == STEP_REBOOK:
+        slots = _rebook_slots()
+        if slots:
+            return (f"Hi {first}, we missed each other today — no problem at all. "
+                    f"Michael has {slots[0]}" + (f" or {slots[1]}" if len(slots) > 1 else "")
+                    + ". Which works? Or send me a time and I'll set it up.")
         return (f"Hi {first}, we missed each other today — no problem at all. "
                 f"Want to grab another time? You can pick any slot here: {BOOK_URL} "
                 f"— or just send me a couple of times that work.")
@@ -311,7 +341,23 @@ def _deliver(channel, kind, rec, key, seq):
         if not phone:
             return False, "no phone on record"
         res = _deps["send_whatsapp"](phone, _short_copy(kind, first, business, agreed))
-        return bool(res), "" if res else "whatsapp send returned nothing"
+        if res:
+            return True, ""
+        # PATCH #157 — a closed WhatsApp window must not cost the lead the
+        # step (Sessa, 6 Oct: the same-day rebook died here and he heard
+        # nothing until the day-2 email). Same step, by email, now.
+        if email:
+            subject, html = _email_copy(kind, first, business, agreed)
+            r2 = _deps["send_email"](email, subject, html)
+            if isinstance(r2, dict):
+                if r2.get("suppressed"):
+                    return False, f"SUPPRESSED: {r2.get('error', '')}"
+                if r2.get("ok"):
+                    return True, "WhatsApp unavailable -> sent by email"
+                return False, f"whatsapp send returned nothing; email failed: {r2.get('error', '')}"
+            if r2:
+                return True, "WhatsApp unavailable -> sent by email"
+        return False, "whatsapp send returned nothing"
 
     if channel == CH_INSTAGRAM:
         igsid = str(rec.get("igsid") or key or "").strip()
@@ -470,7 +516,8 @@ def _pass(now=None):
             if ok:
                 seq["next_step"] = idx + 1
                 seq.setdefault("sent", []).append(
-                    {"step": kind, "channel": channel, "at": now.isoformat()})
+                    {"step": kind, "channel": channel, "at": now.isoformat(),
+                     **({"note": note} if note else {})})
                 out["sent"] += 1
                 try:
                     _deps["pg_save"]("outcome_seq:" + str(key), seq)

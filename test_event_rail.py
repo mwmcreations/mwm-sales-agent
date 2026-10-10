@@ -748,8 +748,8 @@ for _oc in ("client_won", "follow_up", "studio_package_pitched",
 print("\n== #39: EVERY sequence has an ending (the Ezechiel rule) ==")
 for _oc in ("follow_up", "studio_package_pitched", "completed", "no_show"):
     check_true(f"{_oc} closes", outcome_plan(_oc, CH_WHATSAPP, True)["close_after_days"] is not None)
-check("no-show closes fastest — speed is the value",
-      outcome_plan("no_show", CH_WHATSAPP, True)["close_after_days"], 5)
+check("no-show closes fastest — speed is the value (#157: day 3)",
+      outcome_plan("no_show", CH_WHATSAPP, True)["close_after_days"], 3)
 
 print("\n== #39: completed ALWAYS routes to editing, no keyword test ==")
 check_true("completed -> editing", outcome_plan("completed", CH_WHATSAPP, True)["editing"])
