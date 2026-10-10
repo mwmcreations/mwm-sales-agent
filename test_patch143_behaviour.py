@@ -39,7 +39,7 @@ class Tally:
     def __init__(self): self.calls = []
     def bump(self, *a): self.calls.append(a)
 calls = {"sms": [], "email": [], "sheet_rows": [], "sheet_updates": [], "slack": [],
-         "pipeline": [], "consent": [], "stamp": [], "errors": [], "graph": []}
+         "pipeline": [], "consent": [], "stamp": [], "errors": [], "graph": [], "call_now": []}
 LEAD_JSON = {}
 SMS_RESULT = {"ok": True, "sid": "SM123"}
 class Resp:
@@ -94,6 +94,9 @@ G = dict(
     SMS_KIND_TRANSACTIONAL="transactional", SMS_KIND_MARKETING="marketing",
     _heartbeat=lambda n: None,
     _capi=_capi, re=__import__("re"),
+    # PATCH #156 — the CALL NOW alert is recorded, never sent, here
+    _CALL_NOW_LAST={"skipped_internal": 0},
+    _call_now_alert=lambda key, name, rec, verdict, label, phone, now: (calls["call_now"].append((key, name, verdict, phone)) or "sent"),
     _sms_consent_get=lambda e164: {"status": "yes", "marketing": True, "transactional": True} if e164 else {},
     _record_win=lambda key, deal_value=0, service="", notes="": calls["wins"].append((key, deal_value, service)),
     OUTCOME_SHEET_STATUS={"client_won": "Client Won", "follow_up": "Visited — Follow-up",
@@ -159,6 +162,8 @@ ok(rec.get("first_touch_sms_at") and rec.get("first_touch_email_at"), "first-tou
 dev = [t for c, t in calls["slack"] if c == "#dev"]
 ok(len(dev) == 1 and "qualified: *yes*" in dev[0] and "SMS: sent" in dev[0] and "email: sent" in dev[0] and "sheet: ok" in dev[0], "#dev evidence line")
 ok(any(c == "#maya" for c, _ in calls["slack"]) and any(c == "#eric" for c, _ in calls["slack"]), "#maya + #eric told")
+ok(len(calls["call_now"]) == 1 and calls["call_now"][0][3] == "+14075551234" and calls["call_now"][0][2] == "yes", "CALL NOW to Michael fired with the lead's number (#156)")
+ok(any("CALL NOW to Michael: sent" in tx for c, tx in calls["slack"] if c == "#dev"), "#dev line carries the CALL NOW outcome")
 ok(calls["pipeline"] and calls["pipeline"][0].get("new_stage") == "New", "pipeline NEW_LEAD")
 ok(calls["errors"] == [], "no errors reported")
 
@@ -237,6 +242,7 @@ ok(calls["email"] == [] and rec["chase"]["channels"] == ["sms"], "internal email
 ok(rec.get("ai_interest") == "ad_id" and rec["utm_campaign"] == "AD_19 | Film once | AI | Oct 2026", "AI flag from the ad id; label from Meta's ad_name")
 dev = [t for c, t in calls["slack"] if c == "#dev"]
 ok(dev and "*TEST (internal number)*" in dev[0], "#dev line marks the test")
+ok(all(k[3] != "+18135031224" for k in calls["call_now"]) and "CALL NOW to Michael: skipped (internal number)" in dev[0], "no CALL NOW for Michael's own line (#156)")
 
 # ── 6 · the chain over a month ───────────────────────────────────────────
 print("\n== 6 · the chase loop")

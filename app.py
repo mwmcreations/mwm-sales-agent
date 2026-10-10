@@ -50,6 +50,8 @@ import icp as _icp            # S31 — who we are for
 import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
+import call_now as _cn        # Patch #156 — speed to a human: the CALL NOW alert
+import reengage as _rg        # Patch #156/#158 — the one-off cold-list push (counts, then the send)
 import meta_capi as _capi     # Patch #145 — Lead / Schedule / Purchase back to Meta
 import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
@@ -8637,6 +8639,88 @@ _operator_alert.configure(
     pg_save=_operator_pg_save,
     today=lambda: datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d"),
 )
+
+
+# ── PATCH #156 — CALL NOW: speed to a human ──────────────────────────────
+# ERIC, 9 Oct (Michael's order): every form lead with a phone -> SMS to
+# Michael + the #eric line within minutes, "CALL NOW", 8 AM-8 PM ET; outside
+# the window the text waits for 8:00 AM in a pg-backed queue (the #eric line
+# goes at once and says so). Rides operator_alert (#149): the operator number
+# only, never WhatsApp, never a lead.
+_CALL_NOW_LAST = {"sent": 0, "queued": 0, "flushed": 0, "skipped_internal": 0,
+                  "last_at": "", "last_lead": "", "queue_depth": 0, "last_flush_at": ""}
+
+
+def _call_now_queue_get():
+    import pg_store as _pg
+    if not _pg.enabled():
+        return []
+    try:
+        return list(_pg.load_state(_cn.QUEUE_KEY, []) or [])
+    except Exception:
+        return []
+
+
+def _call_now_queue_put(q):
+    import pg_store as _pg
+    if _pg.enabled():
+        try:
+            _pg.save_state(_cn.QUEUE_KEY, list(q or []))
+        except Exception as _qx:
+            _report_error("call_now.queue_save", _qx)
+    _CALL_NOW_LAST["queue_depth"] = len(q or [])
+
+
+def _call_now_alert(lead_key, name, rec, verdict, label, phone, now):
+    """One CALL NOW for one form lead. Returns 'sent' | 'queued' | reason."""
+    sms, eric = _cn.compose(name, rec.get("business"), phone, rec.get("revenue_raw"),
+                            rec.get("role_raw"), rec.get("must_understand"), verdict,
+                            ad_label=label, pretty=_lf.pretty)
+    if _cn.in_window(now):
+        out = _operator_alert.alert("lead", sms, eric_text=eric)
+        _CALL_NOW_LAST.update(sent=_CALL_NOW_LAST["sent"] + (1 if out.get("sms") == "sent" else 0),
+                              last_at=now.isoformat(), last_lead=mask_contact(lead_key))
+        _TALLY.bump("call_now", out.get("sms", "?"))
+        return out.get("sms", "?")
+    q = _cn.enqueue(_call_now_queue_get(), sms, eric, lead_key, now)
+    _call_now_queue_put(q)
+    note = _cn.queued_note(now)
+    _post_to_slack_async(SLACK_ERIC_CHANNEL, f"{eric}\n_{note}_")
+    _CALL_NOW_LAST.update(queued=_CALL_NOW_LAST["queued"] + 1, last_at=now.isoformat(),
+                          last_lead=mask_contact(lead_key))
+    _TALLY.bump("call_now", "queued")
+    return "queued"
+
+
+def _call_now_flush(now=None):
+    """Send what the night queued, once the window is open. Rides the chase
+    loop (every LEAD_CHASE_CYCLE_S), so a queued text leaves within minutes of
+    8:00 AM. Never raises."""
+    try:
+        now = now or datetime.now(pytz.timezone(TIMEZONE))
+        q = _call_now_queue_get()
+        to_send, remaining = _cn.due(q, now)
+        if not to_send:
+            return 0
+        sent = 0
+        for item in to_send:
+            try:
+                out = _operator_alert.alert(
+                    "lead", item.get("sms", ""),
+                    eric_text=(item.get("eric", "") + "\n_queued overnight, text to Michael now_"))
+                if out.get("sms") == "sent":
+                    sent += 1
+                else:
+                    _TALLY.bump("call_now.flush_failed", str(out.get("sms")))
+            except Exception as _fx:
+                _report_error("call_now.flush_item", _fx, item.get("lead_key", ""))
+        _call_now_queue_put(remaining)
+        _CALL_NOW_LAST.update(flushed=_CALL_NOW_LAST["flushed"] + sent,
+                              last_flush_at=now.isoformat())
+        return sent
+    except Exception as _e:
+        _report_error("call_now.flush", _e)
+        return 0
 
 
 # ── PATCH #111 — know who already pays us ─────────────────────────────────
@@ -19270,6 +19354,7 @@ def health_check():
         "lead_chase": dict(_LEAD_CHASE_LAST),
         "capi": _capi.status(),                    # PATCH #145
         "operator_alert": _operator_alert.status(),  # PATCH #149
+        "call_now": {**_CALL_NOW_LAST, "window_et": f"{_cn.WINDOW_START_H:02d}:00-{_cn.WINDOW_END_H:02d}:00"},  # PATCH #156
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         # PATCH #151 — the leads table's connection health. `conn.retries`
         # climbing with `conn.recovered` is the private network blinking and
@@ -19829,6 +19914,20 @@ def _meta_lead_intake(value, lead_meta=None):
             _icp.mark_disqualified(lr, _icp.REASON_NOT_TARGET_MARKET,
                                    at=now.isoformat(), by="lead_form", note=reason)
             lead_data[sender_key] = lr
+        # PATCH #156 — speed to a human. Before the sheet, before the first
+        # touch: the phone goes to Michael now. Every verdict; a human calling
+        # back needs no texting consent. Not for Michael's own test line.
+        call_now_note = "no phone"
+        try:
+            _cn_phone = e164 or (rec["phone"] or "").strip()
+            if _cn_phone and internal:
+                call_now_note = "skipped (internal number)"
+                _CALL_NOW_LAST["skipped_internal"] += 1
+            elif _cn_phone:
+                call_now_note = _call_now_alert(sender_key, name, rec, verdict, label, _cn_phone, now)
+        except Exception as _cnx:
+            call_now_note = "error"
+            _report_error("call_now", _cnx, leadgen_id)
         # PATCH #148 — the studio-hour track is dark until Michael OKs its copy
         # (Railway STUDIO_HOUR_TRACK_LIVE=1). Until then a sub-$50K owner is
         # HELD: row written, nothing sent, nobody brushed off, ERIC told that
@@ -19990,7 +20089,8 @@ def _meta_lead_intake(value, lead_meta=None):
             f"{_lf.pretty(rec['revenue_raw']) or '?'} · ad {label or ad_id or 'organic'}\n"
             f"qualified: *{verdict}* ({reason}){track_txt} · sms_consent: {'yes/lead_form ' + consent_ts if consent else 'no'}\n"
             f"sheet: {sheet_note} · SMS: {sms_note} · email: {email_note} · "
-            f"slots: {_slot_txt} · chain: {_chase.summary(lr.get('chase'), now)}"
+            f"slots: {_slot_txt} · chain: {_chase.summary(lr.get('chase'), now)} · "
+            f"CALL NOW to Michael: {call_now_note}"
             + (" · *TEST (internal number)*" if internal else ""))
         _post_to_slack_async(SLACK_MAYA_CHANNEL,
             f"*NEW LEAD — Instant Form* ({label or 'organic'})\n"
@@ -20272,6 +20372,7 @@ def _lead_chase_loop():
     _t.sleep(90)
     while True:
         try:
+            _call_now_flush()             # PATCH #156 — the overnight CALL NOW texts, at 8 AM
             counts = _chase_pass()
             _LEAD_CHASE_LAST.update({
                 "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
@@ -25701,6 +25802,49 @@ def admin_attribution_backfill():
     except Exception as e:
         _report_error("admin_attribution_backfill (PATCH #136)", e, f"tab={tab}")
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
+
+
+@app.route('/admin/reengage-oct12', methods=['GET'])
+def admin_reengage_oct12():
+    """PATCH #156 — the counts behind ERIC's one-off cold-list push (item 3,
+    9 Oct). /admin/reengage-oct12?secret=<UPLOAD_SECRET>[&list=1]
+
+    Read-only. Walks the lead database (the single source of truth the
+    "MWM Cold Leads – Retargeting" audience is built from), drops clients,
+    people who said no, do-not-contact, internal and test records, and
+    reports who can be reached by email, by SMS (marketing consent on file),
+    who has an open WhatsApp window and who is Orlando-area. `list=1` adds a
+    masked sample. The send itself is PATCH #158, armed only after Michael
+    OKs the copy.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _now = datetime.now(pytz.timezone(TIMEZONE))
+    _rows = []
+    for _k, _r in list(lead_data.items()):
+        if not isinstance(_r, dict):
+            continue
+        _ph = re.sub(r"\D", "", str(_r.get("phone") or (_k if str(_k).startswith("whatsapp:") else "")))
+        if len(_ph) == 10:
+            _ph = "1" + _ph
+        _consent = _sms_consent_get("+" + _ph) if len(_ph) == 11 else {}
+        _f = _rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed,
+                          is_internal=_is_internal_number)
+        if _f:
+            _rows.append(_f)
+    _sum = _rg.summarize(_rows)
+    _out = {"ok": True, "as_of": _get_current_time_edt(), "tag": _rg.TAG, "summary": _sum,
+            "rules": {"email": "deliverable address, not on the do-not-contact list",
+                      "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
+                      "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
+                      "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
+                      "excluded": "clients, said no, disqualified, do-not-contact, internal and test records"}}
+    if str(request.args.get("list") or "") in ("1", "true"):
+        _out["sample"] = [{"key": mask_contact(r["key"]), "name": r["name"], "channel": r["channel"],
+                           "email": r["email"], "sms": r["sms"], "wa_open": r["wa_open"],
+                           "orlando": r["orlando"], "active_7d": r["active_7d"]} for r in _rows[:40]]
+    _TALLY.bump("reengage.count", str(_sum["candidates"]))
+    return jsonify(_out), 200
 
 
 @app.route('/admin/lead-form-repair', methods=['GET'])
