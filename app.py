@@ -19446,6 +19446,7 @@ def health_check():
         "capi": _capi.status(),                    # PATCH #145
         "operator_alert": _operator_alert.status(),  # PATCH #149
         "call_now": {**_CALL_NOW_LAST, "window_et": f"{_cn.WINDOW_START_H:02d}:00-{_cn.WINDOW_END_H:02d}:00"},  # PATCH #156
+        "reengage_oct12": dict(_REENGAGE_LAST),                 # PATCH #158
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         # PATCH #151 — the leads table's connection health. `conn.retries`
         # climbing with `conn.recovered` is the private network blinking and
@@ -20464,6 +20465,7 @@ def _lead_chase_loop():
     while True:
         try:
             _call_now_flush()             # PATCH #156 — the overnight CALL NOW texts, at 8 AM
+            _reengage_tick()              # PATCH #158 — the armed one-off send, when its time comes
             counts = _chase_pass()
             _LEAD_CHASE_LAST.update({
                 "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
@@ -25896,26 +25898,15 @@ def admin_attribution_backfill():
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
 
 
-@app.route('/admin/reengage-oct12', methods=['GET'])
-def admin_reengage_oct12():
-    """PATCH #156 — the counts behind ERIC's one-off cold-list push (item 3,
-    9 Oct). /admin/reengage-oct12?secret=<UPLOAD_SECRET>[&list=1]
+_REENGAGE_LAST = {"armed_for": "", "ran_at": "", "sent_email": 0, "sent_sms": 0,
+                  "failed": 0, "suppressed": 0, "candidates": 0, "last_error": ""}
 
-    Read-only. Walks the lead database (the single source of truth the
-    "MWM Cold Leads – Retargeting" audience is built from), drops clients,
-    people who said no, do-not-contact, internal and test records, and
-    reports who can be reached by email, by SMS (marketing consent on file),
-    who has an open WhatsApp window and who is Orlando-area. `list=1` adds a
-    masked sample. The send itself is PATCH #158, armed only after Michael
-    OKs the copy.
-    """
-    if not _admin_secret_ok(request.args.get("secret")):
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    _now = datetime.now(pytz.timezone(TIMEZONE))
-    _rows = []
-    # PATCH #156b — all consent records in one query, not one per lead
+
+def _reengage_rows(now):
+    """Every candidate as reengage.classify sees it (one consent query)."""
     import pg_store as _pgc
     _consents = {k[len("sms_consent:"):]: v for k, v in (_pgc.load_prefix("sms_consent:") or {}).items()}
+    rows = []
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
             continue
@@ -25923,23 +25914,191 @@ def admin_reengage_oct12():
         if len(_ph) == 10:
             _ph = "1" + _ph
         _consent = (_consents.get("+" + _ph) or _consents.get(_ph) or {}) if len(_ph) == 11 else {}
-        _f = _rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed,
+        _f = _rg.classify(_k, _r, now, consent=_consent, email_suppressed=email_is_suppressed,
                           is_internal=_is_internal_number)
         if _f:
-            _rows.append(_f)
-    _sum = _rg.summarize(_rows)
-    _out = {"ok": True, "as_of": _get_current_time_edt(), "tag": _rg.TAG, "summary": _sum,
-            "rules": {"email": "deliverable address, not on the do-not-contact list",
-                      "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
-                      "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
-                      "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
-                      "excluded": "clients, said no, disqualified, do-not-contact, internal and test records"}}
-    if str(request.args.get("list") or "") in ("1", "true"):
-        _out["sample"] = [{"key": mask_contact(r["key"]), "name": r["name"], "channel": r["channel"],
-                           "email": r["email"], "sms": r["sms"], "wa_open": r["wa_open"],
-                           "orlando": r["orlando"], "active_7d": r["active_7d"]} for r in _rows[:40]]
-    _TALLY.bump("reengage.count", str(_sum["candidates"]))
-    return jsonify(_out), 200
+            _f["_email"] = str(_r.get("email") or "").strip().lower()
+            _f["_phone"] = ("+" + _ph) if len(_ph) == 11 else ""
+            _f["_already"] = bool(_r.get("reengage_oct12"))
+            rows.append(_f)
+    return rows
+
+
+def _reengage_send(now, dry=True, limit=None):
+    """PATCH #158 — the one-off send. dry=True renders and counts without
+    sending. Idempotent: a record that already carries `reengage_oct12` is
+    never sent twice. Returns the summary dict."""
+    import time as _t
+    rows = _reengage_rows(now)
+    slots = get_available_slots() or []
+    out = {"at": now.isoformat(), "dry": dry, "candidates": len(rows), "slots": [s.get("display") for s in slots],
+           "email_sent": 0, "sms_sent": 0, "skipped_already": 0, "suppressed": 0, "failed": 0, "sms_refused": 0,
+           "tagged": 0, "preview": None}
+    subj, html, text = _rg.email_copy("there", slots)
+    out["preview"] = {"subject": subj, "text": text, "sms": _sms_copy.compose(_rg.sms_copy("there", slots))}
+    n = 0
+    for r in rows:
+        if not (r["email"] or r["sms"]):
+            continue
+        if r["_already"]:
+            out["skipped_already"] += 1
+            continue
+        if limit is not None and n >= int(limit):
+            break
+        n += 1
+        if dry:
+            continue
+        key = r["key"]
+        rec = lead_data.get(key)
+        if not isinstance(rec, dict):
+            continue
+        stamp = {"at": now.isoformat(), "email": "", "sms": ""}
+        if r["email"] and r["_email"]:
+            s_, h_, _ = _rg.email_copy(r["name"], slots)
+            res = _email_send(r["_email"], s_, h_, via="reengage-oct12", lead_key=key)
+            if email_ok(res):
+                out["email_sent"] += 1
+                stamp["email"] = "sent"
+            elif isinstance(res, dict) and res.get("suppressed"):
+                out["suppressed"] += 1
+                stamp["email"] = "suppressed"
+            else:
+                out["failed"] += 1
+                stamp["email"] = "failed"
+        if r["sms"] and r["_phone"]:
+            try:
+                body = _sms_body_that_fits((lambda: _rg.sms_copy(r["name"], slots),
+                                            lambda: _rg.sms_copy(r["name"], slots[:1]),
+                                            lambda: _rg.sms_copy(r["name"], [])))
+                sres = _send_sms(r["_phone"], body, kind=SMS_KIND_MARKETING) or {}
+                if sres.get("ok"):
+                    out["sms_sent"] += 1
+                    stamp["sms"] = "sent"
+                else:
+                    out["sms_refused"] += 1
+                    stamp["sms"] = f"refused ({sres.get('reason', '?')})"
+            except Exception as _sx:
+                out["sms_refused"] += 1
+                stamp["sms"] = f"error ({str(_sx)[:40]})"
+        rec["reengage_oct12"] = stamp
+        rec["reengage_tag"] = _rg.TAG
+        lead_data[key] = rec
+        try:
+            update_lead_columns(key, {"Ad Campaign": _rg.TAG})
+            out["tagged"] += 1
+        except Exception:
+            pass
+        _t.sleep(0.4)
+    return out
+
+
+def _reengage_tick(now=None):
+    """Rides the chase loop: when the armed time has come, run the send once
+    and post the summary. Never raises."""
+    try:
+        import pg_store as _pgr
+        if not _pgr.enabled():
+            return
+        now = now or datetime.now(pytz.timezone(TIMEZONE))
+        armed = _pgr.load_state(_rg.SEND_AT_KEY, "")
+        _REENGAGE_LAST["armed_for"] = str(armed or "")
+        if not armed or _pgr.load_state(_rg.DONE_KEY, None) or not _rg.is_due(armed, now):
+            return
+        _pgr.save_state(_rg.DONE_KEY, {"started": now.isoformat()})   # claim first: never twice
+        out = _reengage_send(now, dry=False)
+        _pgr.save_state(_rg.DONE_KEY, out)
+        _REENGAGE_LAST.update(ran_at=now.isoformat(), sent_email=out["email_sent"], sent_sms=out["sms_sent"],
+                              failed=out["failed"], suppressed=out["suppressed"], candidates=out["candidates"])
+        _TALLY.bump("reengage.sent", f"{out['email_sent']} email, {out['sms_sent']} sms")
+        line = (f":mailbox_with_mail: *reengage-oct12 went out* — {out['email_sent']} emails, {out['sms_sent']} texts; "
+                f"{out['suppressed']} suppressed, {out['failed']} failed, {out['sms_refused']} texts refused; "
+                f"slots offered: {', '.join(out['slots']) or 'none'}. Replies go to Maya; sheet column Ad Campaign = {_rg.TAG}.")
+        _post_to_slack_async(SLACK_ERIC_CHANNEL, line)
+        _post_to_slack_async(SLACK_DEV_CHANNEL, line)
+    except Exception as _e:
+        _REENGAGE_LAST["last_error"] = str(_e)[:200]
+        _report_error("reengage.tick", _e)
+
+
+@app.route('/admin/reengage-oct12', methods=['GET'])
+def admin_reengage_oct12():
+    """PATCH #156/#158 — ERIC's one-off cold-list push (item 3, 9 Oct).
+
+    /admin/reengage-oct12?secret=<UPLOAD_SECRET>&mode=count[&list=1]   (default; read-only)
+    &mode=preview            the copy with today's slots + who would get it (no send)
+    &mode=arm&at=<ISO ET>    arm the send for that time (Michael's OK first)
+    &mode=disarm             clear it
+    &mode=status             armed time / done summary
+    &mode=send&go=1          send NOW (same idempotent path the tick uses)
+
+    Candidates: the lead database minus clients, people who said no,
+    disqualified, do-not-contact, internal and test records. Email to every
+    deliverable address; SMS only with a marketing-consent record. A record
+    is tagged `reengage_oct12` and the sheet's Ad Campaign cell set to
+    reengage-oct12, so it is never sent twice and the scorecard can keep
+    them apart from ad leads.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    import pg_store as _pgr
+    _mode = str(request.args.get("mode") or "count").strip().lower()
+    _now = datetime.now(pytz.timezone(TIMEZONE))
+    if _mode == "count":
+        _rows = _reengage_rows(_now)
+        _sum = _rg.summarize(_rows)
+        _sum["already_sent"] = sum(1 for r in _rows if r["_already"])
+        _out = {"ok": True, "as_of": _get_current_time_edt(), "tag": _rg.TAG, "summary": _sum,
+                "rules": {"email": "deliverable address, not on the do-not-contact list",
+                          "sms": "US mobile with a marketing-consent record (status yes, marketing not false) and no do_not_sms",
+                          "open_whatsapp_window": "WhatsApp lead with an inbound message in the last 24 h",
+                          "orlando_area": "area codes 407 / 321 / 689", "central_fl": "352 / 386 / 863 / 772",
+                          "excluded": "clients, said no, disqualified, do-not-contact, internal and test records"}}
+        if str(request.args.get("list") or "") in ("1", "true"):
+            _out["sample"] = [{"key": mask_contact(r["key"]), "name": r["name"], "channel": r["channel"],
+                               "email": r["email"], "sms": r["sms"], "wa_open": r["wa_open"],
+                               "orlando": r["orlando"], "active_7d": r["active_7d"]} for r in _rows[:40]]
+        _TALLY.bump("reengage.count", str(_sum["candidates"]))
+        return jsonify(_out), 200
+    if _mode == "preview":
+        _out = _reengage_send(_now, dry=True)
+        _rows = _reengage_rows(_now)
+        _out["would_email"] = [{"key": mask_contact(r["key"]), "name": r["name"], "email": mask_contact(r["_email"])}
+                               for r in _rows if r["email"] and not r["_already"]]
+        _out["would_sms"] = [{"key": mask_contact(r["key"]), "name": r["name"]} for r in _rows if r["sms"] and not r["_already"]]
+        return jsonify({"ok": True, **_out}), 200
+    if _mode == "arm":
+        _at = str(request.args.get("at") or "").strip()
+        try:
+            _dt = datetime.fromisoformat(_at)
+            if _dt.tzinfo is None:
+                _dt = pytz.timezone(TIMEZONE).localize(_dt)
+        except Exception:
+            return jsonify({"ok": False, "error": "at must be an ISO time, e.g. 2026-10-12T10:00:00-04:00"}), 400
+        if _pgr.load_state(_rg.DONE_KEY, None):
+            return jsonify({"ok": False, "error": "already ran — see mode=status"}), 409
+        _pgr.save_state(_rg.SEND_AT_KEY, _dt.isoformat())
+        _REENGAGE_LAST["armed_for"] = _dt.isoformat()
+        _post_to_slack_async(SLACK_ERIC_CHANNEL, f":alarm_clock: *reengage-oct12 armed* for {_dt.strftime('%A %b %d, %-I:%M %p ET')} — "
+                                                 f"email to every deliverable address, SMS only with consent.")
+        return jsonify({"ok": True, "armed_for": _dt.isoformat()}), 200
+    if _mode == "disarm":
+        _pgr.save_state(_rg.SEND_AT_KEY, "")
+        _REENGAGE_LAST["armed_for"] = ""
+        return jsonify({"ok": True, "armed_for": ""}), 200
+    if _mode == "status":
+        return jsonify({"ok": True, "armed_for": _pgr.load_state(_rg.SEND_AT_KEY, ""),
+                        "done": _pgr.load_state(_rg.DONE_KEY, None), "last": dict(_REENGAGE_LAST)}), 200
+    if _mode == "send":
+        if str(request.args.get("go") or "") != "1":
+            return jsonify({"ok": False, "error": "mode=send needs go=1"}), 400
+        if _pgr.load_state(_rg.DONE_KEY, None):
+            return jsonify({"ok": False, "error": "already ran — see mode=status"}), 409
+        _pgr.save_state(_rg.DONE_KEY, {"started": _now.isoformat(), "by": "admin"})
+        _out = _reengage_send(_now, dry=False, limit=request.args.get("limit"))
+        _pgr.save_state(_rg.DONE_KEY, _out)
+        _REENGAGE_LAST.update(ran_at=_now.isoformat(), sent_email=_out["email_sent"], sent_sms=_out["sms_sent"])
+        return jsonify({"ok": True, **_out}), 200
+    return jsonify({"ok": False, "error": "unknown mode"}), 400
 
 
 @app.route('/admin/lead-form-repair', methods=['GET'])

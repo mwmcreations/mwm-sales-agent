@@ -138,10 +138,14 @@ check("wire.flush_in_chase_loop", "_call_now_flush()             # PATCH #156" i
 check("wire.health", '"call_now": {**_CALL_NOW_LAST' in SRC)
 check("wire.never_a_lead_number", "operator_phone" not in fn and "_send_sms(" not in fn, "only operator_alert may text")
 check("wire.count_route", "@app.route('/admin/reengage-oct12', methods=['GET'])" in SRC)
-rt = SRC[SRC.index("def admin_reengage_oct12():"):SRC.index("@app.route('/admin/lead-form-repair'")]
+_rt_start = SRC.index("def _reengage_rows(now):") if "def _reengage_rows(now):" in SRC else SRC.index("def admin_reengage_oct12():")
+rt = SRC[_rt_start:SRC.index("@app.route('/admin/lead-form-repair'")]
 check("wire.count_secret", '_admin_secret_ok(request.args.get("secret"))' in rt)
-check("wire.count_readonly", "lead_data[" not in rt and "upsert" not in rt and "_email_send" not in rt and "_send_sms" not in rt)
-check("wire.count_uses_module", "_rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed" in rt and "_rg.summarize(_rows)" in rt)
+_cnt = rt[rt.index("if _mode == \"count\":"):rt.index("if _mode == \"preview\":")] if "if _mode == \"count\":" in rt else rt
+check("wire.count_readonly", "lead_data[" not in _cnt and "upsert" not in _cnt and "_email_send" not in _cnt and "_send_sms" not in _cnt)
+check("wire.count_uses_module", ("_rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed" in rt
+                                  or "_rg.classify(_k, _r, now, consent=_consent, email_suppressed=email_is_suppressed" in rt)
+      and "_rg.summarize(_rows)" in rt)
 check("wire.count_masks", "mask_contact(r[\"key\"])" in rt)
 check("wire.count_one_query", '_pgc.load_prefix("sms_consent:")' in rt and "_sms_consent_get(" not in rt, "350 consent reads must be one query (#156b)")
 import pg_store as pgs

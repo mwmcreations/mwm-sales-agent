@@ -125,3 +125,90 @@ def summarize(rows):
         "by_channel": {ch: sum(1 for r in rows if r["channel"] == ch)
                        for ch in sorted({r["channel"] for r in rows})},
     }
+
+
+# ── PATCH #158 — the send ────────────────────────────────────────────────────
+# One email (and an SMS only where marketing consent exists) on Monday
+# 12 Oct, 10:00 AM ET, after Michael OKs the copy. Michael's first person,
+# no price, three named slots, reply or text Maya to book, "stop" honoured.
+
+SEND_AT_KEY = "reengage_oct12_send_at"      # pg: ISO time the send is armed for
+DONE_KEY = "reengage_oct12_done"            # pg: the summary once it ran
+SUBJECT = "Three studio visit slots this week"
+MAYA_WA = "+1 407-871-6473"
+
+
+def _first(name):
+    s = str(name or "").strip()
+    if "@" in s:
+        s = s.split("@", 1)[0]
+    s = s.split()[0] if s.split() else ""
+    s = re.sub(r"[^A-Za-zÀ-ɏ'\-]", "", s)
+    return (s[:1].upper() + s[1:]) if s and len(s) <= 20 else "there"
+
+
+def _slot_lines(slots):
+    out = []
+    for s in (slots or [])[:3]:
+        d = s.get("display") if isinstance(s, dict) else str(s)
+        if d:
+            out.append(str(d).replace(" EST", "").replace(" EDT", ""))
+    return out
+
+
+def email_copy(name, slots):
+    """(subject, html, text). The three slots are named at send time."""
+    fn = _first(name)
+    sl = _slot_lines(slots)
+    slot_txt = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(sl)) if sl else "  (reply with a day that works)"
+    slot_html = "".join(f"<li>{s}</li>" for s in sl) if sl else "<li>Reply with a day that works</li>"
+    text = (
+        f"Hi {fn},\n\n"
+        f"Michael Moraes here, from MWM Creations & Studios in Orlando. You reached out to us a while "
+        f"back, and I'd like to open the door again, simply: come and see the studio.\n\n"
+        f"A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
+        f"customers need to see before they buy. No pitch deck.\n\n"
+        f"I have three slots open this week:\n{slot_txt}\n\n"
+        f"Reply to this email with the one you want, or text Maya on my team at {MAYA_WA}, "
+        f"and she'll lock it in. If none of them work, send me a time that does.\n\n"
+        f"If you'd rather not hear from us, just reply \"stop\" and that's the end of it.\n\n"
+        f"Michael Moraes\n"
+        f"MWM Creations & Studios\n"
+        f"1500 Park Center Dr, Suite 230, Orlando, FL"
+    )
+    html = (
+        f"<p>Hi {fn},</p>"
+        f"<p>Michael Moraes here, from MWM Creations &amp; Studios in Orlando. You reached out to us a while "
+        f"back, and I'd like to open the door again, simply: come and see the studio.</p>"
+        f"<p>A studio visit is 30 minutes, free, and you leave with a clear plan for the videos your "
+        f"customers need to see before they buy. No pitch deck.</p>"
+        f"<p>I have three slots open this week:</p><ol>{slot_html}</ol>"
+        f"<p>Reply to this email with the one you want, or text Maya on my team at "
+        f"<b>{MAYA_WA}</b>, and she'll lock it in. If none of them work, send me a time that does.</p>"
+        f"<p style=\"color:#666;font-size:13px\">If you'd rather not hear from us, just reply \"stop\" and that's the end of it.</p>"
+        f"<p>Michael Moraes<br>MWM Creations &amp; Studios<br>1500 Park Center Dr, Suite 230, Orlando, FL</p>"
+    )
+    return SUBJECT, html, text
+
+
+def sms_copy(name, slots):
+    """Core of the marketing text (compose() wraps it with brand + STOP).
+    Two slots at most, so it stays inside two segments."""
+    fn = _first(name)
+    sl = _slot_lines(slots)[:2]
+    when = (" or ".join(sl)) if sl else "this week"
+    return (f"Hi {fn}, Michael Moraes (MWM Studios). Three free studio-visit slots this week - "
+            f"{when}. Reply with the one you want, or a time that works, and Maya books it.")
+
+
+def is_due(send_at_iso, now):
+    """True once `now` has reached the armed time (both tz-aware)."""
+    if not send_at_iso:
+        return False
+    try:
+        at = datetime.fromisoformat(str(send_at_iso))
+    except Exception:
+        return False
+    if at.tzinfo is None and now.tzinfo is not None:
+        at = at.replace(tzinfo=now.tzinfo)
+    return now >= at
