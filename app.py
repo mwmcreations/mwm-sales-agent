@@ -25821,13 +25821,16 @@ def admin_reengage_oct12():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     _now = datetime.now(pytz.timezone(TIMEZONE))
     _rows = []
+    # PATCH #156b — all consent records in one query, not one per lead
+    import pg_store as _pgc
+    _consents = {k[len("sms_consent:"):]: v for k, v in (_pgc.load_prefix("sms_consent:") or {}).items()}
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
             continue
         _ph = re.sub(r"\D", "", str(_r.get("phone") or (_k if str(_k).startswith("whatsapp:") else "")))
         if len(_ph) == 10:
             _ph = "1" + _ph
-        _consent = _sms_consent_get("+" + _ph) if len(_ph) == 11 else {}
+        _consent = (_consents.get("+" + _ph) or _consents.get(_ph) or {}) if len(_ph) == 11 else {}
         _f = _rg.classify(_k, _r, _now, consent=_consent, email_suppressed=email_is_suppressed,
                           is_internal=_is_internal_number)
         if _f:

@@ -104,3 +104,21 @@ def load_state(key, default=None):
     if not ok or result is _MISS:
         return default
     return result
+
+
+def load_prefix(prefix, limit=5000):
+    """PATCH #156b — every (key, value) whose key starts with `prefix`, in ONE
+    query. Reading 350 consent records one connection at a time took the
+    re-engagement count past a 90 s timeout; this is the same answer in one
+    round trip. Returns {} on any error. Never raises."""
+    if not _enabled or not prefix:
+        return {}
+
+    def _do():
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT key, value FROM app_state WHERE key LIKE %s LIMIT %s",
+                        (str(prefix).replace("%", "\\%").replace("_", "\\_") + "%", int(limit)))
+            return {row[0]: row[1] for row in cur.fetchall()}
+
+    ok, result = _with_retry(f"load_prefix({prefix})", _do)
+    return result if ok and isinstance(result, dict) else {}
