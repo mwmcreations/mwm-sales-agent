@@ -150,6 +150,8 @@ check("wire.c.rows_exclude_clients", "_kc.is_client_record(_r)" in rows and "_CL
 # #159 wiring — past bookers are a segment, both counted, both tagged
 check("wire.s.segment_rows", '_f["segment"] = _rg.segment_for(_f)' in rows and 'if _f.get("booked"):' not in rows
       and '_REENGAGE_LAST["segments"] = ' in rows)
+_srt = 'rows.sort(key=lambda r: 0 if r.get("segment") == _rg.SEG_PAST_BOOKER else 1)'
+check("wire.s.past_booker_wins_dedupe", _srt in rows and rows.index(_srt) < rows.index("_rg.dedupe(rows)"))
 check("wire.s.send_by_segment", '_rg.email_copy(r["name"], slots, segment=seg)' in sf and 'rec["reengage_segment"] = seg' in sf
       and 'update_lead_columns(key, {"Ad Campaign": _rg.TAG, "Ad ID": f"segment: {seg}"})' in sf
       and 'out["sent_by_segment"][seg]' in sf and '"text_past_booker": text_pb' in sf)

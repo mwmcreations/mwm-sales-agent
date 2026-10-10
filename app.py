@@ -26023,6 +26023,9 @@ def _reengage_rows(now):
         _f["_phone"] = ("+" + _ph) if len(_ph) == 11 else ""
         _f["_already"] = bool(_r.get("reengage_oct12"))
         rows.append(_f)
+    # #159b — the same person under a cold key and a booked key gets the
+    # past-booker letter (the booking is the truth); stable sort, then dedupe
+    rows.sort(key=lambda r: 0 if r.get("segment") == _rg.SEG_PAST_BOOKER else 1)
     _rg.dedupe(rows)                     # one letter per address, one text per number
     _excl["duplicate_rows"] = sum(1 for r in rows if r.get("_dup_of"))
     _REENGAGE_LAST["excluded"] = _excl
