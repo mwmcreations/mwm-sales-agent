@@ -27290,6 +27290,145 @@ def _startup_ig_token_exchange():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# PATCH #244 — one-shot Instagram publisher (ERIC's minimal version).
+# Michael approves ONE exact post in chat; the call comes through the Mac
+# daemon (admin secret stays on the Mac). Checks first (caption rules, product
+# names, video spec, client release), then: Drive file streamed to Meta on a
+# one-time URL -> container -> FINISHED -> publish -> permalink to #dev + #eric.
+# No timer, no queue, no auto-publish. One job at a time.
+# ══════════════════════════════════════════════════════════════════════
+import ig_publish as _igp   # Patch #244
+
+_IGP_JOBS = {}
+_IGP_TOKENS = {}
+_IGP_LOCK = threading.Lock()
+SLACK_ERIC_CHANNEL = "C0APZEBQ4P3"
+
+
+def _igp_drive_meta(file_id):
+    try:
+        import victory_drive as _vd
+        return _vd._service().files().get(fileId=file_id, supportsAllDrives=True,
+                                          fields="id,name,mimeType,size,videoMediaMetadata").execute() or {}
+    except Exception as e:
+        print(f"[IG PUBLISH] drive meta failed: {type(e).__name__}")
+        return {}
+
+
+def _igp_public(job):
+    return {k: v for k, v in job.items() if k not in ("video_url",)}
+
+
+@app.route(_igp.MEDIA_PATH + "<tok>", methods=["GET", "HEAD"])
+def ig_publish_media(tok):
+    """One-time URL Meta fetches the video from. Dies with the job (or after 2 h)."""
+    from flask import Response, stream_with_context
+    ent = _IGP_TOKENS.get(tok)
+    if not ent or time.time() > ent["exp"]:
+        return ("not found", 404)
+    try:
+        import victory_drive as _vd
+        up = _vd.open_stream(ent["file_id"], request.headers.get("Range"))
+    except Exception as e:
+        print(f"[IG PUBLISH] media stream failed: {type(e).__name__}")
+        return ("unavailable", 502)
+    headers = {"Content-Type": ent.get("mime") or "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+    for k in ("Content-Length", "Content-Range"):
+        if up.headers.get(k):
+            headers[k] = up.headers[k]
+    if request.method == "HEAD":
+        up.close()
+        return Response(b"", status=up.status_code, headers=headers)
+
+    def gen():
+        try:
+            for chunk in up.iter_content(chunk_size=256 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            up.close()
+    return Response(stream_with_context(gen()), status=up.status_code, headers=headers, direct_passthrough=True)
+
+
+def _igp_worker(job_id, tok, ig_user_id):
+    job = _IGP_JOBS[job_id]
+    try:
+        _igp.run_publish(job, http_requests, INSTAGRAM_ACCESS_TOKEN, ig_user_id)
+    except Exception as e:
+        job.update(status="failed", stage=job.get("status"), error=f"{type(e).__name__}")
+    finally:
+        _IGP_TOKENS.pop(tok, None)
+        job["finished_at"] = datetime.now(pytz.UTC).isoformat()
+    label = f"{job['kind'].capitalize()} `{job.get('file_name') or job['file_id']}`"
+    if job.get("status") == "published":
+        msg = (f":white_check_mark: *IG PUBLISHED* (Patch #244) - {label} is live on @mwm.creations: "
+               f"{job.get('permalink') or 'media ' + str(job.get('media_id'))}. Approved by Michael.")
+        _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
+        _post_to_slack_async(SLACK_ERIC_CHANNEL, msg)
+    else:
+        msg = (f":x: *IG PUBLISH FAILED* (Patch #244) - {label} at *{job.get('stage')}*: {job.get('error')}. "
+               "Nothing went live. Job " + job_id)
+        _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
+        _post_to_slack_async(SLACK_ERIC_CHANNEL, msg)
+
+
+@app.route('/admin/ig-publish', methods=['POST'])
+def admin_ig_publish():
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    file_id = (request.values.get("file_id") or "").strip()
+    kind = (request.values.get("kind") or "reel").strip().lower()
+    caption = request.values.get("caption") or ""
+    approved_by = (request.values.get("approved_by") or "").strip().lower()
+    client_in_frame = str(request.values.get("client_in_frame") or "").lower() in ("1", "true", "yes")
+    release_ok = str(request.values.get("release_ok") or "").lower() in ("1", "true", "yes")
+    dry_run = str(request.values.get("dry_run") or "").lower() in ("1", "true", "yes")
+    if approved_by != "michael":
+        return jsonify({"ok": False, "error": "approved_by must be michael - nothing publishes without his OK"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
+        return jsonify({"ok": False, "error": "file_id must be a Drive file id"}), 400
+    meta = _igp_drive_meta(file_id)
+    problems = _igp.caption_problems(caption, kind) + _igp.video_problems(meta, kind)
+    rp = _igp.release_problem(client_in_frame, release_ok)
+    if rp:
+        problems.append(rp)
+    checks = {"file": meta.get("name"), "mime": meta.get("mimeType"), "size": meta.get("size"),
+              "video": meta.get("videoMediaMetadata"), "kind": kind}
+    if problems:
+        return jsonify({"ok": False, "error": "pre-publish checks failed", "problems": problems, "checks": checks}), 400
+    if dry_run:
+        return jsonify({"ok": True, "dry_run": True, "checks": checks, "message": "all checks passed - nothing published"})
+    me = _igc_me(INSTAGRAM_ACCESS_TOKEN)
+    if not me.get("user_id"):
+        return jsonify({"ok": False, "error": "could not read the Instagram account from the token"}), 502
+    with _IGP_LOCK:
+        busy = [j for j in _IGP_JOBS.values() if j.get("status") in ("queued", "creating", "processing", "publishing")]
+        if busy:
+            return jsonify({"ok": False, "error": "another post is still publishing", "job": _igp_public(busy[0])}), 409
+        tok = _igp.new_media_token()
+        job_id = "igp_" + datetime.now(pytz.UTC).strftime("%Y%m%d%H%M%S")
+        _IGP_TOKENS[tok] = {"file_id": file_id, "exp": time.time() + _igp.TOKEN_TTL_S, "mime": meta.get("mimeType")}
+        _IGP_JOBS[job_id] = {"job_id": job_id, "kind": kind, "file_id": file_id, "file_name": meta.get("name"),
+                             "caption": caption, "status": "queued", "account": me.get("username"),
+                             "video_url": _igc.REDIRECT_BASE_DEFAULT + _igp.MEDIA_PATH + tok,
+                             "started_at": datetime.now(pytz.UTC).isoformat()}
+    threading.Thread(target=_igp_worker, args=(job_id, tok, me["user_id"]), daemon=True, name="ig-publish").start()
+    return jsonify({"ok": True, "job": _igp_public(_IGP_JOBS[job_id]), "checks": checks,
+                    "message": "publishing - the permalink (or Meta's error) will be posted to #dev and #eric"}), 202
+
+
+@app.route('/admin/ig-publish-status', methods=['GET'])
+def admin_ig_publish_status():
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    jid = request.values.get("job_id") or ""
+    if jid:
+        j = _IGP_JOBS.get(jid)
+        return (jsonify({"ok": True, "job": _igp_public(j)}) if j else (jsonify({"ok": False, "error": "no such job"}), 404))
+    return jsonify({"ok": True, "jobs": [_igp_public(j) for j in list(_IGP_JOBS.values())[-10:]]})
+
+
+# ══════════════════════════════════════════════════════════════════════
 # PATCH #243 — Instagram connect (Business Login for Instagram). ERIC's
 # publisher needs content_publish + insights on the IG token; Maya's DMs need
 # manage_messages to stay. Michael opens /admin/ig-connect, signs in on
