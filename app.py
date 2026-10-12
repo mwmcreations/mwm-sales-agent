@@ -27289,6 +27289,159 @@ def _startup_ig_token_exchange():
                   "IG DMs (#1 lead source) may be running on a dead token")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #243 — Instagram connect (Business Login for Instagram). ERIC's
+# publisher needs content_publish + insights on the IG token; Maya's DMs need
+# manage_messages to stay. Michael opens /admin/ig-connect, signs in on
+# Instagram's page and taps Allow; the callback checks every scope and the
+# account, and only then swaps the token. Nobody copies or pastes a token,
+# and nothing here ever prints, logs, posts or renders one.
+# ══════════════════════════════════════════════════════════════════════
+import ig_connect as _igc   # Patch #243
+
+_IGC_STATE_MEM = {}
+
+
+def _igc_app_id():
+    return (os.getenv("INSTAGRAM_APP_ID", "") or _igc.IG_APP_ID_DEFAULT).strip()
+
+
+def _igc_redirect_uri():
+    return _approval_base_url() + _igc.CALLBACK_PATH
+
+
+def _igc_save_state(st):
+    import pg_store as _pgx
+    _IGC_STATE_MEM.clear()
+    _IGC_STATE_MEM.update(st or {})
+    try:
+        if _pgx.enabled():
+            _pgx.save_state(_igc.STATE_PG_KEY, st or {})
+    except Exception as e:
+        print(f"[IG CONNECT] state save failed (memory copy kept): {type(e).__name__}")
+
+
+def _igc_load_state():
+    import pg_store as _pgx
+    try:
+        if _pgx.enabled():
+            st = _pgx.load_state(_igc.STATE_PG_KEY, None)
+            if st:
+                return st
+    except Exception:
+        pass
+    return dict(_IGC_STATE_MEM)
+
+
+def _igc_me(token):
+    """{user_id, username} for a token, {} on any failure."""
+    if not token:
+        return {}
+    try:
+        r = http_requests.get("https://graph.instagram.com/v21.0/me",
+                              params={"fields": "user_id,username", "access_token": token}, timeout=15)
+        if r.status_code == 200:
+            d = r.json() or {}
+            return {"user_id": d.get("user_id"), "username": d.get("username")}
+    except Exception:
+        pass
+    return {}
+
+
+def _igc_publish_quota(token, ig_user_id):
+    """Proves the publish permission: Meta answers this only with content_publish."""
+    try:
+        r = http_requests.get(f"https://graph.instagram.com/v21.0/{ig_user_id}/content_publishing_limit",
+                              params={"fields": "quota_usage,config", "access_token": token}, timeout=15)
+        if r.status_code == 200:
+            row = ((r.json() or {}).get("data") or [{}])[0]
+            used = row.get("quota_usage")
+            total = (row.get("config") or {}).get("quota_total")
+            return f"publish quota OK ({used} of {total} used in the last 24 h)"
+        return f"publish quota check answered HTTP {r.status_code}"
+    except Exception as e:
+        return f"publish quota check failed ({type(e).__name__})"
+
+
+@app.route('/admin/ig-connect', methods=['GET'])
+def admin_ig_connect():
+    """Start: send Michael to Instagram's own sign-in / Allow page."""
+    from flask import redirect as _redirect
+    if not INSTAGRAM_APP_SECRET:
+        return _igc.result_page("Instagram connect is not ready",
+                                ["INSTAGRAM_APP_SECRET is not set on the server, so the code cannot be exchanged.",
+                                 "Nothing was changed. Maya's DMs keep working on the current token."]), 503
+    st = _igc.new_state()
+    _igc_save_state(st)
+    return _redirect(_igc.authorize_url(_igc_app_id(), _igc_redirect_uri(), st["nonce"]), code=302)
+
+
+@app.route(_igc.CALLBACK_PATH, methods=['GET'])
+def ig_connect_callback():
+    """Finish: exchange the code, check scopes + account, then swap the token."""
+    global INSTAGRAM_ACCESS_TOKEN
+    keep = "Nothing was changed. Maya's DMs keep working on the current token."
+    stored = _igc_load_state()
+    if not _igc.state_ok(stored, request.args.get("state")):
+        return _igc.result_page("This link has expired", ["Open /admin/ig-connect again and finish within 15 minutes.", keep]), 400
+    _igc_save_state({})   # single use
+    if request.args.get("error"):
+        reason = (request.args.get("error_description") or request.args.get("error_reason") or "cancelled")[:200]
+        return _igc.result_page("Instagram did not connect", [f"Instagram said: {reason}", keep]), 400
+    code = (request.args.get("code") or "").split("#")[0].strip()
+    if not code:
+        return _igc.result_page("Instagram did not connect", ["No code came back from Instagram.", keep]), 400
+    try:
+        r = http_requests.post(_igc.CODE_EXCHANGE_URL, data={
+            "client_id": _igc_app_id(),
+            "client_secret": INSTAGRAM_APP_SECRET,
+            "grant_type": "authorization_code",
+            "redirect_uri": _igc_redirect_uri(),
+            "code": code,
+        }, timeout=20)
+        short, _uid, perms = _igc.parse_code_response(r.json() if r.content else {})
+    except Exception as e:
+        _report_error("ig_connect", f"code exchange error {type(e).__name__}")
+        return _igc.result_page("Instagram did not connect", ["The code exchange failed.", keep]), 502
+    if not short:
+        _report_error("ig_connect", f"code exchange HTTP {getattr(r, 'status_code', '?')}")
+        return _igc.result_page("Instagram did not connect", ["Instagram refused the code exchange.", keep]), 502
+    missing = _igc.missing_scopes(perms)
+    if missing:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":no_entry: *IG CONNECT REFUSED* - the new token is missing "
+                             + ", ".join(missing) + ". Old token kept; DMs unaffected. Add the missing permission(s) in the Meta app and run /admin/ig-connect again.")
+        return _igc.result_page("Not switched: permissions missing",
+                                ["The new token is missing: " + ", ".join(missing) + ".",
+                                 "Add them in the Meta app (Instagram use case, Permissions and features), then open /admin/ig-connect again.", keep]), 400
+    long = _exchange_ig_short_token(short, INSTAGRAM_APP_SECRET)
+    if not long or not long.get("access_token"):
+        _report_error("ig_connect", "long-lived exchange failed")
+        return _igc.result_page("Instagram did not connect", ["The 60-day exchange failed.", keep]), 502
+    new_token = long["access_token"]
+    new_me = _igc_me(new_token)
+    old_me = _igc_me(INSTAGRAM_ACCESS_TOKEN)
+    ok, why = _igc.same_account(old_me, new_me, os.getenv("IG_EXPECTED_USERNAME", "") or _igc.EXPECTED_USERNAME_DEFAULT)
+    if not ok:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, f":no_entry: *IG CONNECT REFUSED* - {why}. Old token kept; DMs unaffected.")
+        return _igc.result_page("Not switched: wrong account", [why.capitalize() + ".", keep]), 400
+    INSTAGRAM_ACCESS_TOKEN = new_token
+    _persist_ig_token(new_token, long.get("expires_in", 0))
+    try:
+        import pg_store as _pgx
+        if _pgx.enabled():
+            _pgx.save_state(_igc.SCOPES_PG_KEY, {"scopes": list(perms), "username": new_me.get("username"),
+                                                 "at": datetime.now(pytz.UTC).isoformat()})
+    except Exception:
+        pass
+    quota = _igc_publish_quota(new_token, new_me.get("user_id"))
+    days = int(long.get("expires_in", 0) or 0) // 86400
+    _post_to_slack_async(SLACK_DEV_CHANNEL, ":white_check_mark: *IG CONNECTED* (Patch #243) - @" + str(new_me.get("username") or "?")
+                         + f", {why}. Scopes: " + ", ".join(perms) + f". Token swapped live and persisted ({days} days, auto-refresh on). {quota}. ERIC's publisher can start.")
+    return _igc.result_page("Instagram is connected",
+                            ["@" + str(new_me.get("username") or "?") + " is connected with messages, publishing and insights.",
+                             f"Maya's DMs moved to the new token. {quota}.", "You can close this page."])
+
+
 # Run the exchange on module load (gunicorn worker boot)
 try:
     _startup_ig_token_exchange()
