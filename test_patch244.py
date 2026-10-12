@@ -54,6 +54,16 @@ check("params.reel", igp.container_params("reel", "U", "C") == {"media_type": "R
 check("params.story", igp.container_params("story", "U", "C") == {"media_type": "STORIES", "video_url": "U"})
 
 
+# Patch #244b - cover frame
+check("thumb.none", igp.thumb_problem(None, ok_meta, "reel") is None and igp.thumb_problem("", ok_meta, "reel") is None)
+check("thumb.ok", igp.thumb_problem("7000", ok_meta, "reel") is None)
+check("thumb.past_end", igp.thumb_problem("30000", ok_meta, "reel") is not None)
+check("thumb.bad", igp.thumb_problem("7s", ok_meta, "reel") is not None and igp.thumb_problem("-1", ok_meta, "reel") is not None)
+check("thumb.story", igp.thumb_problem("1000", ok_meta, "story") is not None)
+check("thumb.param", igp.container_params("reel", "U", "C", "7000").get("thumb_offset") == "7000"
+      and "thumb_offset" not in igp.container_params("reel", "U", "C") and "thumb_offset" not in igp.container_params("story", "U", "C", "7000"))
+
+
 class R:
     def __init__(s, code, d): s.status_code = code; s._d = d
     def json(s): return s._d
@@ -79,12 +89,13 @@ clock = {"t": 0}
 def fnow(): return clock["t"]
 def fsleep(n): clock["t"] += n
 
-job = {"kind": "reel", "video_url": "https://h/ig/media/T", "caption": "hi"}
+job = {"kind": "reel", "video_url": "https://h/ig/media/T", "caption": "hi", "thumb_offset": "7000"}
 h = FakeHTTP()
 igp.run_publish(job, h, "TOK", "IGU", sleep=fsleep, now=fnow)
 check("run.happy", job["status"] == "published" and job["media_id"] == "M1" and job["permalink"].startswith("https://www.instagram.com/"))
 check("run.create_params", h.calls[0][2]["media_type"] == "REELS" and h.calls[0][2]["video_url"] == "https://h/ig/media/T"
       and h.calls[0][1].endswith("/IGU/media"))
+check("run.thumb_sent", h.calls[0][2].get("thumb_offset") == "7000")
 check("run.publish_creation", any(c[1].endswith("/IGU/media_publish") and c[2]["creation_id"] == "C1" for c in h.calls))
 
 job = {"kind": "reel", "video_url": "U", "caption": "hi"}
@@ -126,6 +137,7 @@ check("wire.no_token_in_slack", "INSTAGRAM_ACCESS_TOKEN" not in wk.split("finall
 md = SRC[SRC.index("def ig_publish_media(tok):"):SRC.index("def _igp_worker(")]
 check("wire.media_expiry", 'time.time() > ent["exp"]' in md and "404" in md)
 check("wire.status_hides_url", '"video_url"' in SRC[SRC.index("def _igp_public("):SRC.index("@app.route(_igp.MEDIA_PATH")])
+check("wire.thumb", "_igp.thumb_problem(thumb_offset, meta, kind)" in rt and '"thumb_offset": thumb_offset or None' in rt)
 check("wire.status_auth", "_admin_secret_ok(" in SRC[SRC.index("def admin_ig_publish_status():"):SRC.index("def admin_ig_publish_status():") + 300])
 
 print(f"static+behaviour: {passed} passed, {failed} failed")

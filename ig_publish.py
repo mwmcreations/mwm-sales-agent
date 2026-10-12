@@ -97,10 +97,34 @@ def new_media_token():
     return secrets.token_urlsafe(24)
 
 
-def container_params(kind, video_url, caption):
+def thumb_problem(thumb_offset, meta, kind):
+    """Patch #244b: Reel cover frame, milliseconds from the start. None/'' = Instagram's default."""
+    if thumb_offset in (None, ""):
+        return None
+    if kind != "reel":
+        return "a cover frame only applies to a Reel"
+    try:
+        ms = int(str(thumb_offset).strip())
+    except (TypeError, ValueError):
+        return "thumb_offset must be whole milliseconds"
+    if ms < 0:
+        return "thumb_offset cannot be negative"
+    try:
+        dur = int(((meta or {}).get("videoMediaMetadata") or {}).get("durationMillis") or 0)
+    except (TypeError, ValueError):
+        dur = 0
+    if dur and ms >= dur:
+        return "thumb_offset %d ms is past the end of the video (%d ms)" % (ms, dur)
+    return None
+
+
+def container_params(kind, video_url, caption, thumb_offset=None):
     if kind == "story":
         return {"media_type": "STORIES", "video_url": video_url}
-    return {"media_type": "REELS", "video_url": video_url, "caption": caption or "", "share_to_feed": "true"}
+    p = {"media_type": "REELS", "video_url": video_url, "caption": caption or "", "share_to_feed": "true"}
+    if thumb_offset not in (None, ""):
+        p["thumb_offset"] = str(int(str(thumb_offset).strip()))
+    return p
 
 
 def run_publish(job, http, token, ig_user_id, sleep=time.sleep, now=time.time, log=lambda *_: None):
@@ -120,7 +144,7 @@ def run_publish(job, http, token, ig_user_id, sleep=time.sleep, now=time.time, l
 
     job.update(status="creating")
     r = http.post("%s/%s/media" % (GRAPH, ig_user_id),
-                  data=dict(container_params(job["kind"], job["video_url"], job.get("caption")), access_token=token), timeout=60)
+                  data=dict(container_params(job["kind"], job["video_url"], job.get("caption"), job.get("thumb_offset")), access_token=token), timeout=60)
     cid = (r.json() or {}).get("id") if r.status_code == 200 else None
     if not cid:
         return _err("create", r)

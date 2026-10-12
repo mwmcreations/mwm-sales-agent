@@ -27383,6 +27383,7 @@ def admin_ig_publish():
     client_in_frame = str(request.values.get("client_in_frame") or "").lower() in ("1", "true", "yes")
     release_ok = str(request.values.get("release_ok") or "").lower() in ("1", "true", "yes")
     dry_run = str(request.values.get("dry_run") or "").lower() in ("1", "true", "yes")
+    thumb_offset = (request.values.get("thumb_offset") or "").strip()   # Patch #244b
     if approved_by != "michael":
         return jsonify({"ok": False, "error": "approved_by must be michael - nothing publishes without his OK"}), 400
     if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
@@ -27392,8 +27393,11 @@ def admin_ig_publish():
     rp = _igp.release_problem(client_in_frame, release_ok)
     if rp:
         problems.append(rp)
+    tp = _igp.thumb_problem(thumb_offset, meta, kind)
+    if tp:
+        problems.append(tp)
     checks = {"file": meta.get("name"), "mime": meta.get("mimeType"), "size": meta.get("size"),
-              "video": meta.get("videoMediaMetadata"), "kind": kind}
+              "video": meta.get("videoMediaMetadata"), "kind": kind, "thumb_offset_ms": thumb_offset or None}
     if problems:
         return jsonify({"ok": False, "error": "pre-publish checks failed", "problems": problems, "checks": checks}), 400
     if dry_run:
@@ -27410,6 +27414,7 @@ def admin_ig_publish():
         _IGP_TOKENS[tok] = {"file_id": file_id, "exp": time.time() + _igp.TOKEN_TTL_S, "mime": meta.get("mimeType")}
         _IGP_JOBS[job_id] = {"job_id": job_id, "kind": kind, "file_id": file_id, "file_name": meta.get("name"),
                              "caption": caption, "status": "queued", "account": me.get("username"),
+                             "thumb_offset": thumb_offset or None,
                              "video_url": _igc.REDIRECT_BASE_DEFAULT + _igp.MEDIA_PATH + tok,
                              "started_at": datetime.now(pytz.UTC).isoformat()}
     threading.Thread(target=_igp_worker, args=(job_id, tok, me["user_id"]), daemon=True, name="ig-publish").start()
