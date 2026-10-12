@@ -99,6 +99,9 @@ for name in ("new_token", "short", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_APP_SECR
             if re.search(r"[{(+,\s]" + re.escape(name) + r"[})\s,+]", bare):
                 check(f"wire.no_leak.{name}.{sink}", False, call[:120])
 check("wire.secret_not_in_url", "client_secret" not in SRC[SRC.index("def admin_ig_connect():"):SRC.index("def ig_connect_callback():")])
+check("wire.redirect_pinned", igc.REDIRECT_BASE_DEFAULT == "https://mwm-sales-agent-production.up.railway.app"
+      and "_igc.REDIRECT_BASE_DEFAULT" in SRC[SRC.index("def _igc_redirect_uri():"):SRC.index("def _igc_save_state(")]
+      and "_approval_base_url()" not in SRC[SRC.index("def _igc_redirect_uri():"):SRC.index("def _igc_save_state(")])
 check("wire.post_body", "http_requests.post(_igc.CODE_EXCHANGE_URL, data={" in cb)
 
 print(f"static+behaviour: {passed} passed, {failed} failed")

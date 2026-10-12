@@ -19,6 +19,9 @@ from urllib.parse import urlencode
 
 IG_APP_ID_DEFAULT = "1673074373983477"          # "MWM Messaging-IG" (public id, not a secret)
 CALLBACK_PATH = "/auth/instagram/callback"
+# Meta matches the redirect URI byte for byte; RAILWAY_PUBLIC_DOMAIN is the custom
+# VI domain, so the registered Railway origin is pinned here (env can override).
+REDIRECT_BASE_DEFAULT = "https://mwm-sales-agent-production.up.railway.app"
 AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize"
 CODE_EXCHANGE_URL = "https://api.instagram.com/oauth/access_token"
 STATE_TTL_S = 900

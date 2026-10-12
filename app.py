@@ -27307,7 +27307,9 @@ def _igc_app_id():
 
 
 def _igc_redirect_uri():
-    return _approval_base_url() + _igc.CALLBACK_PATH
+    # Patch #243b: must equal the URI registered in the Meta app, not the VI custom domain.
+    base = (os.getenv("IG_OAUTH_REDIRECT_BASE", "") or _igc.REDIRECT_BASE_DEFAULT).rstrip("/")
+    return base + _igc.CALLBACK_PATH
 
 
 def _igc_save_state(st):
