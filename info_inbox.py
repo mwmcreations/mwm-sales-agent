@@ -257,6 +257,52 @@ def fetch_recent(service, limit=MAX_FETCH, query="in:inbox"):
     return out
 
 
+# ── PATCH #245 — hard bounces flag the address, so the next run cannot retry ──
+BOUNCE_QUERY = "from:(mailer-daemon OR postmaster) newer_than:7d"
+_BOUNCE_SENDER_RE = re.compile(r"mailer-daemon|postmaster|mail delivery (subsystem|system)", re.I)
+_HARD_RE = re.compile(r"address not found|couldn.?t be found|could not be found|does not exist|"
+                      r"no such user|user unknown|unknown user|recipient address rejected|"
+                      r"\b5\.1\.1\b|\b550\b|invalid recipient|account (has been )?disabled", re.I)
+_SOFT_RE = re.compile(r"mailbox (is )?full|over quota|temporar|try again|\b4\.\d\.\d\b|delayed|will retry", re.I)
+_ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def parse_bounce(row):
+    """The address a HARD bounce reports, lower-cased, or None.
+    Soft bounces (mailbox full, try again later) never flag anyone."""
+    if not isinstance(row, dict) or not _BOUNCE_SENDER_RE.search(str(row.get("from") or "")):
+        return None
+    text = "%s %s" % (row.get("subject") or "", row.get("snippet") or "")
+    if not _HARD_RE.search(text):
+        return None
+    if _SOFT_RE.search(text) and not re.search(r"address not found|5\.1\.1|does not exist|no such user|user unknown", text, re.I):
+        return None
+    for src in (str(row.get("failed") or ""), str(row.get("snippet") or "")):
+        for a in _ADDR_RE.findall(src):
+            a = a.lower().strip(".")
+            if not is_internal(a) and not _BOUNCE_SENDER_RE.search(a):
+                return a
+    return None
+
+
+def fetch_bounces(service, limit=MAX_FETCH, query=BOUNCE_QUERY):
+    """Delivery-failure notices, METADATA ONLY (+ X-Failed-Recipients)."""
+    out = []
+    listing = service.users().messages().list(userId="me", q=query, maxResults=int(limit)).execute()
+    for ref in (listing.get("messages") or []):
+        try:
+            m = service.users().messages().get(
+                userId="me", id=ref["id"], format="metadata",
+                metadataHeaders=["From", "Subject", "Date", "X-Failed-Recipients"]).execute()
+        except Exception:
+            continue
+        p = m.get("payload") or {}
+        out.append({"id": m.get("id"), "from": _header(p, "From"), "subject": _header(p, "Subject"),
+                    "date": _header(p, "Date"), "failed": _header(p, "X-Failed-Recipients"),
+                    "snippet": m.get("snippet") or ""})
+    return out
+
+
 def triage(messages):
     """Classify a batch and sort worst-first. Pure."""
     rows = []

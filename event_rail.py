@@ -620,6 +620,29 @@ def ascii_email(addr):
     return folded, True, ""
 
 
+_GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+_GMAIL_CORE = re.compile(r"^[a-z0-9]{6,30}$")
+
+
+def deliverable_email(addr):
+    """(ok, note) - PATCH #245. ascii_email plus the one rule a big provider
+    publishes: a Gmail username is 6-30 letters, digits and dots (a +tag is
+    extra). Live case (12 Oct): `ez@gmail.com` passed every syntax check, the
+    re-engagement letter went out and bounced 550 5.1.1."""
+    folded, ok, note = ascii_email(addr)
+    if not ok:
+        return False, note
+    local, _, dom = folded.lower().rpartition("@")
+    if dom in _GMAIL_DOMAINS:
+        base = local.split("+", 1)[0]
+        if not base or base.startswith(".") or base.endswith(".") or ".." in base:
+            return False, "not a possible Gmail address: %r" % folded
+        core = base.replace(".", "")
+        if not _GMAIL_CORE.match(core):
+            return False, "not a possible Gmail username (needs 6-30 letters/digits): %r" % folded
+    return True, ""
+
+
 # ── location ─────────────────────────────────────────────────────────
 
 def looks_like_address(location):

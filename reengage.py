@@ -122,7 +122,7 @@ def _aware(dt, like):
     return dt
 
 
-def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=None):
+def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=None, deliverable=None):
     """-> dict of flags for one lead record, or None when the lead is not a
     candidate at all (client, said no, do-not-contact, internal, test).
 
@@ -156,6 +156,14 @@ def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=Non
         return None
     email = primary_email(rec.get("email"))          # #158c: first real address in the cell
     email_ok = bool(email) and not excluded_address(email)
+    # PATCH #245: a hard bounce is final, and an address that cannot exist is not tried
+    if email_ok and rec.get("email_bounced"):
+        email_ok = False
+    if email_ok and deliverable:
+        try:
+            email_ok = bool(deliverable(email)[0])
+        except Exception:
+            email_ok = False
     if email_ok and email_suppressed:
         try:
             sup, _ = email_suppressed(email)
@@ -180,6 +188,50 @@ def classify(key, rec, now, consent=None, email_suppressed=None, is_internal=Non
         "has_phone": us_mobile, "booked": bool(rec.get("booked")),
         "reachable": bool(email_ok or sms_ok),
     }
+
+
+# ── PATCH #245 — anyone with a FUTURE event on the MWM calendar is out ──
+# Live case (12 Oct): Pastiche Graham has a Studio Visit on Fri 2 Apr 2027,
+# RSVP accepted, and got "three studio visit slots this week". She thought she
+# had to pick a new date. Match by attendee email, or by full name in the title.
+def _norm_name(s):
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", str(s or "").lower())).strip()
+
+
+def future_booking_index(events, now):
+    emails, texts = set(), []
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("status") == "cancelled":
+            continue
+        st = ev.get("start") or {}
+        dt = _aware(_parse(st.get("dateTime") or st.get("date")), now)
+        if dt is None:
+            continue
+        if dt.tzinfo is None and now.tzinfo is not None:
+            dt = dt.replace(tzinfo=now.tzinfo)
+        if dt < now:
+            continue
+        for a in ev.get("attendees") or []:
+            if str(a.get("responseStatus") or "") == "declined":
+                continue
+            e = str(a.get("email") or "").strip().lower()
+            if e:
+                emails.add(e)
+        texts.append(_norm_name(ev.get("summary")) + " | " + _norm_name(str(ev.get("description") or "")[:400]))
+    return {"emails": emails, "texts": texts}
+
+
+def has_future_booking(email, name, index):
+    if not index:
+        return False
+    e = str(email or "").strip().lower()
+    if e and e in index.get("emails", ()):
+        return True
+    n = _norm_name(name)
+    if len(n.split()) >= 2 and len(n) >= 5:
+        pad = " " + n + " "
+        return any(pad in " " + t + " " for t in index.get("texts", ()))
+    return False
 
 
 def summarize(rows):

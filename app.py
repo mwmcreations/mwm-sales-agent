@@ -56,7 +56,7 @@ import meta_capi as _capi     # Patch #145 — Lead / Schedule / Purchase back t
 import loop_guard as _loopguard  # Patch #116 — we stop talking to other robots
 from event_rail import TALLY as _TALLY, lead_row_verdict as _lead_row_verdict
 from event_rail import (harden_event_body, audit_event, resolve_channel,
-                        is_ig_scoped, is_dialable, ascii_email,
+                        is_ig_scoped, is_dialable, ascii_email, deliverable_email,
                         reminder_channel_for, EventRailRejected,
                         STANDARD_REMINDERS,
                         classify_event, is_client_event, due_stages,
@@ -12335,6 +12335,63 @@ def _info_watch_once():
     return alerted
 
 
+# ── PATCH #245 — hard bounces flag the address everywhere ─────────────
+# Live case (12 Oct): the re-engagement letter went to `ez@gmail.com` (Anderson,
+# Jul 27 no-show), bounced 550 5.1.1, and nothing would have stopped the next
+# run retrying it. A HARD bounce in info@ or michael@ now puts the address on
+# the pg suppression list (every lead send checks it) and marks the lead.
+BOUNCE_MAILBOXES = [a.strip() for a in os.getenv(
+    "BOUNCE_MAILBOXES", "info@mwmcreations.com,michael@mwmcreations.com").split(",") if a.strip()]
+
+
+def _flag_hard_bounce(addr, box, mid):
+    import re as _re
+    import pg_store as _bpg
+    stamp = {"reason": "hard bounce", "at": datetime.now(pytz.UTC).isoformat(), "mailbox": box, "msg": mid}
+    _bpg.save_state("email_suppressed:" + addr, stamp)
+    marked = 0
+    for _k, _rec in list(lead_data.items()):
+        if isinstance(_rec, dict) and addr in {x.lower() for x in _re.findall(
+                r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", str(_rec.get("email") or ""))}:
+            _nr = dict(_rec)
+            _nr["email_bounced"] = stamp
+            lead_data[_k] = _nr
+            marked += 1
+    return marked
+
+
+def _bounce_sweep_once():
+    """One pass over each mailbox's delivery-failure notices. Never raises."""
+    import pg_store as _bpg
+    if not _bpg.enabled():
+        return []
+    flagged = []
+    for box in BOUNCE_MAILBOXES:
+        try:
+            rows = info_inbox.fetch_bounces(get_gmail_service(impersonate=box))
+        except Exception as _be:
+            print(f"[BOUNCE] {box} unreadable this pass: {type(_be).__name__}")
+            continue
+        for r in rows:
+            mid = r.get("id")
+            if not mid:
+                continue
+            try:
+                if _bpg.load_state("bounce_seen:%s" % mid, None):
+                    continue
+                addr = info_inbox.parse_bounce(r)
+                n = _flag_hard_bounce(addr, box, mid) if addr else 0
+                _bpg.save_state("bounce_seen:%s" % mid, {"addr": addr or "", "box": box, "leads": n})
+                if addr:
+                    flagged.append((addr, n, box))
+            except Exception as _fe:
+                print(f"[BOUNCE] could not process {mid}: {type(_fe).__name__}")
+    if flagged:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, ":no_entry_sign: *Hard bounce -> address suppressed* (Patch #245)\n" + "\n".join(
+            f"• `{mask_contact(a)}` ({b}) - {n} lead record(s) marked; no automated mail will retry it" for a, n, b in flagged))
+    return flagged
+
+
 def _info_watch_thread():
     import time as _t
     _t.sleep(240)
@@ -12344,6 +12401,10 @@ def _info_watch_thread():
             _info_watch_once()
         except Exception as _e:
             print(f"[INFO-WATCH] thread error (non-fatal): {_e}")
+        try:
+            _bounce_sweep_once()
+        except Exception as _e:
+            print(f"[BOUNCE] sweep error (non-fatal): {_e}")
         _t.sleep(300)          # 5 min — a waiting client is time-sensitive
 
 
@@ -18382,6 +18443,13 @@ def api_send_email():
                     _report_error("email_address_invalid", f"{_addr!r} is not deliverable",
                                   f"{_addr_note} — refused before send (via={_via})")
                     return jsonify({"success": False, "error": f"invalid recipient address: {_addr_note}",
+                                    "to": _addr}), 400
+                # PATCH #245 — an address that cannot exist (`ez@gmail.com`) is refused, not sent
+                _dok, _dnote = deliverable_email(_folded)
+                if not _dok:
+                    _report_error("email_address_invalid", f"{_addr!r} is not deliverable",
+                                  f"{_dnote} — refused before send (via={_via})")
+                    return jsonify({"success": False, "error": f"invalid recipient address: {_dnote}",
                                     "to": _addr}), 400
                 if _folded != _addr:
                     print(f"[SEND-EMAIL API] non-ASCII address folded: {_addr!r} -> {_folded!r}")
@@ -25986,6 +26054,16 @@ def _reengage_rows(now):
     # one-off booking, so neither the client roster nor the lead record says
     # client) and is Michael's alone. mode=exclude&name=… / &q=… adds.
     _manual = {str(x).strip().lower() for x in (_pgc.load_state(_rg.EXCLUDE_KEY, None) or []) if str(x).strip()}
+    # PATCH #245 — every FUTURE event on the MWM calendar, read once. Fail
+    # CLOSED: if the calendar cannot be read, nobody is a candidate.
+    try:
+        _fb = _reengage_future_index(now)
+    except Exception as _fe:
+        _REENGAGE_LAST["last_error"] = f"calendar unreadable - nobody is a candidate ({type(_fe).__name__})"
+        _REENGAGE_LAST["excluded"] = {"calendar_unreadable": True}
+        _report_error("reengage_future_bookings", _fe, "fail closed: zero candidates")
+        return []
+    _excl["future_booking"] = 0
     rows = []
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict):
@@ -25995,8 +26073,11 @@ def _reengage_rows(now):
             _ph = "1" + _ph
         _consent = (_consents.get("+" + _ph) or _consents.get(_ph) or {}) if len(_ph) == 11 else {}
         _f = _rg.classify(_k, _r, now, consent=_consent, email_suppressed=_sup,
-                          is_internal=_is_internal_number)
+                          is_internal=_is_internal_number, deliverable=deliverable_email)
         if not _f:
+            continue
+        if _rg.has_future_booking(_rg.primary_email(_r.get("email")), _f.get("name"), _fb):
+            _excl["future_booking"] += 1
             continue
         if _kc.is_client_record(_r):
             _excl["client_record"] += 1
@@ -26032,6 +26113,21 @@ def _reengage_rows(now):
     _REENGAGE_LAST["segments"] = {seg: sum(1 for r in rows if r.get("segment") == seg and r["email"] and not r["_already"]
                                             and not r.get("_dup_of")) for seg in (_rg.SEG_COLD, _rg.SEG_PAST_BOOKER)}
     return rows
+
+
+def _reengage_future_index(now, days=550):
+    """PATCH #245 — attendee emails + titles of every event from now on."""
+    service = get_calendar_service()
+    items, token = [], None
+    for _ in range(20):
+        res = service.events().list(calendarId=CALENDAR_ID, timeMin=now.isoformat(),
+                                    timeMax=(now + timedelta(days=days)).isoformat(),
+                                    singleEvents=True, maxResults=2500, pageToken=token).execute(num_retries=3)
+        items.extend(res.get("items") or [])
+        token = res.get("nextPageToken")
+        if not token:
+            break
+    return _rg.future_booking_index(items, now)
 
 
 def _reengage_send(now, dry=True, limit=None, rows=None):
