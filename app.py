@@ -27516,7 +27516,8 @@ def _startup_ig_token_exchange():
 # one-time URL -> container -> FINISHED -> publish -> permalink to #dev + #eric.
 # No timer, no queue, no auto-publish. One job at a time.
 # ══════════════════════════════════════════════════════════════════════
-import ig_publish as _igp   # Patch #244
+import ig_publish as _igp
+import ad_video as _adv     # PATCH #247 — ad videos into the Meta account library   # Patch #244
 
 _IGP_JOBS = {}
 _IGP_TOKENS = {}
@@ -27650,6 +27651,97 @@ def admin_ig_publish():
     threading.Thread(target=_igp_worker, args=(job_id, tok, me["user_id"]), daemon=True, name="ig-publish").start()
     return jsonify({"ok": True, "job": _igp_public(_IGP_JOBS[job_id]), "checks": checks,
                     "message": "publishing - the permalink (or Meta's error) will be posted to #dev and #eric"}), 202
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #247 — ad videos into the Meta ad account's library (ERIC, 14 Oct).
+# Same one-time /ig/media/<token> stream the IG publisher uses, pointed at
+# POST /act_<id>/advideos as file_url. Reads META_ADS_TOKEN; touches no
+# campaign, ad set, ad or budget. The Drive md5 is reported so ERIC can
+# match it against the export on the Mac.
+# ══════════════════════════════════════════════════════════════════════
+_ADV_JOBS = {}
+META_AD_ACCOUNT_ID = (os.getenv("META_AD_ACCOUNT_ID", "") or _adv.AD_ACCOUNT_DEFAULT).strip()
+
+
+def _adv_drive_meta(file_id):
+    try:
+        import victory_drive as _vd
+        return _vd._service().files().get(fileId=file_id, supportsAllDrives=True,
+                                          fields="id,name,mimeType,size,md5Checksum,videoMediaMetadata").execute() or {}
+    except Exception as e:
+        print(f"[AD VIDEO] drive meta failed: {type(e).__name__}")
+        return {}
+
+
+def _adv_worker(job_id, tok):
+    job = _ADV_JOBS[job_id]
+    try:
+        _adv.run_upload(job, http_requests, os.getenv("META_ADS_TOKEN", ""), META_AD_ACCOUNT_ID)
+    except Exception as e:
+        job.update(status="failed", stage=job.get("status"), error=f"{type(e).__name__}")
+    finally:
+        _IGP_TOKENS.pop(tok, None)
+        job["finished_at"] = datetime.now(pytz.UTC).isoformat()
+    if job.get("status") == "ready":
+        msg = (f":film_frames: *AD VIDEO IN THE ACCOUNT LIBRARY* (Patch #247) - `{job.get('file_name')}` -> video id "
+               f"`{job.get('video_id')}`, title \"{job.get('title_in_library') or job.get('title')}\", "
+               f"{job.get('length_s') or '?'} s, md5 `{job.get('md5')}` (Drive's checksum of the bytes streamed). "
+               f"Account {META_AD_ACCOUNT_ID}. No campaign, ad set or ad was touched.")
+    else:
+        msg = (f":x: *AD VIDEO UPLOAD FAILED* (Patch #247) - `{job.get('file_name')}` at *{job.get('stage')}*: "
+               f"{job.get('error')}. Nothing in the library. Job {job_id}")
+    _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
+    _post_to_slack_async(SLACK_ERIC_CHANNEL, msg)
+
+
+@app.route('/admin/ad-video', methods=['POST'])
+def admin_ad_video():
+    """POST secret, file_id (Drive), [title], [dry_run=1] -> streams the file to
+    POST /act_<id>/advideos; the video id + title + md5 land in #dev and #eric."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    file_id = (request.values.get("file_id") or "").strip()
+    dry_run = str(request.values.get("dry_run") or "").lower() in ("1", "true", "yes")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
+        return jsonify({"ok": False, "error": "file_id must be a Drive file id"}), 400
+    if not os.getenv("META_ADS_TOKEN", ""):
+        return jsonify({"ok": False, "error": "META_ADS_TOKEN is not set on this service"}), 500
+    meta = _adv_drive_meta(file_id)
+    problems = _adv.problems(meta)
+    title = _adv.title_for(meta, request.values.get("title"))
+    checks = {"file": meta.get("name"), "mime": meta.get("mimeType"), "size": meta.get("size"),
+              "md5": meta.get("md5Checksum"), "video": meta.get("videoMediaMetadata"),
+              "title": title, "account": META_AD_ACCOUNT_ID}
+    if problems:
+        return jsonify({"ok": False, "error": "checks failed", "problems": problems, "checks": checks}), 400
+    if dry_run:
+        return jsonify({"ok": True, "dry_run": True, "checks": checks, "message": "all checks passed - nothing uploaded"})
+    with _IGP_LOCK:
+        busy = [j for j in _ADV_JOBS.values() if j.get("status") in ("queued", "uploading", "processing")]
+        if busy:
+            return jsonify({"ok": False, "error": "another ad video is still uploading", "job": _igp_public(busy[0])}), 409
+        tok = _igp.new_media_token()
+        job_id = "adv_" + datetime.now(pytz.UTC).strftime("%Y%m%d%H%M%S")
+        _IGP_TOKENS[tok] = {"file_id": file_id, "exp": time.time() + _igp.TOKEN_TTL_S, "mime": meta.get("mimeType")}
+        _ADV_JOBS[job_id] = {"job_id": job_id, "file_id": file_id, "file_name": meta.get("name"), "title": title,
+                             "md5": meta.get("md5Checksum"), "size": meta.get("size"), "status": "queued",
+                             "video_url": _igc.REDIRECT_BASE_DEFAULT + _igp.MEDIA_PATH + tok,
+                             "started_at": datetime.now(pytz.UTC).isoformat()}
+    threading.Thread(target=_adv_worker, args=(job_id, tok), daemon=True, name="ad-video").start()
+    return jsonify({"ok": True, "job": _igp_public(_ADV_JOBS[job_id]), "checks": checks,
+                    "message": "uploading - the video id (or Meta's error) will be posted to #dev and #eric"}), 202
+
+
+@app.route('/admin/ad-video-status', methods=['GET'])
+def admin_ad_video_status():
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    jid = request.values.get("job_id") or ""
+    if jid:
+        j = _ADV_JOBS.get(jid)
+        return (jsonify({"ok": True, "job": _igp_public(j)}) if j else (jsonify({"ok": False, "error": "no such job"}), 404))
+    return jsonify({"ok": True, "jobs": [_igp_public(j) for j in list(_ADV_JOBS.values())[-10:]]})
 
 
 @app.route('/admin/ig-publish-status', methods=['GET'])
