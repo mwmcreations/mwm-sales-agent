@@ -9,6 +9,7 @@ no schedule, no auto-publish. The Monday approval queue is the full version.
 
 Pure helpers + an injectable runner so the gate can test every branch.
 """
+import json
 import re
 import secrets
 import time
@@ -118,12 +119,61 @@ def thumb_problem(thumb_offset, meta, kind):
     return None
 
 
-def container_params(kind, video_url, caption, thumb_offset=None):
+# ── PATCH #246 — collaborators + user tags (ERIC, 14 Oct: Michael wants his
+# personal account on MWM posts). Reels/feed only; a Story has neither.
+# `collaborators` sends the collab invite (the post shows on the other
+# profile once they accept); `user_tags` tags the account on the Reel —
+# usernames only, no x/y on a Reel. Format is checked here; whether the
+# account exists is Meta's answer at container time (it comes back as the
+# failure line in #dev/#eric), because a personal account cannot be looked
+# up through business_discovery.
+USERNAME_RX = re.compile(r"^[a-z0-9._]{1,30}$")
+MAX_COLLABORATORS = 3
+MAX_USER_TAGS = 20
+
+
+def parse_usernames(raw, limit, label):
+    """'@michellmoraes, MWM.creations' -> (['michellmoraes', 'mwm.creations'], None)
+    or ([], 'problem'). Lower-cased, de-duplicated, leading @ dropped."""
+    out, seen = [], set()
+    for tok in re.split(r"[,\s]+", str(raw or "")):
+        u = tok.strip().lstrip("@").lower()
+        if not u:
+            continue
+        if not USERNAME_RX.match(u) or u.startswith(".") or u.endswith(".") or ".." in u:
+            return [], "%s: '%s' is not an Instagram username (letters, numbers, periods, underscores, up to 30)" % (label, tok.strip()[:40])
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    if len(out) > limit:
+        return [], "%s: at most %d, got %d" % (label, limit, len(out))
+    return out, None
+
+
+def people_problems(kind, collaborators, user_tags):
+    """-> (collab_list, tag_list, [problems])."""
+    problems = []
+    c, pc = parse_usernames(collaborators, MAX_COLLABORATORS, "collaborators")
+    if pc:
+        problems.append(pc)
+    t, pt = parse_usernames(user_tags, MAX_USER_TAGS, "user_tags")
+    if pt:
+        problems.append(pt)
+    if kind == "story" and (c or t):
+        problems.append("collaborators and user_tags apply to a Reel, not a Story")
+    return c, t, problems
+
+
+def container_params(kind, video_url, caption, thumb_offset=None, collaborators=None, user_tags=None):
     if kind == "story":
         return {"media_type": "STORIES", "video_url": video_url}
     p = {"media_type": "REELS", "video_url": video_url, "caption": caption or "", "share_to_feed": "true"}
     if thumb_offset not in (None, ""):
         p["thumb_offset"] = str(int(str(thumb_offset).strip()))
+    if collaborators:
+        p["collaborators"] = json.dumps(list(collaborators)[:MAX_COLLABORATORS])
+    if user_tags:
+        p["user_tags"] = json.dumps([{"username": u} for u in list(user_tags)[:MAX_USER_TAGS]])
     return p
 
 
@@ -144,7 +194,8 @@ def run_publish(job, http, token, ig_user_id, sleep=time.sleep, now=time.time, l
 
     job.update(status="creating")
     r = http.post("%s/%s/media" % (GRAPH, ig_user_id),
-                  data=dict(container_params(job["kind"], job["video_url"], job.get("caption"), job.get("thumb_offset")), access_token=token), timeout=60)
+                  data=dict(container_params(job["kind"], job["video_url"], job.get("caption"), job.get("thumb_offset"),
+                                             job.get("collaborators"), job.get("user_tags")), access_token=token), timeout=60)
     cid = (r.json() or {}).get("id") if r.status_code == 200 else None
     if not cid:
         return _err("create", r)

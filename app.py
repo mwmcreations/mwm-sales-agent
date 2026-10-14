@@ -27580,8 +27580,13 @@ def _igp_worker(job_id, tok, ig_user_id):
         job["finished_at"] = datetime.now(pytz.UTC).isoformat()
     label = f"{job['kind'].capitalize()} `{job.get('file_name') or job['file_id']}`"
     if job.get("status") == "published":
+        _who = ""
+        if job.get("collaborators"):
+            _who += " Collab invite sent to @" + ", @".join(job["collaborators"]) + " (shows on their profile once accepted)."
+        if job.get("user_tags"):
+            _who += " Tagged @" + ", @".join(job["user_tags"]) + "."
         msg = (f":white_check_mark: *IG PUBLISHED* (Patch #244) - {label} is live on @mwm.creations: "
-               f"{job.get('permalink') or 'media ' + str(job.get('media_id'))}. Approved by Michael.")
+               f"{job.get('permalink') or 'media ' + str(job.get('media_id'))}. Approved by Michael.{_who}")
         _post_to_slack_async(SLACK_DEV_CHANNEL, msg)
         _post_to_slack_async(SLACK_ERIC_CHANNEL, msg)
     else:
@@ -27603,6 +27608,8 @@ def admin_ig_publish():
     release_ok = str(request.values.get("release_ok") or "").lower() in ("1", "true", "yes")
     dry_run = str(request.values.get("dry_run") or "").lower() in ("1", "true", "yes")
     thumb_offset = (request.values.get("thumb_offset") or "").strip()   # Patch #244b
+    collaborators_raw = request.values.get("collaborators") or ""        # Patch #246
+    user_tags_raw = request.values.get("user_tags") or ""
     if approved_by != "michael":
         return jsonify({"ok": False, "error": "approved_by must be michael - nothing publishes without his OK"}), 400
     if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
@@ -27615,8 +27622,11 @@ def admin_ig_publish():
     tp = _igp.thumb_problem(thumb_offset, meta, kind)
     if tp:
         problems.append(tp)
+    collaborators, user_tags, pp = _igp.people_problems(kind, collaborators_raw, user_tags_raw)   # Patch #246
+    problems.extend(pp)
     checks = {"file": meta.get("name"), "mime": meta.get("mimeType"), "size": meta.get("size"),
-              "video": meta.get("videoMediaMetadata"), "kind": kind, "thumb_offset_ms": thumb_offset or None}
+              "video": meta.get("videoMediaMetadata"), "kind": kind, "thumb_offset_ms": thumb_offset or None,
+              "collaborators": collaborators, "user_tags": user_tags}
     if problems:
         return jsonify({"ok": False, "error": "pre-publish checks failed", "problems": problems, "checks": checks}), 400
     if dry_run:
@@ -27634,6 +27644,7 @@ def admin_ig_publish():
         _IGP_JOBS[job_id] = {"job_id": job_id, "kind": kind, "file_id": file_id, "file_name": meta.get("name"),
                              "caption": caption, "status": "queued", "account": me.get("username"),
                              "thumb_offset": thumb_offset or None,
+                             "collaborators": collaborators, "user_tags": user_tags,
                              "video_url": _igc.REDIRECT_BASE_DEFAULT + _igp.MEDIA_PATH + tok,
                              "started_at": datetime.now(pytz.UTC).isoformat()}
     threading.Thread(target=_igp_worker, args=(job_id, tok, me["user_id"]), daemon=True, name="ig-publish").start()
