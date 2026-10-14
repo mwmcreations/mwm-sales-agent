@@ -8580,8 +8580,9 @@ def _sms_gates(lead_phone, kind=SMS_KIND_MARKETING):
     # ANSWERED without a ticked box: it is their conversation, not our
     # campaign. Only the transactional kind, only inside the window; STOP
     # (do_not_sms, above) still wins. Everything else is unchanged below.
-    _no_box = consent.get("status") != "yes" or not consent.get(pol["consent_field"])
-    if _no_box and kind == SMS_KIND_TRANSACTIONAL and _sms_inbound_window_open(lead_phone, now):
+    # #161: and it skips quiet hours — the person is awake, they just wrote
+    # (Michael's 6:31 AM texts were answered by Maya and refused: quiet_hours).
+    if kind == SMS_KIND_TRANSACTIONAL and _sms_inbound_window_open(lead_phone, now):
         return True, "inbound_window"
     if consent.get("status") != "yes":
         return False, "no_consent"
@@ -9302,6 +9303,12 @@ def sms_inbound_webhook():
             # also the in-conversation consent ERIC's B3 asked for, so it is
             # recorded before Maya replies — and it still goes to her, because
             # "YES" is usually also the answer to "Thursday at 10?".
+            if _is_michael_phone(frm):
+                # PATCH #161 — the operator texting the line back: Command Mode
+                # (the WhatsApp brain), answered by operator SMS, never as a lead
+                print(f"[SMS-INBOUND] Michael: {body[:120]!r}")
+                threading.Thread(target=_handle_michael_sms, args=(frm, body), daemon=True).start()
+                return ("<Response></Response>", 200, {"Content-Type": "text/xml"})
             _sms_inbound_stamp(frm)                      # PATCH #160: opens the 24 h reply window
             if kw in ("YES", "Y", "YES PLEASE", "SIM", "SI"):
                 try:
@@ -9347,6 +9354,75 @@ def _sms_lead_context(rec):
     if rec.get("ai_interest"):
         bits.append("Came in through the AI 'film once' ad — the AI opener applies.")
     return "\n".join(bits)
+
+
+def _is_michael_phone(phone):
+    """The operator's own number (MICHAEL_PHONE), digits compared."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    m = re.sub(r"\D", "", os.getenv("MICHAEL_PHONE", "") or "")
+    return bool(d and m and (d == m or d[-10:] == m[-10:]))
+
+
+def _handle_michael_sms(frm, body):
+    """PATCH #161 — Michael texted the Maya line. First the deterministic
+    case: he is answering an "unconfirmed: …" alert ("He is confirmed") ->
+    the event is marked confirmed, the watcher stops, he gets a one-line
+    receipt. Otherwise Command Mode — the same brain and tools his WhatsApp
+    messages get — with the answer back by operator SMS (no consent box, no
+    quiet hours: SMS_KIND_OPERATOR). Never raises."""
+    global michael_command_history
+    import operator_cmd as _oc
+    import pg_store as _pg
+    text = (body or "").strip()
+    if not text:
+        return
+    try:
+        now = datetime.now(pytz.timezone(TIMEZONE))
+        try:
+            _mirror_to_maya_shadow_async({"name": "Michael (Command/SMS)", "phone": frm, "is_michael": True}, "inbound", f"[SMS] {text}")
+        except Exception:
+            pass
+        if _oc.is_confirmation(text) and _pg.enabled():
+            alerts = [a for a in (_pg.load_state("unconfirmed_alerts", []) or []) if isinstance(a, dict)]
+            marked = _oc.targets(text, alerts, now)
+            if marked:
+                ids = set()
+                for a in marked:
+                    ids.add(a.get("event_id"))
+                    _pg.save_state(f"confirmed:{a.get('event_id')}", {"at": now.isoformat(), "via": "michael-sms", "text": text[:160]})
+                _pg.save_state("unconfirmed_alerts", [a for a in alerts if a.get("event_id") not in ids])
+                reply = _oc.reply_for(marked)
+                _send_sms(frm, reply, kind=SMS_KIND_OPERATOR)
+                _TALLY.bump("visit.confirmed_by_michael", str(len(marked)))
+                _post_to_slack_async(SLACK_ERIC_CHANNEL, ":white_check_mark: *Michael confirmed by text* — "
+                                     + "; ".join(f"{a.get('name')} {a.get('time')} ({a.get('date')})" for a in marked))
+                print(f"[SMS-MICHAEL] confirmed {len(marked)} event(s)")
+                return
+        # Command Mode, by SMS
+        michael_command_history.append({"role": "user", "content": f"[via SMS] {text}"})
+        if len(michael_command_history) > 30:
+            michael_command_history = michael_command_history[-30:]
+        snap = list(michael_command_history)
+        reply, updated = get_command_reply(snap)
+        michael_command_history = updated
+        clean = _sms_copy.ascii_fold(clean_response(reply) or "")
+        if not clean:
+            clean = "I didn't catch that - what do you need?"
+        sent = 0
+        for chunk in _oc.split_sms(clean, 450)[:3]:
+            res = _send_sms(frm, chunk, kind=SMS_KIND_OPERATOR) or {}
+            if res.get("ok"):
+                sent += 1
+            else:
+                print(f"[SMS-MICHAEL] reply refused: {res.get('reason')}")
+                break
+        _TALLY.bump("sms.michael_command", "sent" if sent else "refused")
+        try:
+            _mirror_to_maya_shadow_async({"name": "Michael (Command/SMS)", "phone": frm, "is_michael": True}, "outbound", f"[SMS] {clean}")
+        except Exception:
+            pass
+    except Exception as _mx:
+        _report_error("sms_michael_command", _mx)
 
 
 def _handle_incoming_sms(frm, body):
@@ -12713,6 +12789,39 @@ def _lead_reminder_thread():
                         if _asked_dt is not None and _asked_dt.tzinfo is None:
                             _asked_dt = tz.localize(_asked_dt)
                         _confirmed = bool(_asked_dt and _last_in and _last_in > _asked_dt)
+                        _how = "reply seen" if _confirmed else ""
+                        # PATCH #161 — two more ways a YES reaches us. (a) Michael
+                        # texted the line "He is confirmed" (operator_cmd) or the
+                        # mark was set by hand; (b) the client ANSWERED THE EMAIL:
+                        # Dr. Scott Robinson replied YES to the T-24 ask on 13 Oct
+                        # and the machine still texted "unconfirmed" at 6:14 the
+                        # next morning, because an email reply never touches the
+                        # lead record this watcher reads. Ask Gmail directly.
+                        if not _confirmed and _pg.enabled():
+                            try:
+                                if _pg.load_state(f"confirmed:{event_id}", None):
+                                    _confirmed, _how = True, "marked confirmed"
+                            except Exception:
+                                pass
+                        if not _confirmed and _asked_dt and _u_email:
+                            try:
+                                _em_in = (_susan_gmail_mod.inbound_from(_u_email, _asked_dt.timestamp(), mailbox="info", limit=3)
+                                          or _susan_gmail_mod.inbound_from(_u_email, _asked_dt.timestamp(), mailbox="michael", limit=3))
+                            except Exception as _gx:
+                                _em_in = []
+                                print(f"[RAIL] email reply check failed (non-fatal): {_gx}")
+                            if _em_in:
+                                _confirmed, _how = True, "replied by email"
+                                try:
+                                    if _pg.enabled():
+                                        _pg.save_state(f"confirmed:{event_id}", {"at": now.isoformat(), "via": "email",
+                                                                                 "subject": _em_in[0].get("subject", "")[:120],
+                                                                                 "snippet": _em_in[0].get("snippet", "")[:160]})
+                                    if isinstance(_u_rec, dict) and _u_key:
+                                        _u_rec["last_message_time"] = now
+                                        lead_data[_u_key] = _u_rec
+                                except Exception:
+                                    pass
                         if not _confirmed:
                             _t_str = event_start.strftime("%I:%M %p").lstrip("0")
                             _why_u = ("no reply since the T-24 ask" if _asked_dt
@@ -12720,12 +12829,26 @@ def _lead_reminder_thread():
                             _operator_alert.alert(
                                 "booking",
                                 event_rail.unconfirmed_text(_u_name, _t_str, event_start.strftime("%A, %B %d"))
-                                + f"\n{summary}\n{_why_u}. Call or text them now.",
+                                + f"\n{summary}\n{_why_u}. Call or text them now, or text me \"confirmed\".",
                                 eric_text=(f":warning: *Unconfirmed visit* — {_u_name or summary} at {_t_str} "
                                            f"({event_start.strftime('%A, %B %d')}): {_why_u}."))
                             _TALLY.bump("visit.unconfirmed_T3", _why_u)
+                            # #161: remember the alert so "He is confirmed" by text can answer it
+                            try:
+                                if _pg.enabled():
+                                    _al = [a for a in (_pg.load_state("unconfirmed_alerts", []) or []) if isinstance(a, dict)]
+                                    _al.append({"event_id": event_id, "name": _u_name or summary, "time": _t_str,
+                                                "date": event_start.strftime("%A, %B %d"), "summary": summary,
+                                                "at": now.isoformat()})
+                                    _pg.save_state("unconfirmed_alerts", _al[-20:])
+                            except Exception:
+                                pass
                         else:
-                            _TALLY.bump("visit.confirmed_by_T3", "reply seen")
+                            _TALLY.bump("visit.confirmed_by_T3", _how)
+                            if _how != "reply seen":
+                                _post_to_slack_async(SLACK_ERIC_CHANNEL,
+                                    f":white_check_mark: *Confirmed* — {_u_name or summary} at "
+                                    f"{event_start.strftime('%-I:%M %p')} ({event_start.strftime('%A, %B %d')}): {_how}.")
                 except Exception as _ux:
                     _report_error("event_rail.unconfirmed_watch", _ux, f"event={event_id}")
 

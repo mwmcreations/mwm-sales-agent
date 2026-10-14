@@ -500,6 +500,42 @@ def find_threads(address, mailbox="info", limit=5, service=None):
     return out
 
 
+def inbound_from(address, since_epoch, mailbox="info", limit=5, service=None):
+    """PATCH #161 — did this address write to us after a moment in time?
+    Dr. Scott Robinson answered the T-24 "Reply YES" email on 13 Oct and the
+    machine still texted Michael "unconfirmed" at 6:14 the next morning: a
+    reply by email never touched the lead record the watcher reads.
+    -> newest-first [{"id", "thread_id", "date", "subject", "snippet"}]
+    of messages FROM `address` received after `since_epoch` (unix seconds)."""
+    addr = _mailbox_address(mailbox)
+    a = str(address or "").strip().lower()
+    if not a or "@" not in a:
+        return []
+    try:
+        since = int(float(since_epoch))
+    except (TypeError, ValueError):
+        return []
+    svc = service or _thread_service(addr)
+    listing = svc.users().messages().list(
+        userId="me", q="from:%s after:%d" % (a, since),
+        maxResults=max(1, min(int(limit or 5), 10))).execute()
+    out = []
+    for ref in listing.get("messages") or []:
+        try:
+            m = svc.users().messages().get(userId="me", id=ref["id"], format="metadata",
+                                           metadataHeaders=["Subject", "Date", "From"]).execute()
+        except Exception as _e:
+            print("[GMAIL] inbound_from: message %s unreadable: %s" % (ref.get("id"), _e))
+            continue
+        h = (m.get("payload") or {}).get("headers") or []
+        out.append({"id": m.get("id"), "thread_id": m.get("threadId"),
+                    "date": _header(h, "Date"), "subject": _header(h, "Subject"),
+                    "from": _header(h, "From"), "snippet": str(m.get("snippet") or "")[:200],
+                    "internal_ms": int(m.get("internalDate") or 0)})
+    out.sort(key=lambda x: -x["internal_ms"])
+    return out
+
+
 # ── Core: Send Email with Optional Attachment ───────────────────────
 
 def send_gmail(to, subject, body_html, drive_file_id=None, filename=None, cc=None,
