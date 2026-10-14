@@ -5630,6 +5630,67 @@ def studio_visit_gate(tool_input, sender):
     return {"error": why}
 
 
+_SMS_REFUSAL_HINTS = {          # PATCH #248 — what Maya should do when a text is refused
+    "no_consent": "no texting consent on file for this number - use send_email_to_lead",
+    "no_consent_marketing": "this lead only agreed to booking texts, not outreach - use send_email_to_lead",
+    "no_consent_transactional": "no texting consent for reminders on file - use send_email_to_lead",
+    "quiet_hours": "outside the texting window (outreach 10 AM-8 PM ET) - try later or send_email_to_lead",
+    "monthly_cap": "this lead already had 4 outreach texts this month - use send_email_to_lead",
+    "do_not_sms": "this number replied STOP - never text it; email only if they have not opted out of email",
+    "twilio_env_missing": "texting is not configured on this service - tell Michael",
+}
+
+
+def _maya_sms_tool(phone, message, lead_name=""):
+    """PATCH #248 — Maya's own outbound SMS (Michael via Maya, 14 Oct: WhatsApp
+    adoption is low among US leads; a form lead who never writes back is
+    reachable only by email and templates). Everything that protects the
+    number lives in _sms_gates, so this is thin: pick the kind, compose the
+    words the carrier-safe way, send, and when refused say WHY so Maya can
+    fall back instead of guessing. Returns the tool result dict."""
+    import sms_consent as _sc
+    e164 = _sc.to_e164(phone)
+    core = " ".join(str(message or "").split())
+    if not e164:
+        return {"error": f"'{str(phone)[:30]}' is not a mobile number I can text (need a US/CA number, E.164 preferred)"}
+    if not core:
+        return {"error": "Missing required field: message"}
+    if _is_internal_number(e164) or _is_michael_phone(e164):
+        return {"error": "that is an internal number, not a lead"}
+    tail = "..." + e164[-4:]
+    try:
+        in_window = _sms_inbound_window_open(e164)
+    except Exception:
+        in_window = False
+    try:
+        if in_window:
+            kind, body = SMS_KIND_TRANSACTIONAL, _sms_copy.compose_reply(core)
+        else:
+            kind, body = SMS_KIND_MARKETING, _sms_copy.compose(core)
+    except ValueError as _cx:
+        return {"error": f"message does not fit a text: {str(_cx)[:120]}. Keep it to one or two short sentences (about 280 characters)."}
+    res = _send_sms(e164, body, kind=kind) or {}
+    if not res.get("ok"):
+        reason = str(res.get("reason") or "refused")
+        _TALLY.bump("sms.maya_tool", f"refused:{reason}")
+        return {"error": f"Text to {tail} refused: {reason}", "what_to_do": _SMS_REFUSAL_HINTS.get(reason, "use send_email_to_lead or tell Michael")}
+    _TALLY.bump("sms.maya_tool", "sent")
+    try:
+        key, rec = _find_lead_by_phone(e164)
+        if key and isinstance(rec, dict):
+            rec["last_outbound_sms"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+            lead_data[key] = rec
+    except Exception:
+        pass
+    try:
+        _mirror_to_maya_shadow_async({"name": lead_name or "lead", "phone": e164, "is_michael": False}, "outbound", f"[SMS] {body}")
+    except Exception:
+        pass
+    _post_to_slack_async(SLACK_MAYA_CHANNEL,
+                         f"*Maya Command — Text Sent*\nTo: {lead_name or 'lead'} ({tail}) · {kind}\n{body}\nSent by: Maya (Michael's command)")
+    return {"success": True, "sent_to": tail, "kind": kind, "text_sent": body}
+
+
 def handle_tool_call(tool_name, tool_input, sender=None):
     """Execute a tool call and return the result as a dict."""
     if tool_name == "get_available_slots":
@@ -5832,13 +5893,18 @@ CAPABILITIES (use your tools):
 - Post messages to Slack channels
 - Send WhatsApp re-engagement templates to leads outside the 24-hour window
 - Reply directly to leads inside the 24-hour WhatsApp window
+- Text leads by SMS (send_sms_to_lead) — the channel US leads actually open
 
 OUTBOUND RULES:
 - Email: ALWAYS available. No restrictions. Use send_email_to_lead for personalized outreach.
+- SMS: Use send_sms_to_lead for US leads, form leads who never replied, or when Michael says "text them".
+  The machine checks consent, the 10 AM-8 PM ET window, the 4-per-month cap and STOP; write only the sentence,
+  the brand and opt-out are added. If it is refused, the result says why - fall back to email and tell Michael.
 - WhatsApp (inside 24h window): Use reply_to_lead_whatsapp for free-form messages.
 - WhatsApp (outside 24h window): Use send_reengagement_template — pre-approved templates only.
 - When Michael asks you to "contact" or "reach out to" a lead, first use lookup_lead to find their info.
-  If they have an email, send email. Mention whether WhatsApp free-form is available (24h window).
+  A form lead with a mobile number and no reply: text first (send_sms_to_lead), email as well if they have one.
+  Otherwise email; mention whether WhatsApp free-form is available (24h window).
 
 ABSOLUTE RULE — NEVER FABRICATE BUSINESS INFORMATION:
 - NEVER invent, create, or assume packages, services, pricing, plans, or product details for MWM Creations.
@@ -5978,6 +6044,38 @@ COMMAND_TOOLS = [
                 "message": {
                     "type": "string",
                     "description": "The message to send. Write it as Maya speaking naturally."
+                }
+            },
+            "required": ["phone", "message"]
+        }
+    },
+    {
+        "name": "send_sms_to_lead",
+        "description": (
+            "Text a lead by SMS (Patch #248). Use for US leads who never open WhatsApp - a form lead who "
+            "has not replied on any channel, or when Michael says 'text them'. Write ONLY the sentence or two "
+            "you want to say, as Maya; the brand prefix and the STOP line are added automatically (two "
+            "segments max, about 280 characters). Rules the machine enforces, so you need not ask: the lead "
+            "must have texting consent on file (every Meta form lead ticked it), outreach texts go out "
+            "10 AM-8 PM ET only, at most 4 per lead per month, STOP is always honoured. If the lead texted "
+            "us in the last 24 h this is a conversational reply instead (no prefix, no window). When the "
+            "text is refused, the result says why - then use send_email_to_lead or tell Michael. "
+            "NEVER invent packages, prices or details Michael did not give you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {
+                    "type": "string",
+                    "description": "Lead's mobile number, E.164 preferred (e.g. +14075551234)."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The sentence(s) to send - no greeting boilerplate, no brand, no opt-out line."
+                },
+                "lead_name": {
+                    "type": "string",
+                    "description": "Name of the lead (for the log)."
                 }
             },
             "required": ["phone", "message"]
@@ -6227,6 +6325,10 @@ def handle_command_tool_call(tool_name, tool_input):
                 return {"success": True, "message_id": result.get("message_id", ""), "sent_to": to_email}
             except Exception as email_err:
                 return {"error": f"Email send failed: {str(email_err)[:200]}"}
+
+        elif tool_name == "send_sms_to_lead":                      # PATCH #248
+            return _maya_sms_tool(tool_input.get("phone", ""), tool_input.get("message", ""),
+                                  tool_input.get("lead_name", ""))
 
         elif tool_name == "reply_to_lead_whatsapp":
             phone = tool_input.get("phone", "").strip()
