@@ -76,6 +76,32 @@ QUALIFIED_VERDICTS = ("yes", "review")
 # Daily Event Report outcomes that mean the visit HAPPENED.
 VISIT_OUTCOMES = ("completed", "follow_up", "studio_package_pitched", "client_won", "not_interested")
 
+# PATCH #251b — Meta's Lead Ads Testing Tool dummies are not people. The one
+# the rail has seen (30 Sep proof run) is listed by id; any record whose name
+# is the tool's "<test lead: …>" placeholder is caught the same way.
+TEST_LEADGEN_IDS = ("4593113990973865",)
+
+
+def is_test_record(rec):
+    """True for anything that must never reach Meta as a stage: the rail's
+    own test leads (test_lead), the Testing Tool dummies, placeholder names."""
+    rec = rec or {}
+    if rec.get("test_lead"):
+        return True
+    if str(rec.get("leadgen_id") or "") in TEST_LEADGEN_IDS:
+        return True
+    if str(rec.get("name") or "").strip().lower().startswith("<test"):
+        return True
+    return False
+
+
+def is_form_lead(rec):
+    """A lead that came through a Meta Instant Form. The live rail writes
+    leadgen_id; a record rebuilt from the sheet (#153 restore) has only
+    meta_lead_ad — it still gets Lead/Qualified, matched by hashed email/phone."""
+    rec = rec or {}
+    return bool(rec.get("leadgen_id") or rec.get("meta_lead_ad"))
+
 CUSTOM_BASE = {"event_source": "crm", "lead_event_source": "MWM Sales Machine"}
 
 # Meta: event_time must be within the last 7 days. Keep an hour of slack.
@@ -278,9 +304,8 @@ def stages_from_record(rec):
     (leadgen_id); the other three apply to any lead."""
     rec = rec or {}
     out = []
-    leadgen = str(rec.get("leadgen_id") or "")
     captured = _first(rec.get("lead_form_at"), rec.get("first_contact_time"))
-    if leadgen:
+    if is_form_lead(rec):
         out.append((STAGE_LEAD, captured,
                     {"ad_id": str(rec.get("ad_id") or ""), "qualified": str(rec.get("qualified") or ""),
                      "content_name": str(rec.get("business") or "")}))
@@ -311,14 +336,14 @@ def backfill_plan(leads, already_sent, since=None, now=None, meta_only=True):
 
     `leads` is {key: record}; `already_sent(key, stage)` is the ledger; `since`
     (epoch or ISO) keeps the plan to leads first seen at or after it; with
-    `meta_only` only leads that carry a leadgen_id are considered (ERIC: the
-    Oct 1+ Meta leads). Pure. Test leads (test_lead) are never planned."""
+    `meta_only` only form leads (leadgen_id or meta_lead_ad) are considered
+    (ERIC: the Oct 1+ Meta leads). Pure. Test records are never planned."""
     since_e = to_epoch(since) if since not in (None, "") else None
     plan = []
     for key, rec in (leads or {}).items():
-        if not isinstance(rec, dict) or rec.get("test_lead"):
+        if not isinstance(rec, dict) or is_test_record(rec):
             continue
-        if meta_only and not rec.get("leadgen_id"):
+        if meta_only and not is_form_lead(rec):
             continue
         seen = to_epoch(_first(rec.get("lead_form_at"), rec.get("first_contact_time")))
         if since_e is not None and (seen is None or seen < since_e):

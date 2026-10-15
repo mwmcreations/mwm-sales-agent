@@ -24987,7 +24987,7 @@ def _capi_stage(lead_key, rec, stage, stage_time=None, extra=None, sync=False):
     Returns (status, detail) where status is 'queued' | 'sent' | 'skipped' | 'failed'."""
     if not lead_key or not isinstance(rec, dict):
         return "skipped", "no record"
-    if rec.get("test_lead"):
+    if _capi.is_test_record(rec):   # #251b: rail test leads AND Meta's Testing Tool dummies
         return "skipped", "test lead"
     if stage not in _capi.STAGE_ORDER:
         return "skipped", f"unknown stage {stage}"

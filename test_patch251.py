@@ -91,6 +91,14 @@ check("rec.form_review", [s for s, _, _ in mc.stages_from_record(dict(rec_form, 
 check("rec.form_no", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="no"))] == ["Lead"])
 check("rec.form_studio_hour_not_qualified", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="studio-hour"))] == ["Lead"])
 check("rec.ig_lead_no_form_stages", mc.stages_from_record({"phone": "14075551234", "first_contact_time": T0}) == [])
+# #251b — a form record rebuilt from the sheet (meta_lead_ad, no leadgen_id) still has Lead/Qualified
+restored = {"meta_lead_ad": True, "qualified": "yes", "ad_id": "ad7", "business": "iD8", "email": "d@example.com",
+            "lead_form_at": "2026-10-02T11:00:00-04:00", "restored_from_sheet_at": "2026-10-07T19:30:00-04:00"}
+check("rec.restored_form_lead", [s for s, _, _ in mc.stages_from_record(restored)] == ["Lead", "Qualified"]
+      and "lead_id" not in mc.stage_event("Lead", "whatsapp:+14075550003", email="d@example.com", lead_id=restored.get("leadgen_id", ""))["user_data"])
+check("rec.is_form_lead", mc.is_form_lead(restored) and mc.is_form_lead({"leadgen_id": "1"}) and not mc.is_form_lead({"phone": "1"}) and not mc.is_form_lead(None))
+check("rec.is_test_record", mc.is_test_record({"test_lead": True}) and mc.is_test_record({"leadgen_id": "4593113990973865"})
+      and mc.is_test_record({"name": "<test lead: dummy data for full_name>"}) and not mc.is_test_record(restored) and not mc.is_test_record(None))
 booked = dict(rec_form, event_id="abc", booked_at="2026-10-05T10:00:00-04:00")
 st = mc.stages_from_record(booked)
 check("rec.booked_needs_event_id", [s for s, _, _ in st] == ["Lead", "Qualified", "StudioVisitBooked"] and st[2][1] == "2026-10-05T10:00:00-04:00")
@@ -116,20 +124,27 @@ LEADS = {
     "whatsapp:+14075550001": {"phone": "14075550001", "event_id": "e1", "booked_at": "2026-10-10T10:00:00-04:00",
                               "first_contact_time": "2026-10-09T10:00:00-04:00"},   # IG lead, booked, no form
     "meta_lead_333": dict(rec_form, leadgen_id="333", test_lead=True),      # never
+    "meta_lead_4593113990973865": dict(rec_form, leadgen_id="4593113990973865", qualified="no",
+                                       name="<test lead: dummy data for full_name>"),   # Meta's Testing Tool dummy — never (#251b)
+    "whatsapp:+14075550004": dict(restored, phone="14075550004", first_contact_time="2026-10-02T11:00:00-04:00"),  # restored form lead (#251b)
     "junk": "not a record",
 }
 sent = {("meta_lead_111", "Lead")}
 plan = mc.backfill_plan(LEADS, lambda k, s: (k, s) in sent, since="2026-10-01T00:00:00-04:00", now=NOW)
 check("plan.meta_only_since_ledger", [(p["lead_key"], p["stage"]) for p in plan] ==
-      [("meta_lead_111", "Qualified"), ("meta_lead_111", "StudioVisitBooked"), ("meta_lead_111", "StudioVisitCompleted"), ("meta_lead_111", "Converted")],
+      [("meta_lead_111", "Qualified"), ("whatsapp:+14075550004", "Lead"), ("whatsapp:+14075550004", "Qualified"),
+       ("meta_lead_111", "StudioVisitBooked"), ("meta_lead_111", "StudioVisitCompleted"), ("meta_lead_111", "Converted")],
       str([(p["lead_key"], p["stage"]) for p in plan]))
+check("plan.dummy_never", not any(p["lead_key"] == "meta_lead_4593113990973865" for p in plan)
+      and not any(p["lead_key"] == "meta_lead_4593113990973865" for p in mc.backfill_plan(LEADS, lambda k, s: False, meta_only=False)))
+check("plan.restored_has_no_lead_id", [p["lead_id"] for p in plan if p["lead_key"] == "whatsapp:+14075550004"] == ["", ""])
 check("plan.rows_carry_identity", plan[0]["lead_id"] == "111" and plan[0]["extra"]["qualified"] == "yes" and plan[0]["stage_time"] == T0)
 plan_all = mc.backfill_plan(LEADS, lambda k, s: False, since="2026-10-01T00:00:00-04:00", now=NOW, meta_only=False)
 check("plan.all_includes_ig_booking", ("whatsapp:+14075550001", "StudioVisitBooked") in [(p["lead_key"], p["stage"]) for p in plan_all]
       and ("meta_lead_333", "Lead") not in [(p["lead_key"], p["stage"]) for p in plan_all])
 check("plan.sorted_by_time_then_stage", [p["stage"] for p in plan_all if p["lead_key"] == "meta_lead_111"] ==
       ["Lead", "Qualified", "StudioVisitBooked", "StudioVisitCompleted", "Converted"])
-check("plan.no_since", len(mc.backfill_plan(LEADS, lambda k, s: False, since=None, now=NOW)) == 6)   # 111 ×5 + 222 Lead
+check("plan.no_since", len(mc.backfill_plan(LEADS, lambda k, s: False, since=None, now=NOW)) == 8)   # 111 ×5 + 222 Lead + restored ×2
 check("plan.empty", mc.backfill_plan({}, lambda k, s: False) == [] and mc.backfill_plan(None, lambda k, s: False) == [])
 
 # ── 5 · the wire ────────────────────────────────────────────────────────────
@@ -207,6 +222,8 @@ check("ig.hashed_only", st == "sent" and "lead_id" not in wire[-1][0]["user_data
       and "email/phone match" in slack[-1][1])
 # guards
 check("guard.test_lead", G["_capi_stage"]("k", {"test_lead": True, "leadgen_id": "1"}, "Lead", sync=True) == ("skipped", "test lead"))
+check("guard.testing_tool_dummy", G["_capi_stage"]("meta_lead_4593113990973865", {"leadgen_id": "4593113990973865", "name": "<test lead: dummy data for full_name>"},
+                                                  "Lead", sync=True) == ("skipped", "test lead"))
 check("guard.no_record", G["_capi_stage"]("k", None, "Lead", sync=True)[0] == "skipped" and G["_capi_stage"]("", {}, "Lead", sync=True)[0] == "skipped")
 check("guard.unknown_stage", G["_capi_stage"]("k", {"phone": "1"}, "Purchase", sync=True)[0] == "skipped")
 # async path hands the same event to the thread
