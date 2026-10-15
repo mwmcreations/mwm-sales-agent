@@ -21,7 +21,9 @@ want = {"_meta_lead_intake", "_meta_lead_fetch", "_chase_pass", "_chase_aware",
         "_chase_is_client", "_sms_body_that_fits", "_first_touch_sms_body",
         "email_ok", "_chase_mask", "_sms_lead_context",
         "_report_drives_record", "_chase_stop", "_deal_value_from", "_on_payment",
-        "_capi_send_async"}
+        "_capi_send_async",
+        # PATCH #251 — the stage sender and its ledger
+        "_capi_stage", "_capi_ledger_has", "_capi_ledger_mark", "_capi_mask", "_capi_send_now"}
 fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 ok(len(fns) == len(want), "functions found (%d/%d)" % (len(fns), len(want)))
 
@@ -93,7 +95,7 @@ G = dict(
     _known_client_lookup=lambda key, cand=None: (False, "no_match", None),
     SMS_KIND_TRANSACTIONAL="transactional", SMS_KIND_MARKETING="marketing",
     _heartbeat=lambda n: None,
-    _capi=_capi, re=__import__("re"),
+    _capi=_capi, re=__import__("re"), _pgs=pg,   # #251: the CAPI ledger reads/writes pg
     # PATCH #156 — the CALL NOW alert is recorded, never sent, here
     _CALL_NOW_LAST={"skipped_internal": 0},
     _call_now_alert=lambda key, name, rec, verdict, label, phone, now: (calls["call_now"].append((key, name, verdict, phone)) or "sent"),
@@ -334,8 +336,11 @@ G["_on_payment"]({"id": "evt_1", "type": "checkout.session.completed", "data": {
     "metadata": {"sku": "studio_subscription"}}}})
 ok(rec.get("paid_at") and rec["relationship"] == "new_client" and rec["chase"]["stopped"] == "client", "a Stripe payment marks paid, client, and stops the chain")
 ok(calls["sheet_updates"][-1][1]["Status"] == "Paid — Client", "sheet row says Paid — Client")
-ok(calls["capi"] and calls["capi"][-1]["event_name"] == "Purchase" and calls["capi"][-1]["custom_data"]["value"] == 1200.0
-   and "em" in calls["capi"][-1]["user_data"], "Purchase event built for Meta (hashed email, $1,200)")
+ok(calls["capi"] and calls["capi"][-1]["event_name"] == "Converted" and calls["capi"][-1]["custom_data"]["value"] == 1200.0
+   and "em" in calls["capi"][-1]["user_data"] and calls["capi"][-1]["event_id"] == "whatsapp:+14075551234:Converted",
+   "Converted stage built for Meta (hashed email, $1,200, keyed by the lead) — #251")
+ok(any(e["event_name"] == "StudioVisitCompleted" and e["custom_data"]["content_name"] == "follow_up" for e in calls["capi"]),
+   "the follow_up report sent StudioVisitCompleted first — #251")
 # client_won from the report
 rec = armed_lead("L14")
 G["_report_drives_record"]("client_won", "whatsapp:+14075551234", rec, "ana@smiledental.com", "Ana Souza", "Studio Subscription $1,200/month", "", "", dict(plan0), False, [])
@@ -348,8 +353,11 @@ ok(rec["chase"]["stopped"] == "disqualified", "not_interested stops the form cha
 # CAPI Lead on a qualified form lead
 reset(); LEAD_JSON.clear(); LEAD_JSON.update(meta_lead(id="123456789012345"))
 G["_meta_lead_intake"]({"leadgen_id": "123456789012345", "form_id": "1093985030009769"})
-ok(calls["capi"] and calls["capi"][-1]["event_name"] == "Lead" and calls["capi"][-1]["user_data"].get("lead_id") == 123456789012345
-   and calls["capi"][-1]["custom_data"]["qualified"] == "yes", "a qualified form lead becomes a Lead event keyed by leadgen id")
+_st = [e for e in calls["capi"] if e["user_data"].get("lead_id") == 123456789012345]
+ok(len(_st) == 2 and [e["event_name"] for e in _st] == ["Lead", "Qualified"]
+   and _st[0]["custom_data"]["qualified"] == "yes" and _st[0]["custom_data"]["event_source"] == "crm"
+   and _st[0]["event_id"].endswith(":Lead") and _st[1]["event_id"].endswith(":Qualified"),
+   "a qualified form lead becomes Lead + Qualified stages keyed by leadgen id — #251")
 ok(_capi.send([calls["capi"][-1]], post=lambda u, j: (200, {"events_received": 1}), dataset_id="1", token="t")[0]
    and _capi.send([calls["capi"][-1]], dataset_id="", token="")[1] == "unconfigured", "CAPI send: ok when configured, named skip when dark")
 

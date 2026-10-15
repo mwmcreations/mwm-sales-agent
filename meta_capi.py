@@ -1,23 +1,53 @@
 """
-meta_capi.py — PATCH #145. Three events back to Meta, nothing else.
+meta_capi.py — PATCH #145 (three events), reshaped by PATCH #251 into the five
+CRM lead stages Meta's "Conversion Leads" optimisation wants.
 
-ERIC's ask (26 Sep, item B4; 30 Sep, item 8): tell Meta when a lead is
-QUALIFIED (`Lead`), when a visit is BOOKED (`Schedule`) and when money
-arrives (`Purchase`), so the Leads-objective campaign optimises for people who
-become clients rather than for anyone who will fill a form.
+ERIC's ask (26 Sep, item B4; 30 Sep, item 8; 15 Oct, patch request): tell Meta
+what happens to a lead AFTER the form, so the Leads-objective campaign can
+optimise for owners who book and buy, not for anyone who will fill a form.
+
+THE FIVE STAGES (one event per stage change, per lead — ERIC, 15 Oct):
+    Lead                   the form was captured (mirrors Meta's own Lead)
+    Qualified              passed the role + revenue gate (verdict yes/review)
+    StudioVisitBooked      a calendar event exists for the visit
+    StudioVisitCompleted   the visit happened (any report outcome but no_show)
+    Converted              money arrived (Stripe) or Michael reported client_won
+
+HOW A STAGE IS KEYED
+    event_id   = "<lead_key>:<Stage>"   — Meta de-duplicates on it, and the
+                 app's ledger (pg `capi_sent:<lead_key>:<Stage>`) never sends
+                 a stage twice. A lead key may itself contain colons
+                 ("whatsapp:+1407…"), so the stage is the LAST colon-field.
+    user_data  lead_id = the Instant Form leadgen id when the lead came from a
+                 Meta form (the match key Conversion Leads keys on), plus
+                 SHA-256 em / ph / fn / ln as the fallback for IG / WhatsApp /
+                 web leads that never touched a form.
+    custom_data {"event_source": "crm", "lead_event_source": "MWM Sales Machine",
+                 "stage": <Stage>} on EVERY event, plus whatever the hook knows
+                 (ad_id, qualified verdict, value/currency, content_name).
+    action_source "system_generated" — the documented value for CRM events.
+
+THE 7-DAY RULE
+    Meta refuses an event whose event_time is more than 7 days old. A stage
+    that happened earlier (the Oct 1+ backfill) is therefore stamped at send
+    time and carries the real moment in custom_data.stage_time, with
+    custom_data.stage_time_clamped = true. The lead_id match window is 28
+    days, which is what the optimisation actually needs.
 
 DARK UNTIL CONFIGURED. Two Railway variables switch it on:
-    META_CAPI_DATASET_ID   the dataset (pixel) id from Events Manager
+    META_CAPI_DATASET_ID   the dataset id from Events Manager (658880878344916)
     META_CAPI_TOKEN        a Conversions API access token, generated in
                            Events Manager and pasted into Railway by Michael
                            (never through Slack or chat)
-Optional: META_CAPI_TEST_CODE (Events Manager "Test events" code) — when
-set, every event is tagged with it so it shows in the test tab and does not
-count.
+Optional: META_CAPI_TEST_CODE (Events Manager "Test events" code) — when set,
+every event is tagged with it so it shows in the test tab and does not count.
+While dark, nothing is marked sent, so the backfill route can send every
+stage once the token exists.
 
-PURE where it matters: payload building and hashing are plain functions
-with no network, so they are tested; `send()` is the only thing that talks
-to Meta, and it never raises.
+PURE where it matters: payload building, hashing, time clamping, the
+stage-from-record derivation and the backfill plan are plain functions with
+no network, so they are tested; `send()` is the only thing that talks to
+Meta, and it never raises.
 """
 
 import hashlib
@@ -25,15 +55,34 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 
 GRAPH = "https://graph.facebook.com/v21.0"
 
-EVENT_LEAD = "Lead"
-EVENT_SCHEDULE = "Schedule"
-EVENT_PURCHASE = "Purchase"
+# ── the five stages, in funnel order ─────────────────────────────────────────
+STAGE_LEAD = "Lead"
+STAGE_QUALIFIED = "Qualified"
+STAGE_BOOKED = "StudioVisitBooked"
+STAGE_COMPLETED = "StudioVisitCompleted"
+STAGE_CONVERTED = "Converted"
+STAGES = (STAGE_LEAD, STAGE_QUALIFIED, STAGE_BOOKED, STAGE_COMPLETED, STAGE_CONVERTED)
+STAGE_ORDER = {s: i for i, s in enumerate(STAGES)}
+
+# Form verdicts that count as Qualified (lead_form.Q_YES / Q_REVIEW — review
+# runs the same opener, visit offer and chain, flagged for a human read).
+# Q_NO and the sub-$50K studio-hour track are not Qualified.
+QUALIFIED_VERDICTS = ("yes", "review")
+
+# Daily Event Report outcomes that mean the visit HAPPENED.
+VISIT_OUTCOMES = ("completed", "follow_up", "studio_package_pitched", "client_won", "not_interested")
+
+CUSTOM_BASE = {"event_source": "crm", "lead_event_source": "MWM Sales Machine"}
+
+# Meta: event_time must be within the last 7 days. Keep an hour of slack.
+MAX_EVENT_AGE_S = 7 * 86400 - 3600
 
 _STATS = {"sent": 0, "failed": 0, "skipped_unconfigured": 0, "last_error": "",
-          "last_event": "", "last_at": ""}
+          "last_event": "", "last_at": "", "by_stage": {}}
 
 
 def configured():
@@ -45,6 +94,7 @@ def status():
     return {"configured": configured(),
             "dataset_id": os.getenv("META_CAPI_DATASET_ID", "").strip() or None,
             "test_code": bool(os.getenv("META_CAPI_TEST_CODE", "").strip()),
+            "stages": list(STAGES),
             **_STATS}
 
 
@@ -102,8 +152,7 @@ def build_event(event_name, ud, event_time=None, source_url="", action_source="s
                 custom=None, event_id=None):
     """One event in Meta's shape. action_source "system_generated" is the
     documented value for CRM/offline-style events like a lead becoming
-    qualified or a visit being booked; purchases from the website checkout
-    use "website"."""
+    qualified or a visit being booked."""
     ev = {
         "event_name": event_name,
         "event_time": int(event_time or time.time()),
@@ -125,6 +174,167 @@ def split_name(name):
         return "", ""
     return parts[0], (parts[-1] if len(parts) > 1 else "")
 
+
+# ── time ─────────────────────────────────────────────────────────────────────
+
+def to_epoch(value):
+    """datetime (aware or naive-as-UTC), ISO string, int/float epoch, or
+    None -> epoch seconds or None. Never raises."""
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp())
+        if isinstance(value, (int, float)):
+            return int(value)
+        s = str(value).strip()
+        if re.fullmatch(r"\d{9,11}(\.\d+)?", s):
+            return int(float(s))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def clamp_time(stage_time, now=None):
+    """(event_time, clamped). A stage older than Meta's 7-day window is
+    stamped `now`; a stage in the future is stamped `now` too (clocks)."""
+    now = int(now or time.time())
+    st = to_epoch(stage_time)
+    if st is None:
+        return now, False
+    if st > now:
+        return now, True
+    if now - st > MAX_EVENT_AGE_S:
+        return now, True
+    return st, False
+
+
+# ── ids ──────────────────────────────────────────────────────────────────────
+
+def event_id_for(lead_key, stage):
+    return f"{lead_key}:{stage}"
+
+
+def ledger_key(lead_key, stage):
+    return f"capi_sent:{lead_key}:{stage}"
+
+
+def parse_event_id(event_id):
+    """'whatsapp:+14075551234:StudioVisitBooked' -> ('whatsapp:+14075551234',
+    'StudioVisitBooked'); anything that does not end in a known stage ->
+    (None, None). The stage is always the LAST colon-field."""
+    s = str(event_id or "")
+    if ":" not in s:
+        return None, None
+    key, stage = s.rsplit(":", 1)
+    if stage not in STAGE_ORDER or not key:
+        return None, None
+    return key, stage
+
+
+# ── the stage event ──────────────────────────────────────────────────────────
+
+def stage_event(stage, lead_key, name="", email="", phone="", lead_id="",
+                stage_time=None, now=None, extra=None):
+    """One CRM stage for one lead, in Meta's shape, keyed for de-duplication."""
+    if stage not in STAGE_ORDER:
+        raise ValueError(f"unknown stage {stage!r}")
+    fn, ln = split_name(name)
+    ud = user_data(email, phone, fn, ln, lead_id=lead_id)
+    et, clamped = clamp_time(stage_time, now)
+    custom = dict(CUSTOM_BASE)
+    custom["stage"] = stage
+    if clamped:
+        st = to_epoch(stage_time)
+        if st is not None:
+            custom["stage_time"] = datetime.fromtimestamp(st, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        custom["stage_time_clamped"] = True
+    for k, v in (extra or {}).items():
+        if v in (None, ""):
+            continue
+        custom[k] = v
+    return build_event(stage, ud, event_time=et, custom=custom,
+                       event_id=event_id_for(lead_key, stage))
+
+
+# ── what a lead record says happened (for the backfill) ─────────────────────
+
+def _first(*vals):
+    for v in vals:
+        if v not in (None, ""):
+            return v
+    return None
+
+
+def stages_from_record(rec):
+    """[(stage, stage_time_or_None, extra), ...] in funnel order, derived from
+    the fields the hooks write. A booking counts only with an event_id (S30:
+    the flag alone is not a booking). Lead/Qualified come only from a form
+    (leadgen_id); the other three apply to any lead."""
+    rec = rec or {}
+    out = []
+    leadgen = str(rec.get("leadgen_id") or "")
+    captured = _first(rec.get("lead_form_at"), rec.get("first_contact_time"))
+    if leadgen:
+        out.append((STAGE_LEAD, captured,
+                    {"ad_id": str(rec.get("ad_id") or ""), "qualified": str(rec.get("qualified") or ""),
+                     "content_name": str(rec.get("business") or "")}))
+        if str(rec.get("qualified") or "") in QUALIFIED_VERDICTS:
+            out.append((STAGE_QUALIFIED, captured,
+                        {"ad_id": str(rec.get("ad_id") or ""), "qualified": str(rec.get("qualified") or "")}))
+    if rec.get("event_id"):
+        out.append((STAGE_BOOKED, _first(rec.get("booked_at"), rec.get("last_outcome_at")),
+                    {"content_name": "studio_visit"}))
+    if str(rec.get("last_outcome") or "") in VISIT_OUTCOMES:
+        out.append((STAGE_COMPLETED, rec.get("last_outcome_at"),
+                    {"content_name": str(rec.get("last_outcome") or "")}))
+    if rec.get("paid_at") or rec.get("won_at"):
+        extra = {"content_name": str(rec.get("paid_product") or rec.get("product") or "")}
+        try:
+            v = float(rec.get("paid_value") or 0)
+            if v:
+                extra["value"] = round(v, 2)
+                extra["currency"] = "USD"
+        except Exception:
+            pass
+        out.append((STAGE_CONVERTED, _first(rec.get("paid_at"), rec.get("won_at")), extra))
+    return out
+
+
+def backfill_plan(leads, already_sent, since=None, now=None, meta_only=True):
+    """Which (lead_key, stage, stage_time, extra) still need sending.
+
+    `leads` is {key: record}; `already_sent(key, stage)` is the ledger; `since`
+    (epoch or ISO) keeps the plan to leads first seen at or after it; with
+    `meta_only` only leads that carry a leadgen_id are considered (ERIC: the
+    Oct 1+ Meta leads). Pure. Test leads (test_lead) are never planned."""
+    since_e = to_epoch(since) if since not in (None, "") else None
+    plan = []
+    for key, rec in (leads or {}).items():
+        if not isinstance(rec, dict) or rec.get("test_lead"):
+            continue
+        if meta_only and not rec.get("leadgen_id"):
+            continue
+        seen = to_epoch(_first(rec.get("lead_form_at"), rec.get("first_contact_time")))
+        if since_e is not None and (seen is None or seen < since_e):
+            continue
+        for stage, st, extra in stages_from_record(rec):
+            if already_sent(key, stage):
+                continue
+            plan.append({"lead_key": key, "stage": stage, "stage_time": st, "extra": extra,
+                         "lead_id": str(rec.get("leadgen_id") or ""),
+                         "name": rec.get("name") or "", "email": rec.get("email") or "",
+                         "phone": rec.get("phone") or ""})
+    plan.sort(key=lambda p: (to_epoch(p["stage_time"]) or 0, STAGE_ORDER[p["stage"]]))
+    return plan
+
+
+# ── the wire ─────────────────────────────────────────────────────────────────
 
 def send(events, post=None, dataset_id=None, token=None, test_code=None):
     """POST the events. Returns (ok, detail). Never raises.
@@ -160,45 +370,12 @@ def send(events, post=None, dataset_id=None, token=None, test_code=None):
     _STATS["last_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     if code == 200 and not (body or {}).get("error"):
         _STATS["sent"] += len(events)
+        for e in events:
+            n = str(e.get("event_name", "?"))
+            _STATS["by_stage"][n] = _STATS["by_stage"].get(n, 0) + 1
         return True, f"received {body.get('events_received', len(events))}"
     _STATS["failed"] += 1
     err = (body or {}).get("error") or {}
     msg = f"HTTP {code} {err.get('message', '') or json.dumps(body)[:200]}"
     _STATS["last_error"] = msg[:200]
     return False, msg
-
-
-# ── the three events, as the app calls them ────────────────────────────────
-
-def lead_event(name="", email="", phone="", lead_id="", ad_id="", qualified="",
-               business="", event_id=None):
-    fn, ln = split_name(name)
-    return build_event(EVENT_LEAD,
-                       user_data(email, phone, fn, ln, lead_id=lead_id),
-                       custom={"lead_event_source": "MWM Sales Machine",
-                               "event_source": "crm",
-                               "qualified": qualified or "", "ad_id": ad_id or "",
-                               "content_name": business or ""},
-                       event_id=event_id or (f"lead-{lead_id}" if lead_id else None))
-
-
-def schedule_event(name="", email="", phone="", lead_id="", when="", kind="studio_visit",
-                   event_id=None):
-    fn, ln = split_name(name)
-    return build_event(EVENT_SCHEDULE,
-                       user_data(email, phone, fn, ln, lead_id=lead_id),
-                       custom={"content_name": kind, "scheduled_for": when or ""},
-                       event_id=event_id)
-
-
-def purchase_event(name="", email="", phone="", lead_id="", value=0.0, currency="USD",
-                   product="", stripe_id="", event_id=None):
-    fn, ln = split_name(name)
-    return build_event(EVENT_PURCHASE,
-                       user_data(email, phone, fn, ln, lead_id=lead_id),
-                       action_source="website",
-                       custom={"value": round(float(value or 0), 2),
-                               "currency": currency or "USD",
-                               "content_name": product or "",
-                               "order_id": stripe_id or ""},
-                       event_id=event_id or (f"purchase-{stripe_id}" if stripe_id else None))

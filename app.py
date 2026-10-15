@@ -5806,17 +5806,13 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                         print(f"[book_appointment] Backfilled lead email: {_book_email}")
                     if _book_biz and not lead_data[sender].get("business"):
                         lead_data[sender]["business"] = _book_biz
-                    # PATCH #145 — a booked visit is the Schedule event.
+                    # PATCH #145 → #251 — a booked visit is the StudioVisitBooked stage.
                     try:
-                        _capi_send_async(_capi.schedule_event(
-                            name=lead_data[sender].get("name", ""),
-                            email=lead_data[sender].get("email", ""),
-                            phone=lead_data[sender].get("phone", "") or sender,
-                            lead_id=lead_data[sender].get("leadgen_id", ""),
-                            when=str(tool_input.get("slot_id", "")), kind=appt_type,
-                            event_id=f"schedule-{event_id}" if event_id else None))
+                        _capi_stage(sender, lead_data[sender], _capi.STAGE_BOOKED,
+                                    extra={"content_name": appt_type,
+                                           "scheduled_for": str(tool_input.get("slot_id", ""))})
                     except Exception as _cpx:
-                        print(f"[CAPI] schedule hook failed (non-fatal): {_cpx}")
+                        print(f"[CAPI] booked hook failed (non-fatal): {_cpx}")
                 fire_hub_event(
                     event_type  = hub_event,
                     lead_name   = tool_input.get("lead_name"),
@@ -18120,6 +18116,13 @@ def _handle_web_tool_call(tool_name, tool_input):
                     "last_message_time": datetime.now(pytz.timezone(TIMEZONE)),
                 }
                 print(f"[Web Chat] Registered new lead in lead_data: {_web_key}")
+            # PATCH #251 — StudioVisitBooked for the web-chat booking too.
+            try:
+                _wb_key = _dedup_match or _web_key
+                _capi_stage(_wb_key, lead_data.get(_wb_key), _capi.STAGE_BOOKED,
+                            extra={"content_name": tool_input.get("appointment_type", "studio_visit")})
+            except Exception as _cpx:
+                print(f"[CAPI] web booked hook failed (non-fatal): {_cpx}")
             # Log to Google Sheets so web leads are tracked
             try:
                 log_new_contact_to_sheets(f"web:{_web_lead_email or 'unknown'}")
@@ -20427,6 +20430,18 @@ def _meta_lead_intake(value, lead_meta=None):
         if track:
             upd["track"] = track
         lr.update(upd)
+        lead_data[sender_key] = lr
+        # PATCH #251 — the CRM stages back to Meta (dark until configured):
+        # every captured form is a Lead; yes/review is also Qualified. Keyed by
+        # the leadgen id so Conversion Leads can match it. Not for test leads.
+        try:
+            _capi_stage(sender_key, lr, _capi.STAGE_LEAD, stage_time=now,
+                        extra={"ad_id": ad_id, "qualified": verdict, "content_name": rec["business"]})
+            if verdict in _capi.QUALIFIED_VERDICTS:
+                _capi_stage(sender_key, lr, _capi.STAGE_QUALIFIED, stage_time=now,
+                            extra={"ad_id": ad_id, "qualified": verdict})
+        except Exception as _cpx:
+            _report_error("capi.form_stage", _cpx, leadgen_id)
         if verdict == _lf.Q_NO:
             _icp.mark_disqualified(lr, _icp.REASON_NOT_TARGET_MARKET,
                                    at=now.isoformat(), by="lead_form", note=reason)
@@ -20585,10 +20600,7 @@ def _meta_lead_intake(value, lead_meta=None):
             lr["chase"] = _chase.arm(now, channels=chans, verdict=verdict,
                                      kind=(_chase.KIND_STUDIO_HOUR if sh else _chase.KIND_FORM))
             lead_data[sender_key] = lr
-            # PATCH #145 — tell Meta this one qualified (dark until configured).
-            _capi_send_async(_capi.lead_event(
-                name=name, email=email, phone=e164 or "", lead_id=leadgen_id,
-                ad_id=ad_id, qualified=verdict, business=rec["business"]))
+            # (PATCH #145's Lead event moved up to capture time — PATCH #251.)
         _LEAD_FORM_LAST.update({"verdict": verdict, "sms": sms_note, "email": email_note,
                                 "count": _LEAD_FORM_LAST["count"] + 1,
                                 "track": track or "none"})
@@ -24668,6 +24680,11 @@ def booking_form_submit():
             if relationship_converted(_c["relationship"]):
                 _lr["status"] = "client"
             _lead_note = "existing lead record updated"
+            # PATCH #251 — a visit Michael booked himself is still a booked visit.
+            try:
+                _capi_stage(_lk, _lr, _capi.STAGE_BOOKED, extra={"content_name": "studio_visit"})
+            except Exception as _cpx:
+                print(f"[CAPI] portal booked hook failed (non-fatal): {_cpx}")
         elif relationship_in_pipeline(_c["relationship"]):
             # PATCH #52 — was `== "new_lead"`, which meant an existing client
             # not yet in the store, or a lead who paid on the call, got NO
@@ -24695,6 +24712,10 @@ def booking_form_submit():
             }
             _lead_note = ("new client record created (not a prospect — never pitched)"
                           if _conv else "new lead record created")
+            try:
+                _capi_stage(_key, lead_data[_key], _capi.STAGE_BOOKED, extra={"content_name": "studio_visit"})
+            except Exception as _cpx:
+                print(f"[CAPI] portal booked hook failed (non-fatal): {_cpx}")
         else:
             _lead_note = (f"no lead record — {RELATIONSHIPS[_c['relationship']]['label'].lower()}"
                           f", deliberately not added to the sales pipeline")
@@ -24792,6 +24813,17 @@ def _report_drives_record(outcome, key, rec, email, name, service, notes, next_s
         return plan
     rec["last_outcome"] = outcome
     rec["last_outcome_at"] = now.isoformat()
+    # PATCH #251 — the visit happened (any outcome but no_show) is the
+    # StudioVisitCompleted stage; client_won is Converted. Dark until configured.
+    try:
+        if outcome in _capi.VISIT_OUTCOMES:
+            _capi_stage(key, rec, _capi.STAGE_COMPLETED, stage_time=now, extra={"content_name": outcome})
+        if outcome == "client_won":
+            _capi_stage(key, rec, _capi.STAGE_CONVERTED, stage_time=now,
+                        extra={"content_name": service or "", "value": _deal_value_from(service) or None,
+                               "currency": "USD" if _deal_value_from(service) else None})
+    except Exception as _cpx:
+        _report_error("capi.report_stage", _cpx, outcome)
     if outcome == "client_won":
         rec["relationship"] = "new_client"
         rec["won_at"] = now.isoformat()
@@ -24883,12 +24915,130 @@ def _on_payment(ev):
             print(f"[P145] payment {ev.get('id')} -> {key}: paid, chase stopped")
         else:
             print(f"[P145] payment {ev.get('id')}: no lead matched ({email or 'no email'})")
-        _capi_send_async(_capi.purchase_event(
-            name=name or (rec or {}).get("name", ""), email=email,
-            phone=e164 or "", lead_id=(rec or {}).get("leadgen_id", ""),
-            value=value, currency=currency, product=str(product), stripe_id=str(obj.get("id") or ev.get("id"))))
+        # PATCH #145 → #251 — money is the Converted stage. With a lead record it
+        # is keyed by the lead (ledger, lead_id); without one Meta still gets
+        # the hashed email/phone under a Stripe-keyed event id.
+        _conv_extra = {"value": round(float(value or 0), 2), "currency": currency or "USD",
+                       "content_name": str(product or ""), "order_id": str(obj.get("id") or ev.get("id") or "")}
+        if key and rec is not None:
+            _capi_stage(key, rec, _capi.STAGE_CONVERTED, stage_time=now, extra=_conv_extra)
+        else:
+            _capi_send_async(_capi.stage_event(
+                _capi.STAGE_CONVERTED, f"stripe:{obj.get('id') or ev.get('id')}",
+                name=name, email=email, phone=e164 or "", stage_time=now, extra=_conv_extra))
     except Exception as _px:
         _report_error("p145.on_payment", _px, str(ev.get("id")))
+
+
+def _capi_mask(lead_key):
+    """A lead key for a Slack line: never the number or the address."""
+    s = str(lead_key or "")
+    if not s:
+        return "?"
+    if s.startswith("meta_lead_"):
+        return s
+    return (s[:4] + "…" + s[-4:]) if len(s) > 9 else "…" + s[-4:]
+
+
+def _capi_ledger_has(lead_key, stage):
+    """PATCH #251 — was this stage already sent for this lead? The ledger is
+    pg `capi_sent:<lead_key>:<Stage>` (a send that Meta accepted), mirrored on
+    the record as rec["capi_stages"][stage] so a sweep can read it without a
+    round trip. Unknown pg -> False: a duplicate is cheap (Meta de-duplicates
+    on event_id); a stage never sent is the expensive mistake."""
+    try:
+        rec = lead_data.get(lead_key)
+        if isinstance(rec, dict) and isinstance(rec.get("capi_stages"), dict) \
+                and rec["capi_stages"].get(stage):
+            return True
+        return bool(_pgs.load_state(_capi.ledger_key(lead_key, stage), None))
+    except Exception:
+        return False
+
+
+def _capi_ledger_mark(lead_key, stage, event_time, why=""):
+    at = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+    try:
+        _pgs.save_state(_capi.ledger_key(lead_key, stage),
+                        {"at": at, "event_time": int(event_time or 0), "why": str(why or "")[:80]})
+    except Exception as _lx:
+        _report_error("capi.ledger", _lx, stage)
+    try:
+        rec = lead_data.get(lead_key)
+        if isinstance(rec, dict):
+            cs = rec.get("capi_stages")
+            if not isinstance(cs, dict):
+                cs = {}
+            cs[stage] = at
+            rec["capi_stages"] = cs
+            lead_data[lead_key] = rec
+    except Exception:
+        pass
+
+
+def _capi_stage(lead_key, rec, stage, stage_time=None, extra=None, sync=False):
+    """PATCH #251 — one CRM stage for one lead, sent once.
+
+    Builds the event from the record (lead_id when the lead came from a Meta
+    form, hashed email/phone/name otherwise) and hands it to the sender. The
+    ledger is written only when Meta ACCEPTS the event, so a stage that could
+    not go out — dark module, network, a Meta error — is retried by the next
+    hook or by /admin/capi-backfill. Test leads never reach Meta.
+    Returns (status, detail) where status is 'queued' | 'sent' | 'skipped' | 'failed'."""
+    if not lead_key or not isinstance(rec, dict):
+        return "skipped", "no record"
+    if rec.get("test_lead"):
+        return "skipped", "test lead"
+    if stage not in _capi.STAGE_ORDER:
+        return "skipped", f"unknown stage {stage}"
+    if _capi_ledger_has(lead_key, stage):
+        return "skipped", "already sent"
+    try:
+        ev = _capi.stage_event(stage, lead_key,
+                               name=rec.get("name", ""), email=rec.get("email", ""),
+                               phone=rec.get("phone", "") or (lead_key if str(lead_key).startswith("whatsapp:") else ""),
+                               lead_id=rec.get("leadgen_id", ""),
+                               stage_time=stage_time, extra=extra)
+    except Exception as _bx:
+        _report_error("capi.build", _bx, stage)
+        return "failed", f"build: {_bx}"
+    if sync:
+        return _capi_send_now(ev)
+    _capi_send_async(ev)
+    return "queued", ev["event_id"]
+
+
+def _capi_send_now(event):
+    """Send one event on the calling thread; mark the ledger and tell #dev on
+    success. Returns (status, detail). Never raises."""
+    name = str(event.get("event_name", "?"))
+    key, stage = _capi.parse_event_id(event.get("event_id"))
+    try:
+        ok, why = _capi.send([event])
+    except Exception as _cx:
+        _report_error("capi.send", _cx, name)
+        return "failed", str(_cx)[:120]
+    _TALLY.bump("capi." + name, "sent" if ok else why.split(":")[0][:40])
+    if ok:
+        if key and stage:
+            _capi_ledger_mark(key, stage, event.get("event_time"), why)
+        lid = (event.get("user_data") or {}).get("lead_id")
+        who = f"lead_id {lid}" if lid else f"lead {_capi_mask(key)} (email/phone match)"
+        clamped = " · stage_time clamped" if (event.get("custom_data") or {}).get("stage_time_clamped") else ""
+        print(f"[CAPI] {name}: {why}")
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f":satellite: capi `{name}` · {who} · {why}{clamped}")
+        except Exception:
+            pass
+        return "sent", why
+    if why != "unconfigured":
+        print(f"[CAPI] {name}: {why}")
+        try:
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f":warning: capi `{name}` for {_capi_mask(key)} failed: {why[:160]}")
+        except Exception:
+            pass
+        return "failed", why
+    return "skipped", why
 
 
 def _capi_send_async(event):
@@ -24896,10 +25046,7 @@ def _capi_send_async(event):
     Railway variables exist; counts either way, so /health can say which."""
     def _go():
         try:
-            ok, why = _capi.send([event])
-            _TALLY.bump("capi." + str(event.get("event_name", "?")), "sent" if ok else why.split(":")[0][:40])
-            if ok or why != "unconfigured":
-                print(f"[CAPI] {event.get('event_name')}: {why}")
+            _capi_send_now(event)
         except Exception as _cx:
             _report_error("capi.send", _cx, str(event.get("event_name")))
     threading.Thread(target=_go, daemon=True).start()
@@ -26949,6 +27096,72 @@ def admin_lead_form_restore():
     return jsonify({"ok": True, "as_of": _get_current_time_edt(), "applied": _apply, "tabs": _tabs,
                     "form_rows": len(_out), "needing_restore": sum(1 for r in _out if r["needs_restore"]),
                     "restored": _restored, "leads": _out}), 200
+
+
+@app.route('/admin/capi-backfill', methods=['GET'])
+def admin_capi_backfill():
+    """PATCH #251 — send the CRM stages Meta has not heard about yet.
+
+    /admin/capi-backfill?secret=<UPLOAD_SECRET>[&since=2026-10-01][&dry_run=1|0][&limit=50][&all=1]
+
+    Dry run by default: lists what WOULD go out (lead_id, stage, the real
+    stage time, whether the 7-day rule clamps it) and sends nothing. With
+    dry_run=0 it sends them one by one on this thread, oldest first, and
+    posts one summary line to #dev. Meta-form leads only unless all=1.
+    Stages already in the ledger are never repeated; while the module is
+    dark nothing is marked, so the same call sends them once the token is in.
+    """
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    since = (request.args.get("since") or "2026-10-01").strip()
+    dry = str(request.args.get("dry_run", "1")).strip() not in ("0", "false", "no")
+    meta_only = str(request.args.get("all", "0")).strip() not in ("1", "true", "yes")
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    try:
+        since_e = _capi.to_epoch(since + ("T00:00:00-04:00" if len(since) == 10 else ""))
+    except Exception:
+        since_e = None
+    plan = _capi.backfill_plan(lead_data, _capi_ledger_has, since=since_e, meta_only=meta_only)
+    now_e = int(time.time())
+    rows = []
+    for p in plan[:limit]:
+        et, clamped = _capi.clamp_time(p["stage_time"], now_e)
+        rows.append({"lead": _capi_mask(p["lead_key"]), "lead_id": p["lead_id"] or None,
+                     "stage": p["stage"],
+                     "stage_time": (datetime.fromtimestamp(_capi.to_epoch(p["stage_time"]), pytz.timezone(TIMEZONE)).isoformat()
+                                    if _capi.to_epoch(p["stage_time"]) else None),
+                     "clamped": clamped})
+    out = {"ok": True, "as_of": datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S %Z"),
+           "configured": _capi.configured(), "test_code": bool(os.getenv("META_CAPI_TEST_CODE", "").strip()),
+           "since": since, "meta_only": meta_only, "dry_run": dry,
+           "planned": len(plan), "shown": len(rows), "rows": rows}
+    if dry:
+        out["note"] = "dry run — nothing sent. Repeat with dry_run=0 to send."
+        return jsonify(out), 200
+    if not _capi.configured():
+        out["note"] = "module is dark (META_CAPI_DATASET_ID / META_CAPI_TOKEN missing) — nothing sent, nothing marked"
+        return jsonify(out), 200
+    results = {"sent": 0, "failed": 0, "skipped": 0}
+    detail = []
+    for p in plan[:limit]:
+        rec = lead_data.get(p["lead_key"])
+        st, why = _capi_stage(p["lead_key"], rec, p["stage"], stage_time=p["stage_time"],
+                              extra=p["extra"], sync=True)
+        results[st if st in results else "skipped"] += 1
+        detail.append({"lead_id": p["lead_id"] or None, "lead": _capi_mask(p["lead_key"]),
+                       "stage": p["stage"], "result": st, "detail": str(why)[:120]})
+    out["results"] = results
+    out["detail"] = detail
+    try:
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+            f":satellite: capi backfill since {since}: {results['sent']} sent · {results['failed']} failed · "
+            f"{results['skipped']} skipped (of {len(plan)} planned)")
+    except Exception:
+        pass
+    return jsonify(out), 200
 
 
 @app.route('/admin/pg-lead', methods=['GET'])

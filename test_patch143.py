@@ -225,10 +225,14 @@ ok("start in October" in sv.post_visit_email(1, "Ana", "", "start in October")[2
 ok(sc.segments(sc.compose(sv.post_visit_sms("Ana"))) <= 2 and "Michael here" in sv.post_visit_sms("Ana"), "post-visit text fits")
 ud = capi.user_data("Ana@Example.com ", "(407) 555-1234", "Ana", "Souza", lead_id="123")
 ok(ud["em"] == [capi._sha("ana@example.com")] and ud["ph"] == [capi._sha("14075551234")] and ud["lead_id"] == 123 and "fn" in ud, "CAPI user_data: hashed, normalised, lead_id as int")
-ev = capi.lead_event("Ana Souza", "ana@example.com", "+14075551234", lead_id="123", ad_id="9", qualified="yes", business="Smile")
-ok(ev["event_name"] == "Lead" and ev["action_source"] == "system_generated" and ev["event_id"] == "lead-123" and ev["custom_data"]["qualified"] == "yes", "Lead event shape")
-pe = capi.purchase_event("Ana", "ana@example.com", "", value=1200, product="sub", stripe_id="cs_1")
-ok(pe["event_name"] == "Purchase" and pe["action_source"] == "website" and pe["custom_data"]["value"] == 1200.0 and pe["custom_data"]["currency"] == "USD" and pe["event_id"] == "purchase-cs_1", "Purchase event shape")
+# PATCH #251 — the three #145 events became the five CRM stages (Lead / Qualified /
+# StudioVisitBooked / StudioVisitCompleted / Converted), keyed "<lead_key>:<Stage>".
+ev = capi.stage_event(capi.STAGE_LEAD, "meta_lead_123", "Ana Souza", "ana@example.com", "+14075551234", lead_id="123",
+                      extra={"ad_id": "9", "qualified": "yes", "content_name": "Smile"})
+ok(ev["event_name"] == "Lead" and ev["action_source"] == "system_generated" and ev["event_id"] == "meta_lead_123:Lead" and ev["custom_data"]["qualified"] == "yes", "Lead event shape")
+pe = capi.stage_event(capi.STAGE_CONVERTED, "whatsapp:+14075551234", "Ana", "ana@example.com", "",
+                      extra={"value": 1200.0, "currency": "USD", "content_name": "sub", "order_id": "cs_1"})
+ok(pe["event_name"] == "Converted" and pe["action_source"] == "system_generated" and pe["custom_data"]["value"] == 1200.0 and pe["custom_data"]["currency"] == "USD" and pe["event_id"] == "whatsapp:+14075551234:Converted", "Converted event shape")
 ok(capi.send([ev], post=lambda u, j: (200, {"events_received": 1}), dataset_id="D", token="T", test_code="TEST1")[0] and capi.send([ev], dataset_id="", token="")[1] == "unconfigured", "send: ok when configured, named skip when dark")
 ok(capi.send([ev], post=lambda u, j: (400, {"error": {"message": "bad token"}}), dataset_id="D", token="T", test_code="")[1].startswith("HTTP 400"), "send: a Meta error is reported, never raised")
 ok(not capi.configured() and capi.status()["configured"] is False, "dark by default")
@@ -236,7 +240,7 @@ ok('sheet_id = os.getenv("GOOGLE_SHEETS_ID", "") or SHEETS_LEADS_ID' in SRC and 
 ok("def _report_drives_record(" in SRC and "_plan = _report_drives_record(outcome, _p39_key" in SRC, "the event report drives the record, the chain and the sheet")
 ok('kind=_chase.KIND_POST_VISIT' in SRC and 'rec["won_at"] = now.isoformat()' in SRC and "*AD → WON*" in SRC, "follow_up arms the post-visit chain; client_won marks Won and tells ERIC")
 ok("def _on_payment(ev)" in SRC and "_on_payment(ev)          # PATCH #145" in SRC and '"invoice.paid"' in SRC, "every paid Stripe event (checkout or invoice) stops the chase")
-ok("_capi.lead_event(" in SRC and "_capi.schedule_event(" in SRC and "_capi.purchase_event(" in SRC and '"capi": _capi.status()' in SRC, "Lead / Schedule / Purchase hooks + /health capi")
+ok("_capi_stage(sender_key, lr, _capi.STAGE_LEAD" in SRC and "_capi.STAGE_BOOKED" in SRC and "_capi.STAGE_CONVERTED" in SRC and '"capi": _capi.status()' in SRC, "Lead / Booked / Converted stage hooks + /health capi (#251)")
 ok("_sv.post_visit_email(copy_step" in SRC and "_sv.post_visit_sms(rec.get(\"name\"))" in SRC, "the chase loop sends post-visit copy for post-visit chains")
 
 # ── the behaviour suite runs as part of this gate ────────────────────────

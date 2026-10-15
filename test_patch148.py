@@ -147,7 +147,8 @@ check("wire.health_flag", '"studio_hour_track_live": _studio_hour_track_live()' 
 check("wire.health_kinds", '"kinds": counts.get("kinds", {})' in SRC)
 check("wire.maya_rule", "_sys += \"\\n\\n\" + _sv.STUDIO_HOUR_RULE" in SRC)
 check("wire.sms_ctx_track", 'bits.append(f"Track: {rec[\'track\']}")' in SRC)
-check("wire.capi_still_sent", SRC.index("kind=(_chase.KIND_STUDIO_HOUR if sh else _chase.KIND_FORM)") < SRC.index("_capi_send_async(_capi.lead_event("))
+check("wire.capi_still_sent", "kind=(_chase.KIND_STUDIO_HOUR if sh else _chase.KIND_FORM)" in SRC
+      and "_capi_stage(sender_key, lr, _capi.STAGE_LEAD" in SRC)   # #251: the Lead stage fires at capture, before the chain
 
 print(f"static: {passed} passed, {failed} failed")
 
