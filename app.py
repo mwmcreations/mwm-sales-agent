@@ -34,6 +34,7 @@ from cris_wix import handle_cris_action
 from lara_actions import handle_lara_action, lookup_sender_identity, format_sender_identity_block, send_lara_template, LARA_TEMPLATES
 # Patch #30 — Event Confirmation Rail. One gate, four write-sites.
 import event_rail
+import wa_templates as _wt            # PATCH #250 — the rail's own WhatsApp templates
 import sheets_queue as _sq   # Patch #107
 import booking_truth as _bt  # S30
 import slots as _slots        # Patch #94 — which times we offer, and why
@@ -8295,6 +8296,63 @@ def send_wa_utility_template(to, template_name, body_params, phone_number_id=Non
         return None
 
 
+# ── PATCH #250 — the rail's own templates, sent only while Meta allows ──────
+# wa_templates.TEMPLATES went in under #160. Meta approved all three on 14 Oct
+# but recategorized mwm_visit_rebook UTILITY -> MARKETING, and MARKETING
+# templates have not delivered to US (+1) numbers since Meta's pause of
+# 1 Apr 2025. So "approved" is not the test; "APPROVED and UTILITY, right now"
+# is — read from Meta's listing, cached an hour, last good answer kept when a
+# refresh fails. Anything not on the list falls back to what the rail did
+# before (#157: generic mwm_lara_shoot_reminder + the email beside it).
+_WA_VISIT_TPL = {"names": set(), "checked_at": 0.0, "error": "", "refreshed_at": ""}
+_WA_VISIT_TPL_TTL = 3600          # a successful read is good for an hour
+_WA_VISIT_TPL_RETRY = 300         # a failed read is retried after five minutes
+
+
+def _wa_visit_templates_usable(force=False):
+    """The wa_templates names Meta currently lists APPROVED + UTILITY."""
+    _now = time.time()
+    if not force and _now - _WA_VISIT_TPL["checked_at"] < _WA_VISIT_TPL_TTL:
+        return set(_WA_VISIT_TPL["names"])
+    if not META_ACCESS_TOKEN or not META_WABA_ID:
+        _WA_VISIT_TPL["error"] = "META_ACCESS_TOKEN/META_WABA_ID not set"
+        _WA_VISIT_TPL["checked_at"] = _now - _WA_VISIT_TPL_TTL + _WA_VISIT_TPL_RETRY
+        return set()
+    try:
+        r = http_requests.get(f"https://graph.facebook.com/v20.0/{META_WABA_ID}/message_templates",
+                              headers={"Authorization": f"Bearer {META_ACCESS_TOKEN}"},
+                              params={"fields": "name,status,category", "limit": 200}, timeout=15)
+        data = r.json() if r.content else {}
+        if r.status_code == 200:
+            _WA_VISIT_TPL["names"] = _wt.usable(data.get("data") or [])
+            _WA_VISIT_TPL["error"] = ""
+            _WA_VISIT_TPL["checked_at"] = _now
+            _WA_VISIT_TPL["refreshed_at"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+        else:
+            _WA_VISIT_TPL["error"] = f"HTTP {r.status_code}: " + str((data.get("error") or {}).get("message") or "")[:120]
+            _WA_VISIT_TPL["checked_at"] = _now - _WA_VISIT_TPL_TTL + _WA_VISIT_TPL_RETRY
+    except Exception as _e:
+        _WA_VISIT_TPL["error"] = str(_e)[:120]
+        _WA_VISIT_TPL["checked_at"] = _now - _WA_VISIT_TPL_TTL + _WA_VISIT_TPL_RETRY
+    return set(_WA_VISIT_TPL["names"])
+
+
+def _wa_visit_template_send(to, name, params):
+    """send_wa_utility_template, but only for a name Meta lists usable now.
+    None otherwise, so every caller falls through to its old path."""
+    if not name or name not in _wa_visit_templates_usable():
+        return None
+    return send_wa_utility_template(to, name, params)
+
+
+def _wa_visit_templates_status():
+    return {"usable": sorted(_WA_VISIT_TPL["names"]), "refreshed_at": _WA_VISIT_TPL["refreshed_at"],
+            "error": _WA_VISIT_TPL["error"],
+            "rail": {"T-24": _wt.STAGE_TEMPLATE[24] if _wt.STAGE_TEMPLATE[24] in _WA_VISIT_TPL["names"] else "mwm_lara_shoot_reminder + email",
+                     "T-2": _wt.STAGE_TEMPLATE[2] if _wt.STAGE_TEMPLATE[2] in _WA_VISIT_TPL["names"] else "mwm_lara_shoot_reminder + email",
+                     "no-show": _wt.REBOOK_TEMPLATE if _wt.REBOOK_TEMPLATE in _WA_VISIT_TPL["names"] else "email"}}
+
+
 
 def send_wa_document_template(to, media_url, filename, first_name, file_label,
                               template_name="mwm_file_delivery", lang="en_US"):
@@ -13041,6 +13099,14 @@ def _lead_reminder_thread():
                         body = _wa_body
                         if send_whatsapp_meta(f"whatsapp:+{_lp}", body=body):
                             _sent_via = "WhatsApp (free-form)"
+                        # PATCH #250 — the stage's own template when the window
+                        # is closed: T-24 carries the YES ask, T-2 the address
+                        # (#160's words, approved 14 Oct). Only while Meta lists
+                        # it APPROVED+UTILITY; otherwise the generic below.
+                        elif _wt.stage_template(stage_h) and _wa_visit_template_send(
+                                f"whatsapp:+{_lp}", _wt.stage_template(stage_h),
+                                _wt.stage_params(stage_h, _time_str, _when_long)):
+                            _sent_via = _wt.SENT_VIA
                         elif send_wa_utility_template(
                                 f"whatsapp:+{_lp}", "mwm_lara_shoot_reminder",
                                 [_fn, "MWM Creations & Studios",
@@ -19805,6 +19871,7 @@ def health_check():
         "operator_alert": _operator_alert.status(),  # PATCH #149
         "call_now": {**_CALL_NOW_LAST, "window_et": f"{_cn.WINDOW_START_H:02d}:00-{_cn.WINDOW_END_H:02d}:00"},  # PATCH #156
         "reengage_oct12": dict(_REENGAGE_LAST),                 # PATCH #158
+        "wa_visit_templates": _wa_visit_templates_status(),     # PATCH #250
         "lead_watch": dict(_lead_watch_last),    # PATCH #128
         # PATCH #151 — the leads table's connection health. `conn.retries`
         # climbing with `conn.recovered` is the private network blinking and
@@ -22623,6 +22690,25 @@ _xo.configure(
 # ══════════════════════════════════════════════════════════════════════
 import outcome_sender as _outcome_seq
 
+
+def _rebook_template_send(phone, first, slots, armed_at):
+    """PATCH #250 — the no-show rebook by UTILITY template when the lead's
+    WhatsApp window is closed (the 0 h step fires the day the report is
+    filed, so armed_at's date IS the missed visit). None when Meta does not
+    list mwm_visit_reschedule usable yet — outcome_sender then goes to email
+    as #157 made it."""
+    try:
+        _missed = datetime.fromisoformat(str(armed_at)).strftime("%A, %B %d")
+    except Exception:
+        _missed = "your scheduled day"
+    _slots = [str(x) for x in (slots or []) if x]
+    if not _slots:
+        return None
+    return _wa_visit_template_send(
+        f"whatsapp:+{re.sub(r'[^0-9]', '', str(phone))}", _wt.REBOOK_TEMPLATE,
+        _wt.reschedule_params(first, _missed, _slots[0], _slots[1] if len(_slots) > 1 else ""))
+
+
 _outcome_seq.configure(
     report_error=_report_error,
     post_slack=_post_to_slack_async,
@@ -22631,6 +22717,7 @@ _outcome_seq.configure(
     send_whatsapp=lambda phone, body: send_whatsapp_meta(phone, body),
     send_instagram=lambda igsid, body: send_instagram_dm(igsid, body),
     slots=lambda: get_available_slots(),     # PATCH #157 — two slots inside 48 h in the rebook
+    send_whatsapp_template=_rebook_template_send,   # PATCH #250 — rebook by template, window closed
     pg_load=_pg.load_state,
     pg_save=_pg.save_state,
     heartbeat=_heartbeat,
@@ -26480,16 +26567,19 @@ def _reengage_tick(now=None):
 @app.route('/admin/wa-templates', methods=['GET'])
 def admin_wa_templates():
     """PATCH #160 — the UTILITY WhatsApp templates for the booking rail
-    (wa_templates.TEMPLATES: mwm_visit_confirm / mwm_visit_today / mwm_visit_rebook).
+    (wa_templates.TEMPLATES: mwm_visit_confirm / mwm_visit_today / mwm_visit_reschedule;
+    mwm_visit_rebook retired under #250 — Meta approved it as MARKETING).
 
-    ?secret=<UPLOAD_SECRET>&mode=status   (default) Meta's status for ours
+    ?secret=<UPLOAD_SECRET>&mode=status   (default) Meta's status for ours + what the rail sends per stage
     &mode=list                             every template on the WABA (name, status, category)
-    &mode=submit&go=1[&names=a,b]          POST the definitions to Meta for approval
+    &mode=submit&go=1[&names=a,b]          POST the definitions to Meta for approval (retired ones only by name)
+    &refresh=1                             (#250) re-read Meta's listing into the rail's usable-set now
     """
     if not _admin_secret_ok(request.args.get("secret")):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    import wa_templates as _wt
     _mode = str(request.args.get("mode") or "status").strip().lower()
+    if str(request.args.get("refresh") or "") == "1":
+        _wa_visit_templates_usable(force=True)           # #250
     if not META_ACCESS_TOKEN:
         return jsonify({"ok": False, "error": "META_ACCESS_TOKEN not set"}), 500
     _url = f"https://graph.facebook.com/v20.0/{META_WABA_ID}/message_templates"
@@ -26503,7 +26593,7 @@ def admin_wa_templates():
             return jsonify({"ok": False, "error": str(_e)[:200]}), 502
         rows = data.get("data") or []
         out = {"ok": r.status_code == 200, "waba": META_WABA_ID, "http": r.status_code,
-               "ours": _wt.status_summary(rows)}
+               "ours": _wt.status_summary(rows), "rail": _wa_visit_templates_status()}   # #250
         if _mode == "list":
             out["all"] = [{"name": x.get("name"), "status": x.get("status"), "category": x.get("category"),
                            "language": x.get("language")} for x in rows]
@@ -26513,7 +26603,8 @@ def admin_wa_templates():
     if _mode == "submit":
         if str(request.args.get("go") or "") != "1":
             return jsonify({"ok": False, "error": "mode=submit needs go=1"}), 400
-        _names = [n.strip() for n in str(request.args.get("names") or "").split(",") if n.strip()] or list(_wt.TEMPLATES)
+        _names = [n.strip() for n in str(request.args.get("names") or "").split(",") if n.strip()] \
+            or [n for n, t in _wt.TEMPLATES.items() if not t.get("retired")]
         results = []
         for n in _names:
             if n not in _wt.TEMPLATES:

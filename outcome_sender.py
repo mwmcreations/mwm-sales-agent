@@ -72,6 +72,8 @@ def configure(**kwargs):
     Required: report_error, post_slack, send_email, send_whatsapp,
               send_instagram, pg_load, pg_save, heartbeat, lead_data,
               matt_channel, maya_channel, dev_channel
+    Optional: slots (#157), send_whatsapp_template (#250: phone, first,
+              slots, armed_at -> truthy when the rebook template went out)
     """
     _deps.update(kwargs)
 
@@ -343,6 +345,18 @@ def _deliver(channel, kind, rec, key, seq):
         res = _deps["send_whatsapp"](phone, _short_copy(kind, first, business, agreed))
         if res:
             return True, ""
+        # PATCH #250 — the rebook has its own UTILITY template now
+        # (mwm_visit_reschedule: the day they missed + two slots), which a
+        # closed window cannot block. app.py injects the sender and decides
+        # whether Meta lists it usable; None here means "not yet", and the
+        # step goes by email exactly as #157 made it.
+        if kind == STEP_REBOOK and _deps.get("send_whatsapp_template"):
+            try:
+                _slots = _rebook_slots()
+                if _slots and _deps["send_whatsapp_template"](phone, first, _slots, seq.get("armed_at")):
+                    return True, "WhatsApp window closed -> sent by visit template"
+            except Exception as exc:
+                _report("rebook_template", exc, f"lead={rec.get('name') or key}")
         # PATCH #157 — a closed WhatsApp window must not cost the lead the
         # step (Sessa, 6 Oct: the same-day rebook died here and he heard
         # nothing until the day-2 email). Same step, by email, now.

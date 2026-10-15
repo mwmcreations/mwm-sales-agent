@@ -109,7 +109,8 @@ check("wire.gate_window_transactional_only", 'kind == SMS_KIND_TRANSACTIONAL and
       and 'return True, "inbound_window"' in gt and gt.index('return False, "do_not_sms"') < gt.index('"inbound_window"'))
 
 # ── (b) templates ────────────────────────────────────────────────────────────
-check("tpl.names", set(wt.TEMPLATES) == {"mwm_visit_confirm", "mwm_visit_today", "mwm_visit_rebook"})
+# #250 added mwm_visit_reschedule (mwm_visit_rebook retired: Meta approved it as MARKETING)
+check("tpl.names", set(wt.TEMPLATES) == {"mwm_visit_confirm", "mwm_visit_today", "mwm_visit_rebook", "mwm_visit_reschedule"})
 for n, t in wt.TEMPLATES.items():
     b = wt.graph_body(n)
     text = b["components"][0]["text"]
@@ -118,7 +119,8 @@ for n, t in wt.TEMPLATES.items():
     check(f"tpl.{n}.examples_match", nvars == len(t["example"]) == len(b["components"][0]["example"]["body_text"][0])
           and sorted(int(x) for x in re.findall(r"\{\{(\d+)\}\}", text)) == sorted(set(range(1, nvars + 1))))
     check(f"tpl.{n}.no_edge_var", not text.startswith("{{") and not text.endswith("}}") and len(text) <= 1024)
-    check(f"tpl.{n}.address_or_slots", (wt.STUDIO_ADDRESS in text) or (n == "mwm_visit_rebook" and "{{2}} or {{3}}" in text))
+    check(f"tpl.{n}.address_or_slots", (wt.STUDIO_ADDRESS in text) or (n == "mwm_visit_rebook" and "{{2}} or {{3}}" in text)
+          or (n == "mwm_visit_reschedule" and "{{3}} or {{4}}" in text))   # #250
 check("tpl.confirm_wording", "Reply YES to confirm or tell us a better time." in wt.TEMPLATES["mwm_visit_confirm"]["text"]
       and "Your studio visit with Michael Moraes is {{1}} on {{2}} at 1500 Park Center Dr, Suite 230, Orlando." in wt.TEMPLATES["mwm_visit_confirm"]["text"])
 check("tpl.params_clean", wt.confirm_params(" 10:00\nAM ", "Tue,  Oct 13") == ["10:00 AM", "Tue, Oct 13"]
