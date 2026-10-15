@@ -87,9 +87,11 @@ rec_form = {"leadgen_id": "111", "qualified": "yes", "ad_id": "ad9", "business":
             "first_contact_time": datetime(2026, 10, 2, 9, 0, tzinfo=pytz.timezone("America/New_York"))}
 st = mc.stages_from_record(rec_form)
 check("rec.form_yes", [s for s, _, _ in st] == ["Lead", "Qualified"] and st[0][1] == T0 and st[0][2]["ad_id"] == "ad9" and st[0][2]["qualified"] == "yes")
-check("rec.form_review", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="review"))] == ["Lead", "Qualified"])
+# #251c — ERIC 15 Oct: studio-hour counts as Qualified, review does not
+check("rec.form_review_not_qualified", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="review"))] == ["Lead"])
 check("rec.form_no", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="no"))] == ["Lead"])
-check("rec.form_studio_hour_not_qualified", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="studio-hour"))] == ["Lead"])
+check("rec.form_studio_hour_qualified", [s for s, _, _ in mc.stages_from_record(dict(rec_form, qualified="studio-hour"))] == ["Lead", "Qualified"])
+check("rec.qualified_verdicts", mc.QUALIFIED_VERDICTS == ("yes", "studio-hour"))
 check("rec.ig_lead_no_form_stages", mc.stages_from_record({"phone": "14075551234", "first_contact_time": T0}) == [])
 # #251b — a form record rebuilt from the sheet (meta_lead_ad, no leadgen_id) still has Lead/Qualified
 restored = {"meta_lead_ad": True, "qualified": "yes", "ad_id": "ad7", "business": "iD8", "email": "d@example.com",

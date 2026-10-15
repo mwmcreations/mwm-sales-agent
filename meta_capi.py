@@ -68,10 +68,12 @@ STAGE_CONVERTED = "Converted"
 STAGES = (STAGE_LEAD, STAGE_QUALIFIED, STAGE_BOOKED, STAGE_COMPLETED, STAGE_CONVERTED)
 STAGE_ORDER = {s: i for i, s in enumerate(STAGES)}
 
-# Form verdicts that count as Qualified (lead_form.Q_YES / Q_REVIEW — review
-# runs the same opener, visit offer and chain, flagged for a human read).
-# Q_NO and the sub-$50K studio-hour track are not Qualified.
-QUALIFIED_VERDICTS = ("yes", "review")
+# Form verdicts that count as Qualified — ERIC's decision, 15 Oct 14:10 ET
+# (#251c): "Qualified" means "an owner we'd take a visit with", so the
+# studio-hour track (owner under $50K: gets the visit offer, the chain, can
+# buy studio hours) counts; `review` (flagged for a human read) stays out;
+# `no` is out. The stages Meta optimises toward are Booked / Completed.
+QUALIFIED_VERDICTS = ("yes", "studio-hour")
 
 # Daily Event Report outcomes that mean the visit HAPPENED.
 VISIT_OUTCOMES = ("completed", "follow_up", "studio_package_pitched", "client_won", "not_interested")
