@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style></head><body>
+<title>JAPA Academy</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: a streaming-platform landing — navy brand ground, one hero, horizontal episode rails per series, a membership desk. */
+:root {
+  --navy: #172c6f;        /* the logo's own navy — the header sits on it exactly */
+  --bg: #0d1a45;
+  --bg-2: #122257;
+  --card: #172c6f;
+  --line: rgba(255,255,255,.12);
+  --fg: #f4f1ea;
+  --fg-2: #b9c1dc;
+  --fg-3: #8a94b8;
+  --sun: #e5485a;         /* the red sun in the JAPA mark */
+  --sun-ink: #ffffff;
+  --teal: #2fb4bd;
+  --door: #3e8ef7;
+  --ok: #4fcf8a;
+  --shadow: 0 18px 50px rgba(0,0,0,.45);
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #f6f3ec; --bg-2: #eceaf2; --card: #ffffff; --line: rgba(23,44,111,.14);
+  --fg: #11204d; --fg-2: #3c4a7a; --fg-3: #6a7598; --teal: #02737b; --door: #1f63c9; --ok: #1f8f5a;
+  --shadow: 0 16px 40px rgba(23,44,111,.14); color-scheme: light;
+} }
+:root[data-theme="light"] {
+  --bg: #f6f3ec; --bg-2: #eceaf2; --card: #ffffff; --line: rgba(23,44,111,.14);
+  --fg: #11204d; --fg-2: #3c4a7a; --fg-3: #6a7598; --teal: #02737b; --door: #1f63c9; --ok: #1f8f5a;
+  --shadow: 0 16px 40px rgba(23,44,111,.14); color-scheme: light;
+}
+* { box-sizing: border-box; }
+body { margin:0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.5; }
+img { max-width:100%; display:block; }
+a { color: inherit; }
+h1,h2,h3 { font-family: var(--display); font-weight: 800; letter-spacing: -.015em; line-height: 1.05; margin: 0; text-wrap: balance; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
+.btn { display:inline-flex; align-items:center; gap:.5em; border:0; border-radius: 999px; padding: 14px 24px; font: 600 16px var(--body); cursor:pointer; text-decoration:none; transition: transform .15s ease, background .15s ease; }
+.btn:focus-visible, .ep:focus-visible, .nav a:focus-visible, input:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
+.btn-sun { background: var(--sun); color: var(--sun-ink); }
+.btn-sun:hover { transform: translateY(-1px); background: #ef5d6e; }
+.btn-ghost { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--line); }
+.btn-ghost:hover { box-shadow: inset 0 0 0 1.5px var(--fg-3); }
+.btn-sm { padding: 10px 18px; font-size: 15px; }
+
+/* header */
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--navy); color: #fff; border-bottom: 1px solid rgba(255,255,255,.1); }
+.top .wrap { display:flex; align-items:center; justify-content: space-between; gap: 16px; min-height: 68px; }
+.brand img { height: 40px; width:auto; }
+.nav { display:flex; align-items:center; gap: 22px; font-size: 15px; font-weight: 600; }
+.nav a { text-decoration:none; color: rgba(255,255,255,.82); }
+.nav a:hover { color:#fff; }
+.nav .links { display:flex; gap: 22px; }
+@media (max-width: 760px) { .nav .links { display:none; } }
+.top .btn-ghost { color:#fff; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.35); }
+.who { font-size: 14px; color: rgba(255,255,255,.75); }
+
+/* hero */
+.hero { position: relative; overflow:hidden; background: var(--navy); color:#fff; }
+.hero .bg { position:absolute; inset:0; background: url(img/plate.jpg) center / cover no-repeat; opacity: .28; filter: saturate(.8); }
+.hero .fade { position:absolute; inset:0; background: linear-gradient(90deg, rgba(23,44,111,.98) 0%, rgba(23,44,111,.9) 45%, rgba(23,44,111,.35) 100%); }
+.hero .wrap { position: relative; display:grid; grid-template-columns: 1.1fr .9fr; gap: 40px; align-items:center; padding-block: 64px 56px; }
+.hero h1 { font-size: clamp(38px, 5.6vw, 68px); max-width: 12ch; }
+.hero h1 em { font-style: normal; color: var(--sun); }
+.hero .lead { font-size: 19px; color: rgba(255,255,255,.86); max-width: 48ch; margin: 18px 0 26px; }
+.hero .cta { display:flex; flex-wrap:wrap; gap: 12px; }
+.stats { display:flex; flex-wrap: wrap; gap: 28px; margin-top: 34px; padding-top: 22px; border-top: 1px solid rgba(255,255,255,.18); }
+.stats b { display:block; font: 800 30px/1 var(--display); }
+.stats span { font-size: 14px; color: rgba(255,255,255,.7); }
+.feature { position: relative; border-radius: 18px; overflow:hidden; box-shadow: var(--shadow); background:#000; aspect-ratio: 16/9; max-width: 100%; }
+.feature img { width:100%; height:100%; object-fit: cover; }
+.feature::after, .story::after { content:""; position:absolute; left:0; right:0; bottom:0; height: 58%; background: linear-gradient(180deg, rgba(5,12,40,0) 0%, rgba(5,12,40,.82) 70%, rgba(5,12,40,.92) 100%); pointer-events:none; }
+.feature .label, .story .label { z-index: 1; }
+.feature .label { position:absolute; left:16px; right:16px; bottom:14px; display:flex; justify-content:space-between; align-items:flex-end; gap: 10px; text-shadow: 0 2px 12px rgba(0,0,0,.7); }
+.feature .label strong { font: 700 17px var(--display); }
+.feature .label small { font-family: var(--mono); font-size: 12px; opacity: .9; }
+.feature .playbig { position:absolute; left:50%; top:50%; width:74px; height:74px; margin:-37px 0 0 -37px; border-radius:50%; background: rgba(229,72,90,.95); display:grid; place-items:center; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+.feature .playbig::after { content:""; border-left: 24px solid #fff; border-top: 14px solid transparent; border-bottom: 14px solid transparent; margin-left: 6px; }
+.feature .pill { position:absolute; top:14px; left:16px; font-family: var(--mono); font-size: 11px; letter-spacing:.12em; text-transform: uppercase; background: rgba(255,255,255,.14); backdrop-filter: blur(6px); padding: 6px 10px; border-radius: 999px; }
+@media (max-width: 860px) { .hero .wrap { grid-template-columns: 1fr; padding-block: 44px 40px; } .hero .fade { background: linear-gradient(180deg, rgba(23,44,111,.97), rgba(23,44,111,.85)); } }
+
+/* sections */
+section.band { padding-block: 56px; }
+.section-head { display:flex; align-items:flex-end; justify-content:space-between; gap: 20px; margin-bottom: 26px; }
+.section-head h2 { font-size: clamp(26px, 3.4vw, 38px); }
+.section-head p { margin: 8px 0 0; color: var(--fg-2); max-width: 60ch; }
+
+/* start here */
+.start { display:grid; grid-template-columns: 1.15fr .85fr; gap: 26px; }
+.story { position:relative; border-radius: 18px; overflow:hidden; background:#000; box-shadow: var(--shadow); aspect-ratio: 16/9; max-width:100%; cursor:pointer; border:0; padding:0; text-align:left; color:#fff; }
+.story img { width:100%; height:100%; object-fit:cover; opacity:.92; }
+.story .label { position:absolute; left:20px; right:20px; bottom:18px; text-shadow: 0 2px 12px rgba(0,0,0,.7); }
+.story .label .eyebrow { color: #ffd2d8; }
+.story .label strong { font: 800 clamp(20px, 2.6vw, 28px)/1.1 var(--display); display:block; }
+.story .label small { font-family: var(--mono); font-size: 12px; }
+.story .playbig { position:absolute; left:50%; top:50%; width:64px; height:64px; margin:-32px 0 0 -32px; border-radius:50%; background: rgba(229,72,90,.95); display:grid; place-items:center; }
+.story .playbig::after { content:""; border-left: 20px solid #fff; border-top: 12px solid transparent; border-bottom: 12px solid transparent; margin-left: 5px; }
+.thursday { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 26px; display:flex; flex-direction:column; gap: 14px; }
+.thursday h3 { font-size: 24px; }
+.thursday ul { list-style:none; margin:0; padding:0; display:grid; gap: 10px; }
+.thursday li { display:flex; gap: 12px; align-items:flex-start; color: var(--fg-2); }
+.thursday li::before { content:""; flex: 0 0 10px; width:10px; height:10px; border-radius:50%; background: var(--teal); margin-top: 9px; }
+.thursday li b { color: var(--fg); }
+.thursday .next { margin-top:auto; padding-top: 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 13px; color: var(--fg-3); }
+@media (max-width: 860px) { .start { grid-template-columns: 1fr; } }
+
+/* series rails */
+.series { padding-block: 26px 10px; }
+.series-head { display:flex; align-items:flex-end; justify-content:space-between; gap: 20px; margin-bottom: 14px; }
+.series-head h3 { font-size: clamp(22px, 2.8vw, 30px); }
+.series-head .blurb { margin: 8px 0 0; color: var(--fg-2); max-width: 62ch; }
+.series-head .count { margin:0; color: var(--fg-3); font-size: 14px; white-space:nowrap; }
+.series-head .count .num { font: 800 26px/1 var(--display); color: var(--fg); margin-right: 6px; }
+.rail { display:grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 285px); gap: 16px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding: 6px 2px 18px; scrollbar-width: thin; scrollbar-color: var(--fg-3) transparent; }
+.ep { scroll-snap-align: start; background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow:hidden; padding:0; text-align:left; color: var(--fg); font: inherit; cursor:pointer; display:flex; flex-direction:column; transition: transform .18s ease, border-color .18s ease; min-width:0; }
+.ep:hover { transform: translateY(-3px); border-color: var(--teal); }
+.thumb { position:relative; display:block; aspect-ratio: 16/9; background:#000; max-width:100%; }
+.thumb img { width:100%; height:100%; object-fit:cover; }
+.thumb .dur { position:absolute; right:8px; bottom:8px; font-family: var(--mono); font-size: 12px; background: rgba(0,0,0,.72); color:#fff; padding: 3px 7px; border-radius: 6px; }
+.thumb .lock { position:absolute; left:8px; top:8px; font-family: var(--mono); font-size: 10px; letter-spacing:.1em; text-transform:uppercase; background: rgba(23,44,111,.85); color:#fff; padding: 4px 8px; border-radius: 999px; }
+.member .thumb .lock { background: rgba(79,207,138,.9); color: #072c17; }
+.thumb .play { position:absolute; left:50%; top:50%; width:46px; height:46px; margin:-23px 0 0 -23px; border-radius:50%; background: rgba(229,72,90,.92); opacity:0; transition: opacity .18s ease; }
+.thumb .play::after { content:""; position:absolute; left:19px; top:14px; border-left: 14px solid #fff; border-top: 9px solid transparent; border-bottom: 9px solid transparent; }
+.ep:hover .play { opacity: 1; }
+.meta { display:flex; flex-direction:column; gap: 6px; padding: 12px 14px 14px; }
+.code { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--teal); }
+.q { font-weight: 600; font-size: 15.5px; line-height: 1.35; }
+
+/* perks */
+.perks { display:grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.perk { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px; }
+.perk .ic { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, var(--door), var(--teal)); margin-bottom: 14px; display:grid; place-items:center; font: 700 18px var(--display); color:#fff; }
+.perk h3 { font-size: 19px; margin-bottom: 8px; }
+.perk p { margin:0; color: var(--fg-2); font-size: 15.5px; }
+@media (max-width: 980px) { .perks { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .perks { grid-template-columns: 1fr; } }
+
+/* coming next */
+.next-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.soon { border: 1.5px dashed var(--line); border-radius: 14px; padding: 20px; display:flex; flex-direction:column; gap: 8px; min-width:0; }
+.soon .code { color: var(--sun); }
+.soon .q { font-size: 17px; }
+.soon p { margin:0; color: var(--fg-3); font-size: 14px; }
+@media (max-width: 760px) { .next-grid { grid-template-columns: 1fr; } }
+
+/* membership */
+.join { background: var(--bg-2); }
+.join .wrap { display:grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items:center; }
+.join h2 { font-size: clamp(30px, 4vw, 46px); }
+.join .price { display:flex; align-items:baseline; gap: 10px; margin: 18px 0 8px; }
+.join .price b { font: 800 54px/1 var(--display); }
+.join .price span { color: var(--fg-2); }
+.join ul.check { list-style:none; padding:0; margin: 18px 0 0; display:grid; gap: 10px; color: var(--fg-2); }
+.join ul.check li::before { content:"\2713"; color: var(--ok); font-weight: 700; margin-right: 10px; }
+.form { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 26px; box-shadow: var(--shadow); display:grid; gap: 14px; }
+.form label { display:grid; gap: 6px; font-size: 14px; font-weight: 600; color: var(--fg-2); }
+.form input[type=text], .form input[type=email], .form input[type=tel] { width:100%; font: 16px var(--body); padding: 12px 14px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--bg); color: var(--fg); }
+.form .row { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form .opt { display:flex; gap: 10px; align-items:flex-start; font-weight: 400; color: var(--fg-2); font-size: 15px; }
+.form .opt input { margin-top: 4px; accent-color: var(--sun); }
+.form .fine { font-size: 13px; color: var(--fg-3); margin:0; }
+.form .done { display:none; text-align:center; padding: 12px 0; }
+.form.ok .done { display:block; }
+.form.ok .fields { display:none; }
+.form .done b { font: 800 26px var(--display); display:block; margin-bottom: 6px; }
+@media (max-width: 860px) { .join .wrap { grid-template-columns: 1fr; } .form .row { grid-template-columns: 1fr; } }
+
+/* footer */
+footer { padding-block: 40px 48px; border-top: 1px solid var(--line); color: var(--fg-3); font-size: 14px; }
+footer .wrap { display:grid; gap: 18px; }
+footer .cols { display:flex; flex-wrap:wrap; justify-content:space-between; gap: 18px; align-items:center; }
+footer .cols img { height: 34px; width:auto; }
+footer .disc { max-width: 90ch; line-height: 1.5; }
+footer .mwm { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+
+/* player / sign-in modal */
+.modal { position: fixed; inset: 0; z-index: 50; background: rgba(5,12,40,.82); display:none; align-items:center; justify-content:center; padding: max(16px, env(safe-area-inset-left, 0px)); }
+.modal.open { display:flex; }
+.sheet { width: min(960px, 100%); max-height: 92vh; overflow:auto; background: var(--card); color: var(--fg); border-radius: 18px; box-shadow: var(--shadow); border: 1px solid var(--line); }
+.player { position:relative; aspect-ratio: 16/9; background:#000; max-width:100%; }
+.player img { width:100%; height:100%; object-fit: cover; }
+.player .gate { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap: 12px; background: rgba(23,44,111,.78); color:#fff; text-align:center; padding: 20px; }
+.player .gate strong { font: 800 24px var(--display); }
+.player .gate p { margin:0; max-width: 40ch; color: rgba(255,255,255,.85); }
+.player .bar { position:absolute; left:0; right:0; bottom:0; height: 4px; background: rgba(255,255,255,.25); }
+.player .bar i { display:block; height:100%; width: 7%; background: var(--sun); }
+.sheet .body { padding: 20px 24px 24px; display:grid; gap: 10px; }
+.sheet .body h3 { font-size: 24px; }
+.sheet .actions { display:flex; flex-wrap:wrap; gap: 10px; margin-top: 8px; }
+.sheet .close { position:absolute; top: 12px; right: 12px; z-index:2; width: 38px; height: 38px; border-radius: 50%; border:0; background: rgba(0,0,0,.55); color:#fff; font-size: 20px; cursor:pointer; }
+.sheet > .inner { position:relative; }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 12px 18px; border-radius: 999px; font-weight: 600; box-shadow: var(--shadow); z-index: 60; display:none; }
+.toast.show { display:block; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="JAPA Academy home"><img src="img/logo-white.jpg" alt="JAPA — Jonathan Arevalo Pineda Academy"></a>
+    <nav class="nav" aria-label="Main">
+      <div class="links"><a href="#ho101">Homeownership 101</a> <a href="#ho102">Homeownership 102</a> <a href="#mm">Money Moves</a> <a href="#ho201">Homeownership 201</a><a href="#join">Membership</a></div>
+      <span class="who" id="who" hidden></span>
+      <button class="btn btn-ghost btn-sm" type="button" id="signin">Sign in</button>
+      <button class="btn btn-sun btn-sm" type="button" data-join>Join free</button>
+    </nav>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="bg" aria-hidden="true"></div><div class="fade" aria-hidden="true"></div>
+  <div class="wrap">
+    <div>
+      <p class="eyebrow" style="color:#ffd2d8">Jonathan Arevalo Pineda Academy &middot; a 501(c)(3) nonprofit</p>
+      <h1>Own your home. <em>Understand</em> every step.</h1>
+      <p class="lead">Straight answers from a mortgage broker who has helped thousands of Florida families buy a home. Short episodes, one question each, recorded every Thursday. Free for members.</p>
+      <div class="cta">
+        <button class="btn btn-sun" type="button" data-join>Join free &rarr;</button>
+        <a class="btn btn-ghost" href="#ho101">Browse the library</a>
+      </div>
+      <div class="stats">
+        <div><b>32</b><span>episodes</span></div>
+        <div><b>4</b><span>series</span></div>
+        <div><b>81 min</b><span>of answers</span></div>
+        <div><b>Thursdays</b><span>new episodes</span></div>
+      </div>
+    </div>
+    <button class="feature" type="button" data-open="HO201|04|What is home equity, and how do I build it faster?|1:17|img/ho201-04.jpg|1chMs-hKljxa5yifyGiB7AI4zzp45fv3m" aria-label="Play: What is home equity, and how do I build it faster?">
+      <img src="img/hero.jpg" alt="" width="960" height="540">
+      <span class="pill">New this week</span>
+      <span class="playbig" aria-hidden="true"></span>
+      <span class="label"><strong>What is home equity, and how do I build it faster?</strong><small>HO201 &middot; 04 &middot; 1:17</small></span>
+    </button>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">Start here</p><h2>Why this academy exists</h2></div>
+    </div>
+    <div class="start">
+      <button class="story" type="button" data-open="STORY|00|Jonathan&#39;s story: the church envelope that saved the house|2:56|img/story.jpg|" aria-label="Play Jonathan's story">
+        <img src="img/story.jpg" alt="" width="1200" height="675">
+        <span class="playbig" aria-hidden="true"></span>
+        <span class="label"><span class="eyebrow">Jonathan&#39;s story &middot; 2:56</span><strong>Raised by a single mother. Started doing loans at 17. Now: 50 Florida families into homeownership every month.</strong></span>
+      </button>
+      <aside class="thursday">
+        <p class="eyebrow">How it works</p>
+        <h3>One question. One honest answer. Every Thursday.</h3>
+        <ul>
+          <li><span><b>Ask anything</b> about buying, financing or keeping a home. Members submit questions; Jonathan answers the ones that help the most people.</span></li>
+          <li><span><b>New episodes land Thursdays.</b> Recorded at the studio, published to members first.</span></li>
+          <li><span><b>Nothing is sold to you.</b> The Academy is education only. It is not a lender and makes no credit decisions.</span></li>
+        </ul>
+        <p class="next">NEXT RECORDING &middot; THURSDAY 2:15 PM &middot; ORLANDO</p>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:0" id="library">
+  <div class="wrap">
+    <div class="section-head">
+      <div><p class="eyebrow">The library</p><h2>Four series, 32 answers</h2><p>Watch in order or jump to the question you have today. Members can watch everything.</p></div>
+    </div>
+    
+    <section class="series" id="ho101">
+      <div class="series-head">
+        <div>
+          <p class="eyebrow">Series 1 &middot; Recorded August 27, 2026</p>
+          <h3>Homeownership 101</h3>
+          <p class="blurb">The first conversation: what a lender actually looks at, which loan fits you, and why owning beats renting.</p>
+        </div>
+        <p class="count"><span class="num">8</span> episodes</p>
+      </div>
+      <div class="rail" role="list">
+        <button class="ep" type="button" data-series="HO101" data-n="01" data-title="Can I really buy a home with no money down?" data-dur="1:52" data-img="img/ho101-01.jpg" data-fid="1PDiT9C1XfSAXvh7Q82pISpcSWFJ9EyNE" aria-label="Episode 01: Can I really buy a home with no money down?">
+          <span class="thumb"><img src="img/ho101-01.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:52</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 01</span><span class="q">Can I really buy a home with no money down?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="02" data-title="What credit score do I need to buy a home?" data-dur="2:37" data-img="img/ho101-02.jpg" data-fid="1AVXdnelfAF8eIDFiYOx0qmYB7mlf6xDy" aria-label="Episode 02: What credit score do I need to buy a home?">
+          <span class="thumb"><img src="img/ho101-02.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:37</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 02</span><span class="q">What credit score do I need to buy a home?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="03" data-title="FHA, VA, USDA or conventional — which loan is right for me?" data-dur="2:10" data-img="img/ho101-03.jpg" data-fid="1dYy0nHUYtUTFcjQT1YOXAY4ihYyMoYn_" aria-label="Episode 03: FHA, VA, USDA or conventional — which loan is right for me?">
+          <span class="thumb"><img src="img/ho101-03.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:10</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 03</span><span class="q">FHA, VA, USDA or conventional — which loan is right for me?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="04" data-title="What are the four things a lender qualifies you on?" data-dur="3:06" data-img="img/ho101-04.jpg" data-fid="1JIDfiRn7cnBk5QSE2gpJopYc0dNg7aDa" aria-label="Episode 04: What are the four things a lender qualifies you on?">
+          <span class="thumb"><img src="img/ho101-04.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:06</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 04</span><span class="q">What are the four things a lender qualifies you on?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="05" data-title="Why is owning better than renting?" data-dur="1:03" data-img="img/ho101-05.jpg" data-fid="10DPO1c51AD9f-7U4zGFvcUHBJ08c0tDa" aria-label="Episode 05: Why is owning better than renting?">
+          <span class="thumb"><img src="img/ho101-05.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:03</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 05</span><span class="q">Why is owning better than renting?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="06" data-title="What income counts when I apply for a mortgage?" data-dur="5:42" data-img="img/ho101-06.jpg" data-fid="1jhL20qhfs__RUB9B-NvJ7SgfAXBh3RDk" aria-label="Episode 06: What income counts when I apply for a mortgage?">
+          <span class="thumb"><img src="img/ho101-06.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">5:42</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 06</span><span class="q">What income counts when I apply for a mortgage?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="07" data-title="What documents will a lender ask me for?" data-dur="1:33" data-img="img/ho101-07.jpg" data-fid="1sM-svQ70F0GFN7_8J4-APvGx83IArbHD" aria-label="Episode 07: What documents will a lender ask me for?">
+          <span class="thumb"><img src="img/ho101-07.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:33</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 07</span><span class="q">What documents will a lender ask me for?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO101" data-n="08" data-title="How long does credit repair really take?" data-dur="4:29" data-img="img/ho101-08.jpg" data-fid="1eye8MqwMgvxwKY1F1r1A_s2kx92U3LY2" aria-label="Episode 08: How long does credit repair really take?">
+          <span class="thumb"><img src="img/ho101-08.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">4:29</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO101 &middot; 08</span><span class="q">How long does credit repair really take?</span></span>
+        </button>
+      </div>
+    </section>
+    <section class="series" id="ho102">
+      <div class="series-head">
+        <div>
+          <p class="eyebrow">Series 2 &middot; Recorded September 10, 2026</p>
+          <h3>Homeownership 102</h3>
+          <p class="blurb">From the lender’s yes to the keys: pre-approval, closing costs, what can still fall apart, and closing day itself.</p>
+        </div>
+        <p class="count"><span class="num">8</span> episodes</p>
+      </div>
+      <div class="rail" role="list">
+        <button class="ep" type="button" data-series="HO102" data-n="01" data-title="Pre-qualified or pre-approved — which one does a seller actually take seriously?" data-dur="0:34" data-img="img/ho102-01.jpg" data-fid="1lFcycJy-uoWUfXjbWXgTir0HII9q_GgU" aria-label="Episode 01: Pre-qualified or pre-approved — which one does a seller actually take seriously?">
+          <span class="thumb"><img src="img/ho102-01.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">0:34</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 01</span><span class="q">Pre-qualified or pre-approved — which one does a seller actually take seriously?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="02" data-title="How much house can I actually afford?" data-dur="0:35" data-img="img/ho102-02.jpg" data-fid="1J-pCy7AU0A5rbz787x6QXa9-SeAyRRIb" aria-label="Episode 02: How much house can I actually afford?">
+          <span class="thumb"><img src="img/ho102-02.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">0:35</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 02</span><span class="q">How much house can I actually afford?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="03" data-title="What is actually in my monthly payment?" data-dur="0:57" data-img="img/ho102-03.jpg" data-fid="1bJTlIT398treAqW_B1RJgcagWz1uZk0t" aria-label="Episode 03: What is actually in my monthly payment?">
+          <span class="thumb"><img src="img/ho102-03.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">0:57</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 03</span><span class="q">What is actually in my monthly payment?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="04" data-title="What do closing costs actually cover, and who pays what?" data-dur="3:16" data-img="img/ho102-04.jpg" data-fid="1mFYUB4hn86KSck10MUoyX2cdaIwAjP6j" aria-label="Episode 04: What do closing costs actually cover, and who pays what?">
+          <span class="thumb"><img src="img/ho102-04.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:16</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 04</span><span class="q">What do closing costs actually cover, and who pays what?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="05" data-title="My offer was accepted — what happens between now and closing?" data-dur="3:57" data-img="img/ho102-05.jpg" data-fid="153NLuGUi1bgEzFnJgkayJV1LQuHZbOUN" aria-label="Episode 05: My offer was accepted — what happens between now and closing?">
+          <span class="thumb"><img src="img/ho102-05.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:57</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 05</span><span class="q">My offer was accepted — what happens between now and closing?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="06" data-title="I’m already approved. What could still make this fall apart?" data-dur="2:17" data-img="img/ho102-06.jpg" data-fid="14G7-0SIJ0dOkulavYoaCDQspfhltrcEM" aria-label="Episode 06: I’m already approved. What could still make this fall apart?">
+          <span class="thumb"><img src="img/ho102-06.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:17</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 06</span><span class="q">I’m already approved. What could still make this fall apart?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="07" data-title="Why isn’t the rate I saw advertised the rate I got?" data-dur="2:59" data-img="img/ho102-07.jpg" data-fid="1n2jI4tcW5yimLcUqulhn8ZE4RhkcSvOd" aria-label="Episode 07: Why isn’t the rate I saw advertised the rate I got?">
+          <span class="thumb"><img src="img/ho102-07.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:59</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 07</span><span class="q">Why isn’t the rate I saw advertised the rate I got?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO102" data-n="08" data-title="What actually happens on closing day, and what do I bring?" data-dur="3:57" data-img="img/ho102-08.jpg" data-fid="1XMohwCCyLlqZecomZ0MPQmNsVowyxwlX" aria-label="Episode 08: What actually happens on closing day, and what do I bring?">
+          <span class="thumb"><img src="img/ho102-08.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:57</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO102 &middot; 08</span><span class="q">What actually happens on closing day, and what do I bring?</span></span>
+        </button>
+      </div>
+    </section>
+    <section class="series" id="mm">
+      <div class="series-head">
+        <div>
+          <p class="eyebrow">Series 3 &middot; Recorded September 24, 2026</p>
+          <h3>Money Moves</h3>
+          <p class="blurb">The money side: what to stop doing before you buy, down-payment help, family gifts, which debts hurt, and the first year after the keys.</p>
+        </div>
+        <p class="count"><span class="num">8</span> episodes</p>
+      </div>
+      <div class="rail" role="list">
+        <button class="ep" type="button" data-series="MM" data-n="01" data-title="I want to buy in the next year. What should I stop doing with my money right now?" data-dur="1:33" data-img="img/mm-01.jpg" data-fid="1sPXDLbJzqMxIGy0ZRbs2ja7E4_nh_bNY" aria-label="Episode 01: I want to buy in the next year. What should I stop doing with my money right now?">
+          <span class="thumb"><img src="img/mm-01.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:33</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 01</span><span class="q">I want to buy in the next year. What should I stop doing with my money right now?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="02" data-title="Down payment assistance: is it really free money, and what’s the catch?" data-dur="2:23" data-img="img/mm-02.jpg" data-fid="1Eyx1kNjiTXw8CMW6BD4BthnafOZiM9jR" aria-label="Episode 02: Down payment assistance: is it really free money, and what’s the catch?">
+          <span class="thumb"><img src="img/mm-02.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:23</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 02</span><span class="q">Down payment assistance: is it really free money, and what’s the catch?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="03" data-title="Should I pay off debt first, or save for the down payment?" data-dur="1:19" data-img="img/mm-03.jpg" data-fid="1e6HyFMSMMlko2xvic0QvoxNMvXUszLam" aria-label="Episode 03: Should I pay off debt first, or save for the down payment?">
+          <span class="thumb"><img src="img/mm-03.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:19</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 03</span><span class="q">Should I pay off debt first, or save for the down payment?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="04" data-title="My family wants to help with my down payment. How do we do that the right way?" data-dur="1:59" data-img="img/mm-04.jpg" data-fid="1CXwGSXfJYMhJHmhdTMQCG15ebvhNZNCo" aria-label="Episode 04: My family wants to help with my down payment. How do we do that the right way?">
+          <span class="thumb"><img src="img/mm-04.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:59</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 04</span><span class="q">My family wants to help with my down payment. How do we do that the right way?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="05" data-title="Why does the lender care where every dollar in my bank account came from?" data-dur="1:18" data-img="img/mm-05.jpg" data-fid="1lfy_gv0ZO-lu7fyS0TsDZrfPKAIvgxaB" aria-label="Episode 05: Why does the lender care where every dollar in my bank account came from?">
+          <span class="thumb"><img src="img/mm-05.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:18</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 05</span><span class="q">Why does the lender care where every dollar in my bank account came from?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="06" data-title="Which debts hurt my approval the most, and which barely matter?" data-dur="3:11" data-img="img/mm-06.jpg" data-fid="1IqkOL1cWuGyeKha4yor-QPEwwBD5xXyM" aria-label="Episode 06: Which debts hurt my approval the most, and which barely matter?">
+          <span class="thumb"><img src="img/mm-06.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:11</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 06</span><span class="q">Which debts hurt my approval the most, and which barely matter?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="07" data-title="I just got the keys. What money moves protect me in the first year?" data-dur="6:30" data-img="img/mm-07.jpg" data-fid="1wxkGCg310wBAO9AWRmymZ7s1Rv8w3c3X" aria-label="Episode 07: I just got the keys. What money moves protect me in the first year?">
+          <span class="thumb"><img src="img/mm-07.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">6:30</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 07</span><span class="q">I just got the keys. What money moves protect me in the first year?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="MM" data-n="08" data-title="I own my home in Florida. What is the homestead exemption, and why can’t I miss it?" data-dur="4:25" data-img="img/mm-08.jpg" data-fid="1ttTwlzDLf7s01mfX9KlQz0QtrMZZHEGo" aria-label="Episode 08: I own my home in Florida. What is the homestead exemption, and why can’t I miss it?">
+          <span class="thumb"><img src="img/mm-08.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">4:25</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">MM &middot; 08</span><span class="q">I own my home in Florida. What is the homestead exemption, and why can’t I miss it?</span></span>
+        </button>
+      </div>
+    </section>
+    <section class="series" id="ho201">
+      <div class="series-head">
+        <div>
+          <p class="eyebrow">Series 4 · New &middot; Recorded October 8, 2026</p>
+          <h3>Homeownership 201 · After the Keys</h3>
+          <p class="blurb">You own it now. Fixed rates that still go up, PMI, Florida insurance, equity, refinancing, and keeping your first home as a rental.</p>
+        </div>
+        <p class="count"><span class="num">8</span> episodes</p>
+      </div>
+      <div class="rail" role="list">
+        <button class="ep" type="button" data-series="HO201" data-n="01" data-title="My rate is fixed. So why did my mortgage payment go up?" data-dur="0:36" data-img="img/ho201-01.jpg" data-fid="1r6euorj_9tVRoGNL3zJ1oizk9gkdcFRz" aria-label="Episode 01: My rate is fixed. So why did my mortgage payment go up?">
+          <span class="thumb"><img src="img/ho201-01.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">0:36</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 01</span><span class="q">My rate is fixed. So why did my mortgage payment go up?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="02" data-title="What is PMI, and how do I get rid of it?" data-dur="2:30" data-img="img/ho201-02.jpg" data-fid="1BFaXBeduMsQfmhMZsSIqIn5tfLLkqN5i" aria-label="Episode 02: What is PMI, and how do I get rid of it?">
+          <span class="thumb"><img src="img/ho201-02.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:30</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 02</span><span class="q">What is PMI, and how do I get rid of it?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="03" data-title="Florida home insurance keeps going up. What can I actually do about it?" data-dur="0:54" data-img="img/ho201-03.jpg" data-fid="1mDEEnhNtL_MW3qeIl8Jdb58BpCbRTGwt" aria-label="Episode 03: Florida home insurance keeps going up. What can I actually do about it?">
+          <span class="thumb"><img src="img/ho201-03.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">0:54</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 03</span><span class="q">Florida home insurance keeps going up. What can I actually do about it?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="04" data-title="What is home equity, and how do I build it faster?" data-dur="1:17" data-img="img/ho201-04.jpg" data-fid="1chMs-hKljxa5yifyGiB7AI4zzp45fv3m" aria-label="Episode 04: What is home equity, and how do I build it faster?">
+          <span class="thumb"><img src="img/ho201-04.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:17</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 04</span><span class="q">What is home equity, and how do I build it faster?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="05" data-title="Should I pay extra on my mortgage, or put that money somewhere else?" data-dur="1:48" data-img="img/ho201-05.jpg" data-fid="1uJ7UQvFOvjp0WBV0kD82VOqXN3sq_KF7" aria-label="Episode 05: Should I pay extra on my mortgage, or put that money somewhere else?">
+          <span class="thumb"><img src="img/ho201-05.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">1:48</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 05</span><span class="q">Should I pay extra on my mortgage, or put that money somewhere else?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="06" data-title="When does refinancing actually make sense, and when is it a trap?" data-dur="3:30" data-img="img/ho201-06.jpg" data-fid="1p6GHoJR8WNbMaSvdyoq_Cr7qLrBZ-jGF" aria-label="Episode 06: When does refinancing actually make sense, and when is it a trap?">
+          <span class="thumb"><img src="img/ho201-06.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">3:30</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 06</span><span class="q">When does refinancing actually make sense, and when is it a trap?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="07" data-title="HELOC or cash-out refinance: how should I use my equity, if at all?" data-dur="4:44" data-img="img/ho201-07.jpg" data-fid="1Vdry9ehnUXM4WkR0C6Q28FRgoM7K0kRC" aria-label="Episode 07: HELOC or cash-out refinance: how should I use my equity, if at all?">
+          <span class="thumb"><img src="img/ho201-07.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">4:44</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 07</span><span class="q">HELOC or cash-out refinance: how should I use my equity, if at all?</span></span>
+        </button>
+        <button class="ep" type="button" data-series="HO201" data-n="08" data-title="Can I buy my next home and keep this one as a rental?" data-dur="2:00" data-img="img/ho201-08.jpg" data-fid="1bYoq3DWesKNEsJnQDI0jVf7HpIBYSfnL" aria-label="Episode 08: Can I buy my next home and keep this one as a rental?">
+          <span class="thumb"><img src="img/ho201-08.jpg" alt="" loading="lazy" width="800" height="450"><span class="dur">2:00</span><span class="lock" aria-hidden="true">&#9679; Members</span><span class="play" aria-hidden="true"></span></span>
+          <span class="meta"><span class="code">HO201 &middot; 08</span><span class="q">Can I buy my next home and keep this one as a rental?</span></span>
+        </button>
+      </div>
+    </section>
+  </div>
+</section>
+
+<section class="band" style="padding-top:12px">
+  <div class="wrap">
+    <div class="section-head"><div><p class="eyebrow">Membership</p><h2>What members get</h2></div></div>
+    <div class="perks">
+      <div class="perk"><div class="ic">&#9654;</div><h3>Every episode, ad-free</h3><p>The full library, on the Academy&#39;s own platform. Not on YouTube, no ads, nothing sold between episodes.</p></div>
+      <div class="perk"><div class="ic">&#9993;</div><h3>New-episode alerts</h3><p>An email or a text the moment a new answer is published. You choose which, and you can stop any time.</p></div>
+      <div class="perk"><div class="ic">?</div><h3>Ask Jonathan</h3><p>Submit the question you are stuck on. The most useful ones become next Thursday&#39;s episodes.</p></div>
+      <div class="perk"><div class="ic">&#8962;</div><h3>Home Bridge Grant news</h3><p>First to hear about the Academy&#39;s $1,000&ndash;$10,000 down-payment and closing-cost grants when applications open.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:12px">
+  <div class="wrap">
+    <div class="section-head"><div><p class="eyebrow">Coming next</p><h2>Questions already on the list</h2></div></div>
+    <div class="next-grid">
+      <div class="soon"><span class="code">Short &middot; Up next</span><span class="q">FHA or non-QM: which one fits my situation?</span><p>A 60-second answer to the question that comes up on every call sheet.</p></div>
+      <div class="soon"><span class="code">Members asked</span><span class="q">Can I use my 401(k) to buy a home, and should I?</span><p>What the rules allow, what it costs you later, and when it is worth it.</p></div>
+      <div class="soon"><span class="code">Members asked</span><span class="q">Should I buy a smaller home now, or wait for the one I really want?</span><p>The math on waiting, in a market that does not wait with you.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band join" id="join">
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Founding membership</p>
+      <h2>Free while the Academy is getting started.</h2>
+      <div class="price"><b>$0</b><span>per month &middot; no card needed</span></div>
+      <p style="color:var(--fg-2);margin:0;max-width:52ch">Sign up once. Your membership unlocks the whole library today and every episode that follows.</p>
+      <ul class="check">
+        <li>All 32 episodes, plus every new Thursday release</li>
+        <li>New-episode alerts by email or text, your choice</li>
+        <li>Submit questions for upcoming episodes</li>
+        <li>Early notice when Home Bridge Grant applications open</li>
+      </ul>
+    </div>
+    <form class="form" id="joinform" novalidate>
+      <div class="fields">
+        <div class="row">
+          <label for="f-name">First name<input id="f-name" name="name" type="text" autocomplete="given-name" placeholder="Maria" required></label>
+          <label for="f-email">Email<input id="f-email" name="email" type="email" autocomplete="email" placeholder="maria@example.com" required></label>
+        </div>
+        <label for="f-phone">Mobile number <span style="font-weight:400">(optional, for text alerts)</span><input id="f-phone" name="phone" type="tel" autocomplete="tel" placeholder="(407) 555-0100"></label>
+        <label class="opt"><input id="f-alerts" type="checkbox" checked> Email me when a new episode is published</label>
+        <label class="opt"><input id="f-sms" type="checkbox"> Text me too (message and data rates may apply; reply STOP to end)</label>
+        <label class="opt"><input id="f-news" type="checkbox" checked> Send me the Thursday note: the week&#39;s episode plus one tip, once a week</label>
+        <button class="btn btn-sun" type="submit" style="justify-content:center">Create my free membership</button>
+        <p class="fine">No cost, no card. You can cancel the emails and texts at any time. The Academy never shares your information.</p>
+      </div>
+      <div class="done"><b id="done-name">Welcome, Maria.</b><span style="color:var(--fg-2)">Your membership is active. Every episode is unlocked, and new ones will reach you on Thursdays.</span><div class="actions" style="justify-content:center"><a class="btn btn-ghost btn-sm" href="#ho101">Start watching</a></div></div>
+    </form>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <img src="img/logo-white.jpg" alt="JAPA" style="border-radius:8px">
+      <span>john@pinedaacademy.com &middot; 407-697-3812 &middot; Orlando, Florida</span>
+    </div>
+    <p class="disc">Jonathan Arevalo Pineda Academy is a 501(c)(3) nonprofit. It is not a lender or credit repair company and makes no credit decisions. Education only, not financial advice. Rates, credit scores, income figures and timelines in the episodes are examples as of the month they were recorded and vary by borrower.</p>
+    <p class="mwm">JAPA Academy &middot; a platform by MWM Creations &amp; Studios &middot; concept preview</p>
+  </div>
+</footer>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+  <div class="sheet"><div class="inner">
+    <button class="close" type="button" id="m-close" aria-label="Close">&times;</button>
+    <div class="player">
+      <img id="m-img" src="" alt="">
+      <div class="gate" id="m-gate"><strong>Members watch free</strong><p>Create your free membership to unlock this episode and the whole library.</p><button class="btn btn-sun btn-sm" type="button" data-join>Join free</button></div>
+      <div class="bar" aria-hidden="true"><i></i></div>
+    </div>
+    <div class="body">
+      <span class="code" id="m-code"></span>
+      <h3 id="m-title"></h3>
+      <p style="margin:0;color:var(--fg-2)">Recorded at the MWM studio in Orlando. Education only, not financial advice.</p>
+      <div class="actions" id="m-actions"></div>
+    </div>
+  </div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  var KEY='japa_member';
+  var member=null;
+  try { member = JSON.parse(localStorage.getItem(KEY)||'null'); } catch(e) { member=null; }
+  var body=document.body, who=document.getElementById('who'), signin=document.getElementById('signin');
+  function paint(){
+    if(member && member.name){ body.classList.add('member'); who.textContent='Hi, '+member.name; who.hidden=false; signin.textContent='Sign out'; }
+    else { body.classList.remove('member'); who.hidden=true; signin.textContent='Sign in'; }
+    var g=document.getElementById('m-gate'); if(g) g.hidden=!!(member&&member.name);
+  }
+  paint();
+  function toast(t){ var el=document.getElementById('toast'); el.textContent=t; el.classList.add('show'); clearTimeout(el._t); el._t=setTimeout(function(){el.classList.remove('show');},2600); }
+  signin.addEventListener('click', function(){
+    if(member){ member=null; try{localStorage.removeItem(KEY);}catch(e){} paint(); toast('Signed out'); }
+    else { document.getElementById('join').scrollIntoView({behavior:'smooth'}); document.getElementById('f-email').focus(); }
+  });
+  document.querySelectorAll('[data-join]').forEach(function(b){ b.addEventListener('click', function(){ closeModal(); document.getElementById('join').scrollIntoView({behavior:'smooth'}); setTimeout(function(){document.getElementById('f-name').focus();},400); }); });
+  var form=document.getElementById('joinform');
+  form.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    var name=document.getElementById('f-name').value.trim(), email=document.getElementById('f-email').value.trim();
+    if(!name){ toast('Add your first name'); document.getElementById('f-name').focus(); return; }
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Add a valid email'); document.getElementById('f-email').focus(); return; }
+    member={name:name, email:email, phone:document.getElementById('f-phone').value.trim(), alerts:document.getElementById('f-alerts').checked, sms:document.getElementById('f-sms').checked, news:document.getElementById('f-news').checked, at:new Date().toISOString()};
+    try{ localStorage.setItem(KEY, JSON.stringify(member)); }catch(e){}
+    document.getElementById('done-name').textContent='Welcome, '+name+'.';
+    form.classList.add('ok'); paint(); toast('Membership active');
+  });
+  // player
+  var modal=document.getElementById('modal');
+  function openEp(series,n,title,dur,img,fid){
+    document.getElementById('m-img').src=img;
+    document.getElementById('m-code').textContent=(series==='STORY'?'JONATHAN\u2019S STORY':series+' \u00b7 '+n)+' \u00b7 '+dur;
+    document.getElementById('m-title').textContent=title;
+    var a=document.getElementById('m-actions'); a.innerHTML='';
+    if(member&&member.name){
+      if(fid){ var l=document.createElement('a'); l.className='btn btn-sun btn-sm'; l.target='_blank'; l.rel='noopener'; l.href='https://drive.google.com/file/d/'+fid+'/view'; l.textContent='Play episode'; a.appendChild(l); }
+      var s=document.createElement('span'); s.style.cssText='font-size:13px;color:var(--fg-3);align-self:center'; s.textContent=fid?'Preview build: the episode opens from the Academy\u2019s private library.':'Preview build: player not wired yet.'; a.appendChild(s);
+    }
+    paint();
+    modal.classList.add('open'); document.getElementById('m-close').focus();
+  }
+  function closeModal(){ modal.classList.remove('open'); }
+  document.getElementById('m-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', function(e){ if(e.target===modal) closeModal(); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
+  document.querySelectorAll('.ep').forEach(function(b){ b.addEventListener('click', function(){ var d=b.dataset; openEp(d.series,d.n,d.title,d.dur,d.img,d.fid); }); });
+  document.querySelectorAll('[data-open]').forEach(function(b){ b.addEventListener('click', function(){ var p=b.getAttribute('data-open').split('|'); openEp(p[0],p[1],p[2],p[3],p[4],p[5]||''); }); });
+})();
+</script>
+
+</body></html>
