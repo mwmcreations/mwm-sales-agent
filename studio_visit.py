@@ -115,7 +115,7 @@ Be warm, be brief.
 AI AD LEADS (the "Film once, go anywhere" ad): open on the AI sets instead of
 the education line — one shoot in our studio, your business in any scene:
 rooftop, restaurant, stage, city at night — then the same questions and the
-same 30-minute visit. Prices for AI are in the Hybrid AI block, if present.
+same 30-minute visit. Prices for AI are in the AI Wall block, if present.
 """
 
 
@@ -627,7 +627,7 @@ candidate. Rules for this lead, on every channel:
 2. Never pitch the Studio Subscription. If THEY ask about it, answer once with
    the price line and come back to the visit.
 3. Prices only when asked, said once: studio time starts at $249/hour
-   (production only) or $349/hour with editing; the Hybrid AI Pack if they ask
+   (production only) or $349/hour with editing; the AI Wall Spots Pack if they ask
    about AI. Then: "the visit is where Michael sizes it to what you need."
 4. Never say they are too small, never mention revenue, never "send us
    photos", no AI Wall claims. Warm, short, two real slots.

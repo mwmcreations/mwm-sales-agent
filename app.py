@@ -2540,7 +2540,7 @@ STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026; for EXISTING package
 clients and portal questions — the sales script above decides what is sold
 to a new lead):
 - The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — the Studio Strategy Visit script above decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
-- Package clients can add a Hybrid AI video to any session: $397 per video (up to 30 s, up to 3 AI scenes). Michael sets it up; tell them you'll let him know.
+- Package clients can add an AI Wall Spot to any session: $397 per Spot (up to 30 s, up to 3 AI scenes; it used to be called a Hybrid AI video). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
 - CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
@@ -2744,9 +2744,9 @@ Everything in the studio rental PLUS post-production editing.
 Includes: studio space, equipment, on-site technician, and editing.
 (Editing adds $100/hour on top of the base $249/hour studio rental.)
 
-Hybrid AI Video (add-on) — $397 per video  (PATCH #141, Michael + ROB, 30 Sep 2026)
-Turn a video from any studio session into a Hybrid AI video: the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round.
-Hybrid AI Pack — $1,497: 1 studio hour + 4 Hybrid AI videos (about $374 per video). Anything longer or custom is quoted at the Strategy Visit.
+AI Wall Spot (add-on) — $397 per Spot  (PATCH #252, ROB + Michael, 16 Oct 2026; was "Hybrid AI video", PATCH #141)
+Turn a video from any studio session into an AI Wall Spot: the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round. On its own, filming included: $597.
+AI Wall Spots Pack — $1,497: 1 studio hour + 4 AI Wall Spots (about $374 per Spot). AI monthly plans (AI Starter, AI Growth, AI Pro) start November 2, from $1,297/month at the founding price; the full list is on mwmcreations.com/ai-studio. Anything longer or custom is quoted at the Strategy Visit.
 General information only: if the lead is curious about AI, share it plainly and invite them to the visit. You are not selling it; Michael closes in the studio.
 
 HOW TO HANDLE PRICING QUESTIONS:
@@ -15788,7 +15788,7 @@ You are LARA — Client & Production Manager for MWM Creations. You are bilingua
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
 - The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — Maya's Studio Strategy Visit script decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
-- Package clients can add a Hybrid AI video to any session: $397 per video (up to 30 s, up to 3 AI scenes). Michael sets it up; tell them you'll let him know.
+- Package clients can add an AI Wall Spot to any session: $397 per Spot (up to 30 s, up to 3 AI scenes; it used to be called a Hybrid AI video). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
 - CANCELLATION POLICY (firm): sessions need at least 24 hours' notice to cancel or reschedule. Cancellations with less than 24h notice keep the hours charged. Exceptions are Michael's decision ONLY — never promise one; say you'll check with Michael.
