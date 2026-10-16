@@ -63,7 +63,7 @@ check("252c: no $597 left", "$597" not in on and "eVq4gzaKlb5o6ej8kq9EI1l" not i
 check("Add a Spot $397", "Add a Spot: $397 per Spot" in off)
 check("Pack $1,497 = 1 h + 4 Spots", "AI Wall Spots Pack: $1,497 = 1 studio hour + 4 AI Wall Spots" in off)
 check("AI Wall Hour $599 = $349 + $250, from Nov 2", "AI Wall Hour: $599 ($349 studio hour with editing + $250 for the AI Wall), from November 2" in off)
-check("MWM Worlds $197", "$197 one-time" in off)
+check("252f: MWM Worlds off the menu, no $197", "$197" not in off and "NOT on the menu right now" in off)
 check("$6 per second custom, never computed", "from $6 per second" in off and "NEVER work out a per-second price" in off)
 
 print("== links")
