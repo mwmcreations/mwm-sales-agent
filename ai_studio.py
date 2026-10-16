@@ -129,7 +129,7 @@ NAMES (say the current name; no fuss if they use an old one):
 
 THE MENU (general information you may share; do not add to it, do not invent dates, deliverables or discounts):
 MONTHLY PLANS: 3-month minimum, then month to month with 30 days' notice. Start this week on our real sets; the AI Wall opens November 2 (the new studio). The month starts on the day they pay, and real-set hours can be used right away in the current studio (PATCH #252b, ROB 16 Oct: Michael wants first payments this week, so never tell them to wait). Each hour: up to 10 edited short videos, or 1 podcast episode with 10 short cuts.
-- AI Starter: $1,297/month founding price (regular $1,497). 1 hour on real sets + 1 AI Wall hour + 1 AI Wall Spot.
+- AI Starter: $1,297/month founding price (regular $1,497). 2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 AI Wall Spot. Say "2 studio hours a month" so it is clear it is the 2-hour plan (Michael, 16 Oct, PATCH #252d).
 - AI Growth (the most popular): $1,697/month founding price (regular $1,997). 4 studio hours a month, up to 2 of them on the AI Wall, + 1 AI Wall Spot.
 - AI Pro: $2,497/month founding price (regular $2,997). 4 AI Wall hours + 2 AI Wall Spots.
 - Studio Only: $1,200/month founding price (regular $1,497). 4 hours on real sets, no AI.

@@ -51,7 +51,7 @@ check("3-month minimum; start this week on real sets, AI Wall Nov 2 (252b)", "3-
       and "The month starts on the day they pay" in off and "plans start November 2" not in off and "Apply now" not in off)
 check("252b base prompt: start this week", "start this week on our real sets (the AI Wall opens November 2)" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
 check("10 shorts or 1 podcast per hour", "up to 10 edited short videos, or 1 podcast episode with 10 short cuts" in off)
-check("plan contents", "1 hour on real sets + 1 AI Wall hour + 1 AI Wall Spot" in off
+check("plan contents", "2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 AI Wall Spot" in off
       and "up to 2 of them on the AI Wall" in off and "4 AI Wall hours + 2 AI Wall Spots" in off
       and "4 hours on real sets, no AI" in off)
 check("move up anytime, founding price comes with them", "move up anytime; the founding price comes with them" in off)
