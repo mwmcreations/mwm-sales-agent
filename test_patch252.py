@@ -47,7 +47,9 @@ for name, f, r in (("AI Starter", "$1,297", "$1,497"), ("AI Growth", "$1,697", "
     line = next((l for l in off.splitlines() if l.startswith("- " + name)), "")
     check("plan %s %s founding, %s regular" % (name, f, r), (f + "/month founding price") in line and ("regular " + r) in line)
 check("AI Growth is the most popular", "AI Growth (the most popular)" in off)
-check("3-month minimum, start November 2", "3-month minimum" in off and "plans start November 2" in off)
+check("3-month minimum; start this week on real sets, AI Wall Nov 2 (252b)", "3-month minimum" in off and "Start this week on our real sets; the AI Wall opens November 2" in off
+      and "The month starts on the day they pay" in off and "plans start November 2" not in off and "Apply now" not in off)
+check("252b base prompt: start this week", "start this week on our real sets (the AI Wall opens November 2)" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
 check("10 shorts or 1 podcast per hour", "up to 10 edited short videos, or 1 podcast episode with 10 short cuts" in off)
 check("plan contents", "1 hour on real sets + 1 AI Wall hour + 1 AI Wall Spot" in off
       and "up to 2 of them on the AI Wall" in off and "4 AI Wall hours + 2 AI Wall Spots" in off
