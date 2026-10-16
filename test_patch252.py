@@ -47,6 +47,8 @@ for name, f, r in (("AI Starter", "$1,297", "$1,497"), ("AI Growth", "$1,697", "
     line = next((l for l in off.splitlines() if l.startswith("- " + name)), "")
     check("plan %s %s founding, %s regular" % (name, f, r), (f + "/month founding price") in line and ("regular " + r) in line)
 check("AI Growth is the most popular", "AI Growth (the most popular)" in off)
+check("252g: AI Wall vs AI Wall Spot explained", "AI WALL = we replace the BACKGROUND" in off and "AI WALL SPOT = we build an ENTIRE WORLD" in off
+      and "The AI Wall changes the background, for long videos. An AI Wall Spot changes the whole world around you, for videos up to 30 seconds." in off)
 check("252e: called subscription plans", "SUBSCRIPTION PLANS" in off and "MONTHLY PLANS" not in off)
 check("3-month minimum; start this week on real sets, AI Wall Nov 2 (252b)", "3-month minimum" in off and "Start this week on our real sets; the AI Wall opens November 2" in off
       and "The month starts on the day they pay" in off and "plans start November 2" not in off and "Apply now" not in off)
@@ -97,7 +99,7 @@ check("podcast price stays off", not ai.ai_lead(None, ["hi, how much is a podcas
 print("== languages / length")
 check("PT + ES key lines", "primeiro estúdio com AI Wall de Orlando" in off and "primer estudio con AI Wall de Orlando" in off)
 check("names stay in English", "Product names stay in English in every language" in off)
-check("block stays compact", len(on) < 9500)
+check("block stays compact (252g: 10,500 with the Wall vs Spot block)", len(on) < 10500)
 
 print("== app.py + studio_visit.py")
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
