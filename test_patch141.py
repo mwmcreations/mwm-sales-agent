@@ -19,7 +19,7 @@ ok("ALWAYS the best next step" in on and "30-minute Studio Strategy Visit" in on
 ok("general information" in on and "PREPARED" in on, "general info so the lead comes prepared")
 ok("never offer one first" in on and "clearly says they want to buy" in on, "payment links only on a clear request, never pushed")
 LINKS252 = ("cNiaEXg4F1uOdGL3069EI1e", "aFa4gzcStehAfOT1W29EI1i", "cNi14ng4F3CWgSX7gm9EI1j", "eVq14n19LgpI9qveIO9EI1k",
-            "eVq4gzaKlb5o6ej8kq9EI1l", "9B65kDf0BehAfOT44a9EI1b", "aFa5kD6u54H07in0RY9EI1c", "14AaEX7y9c9sfOT7gm9EI1h")
+            "00weVdaKlgpI7incAG9EI1m", "9B65kDf0BehAfOT44a9EI1b", "aFa5kD6u54H07in0RY9EI1c", "14AaEX7y9c9sfOT7gm9EI1h")
 ok(all(("https://buy.stripe.com/" + k) in on for k in LINKS252) and on.count("buy.stripe.com") == 8, "252: exactly ROB's eight page links, written in full")
 ok("google.com/url" not in on, "no Gmail-wrapped links")
 ok("NEVER work out a per-second price" in on, "no self-built per-second quotes")

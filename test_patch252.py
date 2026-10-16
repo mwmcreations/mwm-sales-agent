@@ -57,7 +57,8 @@ check("plan contents", "1 hour on real sets + 1 AI Wall hour + 1 AI Wall Spot" i
 check("move up anytime, founding price comes with them", "move up anytime; the founding price comes with them" in off)
 
 print("== one-offs")
-check("Spot $597 filming included", "AI Wall Spot: $597, filming included" in off)
+check("252c: Spot $997 filming included, plan line", "AI Wall Spot: $997, filming included" in off and "On a monthly plan, Spots are included or added for $397." in off)
+check("252c: no $597 left", "$597" not in on and "eVq4gzaKlb5o6ej8kq9EI1l" not in on)
 check("Add a Spot $397", "Add a Spot: $397 per Spot" in off)
 check("Pack $1,497 = 1 h + 4 Spots", "AI Wall Spots Pack: $1,497 = 1 studio hour + 4 AI Wall Spots" in off)
 check("AI Wall Hour $599 = $349 + $250, from Nov 2", "AI Wall Hour: $599 ($349 studio hour with editing + $250 for the AI Wall), from November 2" in off)
@@ -66,7 +67,7 @@ check("$6 per second custom, never computed", "from $6 per second" in off and "N
 
 print("== links")
 LINKS = ("cNiaEXg4F1uOdGL3069EI1e", "aFa4gzcStehAfOT1W29EI1i", "cNi14ng4F3CWgSX7gm9EI1j", "eVq14n19LgpI9qveIO9EI1k",
-         "eVq4gzaKlb5o6ej8kq9EI1l", "9B65kDf0BehAfOT44a9EI1b", "aFa5kD6u54H07in0RY9EI1c", "14AaEX7y9c9sfOT7gm9EI1h")
+         "00weVdaKlgpI7incAG9EI1m", "9B65kDf0BehAfOT44a9EI1b", "aFa5kD6u54H07in0RY9EI1c", "14AaEX7y9c9sfOT7gm9EI1h")
 urls = re.findall(r"https://buy\.stripe\.com/[A-Za-z0-9]+", off)
 check("exactly the eight page links", sorted(u.rsplit("/", 1)[1] for u in urls) == sorted(LINKS))
 check("links only on a clear request", "never offer one first" in off and "clearly says they want to buy" in off)
@@ -103,7 +104,7 @@ SV = open(os.path.join(HERE, "studio_visit.py"), encoding="utf-8").read()
 check("no Hybrid AI name left in app.py prompts", "Hybrid AI Video (add-on)" not in SRC and "Hybrid AI Pack —" not in SRC
       and "add a Hybrid AI video" not in SRC)
 check("base prompt: Spot $397 / $597, Pack, plans from $1,297", "AI Wall Spot (add-on) — $397 per Spot" in SRC
-      and "On its own, filming included: $597." in SRC and "from $1,297/month at the founding price" in SRC)
+      and "On its own, filming included: $997 (on a monthly plan, Spots are included or added for $397)." in SRC and "$597." not in SRC.split("AI Wall Spot (add-on)")[1][:600] and "from $1,297/month at the founding price" in SRC)
 check("studio_visit names", "Hybrid AI" not in SV and "the AI Wall Spots Pack if they ask" in SV and "in the AI Wall block" in SV)
 check("module doc", "PATCH #252" in open(os.path.join(HERE, "ai_studio.py"), encoding="utf-8").read())
 

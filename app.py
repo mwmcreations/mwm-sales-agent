@@ -2745,7 +2745,7 @@ Includes: studio space, equipment, on-site technician, and editing.
 (Editing adds $100/hour on top of the base $249/hour studio rental.)
 
 AI Wall Spot (add-on) — $397 per Spot  (PATCH #252, ROB + Michael, 16 Oct 2026; was "Hybrid AI video", PATCH #141)
-Turn a video from any studio session into an AI Wall Spot: the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round. On its own, filming included: $597.
+Turn a video from any studio session into an AI Wall Spot: the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round. On its own, filming included: $997 (on a monthly plan, Spots are included or added for $397).
 AI Wall Spots Pack — $1,497: 1 studio hour + 4 AI Wall Spots (about $374 per Spot). AI monthly plans (AI Starter, AI Growth, AI Pro), from $1,297/month at the founding price, start this week on our real sets (the AI Wall opens November 2); the full list is on mwmcreations.com/ai-studio. Anything longer or custom is quoted at the Strategy Visit.
 General information only: if the lead is curious about AI, share it plainly and invite them to the visit. You are not selling it; Michael closes in the studio.
 
