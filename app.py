@@ -22778,7 +22778,8 @@ def admin_operator_text():
     GET  /admin/operator-text?secret=<UPLOAD_SECRET>[&all=1]
         Pending rows (all=1: sent and failed too).
     Only Michael's number can ever receive these (operator_alert, #149)."""
-    if not _admin_secret_ok(request.args.get("secret")):
+    # #254b: the daemon posts form-encoded, secret included — read query + form.
+    if not _admin_secret_ok(request.values.get("secret", "")):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     if request.method == "GET":
         rows = _operator_remind_rows()

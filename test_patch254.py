@@ -112,7 +112,7 @@ check("rows.cache_for_health", G["_operator_remind_rows"](max_age_s=55) == ["cac
 check("wire.thread", 'threading.Thread(target=_operator_remind_loop, daemon=True, name="operator_remind").start()' in SRC
       and '_heartbeat("operator_remind")' in SRC and '"operator_remind": 10,' in SRC)
 check("wire.route", "@app.route('/admin/operator-text', methods=['GET', 'POST'])" in SRC and "def admin_operator_text():" in SRC
-      and SRC.index("def admin_operator_text():") < SRC.index('if not _admin_secret_ok(request.args.get("secret")):\n        return jsonify({"ok": False, "error": "unauthorized"}), 401\n    if request.method == "GET":\n        rows = _operator_remind_rows()'))
+      and SRC.index("def admin_operator_text():") < SRC.index('if not _admin_secret_ok(request.values.get("secret", "")):\n        return jsonify({"ok": False, "error": "unauthorized"}), 401\n    if request.method == "GET":\n        rows = _operator_remind_rows()'))
 check("wire.route_sends_now_when_due", 'if _orm.due([row]):\n        out["result"] = _operator_remind_send(row)' in SRC)
 check("wire.health", '"operator_remind": _operator_remind_status(),' in SRC)
 check("wire.import_after_alert", SRC.index("import operator_alert as _operator_alert") < SRC.index("import operator_remind as _orm"))
