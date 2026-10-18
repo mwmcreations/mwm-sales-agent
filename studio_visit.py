@@ -320,6 +320,7 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
                  "walk the studio, we map the videos your buyers need to see, and "
                  "you leave with a 90-day plan. Michael has been " + CREDITS +
                  "; " + WE_DO + ".")
+    body = lines[2:]   # #253: the branded HTML renders greeting, slots and signature itself
     if when:
         lines.append(f"Michael has {when}. Which works? Reply to this email with the "
                      f"one you want, or a better time, and I will book it.")
@@ -333,7 +334,9 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
     lines += ["", "Maya", "Michael Moraes' team - MWM Creations & Studios",
               "1500 Park Center Dr, Suite 230, Orlando, FL"]
     text = "\n".join(lines)
-    return subject, _as_html(lines), text
+    html = branded_email_html(name, body, slots=slots, sms_sent=sms_sent,
+                              box_title="Michael has these times open")
+    return subject, html, text
 
 
 # ── under budget: the first-hour invitation (Michael, 3 Oct 2026) ──────────
@@ -679,6 +682,7 @@ def sh_first_touch_email(name, business="", must_understand="", ai=False,
                  "walk the studio, we map the one or two videos your buyers need to "
                  "see first, and we size it to a studio hour or a small package - "
                  "whatever fits. Michael has been " + CREDITS + "; " + WE_DO + ".")
+    body = lines[2:]   # #253: the branded HTML renders greeting, slots and signature itself
     if when:
         lines.append(f"Michael has {when}. Which works? Reply to this email with the "
                      f"one you want, or a better time, and I will book it.")
@@ -692,7 +696,9 @@ def sh_first_touch_email(name, business="", must_understand="", ai=False,
     lines += ["", "Maya", "Michael Moraes' team - MWM Creations & Studios",
               "1500 Park Center Dr, Suite 230, Orlando, FL"]
     text = "\n".join(lines)
-    return subject, _as_html(lines), text
+    html = branded_email_html(name, body, slots=slots, sms_sent=sms_sent,
+                              box_title="Michael has these times open")
+    return subject, html, text
 
 
 CTA_SH = ("Reply to this email with a day that works, or text Maya at "
@@ -800,6 +806,95 @@ def sh_chase_sms(step, name, slots=None):
 
 
 # ── html ───────────────────────────────────────────────────────────────────
+
+# ── PATCH #253 — the branded first-touch email ──────────────────────────────
+# Michael, 18 Oct 10:40: "one of them has a branded look, which I like, but
+# does not tell anything about timing slots … the other is already giving
+# real time slots. Combine both." So the form rail's first touch — the one
+# with the slots — now wears the welcome email's chrome (dark header with the
+# logo, white body, dark footer), shows the slots as a box the eye lands on,
+# and the generic welcome is never sent on top of it (app.py #253).
+
+BRAND_LOGO = "https://mwmcreations.com/wp-content/uploads/2026/05/Logo-MWM-Creations-Studios-HQ.png"
+BRAND_DARK = "#0d0d1a"
+MAYA_WA_LINK = "https://wa.me/14078716473"
+
+
+def _p(text, margin="0 0 16px"):
+    return (f"<p style=\"margin:{margin};font-size:15px;color:#333333;line-height:1.75;\">"
+            + _html.escape(str(text)) + "</p>")
+
+
+def branded_email_html(name, paragraphs, slots=None, sms_sent=False,
+                       box_title="Pick a time for your visit",
+                       box_note=None, signoff="Maya", cta_text=None):
+    """The branded chrome around a first-touch body.
+
+    `paragraphs` are the body lines (no greeting, no signature); `slots` (up
+    to two) become the highlighted box; the reply instruction sits under the
+    box; the footer is the house footer. Every string is escaped. Pure."""
+    fn = first_name(name)
+    body = "".join(_p(t) for t in paragraphs if str(t).strip())
+    disp = [short_slot(s) for s in (slots or []) if s]
+    disp = [d for d in disp if d][:2]
+    if disp:
+        rows = "".join(
+            f"<tr><td style=\"padding:8px 0;font-size:15px;color:{BRAND_DARK};font-weight:600;\">"
+            f"<span style=\"display:inline-block;min-width:22px;color:#888888;font-weight:700;\">{i + 1}.</span>"
+            f"{_html.escape(d)}</td></tr>" for i, d in enumerate(disp))
+        note = box_note or ("Reply to this email with the one you want, or a better time, "
+                            "and I will book it.")
+        box = (f"<div style=\"background:#f8f8fa;border-left:4px solid {BRAND_DARK};padding:20px 24px;"
+               f"margin:28px 0;border-radius:0 6px 6px 0;\">"
+               f"<p style=\"margin:0 0 10px;font-size:13px;font-weight:700;color:{BRAND_DARK};"
+               f"text-transform:uppercase;letter-spacing:1px;\">{_html.escape(box_title)}</p>"
+               f"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:0 0 10px;\">{rows}</table>"
+               f"<p style=\"margin:0;font-size:14px;color:#555555;line-height:1.65;\">{_html.escape(note)}</p></div>")
+    else:
+        note = box_note or "Reply to this email with a day that works this week and I will book it."
+        box = (f"<div style=\"background:#f8f8fa;border-left:4px solid {BRAND_DARK};padding:20px 24px;"
+               f"margin:28px 0;border-radius:0 6px 6px 0;\">"
+               f"<p style=\"margin:0 0 8px;font-size:13px;font-weight:700;color:{BRAND_DARK};"
+               f"text-transform:uppercase;letter-spacing:1px;\">{_html.escape(box_title)}</p>"
+               f"<p style=\"margin:0;font-size:14px;color:#555555;line-height:1.65;\">{_html.escape(note)}</p></div>")
+    if sms_sent:
+        tail = _p("I also sent you a text, so you can answer wherever is easier.", "0 0 24px")
+    else:
+        tail = _p(f"If you would rather text, Maya answers at {MAYA_WA}.", "0 0 24px")
+    cta = cta_text or "Text Maya on WhatsApp"
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f2f2f2;font-family:Arial,Helvetica,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f2f2f2;padding:30px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 16px rgba(0,0,0,0.10);">
+<tr><td style="background:{BRAND_DARK};padding:30px 40px;text-align:center;">
+<img src="{BRAND_LOGO}" alt="MWM Creations &amp; Studios" width="220" style="display:block;margin:0 auto;max-width:220px;height:auto;">
+</td></tr>
+<tr><td style="padding:40px 40px 30px;">
+<p style="margin:0 0 22px;font-size:18px;color:{BRAND_DARK};font-weight:600;">Hi {_html.escape(fn)},</p>
+{body}{box}{tail}<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto 32px;">
+<tr><td style="background:{BRAND_DARK};border-radius:6px;text-align:center;">
+<a href="{MAYA_WA_LINK}" style="display:inline-block;padding:14px 40px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;letter-spacing:0.3px;">{_html.escape(cta)}</a>
+</td></tr></table>
+<p style="margin:0 0 4px;font-size:15px;color:#333333;line-height:1.6;">{_html.escape(signoff)}</p>
+<p style="margin:0;font-size:15px;color:{BRAND_DARK};font-weight:700;">Michael Moraes' team &middot; MWM Creations &amp; Studios</p>
+</td></tr>
+<tr><td style="background:{BRAND_DARK};padding:30px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+<tr><td style="font-size:12px;color:#888888;line-height:1.7;">
+<strong style="color:#cccccc;">MWM Creations &amp; Studios</strong><br>1500 Park Center Dr, Suite 230<br>Orlando, FL 32835<br>
+<a href="mailto:info@mwmcreations.com" style="color:#888888;text-decoration:none;">info@mwmcreations.com</a>
+</td><td align="right" valign="top" style="font-size:12px;color:#888888;line-height:1.7;">
+<a href="https://mwmcreations.com" style="color:#cccccc;text-decoration:none;font-weight:600;">Website</a><br>
+<a href="https://www.instagram.com/mwm.creations" style="color:#888888;text-decoration:none;">Instagram</a><br>
+<a href="{MAYA_WA_LINK}" style="color:#888888;text-decoration:none;">WhatsApp</a>
+</td></tr></table>
+</td></tr>
+</table></td></tr></table>
+</body></html>"""
+
 
 def _as_html(lines):
     """Plain, readable HTML. One paragraph per non-empty line; no images, no

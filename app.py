@@ -10522,12 +10522,22 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                             fields = _parse_lead_fields(lead_info)
                             if sndr not in lead_data:
                                 lead_data[sndr] = {}
+                            # PATCH #253 — "captured" means the record had NO
+                            # email before this reply. An address the form rail
+                            # (or a booking) already put on the record is not a
+                            # capture, so the welcome email must not fire again.
+                            _email_on_record = str(lead_data[sndr].get("email") or "").strip()
                             lead_data[sndr].update({"name": fields.get("name", lead_data[sndr].get("name", "")), "email": fields.get("email", lead_data[sndr].get("email", ""))})
                             # ── Email Capture Dynamic Upgrade ──
                             # When Maya captures email from a lead who had no email before,
                             # upgrade routing: add Susan (email) + LARA (CRM)
                             _new_email = fields.get("email", "")
-                            _had_email_before = bool(lead_data[sndr].get("_email_notified"))
+                            _had_email_before = bool(lead_data[sndr].get("_email_notified")) or bool(_email_on_record) \
+                                or bool(lead_data[sndr].get("meta_lead_ad"))
+                            if _new_email and _had_email_before and not lead_data[sndr].get("_email_notified"):
+                                lead_data[sndr]["_email_notified"] = True
+                                _TALLY.bump("welcome_email.skipped_known_address", str(lead_data[sndr].get("source") or "whatsapp"))
+                                print(f"[Routing] {sndr}: email already on the record — no second welcome email")
                             if _new_email and not _had_email_before:
                                 lead_data[sndr]["_email_notified"] = True
                                 _lead_nm = fields.get("name") or lead_data[sndr].get("name", "Unknown")
@@ -11171,6 +11181,7 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
                         fields = _parse_lead_fields(lead_info)
                         if sndr not in lead_data:
                             lead_data[sndr] = {}
+                        _email_on_record = str(lead_data[sndr].get("email") or "").strip()   # PATCH #253
                         lead_data[sndr].update({
                             "name": fields.get("name", lead_data[sndr].get("name", "")),
                             "email": fields.get("email", lead_data[sndr].get("email", "")),
@@ -11183,7 +11194,11 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
 
                         # ── Email Capture Dynamic Upgrade (same as WhatsApp flow) ──
                         _new_email = fields.get("email", "")
-                        _had_email_before = bool(lead_data[sndr].get("_email_notified"))
+                        _had_email_before = bool(lead_data[sndr].get("_email_notified")) or bool(_email_on_record) \
+                            or bool(lead_data[sndr].get("meta_lead_ad"))   # PATCH #253
+                        if _new_email and _had_email_before and not lead_data[sndr].get("_email_notified"):
+                            lead_data[sndr]["_email_notified"] = True
+                            _TALLY.bump("welcome_email.skipped_known_address", "instagram")
                         if _new_email and not _had_email_before:
                             lead_data[sndr]["_email_notified"] = True
                             _lead_nm = fields.get("name") or lead_data[sndr].get("name", "Unknown")
@@ -18458,10 +18473,52 @@ def _build_welcome_email_html(lead_name):
 </body></html>"""
 
 
+def _welcome_email_blocked(addr, leads=None, pg_load=None):
+    """PATCH #253 — the generic welcome is a ONE-TIME email per address, and
+    never for an address whose first touch the form rail already sent.
+    Returns (blocked, why). Pure: `leads` and `pg_load` are injectable.
+
+    18 Oct 10:30–10:31: Michael Gagaoudakis (Instant Form, studio-hour) got
+    the rail's first-touch email, then the Meta thank-you page handed his
+    form answers to WhatsApp, Maya's reply carried his address, and the
+    "email captured" upgrade sent "Thank you for reaching out" a minute
+    later. Michael: one email only. The callers now check the record; this
+    is the last line, so no future caller can repeat it either."""
+    a = str(addr or "").strip().lower()
+    if not a:
+        return True, "no address"
+    leads = lead_data if leads is None else leads
+    for _k, _r in list((leads or {}).items()):
+        if not isinstance(_r, dict):
+            continue
+        if str(_r.get("email") or "").strip().lower() != a:
+            continue
+        if _r.get("meta_lead_ad") or _r.get("first_touch_email_at"):
+            return True, "form rail owns the first touch"
+    try:
+        if pg_load is None:
+            import pg_store as _wp
+            pg_load = _wp.load_state if _wp.enabled() else None
+        if pg_load and pg_load("welcome_email_at:" + a, None):
+            return True, "welcome already sent"
+    except Exception:
+        pass
+    return False, ""
+
+
 def _send_welcome_email_async(to_email, lead_name, source="form"):
     """Send the welcome email in a background thread. Non-blocking, non-fatal."""
     def _do_send():
         try:
+            # PATCH #253 — one welcome per address, never on top of the form rail.
+            try:
+                _blocked, _why = _welcome_email_blocked(to_email)
+            except Exception:
+                _blocked, _why = False, ""
+            if _blocked:
+                print(f"[Welcome Email] NOT sent to {to_email} ({lead_name}) via {source}: {_why}")
+                _TALLY.bump("welcome_email.blocked", _why)
+                return
             # S24: To-header guard. Lead rows sometimes hold two names/emails jammed
             # into one field ("a@x.com / b@y.com") -> Gmail 400 "Invalid To header".
             # Extract real addresses: first one is To, the rest become CC. Fail loud
@@ -20424,6 +20481,13 @@ def _meta_lead_intake(value, lead_meta=None):
             "lead_form_at": now.isoformat(),
             "test_lead": internal,
         }
+        # PATCH #253 — the form rail owns this lead's first email. Mark the
+        # address as already handled so the "email captured" upgrade in the
+        # WhatsApp / Instagram handlers can never send the generic welcome on
+        # top of it (18 Oct 10:31: Michael Gagaoudakis got the rail's first
+        # touch at 10:30 and "Thank you for reaching out" at 10:31).
+        if email:
+            upd["_email_notified"] = True
         if ai:
             upd["ai_interest"] = "ad_id"
         track = _lf.track_for(verdict)
