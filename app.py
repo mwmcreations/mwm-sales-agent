@@ -1017,6 +1017,7 @@ _THREAD_STALE_OVERRIDES = {
     "sheets_queue_drain": 5,
     # S30: hourly sweep. 2x cycle + margin.
     "booking_truth_sweep": 150,
+    "operator_remind": 10,          # PATCH #254 — once a minute
 }
 
 
@@ -19843,6 +19844,7 @@ def health_check():
         "status": overall,
         "sheets_queue": sheets_queue_stats,   # Patch #107
         "booking_truth": booking_truth_stats, # S30
+        "operator_remind": _operator_remind_status(),   # PATCH #254
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -22686,6 +22688,122 @@ def _bt_sweep_loop():
 
 
 threading.Thread(target=_bt_sweep_loop, daemon=True, name="booking_truth_sweep").start()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #254 — OPERATOR REMINDERS (operator_remind.py): a text to Michael at
+# a time he chose. Rows live in pg (operator_text:*); this thread sends the
+# ones that are due, once a minute, through operator_alert (SMS to
+# MICHAEL_PHONE only). POST /admin/operator-text creates one.
+# ══════════════════════════════════════════════════════════════════════
+import operator_remind as _orm
+
+_ORM_LAST = {"checked_at": "", "sent": 0, "failed": 0, "last_result": "", "last_id": ""}
+_ORM_CACHE = {"at": 0.0, "rows": []}
+
+
+def _operator_remind_rows(max_age_s=0):
+    """The reminder rows from pg. /health passes max_age_s so it never adds a
+    query per probe; the sweep and the route always read fresh."""
+    if max_age_s and time.time() - _ORM_CACHE["at"] < max_age_s:
+        return list(_ORM_CACHE["rows"])
+    try:
+        rows = [v for v in (_pgs.load_prefix(_orm.KEY_PREFIX) or {}).values() if isinstance(v, dict)]
+    except Exception as _e:
+        _report_error("operator_remind.load", _e, "")
+        return list(_ORM_CACHE["rows"])
+    _ORM_CACHE.update(at=time.time(), rows=rows)
+    return rows
+
+
+def _operator_remind_send(row):
+    """Send one due reminder now; stamp the row either way. Returns the result."""
+    res = _operator_alert.alert("reminder", row.get("body", ""))
+    outcome = res.get("sms", "failed")
+    stamped = _orm.mark(row, outcome)
+    try:
+        _pgs.save_state(_orm.key(stamped), stamped)
+    except Exception as _e:
+        _report_error("operator_remind.save", _e, row.get("id", ""))
+    _ORM_LAST["last_result"] = outcome
+    _ORM_LAST["last_id"] = row.get("id", "")
+    if outcome == "sent":
+        _ORM_LAST["sent"] += 1
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+            f":alarm_clock: operator reminder `{row.get('id')}` texted to Michael "
+            f"(set for {_orm.fmt_at(row, pytz.timezone(TIMEZONE))} by {row.get('created_by') or 'DEV'})")
+    else:
+        _ORM_LAST["failed"] += 1
+        _post_to_slack_async(SLACK_DEV_CHANNEL,
+            f":warning: operator reminder `{row.get('id')}` NOT texted to Michael: {outcome} "
+            f"(set for {_orm.fmt_at(row, pytz.timezone(TIMEZONE))}) — the row keeps the reason; nobody retries it")
+    return outcome
+
+
+def _operator_remind_once(now=None):
+    rows = _operator_remind_rows()
+    sent = []
+    for row in _orm.due(rows, now):
+        sent.append((row.get("id"), _operator_remind_send(row)))
+    _ORM_LAST["checked_at"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+    return sent
+
+
+def _operator_remind_status():
+    s = _orm.summarize(_operator_remind_rows(max_age_s=55))
+    s.update({k: v for k, v in _ORM_LAST.items()})
+    return s
+
+
+def _operator_remind_loop():
+    time.sleep(90)
+    while True:
+        try:
+            _heartbeat("operator_remind")
+            _operator_remind_once()
+        except Exception as _e:
+            print(f"[OPERATOR_REMIND] sweep error (non-fatal): {_e}")
+        time.sleep(60)
+
+
+threading.Thread(target=_operator_remind_loop, daemon=True, name="operator_remind").start()
+
+
+@app.route('/admin/operator-text', methods=['GET', 'POST'])
+def admin_operator_text():
+    """PATCH #254 — hold a text for Michael until a chosen time.
+
+    POST /admin/operator-text?secret=<UPLOAD_SECRET>  body=<text>&at=<ISO, ET offset>[&created_by=<agent>]
+        No `at`, or a past `at`: sent now. Returns the row and, for a send-now, the result.
+    GET  /admin/operator-text?secret=<UPLOAD_SECRET>[&all=1]
+        Pending rows (all=1: sent and failed too).
+    Only Michael's number can ever receive these (operator_alert, #149)."""
+    if not _admin_secret_ok(request.args.get("secret")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if request.method == "GET":
+        rows = _operator_remind_rows()
+        show_all = str(request.args.get("all", "0")) in ("1", "true", "yes")
+        if not show_all:
+            rows = [r for r in rows if not r.get("sent_at") and not r.get("result")]
+        rows.sort(key=lambda r: r.get("at") or 0)
+        return jsonify({"ok": True, "status": _operator_remind_status(),
+                        "rows": [dict(r, at_local=_orm.fmt_at(r, pytz.timezone(TIMEZONE))) for r in rows]}), 200
+    payload = request.get_json(silent=True) or {}
+    body = payload.get("body") or request.form.get("body") or request.args.get("body") or ""
+    at = payload.get("at") or request.form.get("at") or request.args.get("at") or ""
+    who = payload.get("created_by") or request.form.get("created_by") or request.args.get("created_by") or "DEV"
+    row, err = _orm.make(body, at or None, created_by=who)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        _pgs.save_state(_orm.key(row), row)
+    except Exception as _e:
+        _report_error("operator_remind.create", _e, row["id"])
+        return jsonify({"ok": False, "error": f"could not store: {_e}"}), 503
+    out = {"ok": True, "row": dict(row, at_local=_orm.fmt_at(row, pytz.timezone(TIMEZONE)))}
+    if _orm.due([row]):
+        out["result"] = _operator_remind_send(row)
+    return jsonify(out), 200
 
 
 # ══════════════════════════════════════════════════════════════════════

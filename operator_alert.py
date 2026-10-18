@@ -35,6 +35,7 @@ KINDS = {
     "lead":     {"eric": True},
     "expo":     {"eric": True},
     "briefing": {"eric": False},   # 1-h pre-visit brief, for Michael only
+    "reminder": {"eric": False},   # PATCH #254: a text Michael asked for at a chosen time
     "test":     {"eric": False},
 }
 SMS_MAX = 640              # ~4-5 segments; enough for a booking or a brief
