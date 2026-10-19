@@ -23,8 +23,11 @@ KINDS = ("reel", "story")
 
 BANNED_PHRASES = ("no led wall", "no green screen")
 # Product names must be written exactly; these catch the near-misses.
-PRODUCT_EXACT = ("AI Wall Spot", "AI Wall Session")
+PRODUCT_EXACT = ("AI Wall Session",)
 _PRODUCT_RX = re.compile(r"\bai[\s-]*wall[\s-]*(spot|session)s?\b", re.I)
+# PATCH #255 (Michael, 19 Oct): "AI Wall Spot" is retired -> "Full Immersion".
+_RETIRED_RX = re.compile(r"\bai[\s-]*wall[\s-]*spots?\b", re.I)
+_FI_RX = re.compile(r"\bfull[\s-]*immersion\b", re.I)
 
 LIMITS = {   # seconds, bytes - conservative versions of Meta's published limits
     "reel": {"min_s": 3, "max_s": 15 * 60, "max_bytes": 1024 * 1024 * 1024},
@@ -42,8 +45,13 @@ def caption_problems(caption, kind):
             out.append('caption contains "%s" (not allowed)' % p)
     for m in _PRODUCT_RX.finditer(c):
         word = m.group(0)
-        if word not in PRODUCT_EXACT:
-            out.append('product name written "%s" - must be exactly "AI Wall Spot" or "AI Wall Session"' % word)
+        if _RETIRED_RX.fullmatch(word):
+            out.append('"%s" is a retired name - write "Full Immersion"' % word)
+        elif word not in PRODUCT_EXACT:
+            out.append('product name written "%s" - must be exactly "AI Wall Session"' % word)
+    for m in _FI_RX.finditer(c):
+        if m.group(0) not in ("Full Immersion", "FULL IMMERSION"):
+            out.append('product name written "%s" - must be exactly "Full Immersion"' % m.group(0))
     if kind == "reel" and not c.strip():
         out.append("a Reel needs a caption")
     if len(c) > 2200:

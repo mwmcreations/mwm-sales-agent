@@ -34,10 +34,10 @@ off = ai.maya_ai_context("", "asked")
 wa = ai.maya_ai_context("", "ad_id")
 
 print("== names")
-for k in ("AI Wall Spot", "AI Wall Spots Pack", "AI Wall Hour", "MWM Worlds", "Orlando's first AI Wall studio"):
+for k in ("Full Immersion", "Full Immersion Pack", "AI Wall Hour", "MWM Worlds", "Orlando's first AI Wall studio"):
     check("name: " + k, k in off)
-check("old names only as a mapping", off.count("Hybrid AI") == 2 and '"Hybrid AI video" = AI Wall Spot' in off
-      and '"Hybrid AI Pack" = AI Wall Spots Pack' in off)
+check("old names only as a mapping (255)", off.count("Hybrid AI") == 2 and '"AI Wall Spot" (our name until 19 Oct) or "Hybrid AI video" = Full Immersion' in off
+      and '"AI Wall Spots Pack" or "Hybrid AI Pack" = Full Immersion Pack' in off and off.count("AI Wall Spot") == 2)
 check("no 'Florida's first' claim allowed", "Never say \"Florida's first\"" in off)
 check("no LED / no green screen line", "No LED wall. No green screen." in off)
 
@@ -47,24 +47,24 @@ for name, f, r in (("AI Starter", "$1,297", "$1,497"), ("AI Growth", "$1,697", "
     line = next((l for l in off.splitlines() if l.startswith("- " + name)), "")
     check("plan %s %s founding, %s regular" % (name, f, r), (f + "/month founding price") in line and ("regular " + r) in line)
 check("AI Growth is the most popular", "AI Growth (the most popular)" in off)
-check("252g: AI Wall vs AI Wall Spot explained", "AI WALL = we replace the BACKGROUND" in off and "AI WALL SPOT = we build an ENTIRE WORLD" in off
-      and "The AI Wall changes the background, for long videos. An AI Wall Spot changes the whole world around you, for videos up to 30 seconds." in off)
+check("252g/255: AI Wall vs Full Immersion explained", "AI WALL = we replace the BACKGROUND" in off and "FULL IMMERSION = we transform EVERYTHING" in off
+      and "The AI Wall changes the background, for long videos. Full Immersion transforms everything around you, even your clothes, for videos up to 30 seconds." in off)
 check("252e: called subscription plans", "SUBSCRIPTION PLANS" in off and "MONTHLY PLANS" not in off)
 check("3-month minimum; start this week on real sets, AI Wall Nov 2 (252b)", "3-month minimum" in off and "Start this week on our real sets; the AI Wall opens November 2" in off
       and "The month starts on the day they pay" in off and "plans start November 2" not in off and "Apply now" not in off)
 check("252b base prompt: start this week", "start this week on our real sets (the AI Wall opens November 2)" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
 check("10 shorts or 1 podcast per hour", "up to 10 edited short videos, or 1 podcast episode with 10 short cuts" in off)
-check("plan contents", "2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 AI Wall Spot" in off
-      and "up to 2 of them on the AI Wall" in off and "4 AI Wall hours + 2 AI Wall Spots" in off
+check("plan contents", "2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 Full Immersion video" in off
+      and "up to 2 of them on the AI Wall" in off and "4 AI Wall hours + 2 Full Immersion videos" in off
       and "4 hours on real sets, no AI" in off)
 check("move up anytime, founding price comes with them", "move up anytime; the founding price comes with them" in off)
 
 print("== one-offs")
-check("252c: Spot $997 filming included, plan line", "AI Wall Spot: $997, filming included" in off and "On a monthly plan, Spots are included or added for $397." in off)
+check("252c: Spot $997 filming included, plan line", "Full Immersion: $997 for one video, filming included" in off and "On a monthly plan, Full Immersion videos are included or added for $397." in off)
 check("252c: no $597 left", "$597" not in on and "eVq4gzaKlb5o6ej8kq9EI1l" not in on)
-check("Add a Spot $397", "Add a Spot: $397 per Spot" in off)
+check("Add a Full Immersion video $397", "Add a Full Immersion video: $397 per video" in off)
 check("252h: $397 add-on is for subscription-plan clients only", "ONLY for clients already on a subscription plan" in off and "SUBSCRIPTION-PLAN CLIENTS ONLY" in off and "added to a session or plan" not in off and "Subscription-plan clients can turn a video" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
-check("Pack $1,497 = 1 h + 4 Spots", "AI Wall Spots Pack: $1,497 = 1 studio hour + 4 AI Wall Spots" in off)
+check("Pack $1,497 = 1 h + 4 Spots", "Full Immersion Pack: $1,497 = 1 studio hour + 4 Full Immersion videos" in off)
 check("AI Wall Hour $599 = $349 + $250, from Nov 2", "AI Wall Hour: $599 ($349 studio hour with editing + $250 for the AI Wall), from November 2" in off)
 check("252f: MWM Worlds off the menu, no $197", "$197" not in off and "NOT on the menu right now" in off)
 check("$6 per second custom, never computed", "from $6 per second" in off and "NEVER work out a per-second price" in off)
@@ -93,6 +93,7 @@ check("AI Wall hours not before Nov 2", "Never book an AI Wall hour before that"
 print("== branch triggers")
 check("'AI wall' triggers", ai.ai_lead(None, ["do you have an AI wall?"], "")[0])
 check("'AI Wall Spot' triggers", ai.ai_lead(None, ["how much is an AI Wall Spot"], "")[0])
+check("255: 'Full Immersion' triggers", ai.ai_lead(None, ["how much is Full Immersion?"], "")[0])
 check("'MWM Worlds' triggers", ai.ai_lead(None, ["tell me about MWM Worlds"], "")[0])
 check("'email' still does not", not ai.ai_lead(None, ["I said I'd email you"], "")[0])
 check("podcast price stays off", not ai.ai_lead(None, ["hi, how much is a podcast?"], "")[0])
@@ -107,9 +108,9 @@ SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 SV = open(os.path.join(HERE, "studio_visit.py"), encoding="utf-8").read()
 check("no Hybrid AI name left in app.py prompts", "Hybrid AI Video (add-on)" not in SRC and "Hybrid AI Pack —" not in SRC
       and "add a Hybrid AI video" not in SRC)
-check("base prompt: Spot $397 / $597, Pack, plans from $1,297", "AI Wall Spot (add-on) — $397 per Spot" in SRC
-      and "On its own, filming included: $997 (on a monthly plan, Spots are included or added for $397)." in SRC and "$597." not in SRC.split("AI Wall Spot (add-on)")[1][:600] and "from $1,297/month at the founding price" in SRC)
-check("studio_visit names", "Hybrid AI" not in SV and "the AI Wall Spots Pack if they ask" in SV and "in the AI Wall block" in SV)
+check("base prompt: Spot $397 / $597, Pack, plans from $1,297", "Full Immersion (add-on) — $397 per video" in SRC
+      and "On its own, filming included: $997 (on a monthly plan, Full Immersion videos are included or added for $397)." in SRC and "$597." not in SRC.split("Full Immersion (add-on)")[1][:600] and "from $1,297/month at the founding price" in SRC)
+check("studio_visit names", "Hybrid AI" not in SV and "the Full Immersion Pack if they ask" in SV and "in the AI Wall block" in SV)
 check("module doc", "PATCH #252" in open(os.path.join(HERE, "ai_studio.py"), encoding="utf-8").read())
 
 print("static: %d passed, %d failed" % (passed, failed))

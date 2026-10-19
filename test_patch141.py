@@ -24,7 +24,7 @@ ok(all(("https://buy.stripe.com/" + k) in on for k in LINKS252) and on.count("bu
 ok("google.com/url" not in on, "no Gmail-wrapped links")
 ok("NEVER work out a per-second price" in on, "no self-built per-second quotes")
 print("\n== the menu")
-for k in ("$249", "$349", "$1,200/month", "3-month minimum", "30 days' notice", "$397 per Spot",
+for k in ("$249", "$349", "$1,200/month", "3-month minimum", "30 days' notice", "$397 per video",
           "Up to 30 seconds", "up to 3 AI scenes", "1 revision round", "$1,497", "$374", "from $6 per second"):
     ok(k in on, "menu has " + k)
 for k in ("$749", "$2,197", "+$250"):
@@ -47,8 +47,8 @@ ok(not ai.ai_lead(None, ["hi, how much is a podcast?"], "")[0], "normal podcast 
 print("\n== base prompts (app.py)")
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 ok("$200" not in SRC and SRC.count("$196") >= 6, "savings are $196 everywhere ($1,396 - $1,200)")
-ok("AI Wall Spot (add-on) — $397 per Spot" in SRC and "You are not selling it; Michael closes in the studio." in SRC, "general studio pricing knows the AI add-on (252 names)")
-ok(SRC.count("Package clients can add an AI Wall Spot to any session: $397 per Spot") == 2, "package clients know the add-on (252 names)")
+ok("Full Immersion (add-on) — $397 per video" in SRC and "You are not selling it; Michael closes in the studio." in SRC, "general studio pricing knows the AI add-on (252 names)")
+ok(SRC.count("Package clients can add a Full Immersion video to any session: $397 per video") == 2, "package clients know the add-on (252 names)")
 print("\n== 141b (after the live test transcripts)")
 ok("do NOT add up a total" in on and "more than one plan" in on, "141b/252: no totals or combinations, hand off")
 ok("KEEP IT SHORT" in on and "Never paste the whole menu" in on, "141b: short answers (the PT reply was cut off at 600 tokens)")
