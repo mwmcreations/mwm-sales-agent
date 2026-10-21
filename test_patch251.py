@@ -243,7 +243,8 @@ check("wire.form_lead_then_qualified", "_capi_stage(sender_key, lr, _capi.STAGE_
       and SRC.index("_capi_stage(sender_key, lr, _capi.STAGE_LEAD") < SRC.index("_capi_stage(sender_key, lr, _capi.STAGE_QUALIFIED"))
 check("wire.form_before_verdict_branches", SRC.index("_capi_stage(sender_key, lr, _capi.STAGE_LEAD") < SRC.index("if verdict == _lf.Q_NO:\n            _icp.mark_disqualified(lr"))
 check("wire.old_lead_event_gone", "_capi.lead_event(" not in SRC and "_capi.schedule_event(" not in SRC and "_capi.purchase_event(" not in SRC)
-check("wire.booked_maya_tool", "_capi_stage(sender, lead_data[sender], _capi.STAGE_BOOKED," in SRC)
+check("wire.booked_maya_tool", "_capi_stage(_capi_key, lead_data[_capi_key], _capi.STAGE_BOOKED," in SRC   # #256: the form key when linked
+      and "_capi_key = sender" in SRC)
 check("wire.booked_web_chat", "_capi_stage(_wb_key, lead_data.get(_wb_key), _capi.STAGE_BOOKED," in SRC)
 check("wire.booked_portal", SRC.count("_capi.STAGE_BOOKED, extra={\"content_name\": \"studio_visit\"}") == 2)
 check("wire.completed_and_converted_from_report", "if outcome in _capi.VISIT_OUTCOMES:" in SRC

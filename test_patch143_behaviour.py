@@ -23,7 +23,9 @@ want = {"_meta_lead_intake", "_meta_lead_fetch", "_chase_pass", "_chase_aware",
         "_report_drives_record", "_chase_stop", "_deal_value_from", "_on_payment",
         "_capi_send_async",
         # PATCH #251 — the stage sender and its ledger
-        "_capi_stage", "_capi_ledger_has", "_capi_ledger_mark", "_capi_mask", "_capi_send_now"}
+        "_capi_stage", "_capi_ledger_has", "_capi_ledger_mark", "_capi_mask", "_capi_send_now",
+        # PATCH #256 — the chase reads a form lead's linked WhatsApp record
+        "_chase_twin", "_chase_inbound", "_chase_booked"}
 fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
 ok(len(fns) == len(want), "functions found (%d/%d)" % (len(fns), len(want)))
 

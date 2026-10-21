@@ -130,6 +130,8 @@ def first_name(name, fallback="there"):
     s = re.sub(r"[^A-Za-zÀ-ɏ'\-]", "", s)
     if not s or len(s) > 20:
         return fallback
+    if len(s) > 1 and s.isupper():      # PATCH #256: 'VICENTE' -> 'Vicente'
+        s = s.lower()
     return s[:1].upper() + s[1:]
 
 

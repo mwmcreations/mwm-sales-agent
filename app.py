@@ -5807,9 +5807,21 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                         print(f"[book_appointment] Backfilled lead email: {_book_email}")
                     if _book_biz and not lead_data[sender].get("business"):
                         lead_data[sender]["business"] = _book_biz
+                    # PATCH #256 — booked from the lead's second number: the
+                    # form record is booked too (its chain stops, its sheet
+                    # row and repair view say so), and the stage goes to Meta
+                    # under the form key, which carries the lead_id.
+                    _capi_key = sender
+                    _fk = lead_data[sender].get("linked_form_key")
+                    if _fk and isinstance(lead_data.get(_fk), dict):
+                        lead_data[_fk].update({
+                            "booked": True, "booked_at": lead_data[sender]["booked_at"],
+                            "event_id": event_id, "booked_via_linked": sender})
+                        _capi_key = _fk
+                        _TALLY.bump("lead_form.booked_via_linked", mask_contact(sender))
                     # PATCH #145 → #251 — a booked visit is the StudioVisitBooked stage.
                     try:
-                        _capi_stage(sender, lead_data[sender], _capi.STAGE_BOOKED,
+                        _capi_stage(_capi_key, lead_data[_capi_key], _capi.STAGE_BOOKED,
                                     extra={"content_name": appt_type,
                                            "scheduled_for": str(tool_input.get("slot_id", ""))})
                     except Exception as _cpx:
@@ -7577,6 +7589,13 @@ def notify_michael_maya_lead(lead_info: str, sender: str):
     try:
         clean_phone = (sender or "").replace("whatsapp:", "")
         _info = (lead_info or "").strip()
+        # PATCH #256 — a form lead's second number is not a new capture:
+        # the rail's CALL NOW already reached Michael (and #eric).
+        _lk = (lead_data.get(sender) or {}).get("linked_form_key") if sender else None
+        if _lk:
+            _TALLY.bump("lead_form.wa_handoff_skipped_lead_alert", clean_phone[-4:])
+            print(f"[Lead Alert] {sender} is form lead {_lk}'s WhatsApp number — CALL NOW covered it; no second alert")
+            return
         _operator_alert.alert(
             "lead",
             f"New lead captured by Maya\n{clean_phone}\n{_info}",
@@ -10264,12 +10283,35 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 # Extract name from "Full name: ..." pattern
                 _name_match = re.search(r'[Ff]ull\s*[Nn]ame:\s*(.+)', incoming_msg)
                 if _name_match:
-                    _early_name = _name_match.group(1).strip()
+                    _early_name = _lf.tidy_name(_name_match.group(1).strip())   # PATCH #256
                     if _early_name:
                         lead_data[sender]["name"] = _early_name
                         print(f"[Early Extract] Name found in message text for {sender}: {_early_name}")
         except Exception as _extract_err:
             print(f"⚠️ Early form-fill extraction error (non-fatal): {_extract_err}")
+
+        # ── PATCH #256: a form lead writing from a second number ──
+        # Meta's thank-you page hands the form answers to WhatsApp. When the
+        # lead's WhatsApp number is not the number on the form (Vicente
+        # Orellana, 21 Oct 07:58: form …2350, WhatsApp …4743) this sender is
+        # brand new to the machine, so #154's "is this a form lead" guard
+        # saw nothing, and the lead got a second record with its own
+        # pipeline card, its own Susan/LARA assignment and a lead alert —
+        # while the form record's chase chain could never see a reply or a
+        # booking made from here. Link the two: both records point at each
+        # other, and the chase reads inbound/booked across both.
+        _handoff_form_key = None
+        try:
+            if is_new_sender and not is_michael:
+                _ho = _lf.handoff_fields(incoming_msg)
+                if _ho["is_handoff"]:
+                    _handoff_form_key, _ = _find_form_twin(
+                        sender, _ho["email"] or lead_data.get(sender, {}).get("email"), _ho["phone"])
+                    if _handoff_form_key:
+                        _link_form_handoff(sender, _handoff_form_key,
+                                           datetime.now(pytz.timezone(TIMEZONE)))
+        except Exception as _lnk_err:
+            _report_error("lead_form.wa_handoff_link", _lnk_err, sender)
 
         # ── Pipeline Event: NEW_LEAD ──
         try:
@@ -10281,10 +10323,20 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                     _assigned = ["Maya", "Susan", "Eric", "LARA"]
                 # Patch #110: same guard on the WhatsApp leg — a client who
                 # changes number, or writes from a second line, is not new.
-                _post_new_lead_or_existing_client(
-                    sender, "WhatsApp",
-                    f"First message: {incoming_msg[:200]}",
-                    _assigned, lead_name=_ld.get("name", ""))
+                # PATCH #256: a linked handoff is the form lead's second
+                # number, not a second lead — the rail posted the card.
+                if _handoff_form_key:
+                    _TALLY.bump("lead_form.wa_handoff_linked", str(_ld.get("name", "")))
+                    _post_to_slack_async(SLACK_DEV_CHANNEL,
+                        f":link: WhatsApp handoff from form lead *{_ld.get('name') or '?'}* "
+                        f"linked — one lead, two numbers (form {mask_contact(_handoff_form_key)}, "
+                        f"WhatsApp {mask_contact(sender)}). No second card, welcome, "
+                        f"Susan/LARA line or lead alert; the chain reads both numbers.")
+                else:
+                    _post_new_lead_or_existing_client(
+                        sender, "WhatsApp",
+                        f"First message: {incoming_msg[:200]}",
+                        _assigned, lead_name=_ld.get("name", ""))
                 # ── Auto-route to Susan + send welcome email when lead has email (form fill) ──
                 # PATCH #154 — not for an Instant Form lead. Meta's thank-you
                 # page hands the form answers to WhatsApp as the lead's first
@@ -10294,7 +10346,8 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 # plus Susan and LARA were told about a lead the rail had
                 # already told the room about. The rail owns a form lead's
                 # first touch; Maya still answers the WhatsApp message.
-                _is_form_lead = bool(_ld.get("meta_lead_ad"))
+                # PATCH #256: ...and a record LINKED to a form record is one.
+                _is_form_lead = bool(_ld.get("meta_lead_ad") or _ld.get("linked_form_key"))
                 if _has_email and _is_form_lead:
                     print(f"[Routing] {_ld.get('name', 'lead')} is an Instant Form lead — "
                           f"the form rail already sent the first touch; no second welcome email")
@@ -20770,6 +20823,94 @@ def _chase_aware(dt):
     return dt
 
 
+# ── PATCH #256: one lead, two numbers ────────────────────────────────────
+# Vicente Orellana, 21 Oct 07:58: the Instant Form carried …2350, the
+# thank-you page's WhatsApp handoff came from …4743. Two records, and the
+# form record's chase chain (keyed on its own last_message_time / booked)
+# would have emailed him on day 1 even after Maya booked him on WhatsApp.
+# The WhatsApp handler links the handoff to its form record; these read
+# across the pair. The handoff message itself (the form answers) is NOT a
+# reply — only something the lead writes after it is.
+
+def _find_form_twin(sender, email, phone):
+    """The Instant Form record this WhatsApp sender belongs to, by the email
+    or the phone the thank-you page put in the message. (key, rec) or (None, None)."""
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if len(digits) == 10:
+        digits = "1" + digits
+    em = str(email or "").strip().lower()
+    for k, r in list(lead_data.items()):
+        if k == sender or not isinstance(r, dict) or not r.get("meta_lead_ad"):
+            continue
+        if em and str(r.get("email") or "").strip().lower() == em:
+            return k, r
+        if digits and re.sub(r"\D", "", str(r.get("phone") or "")) == digits:
+            return k, r
+    return None, None
+
+
+def _link_form_handoff(sender, form_key, now):
+    """Both records point at each other. The WhatsApp record borrows the
+    form's name/business/email (never meta_lead_ad or leadgen_id — it is
+    not a second form lead) and is marked as already welcomed."""
+    wa = lead_data.get(sender) or {}
+    fr = lead_data.get(form_key) or {}
+    wa["linked_form_key"] = form_key
+    wa["form_handoff_at"] = now.isoformat() if hasattr(now, "isoformat") else str(now)
+    for f in ("name", "business", "email"):
+        if fr.get(f) and not wa.get(f):
+            wa[f] = fr[f]
+    wa["_email_notified"] = True
+    fr["linked_wa_key"] = sender
+    fr["linked_at"] = wa["form_handoff_at"]
+    lead_data[sender] = wa
+    lead_data[form_key] = fr
+    return wa, fr
+
+
+def _find_wa_twin(form_key, email):
+    """The reverse lookup, for the repair route: a WhatsApp record that is
+    not itself a form lead, with this form lead's email. (key, rec) or (None, None)."""
+    em = str(email or "").strip().lower()
+    if not em:
+        return None, None
+    for k, r in list(lead_data.items()):
+        if k == form_key or not isinstance(r, dict) or r.get("meta_lead_ad") \
+                or not str(k).startswith("whatsapp:"):
+            continue
+        if str(r.get("email") or "").strip().lower() == em:
+            return k, r
+    return None, None
+
+
+def _chase_twin(rec):
+    """The WhatsApp record a form lead is linked to, or None."""
+    k = (rec or {}).get("linked_wa_key")
+    tw = lead_data.get(k) if k else None
+    return tw if isinstance(tw, dict) else None
+
+
+def _chase_inbound(rec):
+    """The lead's latest inbound on EITHER number: the record's own
+    last_message_time, or the twin's when that is later than the handoff
+    (the handoff is the form answers, not an answer to us)."""
+    own = _chase_aware((rec or {}).get("last_message_time"))
+    tw = _chase_twin(rec)
+    if tw:
+        ti = _chase_aware(tw.get("last_message_time"))
+        ho = _chase_aware(tw.get("form_handoff_at"))
+        if ti and (ho is None or ti > ho + timedelta(minutes=1)) and (own is None or ti > own):
+            own = ti
+    return own
+
+
+def _chase_booked(rec):
+    """Booked on either number."""
+    tw = _chase_twin(rec)
+    return bool((rec or {}).get("booked") or (rec or {}).get("appointment_booked")
+                or (tw and (tw.get("booked") or tw.get("appointment_booked"))))
+
+
 def _chase_is_client(sender_key):
     rec = lead_data.get(sender_key) or {}
     if rec.get("paid_at") or str(rec.get("outcome") or "").lower() == "won":
@@ -20798,10 +20939,10 @@ def _chase_pass(now=None):
             since = _chase_aware(pend.get("since"))
             e164 = _sc.to_e164(rec.get("phone"))
             waited_h = ((now - since).total_seconds() / 3600.0 if since else 999)
-            inbound = _chase_aware(rec.get("last_message_time"))
+            inbound = _chase_inbound(rec)                       # PATCH #256: either number
             replied = bool(inbound and since and inbound > since + timedelta(minutes=1))
             if not e164 or waited_h > _chase.FIRST_TOUCH_SMS_MAX_WAIT_H or replied \
-                    or rec.get("booked") or isinstance(rec.get("disqualified"), dict):
+                    or _chase_booked(rec) or isinstance(rec.get("disqualified"), dict):
                 rec["first_touch_sms_dropped"] = ("replied" if replied else
                                                   f"waited {waited_h:.0f}h")
                 rec.pop("first_touch_sms_pending", None)
@@ -20825,8 +20966,9 @@ def _chase_pass(now=None):
         if state.get("stopped"):
             counts["stopped"][state["stopped"]] = counts["stopped"].get(state["stopped"], 0) + 1
             continue
-        inbound = _chase_aware(rec.get("last_message_time"))
-        reason = _chase.stop_reason(state, rec, now, last_inbound=inbound,
+        inbound = _chase_inbound(rec)                           # PATCH #256: either number
+        rec_v = dict(rec, booked=True) if _chase_booked(rec) else rec
+        reason = _chase.stop_reason(state, rec_v, now, last_inbound=inbound,
                                     is_client=_chase_is_client(key))
         if not reason and _chase.is_finished(state):
             reason = _chase.STOP_CLOSED
@@ -27086,7 +27228,7 @@ def admin_lead_form_repair():
     _apply = str(request.args.get("apply") or "") in ("1", "true", "yes")
     _tz = pytz.timezone(TIMEZONE)
     _now = datetime.now(_tz)
-    _rows, _fixed = [], 0
+    _rows, _fixed, _linked = [], 0, 0
     for _k, _r in list(lead_data.items()):
         if not isinstance(_r, dict) or not _r.get("meta_lead_ad"):
             continue
@@ -27097,6 +27239,21 @@ def admin_lead_form_repair():
                 "business_was": _old, "business_now": _new,
                 "needs_fix": bool(_bad or (_new and _new != _old)),
                 "chase": _chase.summary(_r.get("chase"), _now)}
+        # PATCH #256 — a form lead whose WhatsApp handoff came from another
+        # number before this patch has an unlinked twin; link it (apply=1).
+        if not _r.get("linked_wa_key"):
+            _wk, _wr = _find_wa_twin(_k, _r.get("email"))
+            if _wk:
+                _row["link_candidate"] = mask_contact(_wk)
+                if _apply:
+                    _ho_at = _wr.get("first_contact_time") or _wr.get("last_message_time") or _now
+                    _link_form_handoff(_wk, _k, _ho_at)
+                    _r = lead_data[_k]
+                    _row["linked"] = True
+                    _linked += 1
+        if _r.get("linked_wa_key"):
+            _row["linked_wa"] = mask_contact(_r.get("linked_wa_key"))
+            _row["booked_either"] = _chase_booked(_r)
         if _row["needs_fix"] and _apply:
             _r["business"] = _new
             _fx = _r.get("form_extra")
@@ -27140,10 +27297,11 @@ def admin_lead_form_repair():
                 break
         if _stopped is None:
             _stopped = {"error": "no lead matched stop_chase"}
-    _TALLY.bump("lead_form.repair", f"{_fixed} fixed" if _apply else "report")
+    _TALLY.bump("lead_form.repair", f"{_fixed} fixed, {_linked} linked" if _apply else "report")
     return jsonify({"ok": True, "as_of": _get_current_time_edt(), "applied": _apply,
                     "form_leads": len(_rows), "needing_fix": sum(1 for r in _rows if r["needs_fix"]),
-                    "fixed": _fixed, "leads": _rows, "stop_chase": _stopped}), 200
+                    "fixed": _fixed, "link_candidates": sum(1 for r in _rows if r.get("link_candidate")),
+                    "linked": _linked, "leads": _rows, "stop_chase": _stopped}), 200
 
 
 @app.route('/admin/lead-form-restore', methods=['GET'])

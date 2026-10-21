@@ -30,7 +30,7 @@ def check(name, cond, detail=""):
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 i = SRC.index("# ── Auto-route to Susan + send welcome email when lead has email (form fill) ──")
 blk = SRC[i:i + 2600]
-check("guard.flag", '_is_form_lead = bool(_ld.get("meta_lead_ad"))' in blk, blk[:900])
+check("guard.flag", '_is_form_lead = bool(_ld.get("meta_lead_ad") or _ld.get("linked_form_key"))' in blk, blk[:900])   # widened by #256
 check("guard.skip_branch", "if _has_email and _is_form_lead:" in blk and "no second welcome email" in blk)
 check("guard.counter", '_TALLY.bump("lead_form.wa_handoff_skipped_welcome"' in blk)
 check("guard.welcome_conditioned", "if _has_email and not _is_form_lead:" in blk

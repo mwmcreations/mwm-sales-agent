@@ -108,7 +108,8 @@ check("wire.ig_capture_order", SRC.index("_email_on_record = str(lead_data[sndr]
 check("wire.sender_guard", "_blocked, _why = _welcome_email_blocked(to_email)" in SRC
       and SRC.index("def _welcome_email_blocked(") < SRC.index("def _send_welcome_email_async(")
       and SRC.index("_blocked, _why = _welcome_email_blocked(to_email)") < SRC.index("html = _build_welcome_email_html(lead_name)"))
-check("wire.154_guard_kept", "_is_form_lead = bool(_ld.get(\"meta_lead_ad\"))" in SRC and "if _has_email and not _is_form_lead:" in SRC)
+check("wire.154_guard_kept", "_is_form_lead = bool(_ld.get(\"meta_lead_ad\") or _ld.get(\"linked_form_key\"))" in SRC   # widened by #256
+      and "if _has_email and not _is_form_lead:" in SRC)
 check("wire.rail_still_sends_first_touch", "_ft_email = _sv.sh_first_touch_email if sh else _sv.form_first_touch_email" in SRC)
 
 print(f"static+behaviour: {passed} passed, {failed} failed")

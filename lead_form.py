@@ -179,6 +179,58 @@ def pretty(value):
     return " ".join(s.replace("_", " ").split())
 
 
+_NAME_PARTICLES = {"da", "de", "do", "dos", "das", "del", "della", "di", "du",
+                   "van", "von", "der", "den", "la", "le", "y", "e"}
+
+
+def tidy_name(name):
+    """PATCH #256 — 'VICENTE ORELLANA' / 'vicente orellana' -> 'Vicente
+    Orellana'. A name typed in one case is re-cased; a mixed-case name
+    ('McDonald', 'DeShawn', 'João da Silva') is left exactly as typed.
+    (Vicente's first text and email opened 'Hi VICENTE,' — 21 Oct.)"""
+    s = re.sub(r"\s+", " ", str(name or "")).strip()
+    letters = re.sub(r"[^A-Za-zÀ-ɏ]", "", s)
+    if not letters or not (letters.isupper() or letters.islower()):
+        return s
+
+    def cap(tok, first):
+        low = tok.lower()
+        if not first and low in _NAME_PARTICLES:
+            return low
+        return re.sub(r"(^|[-'’.])([a-zà-ɏ])",
+                      lambda m: m.group(1) + m.group(2).upper(), low)
+
+    toks = s.split(" ")
+    return " ".join(cap(t, i == 0) for i, t in enumerate(toks))
+
+
+_HANDOFF_MARK = re.compile(r"filled out your form", re.I)
+_HANDOFF_EMAIL = re.compile(r"[Ee]-?mail\s*:\s*([^\s,<>|]+@[^\s,<>|]+\.[^\s,<>|]+)")
+_HANDOFF_PHONE = re.compile(r"[Pp]hone(?:\s*number)?\s*:\s*([+\d(][\d\s().\-]{6,})")
+_HANDOFF_NAME = re.compile(r"[Ff]ull\s*[Nn]ame\s*:\s*(.+)")
+
+
+def handoff_fields(text):
+    """PATCH #256 — what Meta's thank-you page put in the lead's first
+    WhatsApp message: the form answers as 'label: value' lines. Returns
+    {is_handoff, email, phone, name}. It is a handoff when the message says
+    so or carries at least two of the labelled lines (email, phone, full
+    name); a plain message that merely contains an address is not one."""
+    t = str(text or "")
+    e = _HANDOFF_EMAIL.search(t)
+    email = e.group(1) if e else ""
+    m = _HANDOFF_PHONE.search(t)
+    phone = re.sub(r"\D", "", m.group(1)) if m else ""
+    if len(phone) == 10:
+        phone = "1" + phone
+    n = _HANDOFF_NAME.search(t)
+    name = tidy_name(n.group(1).strip().rstrip(".")) if n else ""
+    labelled = sum(1 for v in (email, phone, name) if v)
+    is_handoff = bool(_HANDOFF_MARK.search(t)) or labelled >= 2
+    return {"is_handoff": is_handoff, "email": email.strip().rstrip(".").lower(),
+            "phone": phone, "name": name}
+
+
 def extract(fields):
     """The form answers we care about, by meaning rather than by key."""
     fields = dict(fields or {})
@@ -197,6 +249,7 @@ def extract(fields):
         fn, ln = fields.get("first_name", ""), fields.get("last_name", "")
         name = (fn + " " + ln).strip()
         used.update(k for k in ("first_name", "last_name") if k in fields)
+    name = tidy_name(name)          # PATCH #256
     email = take("email").lower()
     phone = take("phone", "mobile", "cell", "whatsapp")
     # PATCH #152 — the choice questions first, so a question that merely
