@@ -7591,10 +7591,15 @@ def notify_michael_maya_lead(lead_info: str, sender: str):
         _info = (lead_info or "").strip()
         # PATCH #256 — a form lead's second number is not a new capture:
         # the rail's CALL NOW already reached Michael (and #eric).
-        _lk = (lead_data.get(sender) or {}).get("linked_form_key") if sender else None
+        # PATCH #258 — nor is the form lead itself (Michael, 21 Oct 13:15:
+        # "I don't need to receive those two text messages"): one text per
+        # form lead, and it is the CALL NOW, which now carries the email and
+        # the website too. Organic WhatsApp / Instagram leads still get this one.
+        _lrec = (lead_data.get(sender) or {}) if sender else {}
+        _lk = _lrec.get("linked_form_key") or ("form lead" if _lrec.get("meta_lead_ad") else None)
         if _lk:
-            _TALLY.bump("lead_form.wa_handoff_skipped_lead_alert", clean_phone[-4:])
-            print(f"[Lead Alert] {sender} is form lead {_lk}'s WhatsApp number — CALL NOW covered it; no second alert")
+            _TALLY.bump("lead_form.skipped_lead_alert", clean_phone[-4:])
+            print(f"[Lead Alert] {sender} is a form lead ({_lk}) — CALL NOW covers it; no second text")
             return
         _operator_alert.alert(
             "lead",
@@ -8964,7 +8969,8 @@ def _call_now_alert(lead_key, name, rec, verdict, label, phone, now):
     """One CALL NOW for one form lead. Returns 'sent' | 'queued' | reason."""
     sms, eric = _cn.compose(name, rec.get("business"), phone, rec.get("revenue_raw"),
                             rec.get("role_raw"), rec.get("must_understand"), verdict,
-                            ad_label=label, pretty=_lf.pretty)
+                            ad_label=label, pretty=_lf.pretty,
+                            email=rec.get("email"), website=rec.get("website"))   # PATCH #258
     if _cn.in_window(now):
         out = _operator_alert.alert("lead", sms, eric_text=eric)
         _CALL_NOW_LAST.update(sent=_CALL_NOW_LAST["sent"] + (1 if out.get("sms") == "sent" else 0),

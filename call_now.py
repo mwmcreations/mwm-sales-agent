@@ -42,10 +42,15 @@ def _clean(v, limit=80):
 
 
 def compose(name, business, phone, revenue, role, must_understand, verdict,
-            ad_label="", pretty=lambda v: v):
+            ad_label="", pretty=lambda v: v, email="", website=""):
     """-> (sms_text, eric_text). Short enough for the operator SMS cap, and
     never a raw choice value: `pretty` turns owner_/_founder_/_partner into
-    words (lead_form.pretty)."""
+    words (lead_form.pretty).
+
+    PATCH #258 (Michael, 21 Oct 13:15: "I don't need to receive those two
+    text messages… combine both"): this is now the ONE text he gets for a
+    form lead, so it also carries what the "New lead captured by Maya" text
+    used to — the email and the website."""
     nm = _clean(name, 60) or "no name"
     biz = _clean(business, 60)
     rev = _clean(pretty(revenue), 30)
@@ -53,6 +58,8 @@ def compose(name, business, phone, revenue, role, must_understand, verdict,
     mu = _clean(must_understand, 140)
     ph = _clean(phone, 24)
     v = _clean(verdict, 16)
+    em = _clean(email, 60)
+    web = _clean(website, 60)
     lines = [f"CALL NOW - form lead ({v})", nm + (f" - {biz}" if biz else "")]
     band = " / ".join(x for x in (rev, rl) if x)
     if band:
@@ -60,6 +67,10 @@ def compose(name, business, phone, revenue, role, must_understand, verdict,
     if mu:
         lines.append(f"Must understand: {mu}")
     lines.append(ph)
+    if em:
+        lines.append(em)
+    if web:
+        lines.append(web)
     if ad_label:
         lines.append(f"ad {_clean(ad_label, 40)}")
     lines.append("First call inside the hour.")
@@ -68,7 +79,10 @@ def compose(name, business, phone, revenue, role, must_understand, verdict,
             + (f" · {biz}" if biz else "")
             + (f"\n{band}" if band else "")
             + (f"\nMust understand: _{mu}_" if mu else "")
-            + f"\n`{ph}`" + (f" · ad {_clean(ad_label, 40)}" if ad_label else "")
+            + f"\n`{ph}`"
+            + (f" · {em}" if em else "")
+            + (f" · {web}" if web else "")
+            + (f" · ad {_clean(ad_label, 40)}" if ad_label else "")
             + "\n_Michael's rule: first call inside the hour (8 AM–8 PM ET)._")
     return sms, eric
 

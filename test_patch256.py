@@ -184,8 +184,8 @@ check("wire.link_guarded", "_ho = _lf.handoff_fields(incoming_msg)\n            
       and "_report_error(\"lead_form.wa_handoff_link\", _lnk_err, sender)" in SRC)
 check("wire.154_guard_sees_link", "_is_form_lead = bool(_ld.get(\"meta_lead_ad\") or _ld.get(\"linked_form_key\"))" in SRC)
 check("wire.early_name_tidied", "_early_name = _lf.tidy_name(_name_match.group(1).strip())" in SRC)
-check("wire.lead_alert_skipped", "_lk = (lead_data.get(sender) or {}).get(\"linked_form_key\") if sender else None\n        if _lk:" in SRC
-      and SRC.index("def notify_michael_maya_lead(") < SRC.index("_TALLY.bump(\"lead_form.wa_handoff_skipped_lead_alert\"") < SRC.index("def log_lead("))
+check("wire.lead_alert_skipped", "_lk = _lrec.get(\"linked_form_key\") or (\"form lead\" if _lrec.get(\"meta_lead_ad\") else None)\n        if _lk:" in SRC   # widened by #258
+      and SRC.index("def notify_michael_maya_lead(") < SRC.index("_TALLY.bump(\"lead_form.skipped_lead_alert\"") < SRC.index("def log_lead("))
 check("wire.booking_marks_form", "_fk = lead_data[sender].get(\"linked_form_key\")\n                    if _fk and isinstance(lead_data.get(_fk), dict):" in SRC
       and "\"event_id\": event_id, \"booked_via_linked\": sender})" in SRC
       and "_capi_stage(_capi_key, lead_data[_capi_key], _capi.STAGE_BOOKED," in SRC)
