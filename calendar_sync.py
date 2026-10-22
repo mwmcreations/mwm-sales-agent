@@ -157,12 +157,21 @@ def _report(ctx, exc, detail=""):
     print("[GCAL SYNC] {}: {} {}".format(ctx, exc, detail))
 
 
-def _slack(channel_key, text):
+def _slack(channel_key, text, unfurl=None):
+    """PATCH #259: `unfurl=False` posts without link previews. A message whose
+    links ACT (the deletion question) must never be crawled by Slack's
+    previewer — that crawl answered "No, put it back" for booking #107."""
     fn = _deps.get("post_slack")
     ch = _deps.get(channel_key)
     if fn and ch:
         try:
-            fn(ch, text)
+            if unfurl is None:
+                fn(ch, text)
+            else:
+                try:
+                    fn(ch, text, unfurl=unfurl)
+                except TypeError:          # an older post_slack without the kwarg
+                    fn(ch, text)
         except Exception as exc:
             print("[GCAL SYNC] slack post failed: {}".format(exc))
 
@@ -792,12 +801,16 @@ def _handle_deletion(event_id, summary):
 
     summary["asked"] += 1
     _save(KEY_SEEN + event_id, {})
+    # PATCH #259: no link previews on this message (see _slack). The links open
+    # a confirmation page since S28b; the button on that page is the answer.
     _slack("matt_channel",
            "{}\n\n<{}|✅ Yes, cancel it>     <{}|↩️ No, put it back>\n\n"
-           "_Nothing has changed yet. Until you tap one, the booking stands and "
+           "_Nothing has changed yet. Each link opens a page with ONE button — "
+           "the button is the answer. Until you press one, the booking stands and "
            "the morning drift check will keep flagging the missing event._".format(
                resp.get("question") or "You deleted the calendar event for booking #{}.".format(bid),
-               resp.get("yes_url") or "", resp.get("no_url") or ""))
+               resp.get("yes_url") or "", resp.get("no_url") or ""),
+           unfurl=False)
 
 
 def sync_once():

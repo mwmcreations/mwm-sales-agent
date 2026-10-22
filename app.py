@@ -1492,8 +1492,16 @@ HOT_SIGNAL_TRIGGERS = {
 }
 
 
-def post_to_slack(channel, text, blocks=None):
-    """Post a message to Slack channel using the Web API."""
+def post_to_slack(channel, text, blocks=None, unfurl=None):
+    """Post a message to Slack channel using the Web API.
+
+    PATCH #259 — `unfurl=False` turns link previews off for this one message.
+    Slack fetches every URL in a message to build its preview, and on Oct 21
+    that fetch "tapped" the calendar-sync's *No, put it back* link for booking
+    #107 seven seconds after the question was posted. The WordPress side now
+    needs a POST (S28b), so a fetch can no longer act — this is the belt to
+    that brace: a message whose links DO things is posted without previews.
+    """
     if not SLACK_BOT_TOKEN:
         print("⚠️ SLACK_BOT_TOKEN not configured, skipping Slack notification")
         return None
@@ -1505,6 +1513,9 @@ def post_to_slack(channel, text, blocks=None):
     payload = {"channel": channel, "text": text}
     if blocks:
         payload["blocks"] = blocks
+    if unfurl is False:
+        payload["unfurl_links"] = False
+        payload["unfurl_media"] = False
     try:
         response = http_requests.post(url, json=payload, headers=headers, timeout=5)
         response.raise_for_status()
@@ -1538,12 +1549,12 @@ _maya_actions_mod.ERROR_REPORTER = _report_error
 _maya_actions_mod.SUPPRESSION_CHECK = _wa_is_suppressed  # S21
 
 
-def _post_to_slack_async(channel, text, blocks=None):
+def _post_to_slack_async(channel, text, blocks=None, unfurl=None):
     """Post to Slack asynchronously in a background thread."""
     thread = threading.Thread(
         target=post_to_slack,
         args=(channel, text),
-        kwargs={"blocks": blocks},
+        kwargs={"blocks": blocks, "unfurl": unfurl},
         daemon=True
     )
     thread.start()
