@@ -206,7 +206,8 @@ check("wire.to_list", 'to_list = _addr_list(data.get("to", ""))' in rt and 'to_e
 check("wire.cc_read", 'cc_list = _addr_list(data.get("cc", ""))' in rt and "cc=(cc_email or None)" in rt)
 check("wire.thread_params", 'data.get("thread_id")' in rt and 'data.get("reply_to_message_id")' in rt and 'data.get("in_reply_to")' in rt and "thread=_thread" in rt)
 check("wire.subject_optional_for_reply", 'if not subject and not (_thread and (_thread.get("thread_id") or _thread.get("message_id"))):' in rt)
-check("wire.guard_every_address", "for _addr in to_list + cc_list:" in rt and rt.index("for _addr in to_list + cc_list:") < rt.index("_email_send(to_email"))
+# PATCH #260 — the per-address loop moved into _send_api_refusal (tested in test_patch260).
+check("wire.guard_every_address", "_send_api_refusal(to_list + cc_list" in rt and rt.index("_send_api_refusal(to_list + cc_list") < rt.index("_email_send(to_email"))
 check("wire.fold_every_address", "for _lst in (to_list, cc_list):" in rt)
 check("wire.409_from_sender", 'if result.get("suppressed"):' in rt and "409" in rt[rt.index('if result.get("suppressed"):'):rt.index('if result.get("suppressed"):') + 300])
 check("wire.response_lists", '"to": to_list,' in rt and '"cc": cc_list,' in rt and '"thread_id": result.get("thread_id", "")' in rt)

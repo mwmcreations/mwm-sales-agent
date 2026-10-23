@@ -189,10 +189,14 @@ G = dict(lead_data=lead_data, datetime=datetime, pytz=pytz, TIMEZONE="America/Ne
          _report_error=lambda ctx, exc, detail="": errors.append((ctx, str(exc), detail)))
 exec(compile(ast.Module(body=fns, type_ignores=[]), "app_251", "exec"), G)
 
+# PATCH #260 — the live section runs _capi_stage against the real clock, which
+# clamps a stage_time older than 7 days. A fixed Oct 15 NOW turned this red on
+# Oct 22 (live.ledger_pg). Use a stage time one minute ago instead.
+LIVE = int(time.time()) - 60
 # dark: nothing marked, status says so
 os.environ.pop("META_CAPI_DATASET_ID", None); os.environ.pop("META_CAPI_TOKEN", None)
 lead_data["meta_lead_777"] = {"name": "Duncan Wardle", "email": "d@example.com", "phone": "14075559999", "leadgen_id": "777"}
-st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=NOW, sync=True)
+st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=LIVE, sync=True)
 check("dark.skipped_unmarked", st == "skipped" and why == "unconfigured" and not pg.d and "capi_stages" not in lead_data["meta_lead_777"] and not slack)
 
 # configured: sent once, ledger written, #dev told with lead_id only
@@ -200,13 +204,13 @@ os.environ["META_CAPI_DATASET_ID"] = "658880878344916"; os.environ["META_CAPI_TO
 real_send = mc.send
 wire = []
 mc.send = lambda events, **k: (wire.append(events) or (True, "received %d" % len(events)))
-st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=NOW, sync=True)
+st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=LIVE, sync=True)
 check("live.sent", st == "sent" and why == "received 1" and wire[-1][0]["event_id"] == "meta_lead_777:Lead" and wire[-1][0]["user_data"]["lead_id"] == 777)
-check("live.ledger_pg", pg.d.get("capi_sent:meta_lead_777:Lead", {}).get("event_time") == NOW)
+check("live.ledger_pg", pg.d.get("capi_sent:meta_lead_777:Lead", {}).get("event_time") == LIVE)
 check("live.ledger_record", lead_data["meta_lead_777"]["capi_stages"]["Lead"])
 check("live.dev_line_no_pii", slack and slack[-1][0] == "#dev" and "lead_id 777" in slack[-1][1] and "Duncan" not in slack[-1][1]
       and "example.com" not in slack[-1][1] and "`Lead`" in slack[-1][1])
-st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=NOW, sync=True)
+st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Lead", stage_time=LIVE, sync=True)
 check("live.second_send_skipped", st == "skipped" and why == "already sent" and len(wire) == 1)
 # ledger survives a restart (record wiped, pg kept)
 lead_data["meta_lead_777"].pop("capi_stages")
@@ -214,12 +218,12 @@ check("live.ledger_from_pg", G["_capi_ledger_has"]("meta_lead_777", "Lead") is T
 # a Meta error: not marked, #dev warned, masked
 mc.send = lambda events, **k: (False, "HTTP 400 Invalid parameter")
 lead_data["whatsapp:+14075550123"] = {"name": "Ana", "phone": "14075550123"}
-st, why = G["_capi_stage"]("whatsapp:+14075550123", lead_data["whatsapp:+14075550123"], "StudioVisitBooked", stage_time=NOW, sync=True)
+st, why = G["_capi_stage"]("whatsapp:+14075550123", lead_data["whatsapp:+14075550123"], "StudioVisitBooked", stage_time=LIVE, sync=True)
 check("fail.not_marked", st == "failed" and why.startswith("HTTP 400") and "capi_sent:whatsapp:+14075550123:StudioVisitBooked" not in pg.d)
 check("fail.dev_warned_masked", slack[-1][1].startswith(":warning: capi `StudioVisitBooked`") and "+14075550123" not in slack[-1][1] and "…0123" in slack[-1][1])
 # a lead without a form: hashed phone, no lead_id, #dev says so
 mc.send = lambda events, **k: (wire.append(events) or (True, "received 1"))
-st, why = G["_capi_stage"]("whatsapp:+14075550123", lead_data["whatsapp:+14075550123"], "StudioVisitBooked", stage_time=NOW, sync=True)
+st, why = G["_capi_stage"]("whatsapp:+14075550123", lead_data["whatsapp:+14075550123"], "StudioVisitBooked", stage_time=LIVE, sync=True)
 check("ig.hashed_only", st == "sent" and "lead_id" not in wire[-1][0]["user_data"] and wire[-1][0]["user_data"]["ph"] == [mc._sha("14075550123")]
       and "email/phone match" in slack[-1][1])
 # guards
@@ -229,7 +233,7 @@ check("guard.testing_tool_dummy", G["_capi_stage"]("meta_lead_4593113990973865",
 check("guard.no_record", G["_capi_stage"]("k", None, "Lead", sync=True)[0] == "skipped" and G["_capi_stage"]("", {}, "Lead", sync=True)[0] == "skipped")
 check("guard.unknown_stage", G["_capi_stage"]("k", {"phone": "1"}, "Purchase", sync=True)[0] == "skipped")
 # async path hands the same event to the thread
-st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Qualified", stage_time=NOW)
+st, why = G["_capi_stage"]("meta_lead_777", lead_data["meta_lead_777"], "Qualified", stage_time=LIVE)
 check("async.queued", st == "queued" and why == "meta_lead_777:Qualified")
 time.sleep(0.3)
 check("async.landed", any(e[0]["event_id"] == "meta_lead_777:Qualified" for e in wire) and "capi_sent:meta_lead_777:Qualified" in pg.d)

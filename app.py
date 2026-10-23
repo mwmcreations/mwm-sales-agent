@@ -14251,22 +14251,27 @@ def _email_send(to, subject, html, drive_file_id=None, cc=None, via="machine",
     # exception the sender learned, or a client's booking reminder dies here
     # instead of one layer down. (That two-layer asymmetry is exactly what
     # made #66 look fixed when it was not.)
-    _tdec, _twhy = ("default", "")
-    if transactional:
-        _tdec, _twhy = transactional_allowed(
-            _to, TRANSACTIONAL_OK_EMAILS, NEVER_CONTACT_EMAILS)
-        if _tdec == "block":
-            print(f"[EMAIL] transactional refused ({_twhy}) — not sending to {_to}")
-            return {"ok": False, "suppressed": True,
-                    "error": f"transactional refused: {_twhy}"}
-    if _tdec != "allow":
-        # PATCH #155 — TO may carry several addresses; each faces the guard.
-        for _one in [a.strip() for a in re.split(r"[,;]+", _to) if a.strip()] or [_to]:
-            _sup, _reason = email_is_suppressed(_one)
-            if _sup:
-                print(f"[EMAIL] suppressed ({_reason}) — not sending to {_one}")
-                return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}",
+    # PATCH #260 — the transactional exception is decided PER ADDRESS. It used
+    # to be decided on the whole TO string, so "client, other" never matched
+    # the allow-list and an allow-listed client in a multi-address send was
+    # refused. Single-address sends behave exactly as before.
+    for _one in [a.strip() for a in re.split(r"[,;]+", _to) if a.strip()] or [_to]:
+        if transactional:
+            _tdec, _twhy = transactional_allowed(
+                _one, TRANSACTIONAL_OK_EMAILS, NEVER_CONTACT_EMAILS)
+            if _tdec == "block":
+                print(f"[EMAIL] transactional refused ({_twhy}) — not sending to {_one}")
+                return {"ok": False, "suppressed": True,
+                        "error": f"transactional refused: {_twhy}",
                         "blocked_address": _one}
+            if _tdec == "allow":
+                continue
+        # PATCH #155 — TO may carry several addresses; each faces the guard.
+        _sup, _reason = email_is_suppressed(_one)
+        if _sup:
+            print(f"[EMAIL] suppressed ({_reason}) — not sending to {_one}")
+            return {"ok": False, "suppressed": True, "error": f"suppressed: {_reason}",
+                    "blocked_address": _one}
     try:
         _kw = {}
         if cc:
@@ -18825,6 +18830,42 @@ def api_send_wa_media():
         return jsonify({"success": False, "error": str(e)[:200]}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PATCH #260 — CLIENT DELIVERY THROUGH /api/send-email.
+#
+# Oct 23: LARA's EP04 delivery to Marcia Cardim (ediasm@icloud.com) came back
+# 409 "do-not-contact list". Marcia is on EMAIL_DNC on purpose (#38): she is a
+# client and must never get LEAD mail. #69 already gave her the narrow way
+# through for CLIENT mail (TRANSACTIONAL_OK_EMAILS) — but only the machine's
+# own reminder rail could use it. The agents' endpoint had no way to say
+# "this is a client delivery", so DNC answered a question it was never meant
+# to answer, exactly the #69 failure on a new path.
+#
+# Michael chose (Oct 23, in chat): keep her on DNC, add the flag. A caller
+# sends `"client_delivery": true`; then, per address:
+#   allow   (on TRANSACTIONAL_OK)  → the lead-DNC check is skipped for it
+#   block   (NEVER_CONTACT / bad)  → 409, nothing sent — Yasmin stays unreachable
+#   default (everyone else)        → the ordinary suppression check, unchanged
+# Without the flag nothing changes at all. Lead automations never pass it,
+# so DNC still keeps every lead rail away from her.
+# ═══════════════════════════════════════════════════════════════════════════
+def _send_api_refusal(addrs, client_delivery=False):
+    """None when every address may receive this send, else (addr, reason).
+    Pure apart from the two predicates it calls."""
+    for _addr in addrs:
+        if client_delivery:
+            _tdec, _twhy = transactional_allowed(
+                _addr, TRANSACTIONAL_OK_EMAILS, NEVER_CONTACT_EMAILS)
+            if _tdec == "block":
+                return _addr, f"client delivery refused: {_twhy}"
+            if _tdec == "allow":
+                continue
+        _sup, _sup_reason = email_is_suppressed(_addr)
+        if _sup:
+            return _addr, _sup_reason
+    return None
+
+
 @app.route('/api/send-email', methods=['POST'])
 def api_send_email():
     """Universal email send endpoint for agent Cowork sessions.
@@ -18843,6 +18884,9 @@ def api_send_email():
         attachment_filename: filename to search in _AGENTS > UPLOADS Drive folder (optional)
         attachment_drive_id: explicit Drive file ID (optional, overrides filename search)
         token: auth token (required)
+        client_delivery: true for a delivery to a CLIENT (PATCH #260). An address
+            on TRANSACTIONAL_OK_EMAILS then skips the lead do-not-contact list;
+            the never-contact tier still refuses. Never set it on lead mail.
         PATCH #155 — reply inside an existing conversation (any ONE of):
         thread_id: Gmail thread id, with mailbox ("info" default, or "michael")
         reply_to_message_id: Gmail message id, with mailbox (same)
@@ -18910,15 +18954,17 @@ def api_send_email():
         # PATCH #38 — DNC gate. Before auth-adjacent work, before Drive, before
         # send. 409 is the documented suppression code in SUSAN's playbook.
         # PATCH #155 — every address, TO and CC alike; one refusal stops the send.
-        for _addr in to_list + cc_list:
-            _sup, _sup_reason = email_is_suppressed(_addr)
-            if _sup:
-                print(f"[SEND-EMAIL API] SUPPRESSED {_addr} — {_sup_reason} (via={_via})")
-                _report_error("email_send_suppressed",
-                              f"send to {_addr} refused: {_sup_reason}",
-                              f"via={_via} subject={subject[:80]!r} — PREVENTED, not burned")
-                return jsonify({"success": False, "error": f"suppressed: {_sup_reason}",
-                                "suppressed": True, "to": _addr}), 409
+        # PATCH #260 — `client_delivery` lets an allow-listed CLIENT through.
+        _client_delivery = data.get("client_delivery") is True
+        _refusal = _send_api_refusal(to_list + cc_list, _client_delivery)
+        if _refusal:
+            _addr, _sup_reason = _refusal
+            print(f"[SEND-EMAIL API] SUPPRESSED {_addr} — {_sup_reason} (via={_via})")
+            _report_error("email_send_suppressed",
+                          f"send to {_addr} refused: {_sup_reason}",
+                          f"via={_via} subject={subject[:80]!r} — PREVENTED, not burned")
+            return jsonify({"success": False, "error": f"suppressed: {_sup_reason}",
+                            "suppressed": True, "to": _addr}), 409
 
         # PATCH #38 — an address that cannot be delivered must fail LOUDLY here,
         # not silently bounce hours later. Live case: Anderson Brito Baez,
@@ -18970,7 +19016,8 @@ def api_send_email():
         # PATCH #44C — goes through the shared sender so the follow-up stamps
         # are written in exactly ONE place for every rail, manual or automatic.
         result = _email_send(to_email, subject, html_body, drive_file_id,
-                             cc=(cc_email or None), via=_via, thread=_thread)
+                             cc=(cc_email or None), via=_via, thread=_thread,
+                             transactional=_client_delivery)
 
         if result.get("ok"):
             print(f"[SEND-EMAIL API] Sent to {to_email} cc={cc_email or '-'} — msgId: {result['message_id']}")
