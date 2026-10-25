@@ -1858,6 +1858,14 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
     if channel_id != SLACK_MAYA_SHADOW_CHANNEL:
         return
 
+    # PATCH #261 — who wrote this? An agent session (the 24h follow-up task, a
+    # LARA/SUSAN relay) posts through the Slack connector and the text ends with
+    # "Sent using Claude"; Michael typing in Slack has no such tail.
+    _agent_authored = _relay_is_agent_authored(text)
+    text = _relay_clean_text(text)
+    if not text:
+        return
+
     # ── Session 41: Channel-aware reverse lookup ──
     # Reverse lookup: find which lead owns this thread.
     # The thread key can be phone digits (WhatsApp) or @username / IGSID (IG DM).
@@ -2023,8 +2031,14 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
         wa_sender = f"whatsapp:+{target_key}"
         try:
             send_whatsapp_meta(wa_sender, body=text)
-            print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_key}")
-            _manual_mode[re.sub(r"\D", "", str(target_key))] = time.time() + 3600  # S2.5: mute Maya 60 min
+            _digits = re.sub(r"\D", "", str(target_key))
+            if _agent_authored:
+                # PATCH #261 — a follow-up robot is not Michael. Maya stays on duty.
+                print(f"[SHADOW RELAY] ✅ Relayed an agent follow-up to {target_key} — Maya stays on duty")
+                _TALLY.bump("relay.agent_followup", f"…{_digits[-4:]}")
+            else:
+                print(f"[SHADOW RELAY] ✅ Relayed Michael's message to {target_key}")
+                _manual_mode[_digits] = time.time() + MANUAL_MODE_TTL_S  # S2.5: mute Maya while Michael drives
         except Exception as e:
             print(f"[SHADOW RELAY] ❌ WhatsApp send failed: {e}")
             try:
@@ -2057,7 +2071,8 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
             "https://slack.com/api/chat.postMessage",
             json={
                 "channel": channel_id,
-                "text": f"✅ *MICHAEL (via Maya {_channel_label}):*\n{text}",
+                "text": (f"✅ *FOLLOW-UP (via Maya {_channel_label}):*\n{text}" if _agent_authored
+                         else f"✅ *MICHAEL (via Maya {_channel_label}):*\n{text}"),
                 "thread_ts": thread_ts,
             },
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
@@ -10644,9 +10659,22 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
         def process_maya(snap, sndr, ctx="", identity=None, is_michael_ping=False):
             to_wa = sndr if sndr.startswith("whatsapp:") else f"whatsapp:{sndr}"
             # S2.5: manual mode — Michael is driving this conversation via shadow relay
-            if not is_michael_ping and time.time() < _manual_mode.get(re.sub(r"\D", "", sndr), 0):
-                print(f"[MANUAL MODE] Auto-reply suppressed for {sndr} — Michael is driving")
-                return
+            # PATCH #261: HOLD, don't drop. One waiter per lead; it sleeps until the
+            # mute ends, then answers only if the lead's message is still the last turn.
+            _held = False
+            _digits = re.sub(r"\D", "", sndr)
+            if not is_michael_ping and time.time() < _manual_mode_until(_digits):
+                if not _manual_hold_begin(_digits, sndr, identity, (snap[-1].get("content") if snap else "")):
+                    print(f"[MANUAL MODE] {sndr} already has a waiter — this inbound rides with it")
+                    return
+                print(f"[MANUAL MODE] holding reply for {sndr} until {_fmt_local_hm(_manual_mode_until(_digits))}")
+                _manual_hold_wait(_digits)
+                if not _manual_hold_end(_digits, sndr):
+                    print(f"[MANUAL MODE] hold released for {sndr} — a human answered, Maya stays quiet")
+                    return
+                print(f"[MANUAL MODE] hold released for {sndr} — nobody answered, Maya answers now")
+                snap = list(conversation_history.get(sndr) or snap)
+                _held = True
             try:
                 reply, updated_history = get_claude_reply(snap, sndr, lead_context=ctx, is_owner=is_michael_ping)
                 conversation_history[sndr] = updated_history
@@ -10766,7 +10794,9 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             # history, so sending ours would put two answers to two halves of one
             # thought in front of the lead. Drop it.
             try:
-                if _burst.is_superseded(sender, _burst_seq):
+                # PATCH #261: a held reply answers the whole history — the newer
+                # inbounds that arrived during the hold had no reply of their own.
+                if not _held and _burst.is_superseded(sender, _burst_seq):
                     print(f"[Burst] reply to seq {_burst_seq} superseded for {sender} — dropped")
                     _TALLY.bump("burst.reply_superseded", "whatsapp — a newer message answered for both")
                     return
@@ -12281,6 +12311,107 @@ threading.Thread(target=_pre_meeting_briefer, daemon=True).start()
 
 _mr_reported_events = {}   # {event_id: outcome_str} — events already reported via Daily Event Report
 _manual_mode = {}          # S2.5: {phone_digits: epoch_expiry} — Michael driving via shadow relay
+# ── PATCH #261 · manual mode is for Michael, and nothing a lead says is dropped ──
+# Sun 25 Oct 18:04: the "Maya 24h followup" task posted its follow-up to Shawnie
+# Whitaker in her #maya-shadow thread. The relay saw Michael's Slack user, sent
+# it, and muted Maya for an hour ("Michael is driving"). Shawnie answered at
+# 18:24 — "I would love to come visit the studio, what's the address, 11 AM?" —
+# and process_maya threw the message away in silence. Nobody was told; the
+# mute ended at 19:04 and nothing caught up. Michael found it at 19:22.
+# Two things were wrong, both fixed here:
+#   (a) a message posted by an agent session carries Slack's "Sent using
+#       Claude" attribution; Michael typing in Slack does not. The relay now
+#       tells them apart: an agent follow-up goes out as Maya and Maya STAYS
+#       on duty. Only Michael's own words start manual mode.
+#   (b) while manual mode IS on, an inbound is HELD, not dropped: the thread
+#       gets a ⏸ note, Michael gets a text, and when the mute ends with the
+#       lead's message still the last turn, Maya answers it.
+MANUAL_MODE_TTL_S = int(os.getenv("MANUAL_MODE_TTL_S", "3600"))
+MANUAL_HOLD_MAX_S = int(os.getenv("MANUAL_HOLD_MAX_S", "10800"))   # a hold never waits more than 3 h
+_manual_hold = {}          # {phone_digits: {"since": epoch, "thread_ts": str}} — one waiter per lead
+_AGENT_ATTRIBUTION_RE = re.compile(r"\s*\*?Sent using\s*\*?\s+\w+\s*$", re.IGNORECASE)
+
+
+def _relay_is_agent_authored(text):
+    """True when the Slack text ends with the Claude/Cowork attribution — i.e.
+    an agent session posted it through the Slack connector, not Michael."""
+    return bool(_AGENT_ATTRIBUTION_RE.search(str(text or "")))
+
+
+def _relay_clean_text(text):
+    return _AGENT_ATTRIBUTION_RE.sub("", str(text or "")).strip()
+
+
+def _manual_mode_until(digits):
+    return float(_manual_mode.get(digits, 0) or 0)
+
+
+def _manual_hold_begin(digits, sender, identity, incoming_msg):
+    """Register this inbound as held. Returns False when a waiter already exists
+    for the lead (it will answer with the full history when the mute ends)."""
+    if digits in _manual_hold:
+        return False
+    until = _manual_mode_until(digits)
+    _manual_hold[digits] = {"since": time.time(), "until": until}
+    _TALLY.bump("maya.manual_hold", f"{digits[-4:]} — held until {_fmt_local_hm(until)}")
+    _manual_hold_notify(digits, sender, identity, incoming_msg, until)
+    return True
+
+
+def _fmt_local_hm(epoch):
+    try:
+        return datetime.fromtimestamp(float(epoch), pytz.timezone(TIMEZONE)).strftime("%-I:%M %p")
+    except Exception:
+        return "soon"
+
+
+def _manual_hold_notify(digits, sender, identity, incoming_msg, until):
+    """⏸ note in the lead's #maya-shadow thread + a text to Michael. Best effort."""
+    hm = _fmt_local_hm(until)
+    name = ""
+    try:
+        name = (identity or {}).get("name") or (lead_data.get(sender) or {}).get("name") or ""
+        if name == "Unknown lead":
+            name = ""
+    except Exception:
+        pass
+    who = name or f"…{digits[-4:]}"
+    thread_ts = maya_shadow_threads.get(digits) or maya_shadow_threads.get(sender)
+    if SLACK_BOT_TOKEN and SLACK_MAYA_SHADOW_CHANNEL and thread_ts:
+        try:
+            http_requests.post(
+                "https://slack.com/api/chat.postMessage",
+                json={"channel": SLACK_MAYA_SHADOW_CHANNEL, "thread_ts": thread_ts,
+                      "text": (f"⏸ *Maya is holding* — Michael replied in this thread, so Maya stays quiet until {hm}. "
+                               f"The lead just wrote; if nobody answers here by {hm}, Maya answers it.")},
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                timeout=5)
+        except Exception as _e:
+            print(f"[MANUAL MODE] hold note failed: {_e}")
+    try:
+        _operator_alert.alert(
+            "hold",
+            f"{who} replied on WhatsApp while you're driving the thread (Maya muted until {hm}). "
+            f"Reply in #maya-shadow, or Maya answers at {hm}. They said: {str(incoming_msg or '')[:160]}")
+    except Exception as _e:
+        print(f"[MANUAL MODE] hold text failed: {_e}")
+
+
+def _manual_hold_wait(digits):
+    """Sleep until the mute ends (Michael may keep extending it). Bounded."""
+    deadline = time.time() + MANUAL_HOLD_MAX_S
+    while time.time() < _manual_mode_until(digits) and time.time() < deadline:
+        time.sleep(15)
+
+
+def _manual_hold_end(digits, sender):
+    """Release the waiter. Returns True when the lead's last message is still
+    unanswered (nobody human replied), i.e. Maya should answer now."""
+    _manual_hold.pop(digits, None)
+    hist = conversation_history.get(sender) or []
+    unanswered = bool(hist) and (hist[-1].get("role") == "user")
+    _TALLY.bump("maya.manual_hold_released", f"{digits[-4:]} — {'Maya answers' if unanswered else 'a human answered'}")
+    return unanswered
 _cold_email_count = {}     # S2.2: {'date': 'YYYY-MM-DD', 'n': int} — daily cap on auto cold emails
 _lead_reminder_sent = set()  # S2.3: {'eventid:24h' / 'eventid:2h'}
 _noshow_processed = set()  # event IDs already flagged as no-show
@@ -17686,6 +17817,55 @@ def admin_event_rail_backfill():
         "needs_human_events": needs_human_detail,
         "would_consider_events": would_repair_detail,
     })
+
+
+@app.route("/admin/maya-catchup", methods=["POST"])
+def admin_maya_catchup():
+    """PATCH #261 — make Maya answer a WhatsApp lead whose LAST turn is still
+    the lead's (a message that was dropped under the old manual-mode rule, or
+    missed for any other reason). Dry by default: `apply=1` sends.
+    Form: secret, phone, apply (0/1)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+    phone = re.sub(r"\D", "", request.values.get("phone", ""))
+    if not phone:
+        return jsonify({"ok": False, "error": "phone required"}), 400
+    sender = f"whatsapp:+{phone}"
+    hist = conversation_history.get(sender)
+    if not hist:
+        return jsonify({"ok": False, "error": "no conversation for that number", "sender": sender}), 404
+    last = hist[-1]
+    if last.get("role") != "user":
+        return jsonify({"ok": False, "reason": "nothing pending — the last turn is Maya's", "sender": sender,
+                        "last": str(last.get("content"))[:200]}), 200
+    pending = str(last.get("content"))[:300]
+    if request.values.get("apply", "0") != "1":
+        return jsonify({"ok": True, "dry": True, "sender": sender, "pending": pending,
+                        "manual_mode_until": _manual_mode_until(phone)}), 200
+    try:
+        _manual_mode.pop(phone, None)
+        _manual_hold.pop(phone, None)
+        _ctx = ""
+        try:
+            _ctx = lookup_lead_in_sheets(sender) or ""
+        except Exception:
+            _ctx = ""
+        reply, updated = get_claude_reply(list(hist), sender, lead_context=_ctx)
+        conversation_history[sender] = updated
+        clean_reply = str(reply or "").strip()
+        if not clean_reply:
+            return jsonify({"ok": False, "error": "Maya returned an empty reply"}), 500
+        send_whatsapp_meta(sender, body=clean_reply)
+        _loop_note_reply(sender, clean_reply)
+        try:
+            _mirror_to_maya_shadow_async(_build_maya_sender_identity(sender), "outbound", clean_reply)
+        except Exception as _e:
+            print(f"[CATCHUP] shadow mirror failed (non-fatal): {_e}")
+        _TALLY.bump("maya.catchup_sent", f"…{phone[-4:]}")
+        return jsonify({"ok": True, "sender": sender, "pending": pending, "reply": clean_reply[:500]}), 200
+    except Exception as e:
+        _report_error("maya.catchup", e, sender)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/admin/send-maya-message", methods=["POST"])
