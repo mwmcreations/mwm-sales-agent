@@ -23933,6 +23933,8 @@ import agent_talk as _at
 AGENT_TALK_MODE_DEFAULT = os.getenv("AGENT_TALK_MODE", "test").strip().lower() or "test"
 AGENT_TALK_CAP_USD = float(os.getenv("AGENT_TALK_DAILY_CAP_USD", str(_at.DAILY_CAP_DEFAULT_USD)) or _at.DAILY_CAP_DEFAULT_USD)
 AGENT_TALK_MAX_TOKENS = int(os.getenv("AGENT_TALK_MAX_TOKENS", "1500") or 1500)
+AGENT_TALK_THINKING = {"haiku": {"type": "disabled"}, "sonnet": {"type": "between_tools"}}
+AGENT_TALK_EFFORT = {"haiku": os.getenv("AGENT_TALK_EFFORT_HAIKU", "low"), "sonnet": os.getenv("AGENT_TALK_EFFORT_SONNET", "medium")}
 AGENT_TALK_MODELS = {
     "haiku": os.getenv("AGENT_TALK_HAIKU", _at.MODEL_IDS_DEFAULT["haiku"]),
     "sonnet": os.getenv("AGENT_TALK_SONNET", _at.MODEL_IDS_DEFAULT["sonnet"]),
@@ -24137,28 +24139,37 @@ def _agent_talk_advance(cid):
 
 
 def _agent_talk_call(model, system, messages, tier):
-    """One Messages call for a round. Thinking is turned off (a 220-word reply
-    needs none, and T1 showed the budget vanishing into it); an API that does
-    not accept the parameter for this model gets the call without it; an
-    unknown model id falls back to the app's own model for the tier."""
+    """One Messages call for a round, with thinking at its minimum: a 220-word
+    reply needs none, and T1/T1b (2 Nov) showed the output budget vanishing
+    into it (700 tokens of thinking, no text; then a reply cut mid-sentence).
+    Per platform.claude.com/docs/en/build-with-claude/effort (read 2 Nov 2026):
+    Haiku 5.5 takes thinking {"type": "disabled"}; Sonnet 5.5's lowest setting
+    is {"type": "between_tools"} (no tools here, so none); effort low/medium.
+    Sent as extra_body so an older SDK passes them through; an API that
+    refuses them gets the call without; an unknown model id falls back to the
+    app's own model for the tier."""
     kwargs = dict(model=model, max_tokens=AGENT_TALK_MAX_TOKENS, system=system, messages=messages)
+    steer = {"thinking": AGENT_TALK_THINKING.get(tier) or {"type": "disabled"},
+             "output_config": {"effort": AGENT_TALK_EFFORT.get(tier, "low")}}
+
+    def _once(kw):
+        try:
+            return client.messages.create(extra_body=steer, **kw)
+        except Exception as _e1:
+            msg = str(_e1).lower()
+            if "thinking" in msg or "effort" in msg or "output_config" in msg:
+                print(f"[AGENT-TALK] steering refused for {kw['model']} ({str(_e1)[:100]}); calling without it")
+                return client.messages.create(**kw)
+            raise
+
     try:
-        return client.messages.create(thinking={"type": "disabled"}, **kwargs)
-    except Exception as _e1:
-        msg = str(_e1).lower()
-        if "thinking" in msg:
-            print(f"[AGENT-TALK] thinking=disabled refused for {model} ({str(_e1)[:80]}); calling without it")
-            return client.messages.create(**kwargs)
+        return _once(kwargs)
+    except Exception as _e:
         fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN
-        if "model" in msg and fallback != model:
-            print(f"[AGENT-TALK] model {model} refused ({str(_e1)[:80]}); falling back to {fallback}")
+        if "model" in str(_e).lower() and fallback != model:
+            print(f"[AGENT-TALK] model {model} refused ({str(_e)[:80]}); falling back to {fallback}")
             kwargs["model"] = fallback
-            try:
-                return client.messages.create(thinking={"type": "disabled"}, **kwargs)
-            except Exception as _e2:
-                if "thinking" in str(_e2).lower():
-                    return client.messages.create(**kwargs)
-                raise
+            return _once(kwargs)
         raise
 
 
@@ -24223,6 +24234,7 @@ def _agent_talk_run_round_inner(cid, conv):
     text = ""
     stop = ""
     kinds = []
+    think_tok = 0
     try:
         resp = _agent_talk_call(model, system, messages, tier)
         text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
@@ -24230,6 +24242,7 @@ def _agent_talk_run_round_inner(cid, conv):
         stop = str(getattr(resp, "stop_reason", "") or "")
         in_tok = int(getattr(resp.usage, "input_tokens", 0) or 0)
         out_tok = int(getattr(resp.usage, "output_tokens", 0) or 0)
+        think_tok = int(getattr(getattr(resp.usage, "output_tokens_details", None), "thinking_tokens", 0) or 0)
         if not text.strip():
             # T1 (2 Nov 18:17): five rounds came back with 700 output tokens and
             # no text — the budget went to thinking. An empty round is never
@@ -24252,7 +24265,7 @@ def _agent_talk_run_round_inner(cid, conv):
     mem_quoted, mem_verified = _at.memory_verified(parsed, agent, _at.excerpt_lines(excerpt))
     posted = _at_post(conv["channel"], _at.reply_header(agent, round_n) + "\n" + body, thread_ts=conv["ts"])
     conv["log"].append({"agent": agent, "round": round_n, "tier": tier, "model": model, "in": in_tok,
-                        "out": out_tok, "usd": usd, "secs": secs, "stop": stop, "blocks": kinds, "mem_quoted": mem_quoted,
+                        "out": out_tok, "think": think_tok, "usd": usd, "secs": secs, "stop": stop, "blocks": kinds, "mem_quoted": mem_quoted,
                         "mem_verified": mem_verified, "mem_lines": result.get("served", 0),
                         "end": end, "ts": posted, "at": time.time()})
     conv["usd"] = round(conv.get("usd", 0.0) + usd, 6)
