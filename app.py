@@ -23966,8 +23966,9 @@ def _at_load(k, default=None):
 def _at_save(k, v):
     try:
         if _pg.enabled():
-            _pg.save_state(k, v)
-            return True
+            if _pg.save_state(k, v):
+                return True
+            _report_error("agent_talk.pg_save", "save_state returned False", k)
     except Exception as _e:
         _report_error("agent_talk.pg_save", _e, k)
     return False
@@ -24161,9 +24162,43 @@ def _agent_talk_call(model, system, messages, tier):
         raise
 
 
+_at_round_guard = {}
+
+
 def _agent_talk_run_round(cid):
-    conv = _at_load(_at_conv_key(cid))
-    if not isinstance(conv, dict) or conv.get("status") not in ("open", "waiting_memory", "stalled"):
+    """One round, guarded: a crash inside is reported to #dev and counted as a
+    stall (T1b, 2 Nov 18:32: a NameError after the Slack post and before the
+    save made the loop re-run ROB's round every minute, nine posts, nothing
+    saved, the cap blind); and no process runs more rounds for one
+    conversation than it can possibly need, whatever pg says."""
+    try:
+        n = _at_round_guard.get(cid, 0) + 1
+        _at_round_guard[cid] = n
+        conv = _at_load(_at_conv_key(cid))
+        if not isinstance(conv, dict):
+            return
+        limit = int(conv.get("max_rounds", _at.MAX_ROUNDS_DEFAULT)) * max(1, len(conv.get("owners") or [])) + 2
+        if n > limit:
+            if n == limit + 1 and conv.get("status") != "closed":
+                _agent_talk_close(conv, "stalled", f"round guard: this process ran {n - 1} rounds for a {limit - 2}-round conversation — stopped.")
+            return
+        _agent_talk_run_round_inner(cid, conv)
+    except Exception as _e:
+        _report_error("agent_talk.round", _e, cid)
+        try:
+            conv = _at_load(_at_conv_key(cid))
+            if isinstance(conv, dict) and conv.get("status") != "closed":
+                conv["stalls"] = int(conv.get("stalls", 0)) + 1
+                if conv["stalls"] >= _at.STALL_RETRIES_MAX:
+                    _agent_talk_close(conv, "stalled", f"round crashed {conv['stalls']} times: {str(_e)[:160]}")
+                else:
+                    _at_save(_at_conv_key(cid), conv)
+        except Exception as _e2:
+            _report_error("agent_talk.round_cleanup", _e2, cid)
+
+
+def _agent_talk_run_round_inner(cid, conv):
+    if conv.get("status") not in ("open", "waiting_memory", "stalled"):
         return
     agent = conv["turn"]
     req = conv.get("memreq") or {}
@@ -24200,7 +24235,16 @@ def _agent_talk_run_round(cid):
             # no text — the budget went to thinking. An empty round is never
             # posted; it is a failure the retry path handles.
             raise RuntimeError(f"empty reply (stop={stop}, blocks={kinds}, out={out_tok})")
-    except Exception as _e:    secs = round(time.time() - t0, 1)
+    except Exception as _e:
+        _report_error("agent_talk.api", _e, f"{cid} {agent} {model}")
+        conv["stalls"] = int(conv.get("stalls", 0)) + 1
+        conv["status"] = "open"
+        conv["memreq"] = req          # keep the excerpt; retry on the next pass
+        _at_save(_at_conv_key(cid), conv)
+        if conv["stalls"] >= _at.STALL_RETRIES_MAX:
+            _agent_talk_close(conv, "stalled", f"API refused {conv['stalls']} times: {str(_e)[:160]}")
+        return
+    secs = round(time.time() - t0, 1)
     usd = _at.cost_usd(tier, in_tok, out_tok)
     body, end, nxt = _at.enforce_ending(text, agent, round_n, partners, closing)
     parsed = _at.parse_reply(body)
@@ -24510,6 +24554,22 @@ def admin_agent_talk_decide():
     line = f"📱 Michael answered decision {d['id']} in his session: *{answer.upper()}*"
     _at_post(d["channel"], line, thread_ts=d["ts"])
     return jsonify({"ok": True, "decision": d}), 200
+
+
+@app.route('/admin/agent-talk/stop', methods=['POST'])
+def admin_agent_talk_stop():
+    """POST {conv: <channel:ts>} — close a running conversation now (no decision, no text)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    cid = payload.get("conv") or request.form.get("conv") or ""
+    conv = _at_load(_at_conv_key(cid)) if cid else None
+    if not isinstance(conv, dict):
+        return jsonify({"ok": False, "error": "no such conversation"}), 404
+    if conv.get("status") == "closed":
+        return jsonify({"ok": True, "conv": conv, "note": "already closed"}), 200
+    _agent_talk_close(conv, "stopped", "⏹ stopped by Michael/DEV through the admin route.")
+    return jsonify({"ok": True, "conv": conv}), 200
 
 
 @app.route('/admin/agent-talk/mode', methods=['POST'])

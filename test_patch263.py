@@ -277,6 +277,112 @@ with tempfile.TemporaryDirectory() as td:
           and ns["excerpt_for"]({"file": "_HANDOFF.md"})["ok"] is False and ns["excerpt_for"]({"file": "rob.md"})["ok"] is False)
     check("bridge.missing_file", ns["excerpt_for"]({"file": "LARA.md"})["error"].startswith("no such memory file"))
 
+# ── 5 · a round, end to end, with stubs (T1b: a NameError after the post looped a round forever) ──
+import ast
+import types
+tree = ast.parse(SRC)
+NAMES = {"_agent_talk_run_round", "_agent_talk_run_round_inner", "_agent_talk_close", "_agent_talk_decision",
+         "_at_conv_key", "_at_spend_today", "_at_cap_alert_once", "_agent_talk_advance", "_at_index_drop",
+         "_at_index_add", "_at_open_conversations", "_at_load", "_at_save"}
+code5 = "\n".join(ast.get_source_segment(SRC, n) for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in NAMES)
+
+
+class _Blk:
+    def __init__(self, t, text=""):
+        self.type, self.text = t, text
+
+
+class _Resp:
+    def __init__(self, text, out=300):
+        self.content = [_Blk("thinking", ""), _Blk("text", text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=8000, output_tokens=out)
+
+
+def _harness(reply_text, raise_api=False):
+    PG = {}
+    posts = []
+    alerts = []
+    errors = []
+
+    class _PG:
+        @staticmethod
+        def enabled():
+            return True
+
+        @staticmethod
+        def save_state(k, v):
+            PG[k] = json.loads(json.dumps(v, default=str))
+            return True
+
+        @staticmethod
+        def load_state(k, default=None):
+            return json.loads(json.dumps(PG.get(k, default)))
+
+    class _T:
+        def __init__(self, target=None, args=(), daemon=True, name=""):
+            self.target, self.args = target, args
+
+        def start(self):
+            pass
+
+    def _call(model, system, messages, tier):
+        if raise_api:
+            raise RuntimeError("boom")
+        return _Resp(reply_text)
+
+    G = {"_pg": _PG, "_at": at, "time": time, "json": json, "threading": types.SimpleNamespace(Thread=_T),
+         "_report_error": lambda c, e, d="": errors.append((c, str(e), d)),
+         "_at_read_thread": lambda ch, ts: [{"text": KICK, "user": "U1"}],
+         "_at_post": lambda ch, text, thread_ts=None: (posts.append((ch, text, thread_ts)) or "1.1"),
+         "_agent_talk_call": _call, "AGENT_TALK_MODELS": {"haiku": "h", "sonnet": "s"}, "AGENT_TALK_CAP_USD": 3.0,
+         "_TALLY": types.SimpleNamespace(bump=lambda *a, **k: None), "_at_today": lambda: "2026-11-02",
+         "_operator_alert": types.SimpleNamespace(alert=lambda k, t, eric_text=None: (alerts.append((k, t)) or {"sms": "sent"})),
+         "_AT_INDEX": "agent_talk_index", "_AT_DECISIONS": "agent_decisions", "_at_round_guard": {},
+         "_at_cap_alerted": {"day": ""}, "_at_lock": __import__("threading").Lock(), "datetime": __import__("datetime").datetime,
+         "print": lambda *a, **k: None}
+    exec(code5, G)
+    conv = at.new_conversation("C0AR7NY6SHF", "1.0", KICK, at.parse_assignment(KICK))
+    conv["memreq"] = {"id": "r1", "agent": "ROB", "served": {"ok": True, "lines": "17419: Giselle paid in full", "served": 1}}
+    conv["status"] = "open"
+    PG["agent_talk:C0AR7NY6SHF:1.0"] = json.loads(json.dumps(conv))
+    PG["agent_talk_index"] = ["C0AR7NY6SHF:1.0"]
+    return G, PG, posts, alerts, errors
+
+
+import json
+G, PG, posts, alerts, errors = _harness('ROB.md line 17419: "Giselle paid in full"\nfacts\n— ROB (round 1)\n→ DEV, your turn')
+G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0")
+c = PG["agent_talk:C0AR7NY6SHF:1.0"]
+check("round.posted_once", len(posts) == 1 and posts[0][1].startswith("*ROB* · round 1\nROB.md line 17419") and posts[0][2] == "1.0", posts)
+check("round.state_saved", c["rounds"] == {"ROB": 1, "DEV": 0} and c["turn"] == "DEV" and c["status"] == "open" and c["memreq"] is None, (c["rounds"], c["turn"], c["status"]))
+check("round.log_and_cost", len(c["log"]) == 1 and c["log"][0]["tier"] == "sonnet" and c["log"][0]["mem_verified"] is True
+      and c["log"][0]["stop"] == "end_turn" and c["log"][0]["blocks"] == ["thinking", "text"] and abs(c["usd"] - at.cost_usd("sonnet", 8000, 300)) < 1e-9, c["log"])
+check("round.spend_saved", PG.get("agent_talk_spend:2026-11-02", {}).get("rounds") == 1 and PG["agent_talk_spend:2026-11-02"]["by_tier"] == {"sonnet": 1})
+check("round.no_errors", errors == [], errors)
+G, PG, posts, alerts, errors = _harness("", raise_api=True)
+G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0")
+c = PG["agent_talk:C0AR7NY6SHF:1.0"]
+check("round.api_failure_is_a_stall_not_a_post", posts == [] and c["stalls"] == 1 and c["status"] == "open" and c["memreq"] is not None
+      and errors and errors[0][0] == "agent_talk.api", (posts, c.get("stalls"), errors))
+G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0"); G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0")
+c = PG["agent_talk:C0AR7NY6SHF:1.0"]
+check("round.three_stalls_close", c["status"] == "closed" and c["close_reason"] == "stalled" and any("API refused 3 times" in p[1] for p in posts), (c["status"], posts))
+G, PG, posts, alerts, errors = _harness('x\n— ROB (round 1)\n→ DEV, your turn')
+G["_at_save"] = lambda k, v: False     # pg refusing every save: the guard must still stop the loop
+for _ in range(12):
+    G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0")
+check("round.guard_stops_a_runaway", len(posts) == 3 * 2 + 2 + 1 and sum("round guard" in p[1] for p in posts) == 1, len(posts))
+G, PG, posts, alerts, errors = _harness('DEV.md line 1: x\n— DEV (round 1)\nAGREED — for Michael:\n• one line\n• two')
+c0 = PG["agent_talk:C0AR7NY6SHF:1.0"]; c0["turn"] = "DEV"; c0["memreq"]["agent"] = "DEV"
+G["_agent_talk_run_round"]("C0AR7NY6SHF:1.0")
+c = PG["agent_talk:C0AR7NY6SHF:1.0"]
+check("round.agreed_makes_a_decision", c["status"] == "closed" and c["close_reason"] == "agreed" and c["decision_id"] == 1
+      and PG["agent_decision:1"]["sms"].startswith("MWM decision 1: one line two") and alerts and alerts[0][0] == "decision"
+      and any("⏱ 1 round" in p[1] for p in posts), (c["status"], alerts, [p[1][:40] for p in posts]))
+check("app.stop_route", "@app.route('/admin/agent-talk/stop'" in SRC and '_agent_talk_close(conv, "stopped"' in SRC)
+check("app.save_false_is_reported", '_report_error("agent_talk.pg_save", "save_state returned False", k)' in SRC)
+
 print(f"static+behaviour: {passed} passed, {failed} failed")
 r_ = subprocess.run([sys.executable, os.path.join(HERE, "test_patch262.py")], capture_output=True, text=True)
 tail = [l for l in r_.stdout.strip().splitlines() if l.startswith("TOTAL ")]

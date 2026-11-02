@@ -458,7 +458,7 @@ def footer(conv):
         mem_v += 1 if r.get("mem_verified") else 0
     tier_txt = ", ".join(f"{n} {t.capitalize()}" for t, n in sorted(tiers.items()))
     reason = {"agreed": "AGREED", "needs": "NEEDS MICHAEL", "done": "DONE", "rounds": "round limit",
-              "capped": "daily cap", "stalled": "stalled"}.get(conv.get("close_reason", ""), conv.get("close_reason", ""))
+              "capped": "daily cap", "stalled": "stalled", "stopped": "stopped"}.get(conv.get("close_reason", ""), conv.get("close_reason", ""))
     return (f"⏱ {len(rounds)} round{'s' if len(rounds) != 1 else ''} · {secs // 60}m {secs % 60:02d}s · "
             f"${conv.get('usd', 0.0):.3f} ({tier_txt or 'no calls'}) · memory quoted {mem_q}/{len(rounds)}, "
             f"verified {mem_v}/{len(rounds)} · {reason}")
