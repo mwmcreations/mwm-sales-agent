@@ -23932,6 +23932,7 @@ import agent_talk as _at
 
 AGENT_TALK_MODE_DEFAULT = os.getenv("AGENT_TALK_MODE", "test").strip().lower() or "test"
 AGENT_TALK_CAP_USD = float(os.getenv("AGENT_TALK_DAILY_CAP_USD", str(_at.DAILY_CAP_DEFAULT_USD)) or _at.DAILY_CAP_DEFAULT_USD)
+AGENT_TALK_MAX_TOKENS = int(os.getenv("AGENT_TALK_MAX_TOKENS", "1500") or 1500)
 AGENT_TALK_MODELS = {
     "haiku": os.getenv("AGENT_TALK_HAIKU", _at.MODEL_IDS_DEFAULT["haiku"]),
     "sonnet": os.getenv("AGENT_TALK_SONNET", _at.MODEL_IDS_DEFAULT["sonnet"]),
@@ -24134,6 +24135,32 @@ def _agent_talk_advance(cid):
     _agent_talk_run_round(cid)
 
 
+def _agent_talk_call(model, system, messages, tier):
+    """One Messages call for a round. Thinking is turned off (a 220-word reply
+    needs none, and T1 showed the budget vanishing into it); an API that does
+    not accept the parameter for this model gets the call without it; an
+    unknown model id falls back to the app's own model for the tier."""
+    kwargs = dict(model=model, max_tokens=AGENT_TALK_MAX_TOKENS, system=system, messages=messages)
+    try:
+        return client.messages.create(thinking={"type": "disabled"}, **kwargs)
+    except Exception as _e1:
+        msg = str(_e1).lower()
+        if "thinking" in msg:
+            print(f"[AGENT-TALK] thinking=disabled refused for {model} ({str(_e1)[:80]}); calling without it")
+            return client.messages.create(**kwargs)
+        fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN
+        if "model" in msg and fallback != model:
+            print(f"[AGENT-TALK] model {model} refused ({str(_e1)[:80]}); falling back to {fallback}")
+            kwargs["model"] = fallback
+            try:
+                return client.messages.create(thinking={"type": "disabled"}, **kwargs)
+            except Exception as _e2:
+                if "thinking" in str(_e2).lower():
+                    return client.messages.create(**kwargs)
+                raise
+        raise
+
+
 def _agent_talk_run_round(cid):
     conv = _at_load(_at_conv_key(cid))
     if not isinstance(conv, dict) or conv.get("status") not in ("open", "waiting_memory", "stalled"):
@@ -24159,32 +24186,21 @@ def _agent_talk_run_round(cid):
     t0 = time.time()
     in_tok = out_tok = 0
     text = ""
+    stop = ""
+    kinds = []
     try:
-        try:
-            resp = client.messages.create(model=model, max_tokens=700, system=system, messages=messages)
-        except Exception as _e1:
-            # an unknown model id (a renamed snapshot, a typo in the env) falls back
-            # to the app's own models for this round, and says so in the log
-            fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN
-            if "model" in str(_e1).lower() and fallback != model:
-                print(f"[AGENT-TALK] model {model} refused ({str(_e1)[:80]}); falling back to {fallback}")
-                model = fallback
-                resp = client.messages.create(model=model, max_tokens=700, system=system, messages=messages)
-            else:
-                raise
-        text = "".join(getattr(b, "text", "") for b in resp.content)
+        resp = _agent_talk_call(model, system, messages, tier)
+        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+        kinds = [getattr(b, "type", "?") for b in resp.content]
+        stop = str(getattr(resp, "stop_reason", "") or "")
         in_tok = int(getattr(resp.usage, "input_tokens", 0) or 0)
         out_tok = int(getattr(resp.usage, "output_tokens", 0) or 0)
-    except Exception as _e:
-        _report_error("agent_talk.api", _e, f"{cid} {agent} {model}")
-        conv["stalls"] = int(conv.get("stalls", 0)) + 1
-        conv["status"] = "open"
-        conv["memreq"] = req          # keep the excerpt; retry on the next pass
-        _at_save(_at_conv_key(cid), conv)
-        if conv["stalls"] >= _at.STALL_RETRIES_MAX:
-            _agent_talk_close(conv, "stalled", f"API refused {conv['stalls']} times: {str(_e)[:160]}")
-        return
-    secs = round(time.time() - t0, 1)
+        if not text.strip():
+            # T1 (2 Nov 18:17): five rounds came back with 700 output tokens and
+            # no text — the budget went to thinking. An empty round is never
+            # posted; it is a failure the retry path handles.
+            raise RuntimeError(f"empty reply (stop={stop}, blocks={kinds}, out={out_tok})")
+    except Exception as _e:    secs = round(time.time() - t0, 1)
     usd = _at.cost_usd(tier, in_tok, out_tok)
     body, end, nxt = _at.enforce_ending(text, agent, round_n, partners, closing)
     parsed = _at.parse_reply(body)
@@ -24192,7 +24208,7 @@ def _agent_talk_run_round(cid):
     mem_quoted, mem_verified = _at.memory_verified(parsed, agent, _at.excerpt_lines(excerpt))
     posted = _at_post(conv["channel"], _at.reply_header(agent, round_n) + "\n" + body, thread_ts=conv["ts"])
     conv["log"].append({"agent": agent, "round": round_n, "tier": tier, "model": model, "in": in_tok,
-                        "out": out_tok, "usd": usd, "secs": secs, "mem_quoted": mem_quoted,
+                        "out": out_tok, "usd": usd, "secs": secs, "stop": stop, "blocks": kinds, "mem_quoted": mem_quoted,
                         "mem_verified": mem_verified, "mem_lines": result.get("served", 0),
                         "end": end, "ts": posted, "at": time.time()})
     conv["usd"] = round(conv.get("usd", 0.0) + usd, 6)

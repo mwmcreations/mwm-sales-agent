@@ -228,8 +228,12 @@ blk = SRC[SRC.index("def _agent_talk_maybe_start("):SRC.index("# S7 — STUDIO P
 check("app.routes_fail_closed", blk.count("_admin_secret_ok(") >= 6)
 check("app.mode_gate", 'if mode == "off":' in blk and 'if mode == "test" and not parsed.get("test") and via != "admin":' in blk)
 check("app.cap_checked_before_round", "if _at.capped(spend, AGENT_TALK_CAP_USD):" in blk and '_agent_talk_close(conv, "capped")' in blk)
-check("app.one_api_call_per_round", blk.count("client.messages.create(") == 2 and blk.count("max_tokens=700") == 2
-      and 'fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN' in blk)
+check("app.one_call_helper", blk.count("resp = _agent_talk_call(model, system, messages, tier)") == 1
+      and "def _agent_talk_call(model, system, messages, tier):" in blk and 'fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN' in blk)
+check("app.thinking_off_with_fallback", 'client.messages.create(thinking={"type": "disabled"}, **kwargs)' in blk
+      and 'if "thinking" in msg:' in blk and "AGENT_TALK_MAX_TOKENS" in blk and 'os.getenv("AGENT_TALK_MAX_TOKENS", "1500")' in SRC)
+check("app.text_blocks_only_and_empty_is_failure", 'if getattr(b, "type", "") == "text")' in blk
+      and 'raise RuntimeError(f"empty reply (stop={stop}, blocks={kinds}, out={out_tok})")' in blk and '"stop": stop, "blocks": kinds' in blk)
 check("app.model_from_tier", "model = AGENT_TALK_MODELS[tier]" in blk and 'tier = _at.model_for(agent, conv.get("kickoff", ""), partner_text, closing=closing)' in blk)
 check("app.meters_tokens", '"in": in_tok,' in blk and '"out": out_tok, "usd": usd, "secs": secs' in blk and "_at.spend_add(_at_spend_today(), usd, tier)" in blk)
 check("app.memory_verified_logged", '"mem_quoted": mem_quoted' in blk and '"mem_verified": mem_verified' in blk)
