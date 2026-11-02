@@ -9643,6 +9643,12 @@ def _handle_michael_sms(frm, body):
             _mirror_to_maya_shadow_async({"name": "Michael (Command/SMS)", "phone": frm, "is_michael": True}, "inbound", f"[SMS] {text}")
         except Exception:
             pass
+        # PATCH #263 — an answer to an open agent decision ("yes", "not yet",
+        # "D2 no") is matched and receipted BEFORE command mode, which on
+        # 2 Nov answered "1) not yet 2) not yet" with "I'm missing context".
+        _at_hook = globals().get("_agent_talk_owner_text")   # absent when this function is lifted alone (test_patch161)
+        if _at_hook and _at_hook(frm, text):
+            return
         if _oc.is_confirmation(text) and _pg.enabled():
             alerts = [a for a in (_pg.load_state("unconfirmed_alerts", []) or []) if isinstance(a, dict)]
             marked = _oc.targets(text, alerts, now)
@@ -17957,6 +17963,14 @@ def slack_events():
 
         # ── Dedicated agent channels: direct routing ──
         elif channel_id in AGENT_CHANNELS and text.strip():
+            # PATCH #263 — an ASSIGNMENT ("Owners: ROB + DEV") opens an
+            # agent-to-agent conversation the app runs; anything else keeps
+            # the old path (silent for the agents without an action path).
+            try:
+                if _agent_talk_maybe_start(channel_id, text, user_id, event.get("ts", ""), thread_ts):
+                    return "OK", 200
+            except Exception as _ate:
+                _report_error("agent_talk.start", _ate, channel_id)
             threading.Thread(
                 target=_handle_slack_agent_message,
                 args=(channel_id, text, user_id, thread_ts),
@@ -20842,6 +20856,7 @@ def health_check():
         "sheets_queue": sheets_queue_stats,   # Patch #107
         "booking_truth": booking_truth_stats, # S30
         "operator_remind": _operator_remind_status(),   # PATCH #254
+        "agent_talk": _agent_talk_status(),             # PATCH #263
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -23899,6 +23914,600 @@ def admin_operator_text():
     if _orm.due([row]):
         out["result"] = _operator_remind_send(row)
     return jsonify(out), 200
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #263 — AGENTS TALK TO EACH OTHER (agent_talk.py)
+#
+# An ASSIGNMENT in an agent channel ("Owners: ROB + DEV") opens a
+# conversation the APP runs: it asks the Mac bridge for the agent's own
+# memory lines, makes ONE Messages API call per round (Haiku routine /
+# Sonnet money), posts the reply in the thread as that agent, hands the turn
+# over itself, meters tokens and dollars, stops at a daily cap, turns
+# "AGREED — for Michael:" into a numbered decision texted to Michael, and
+# matches his text answer back to it before Maya's command mode sees it.
+# AGENT_TALK_MODE off|test|on (env; pg 'agent_talk_mode' overrides).
+# ══════════════════════════════════════════════════════════════════════
+import agent_talk as _at
+
+AGENT_TALK_MODE_DEFAULT = os.getenv("AGENT_TALK_MODE", "test").strip().lower() or "test"
+AGENT_TALK_CAP_USD = float(os.getenv("AGENT_TALK_DAILY_CAP_USD", str(_at.DAILY_CAP_DEFAULT_USD)) or _at.DAILY_CAP_DEFAULT_USD)
+AGENT_TALK_MODELS = {
+    "haiku": os.getenv("AGENT_TALK_HAIKU", _at.MODEL_IDS_DEFAULT["haiku"]),
+    "sonnet": os.getenv("AGENT_TALK_SONNET", _at.MODEL_IDS_DEFAULT["sonnet"]),
+}
+_AT_INDEX = "agent_talk_index"           # pg: [conv ids] open conversations
+_AT_DECISIONS = "agent_decisions"        # pg: {"next": n, "ids": [..]}
+_AT_BRIDGE = "agent_talk_bridge"         # pg: {"last_seen": epoch, "name": ...}
+_at_lock = threading.Lock()
+
+
+def _at_mode():
+    try:
+        m = (_pg.load_state("agent_talk_mode", "") or "").strip().lower() if _pg.enabled() else ""
+    except Exception:
+        m = ""
+    return m if m in ("off", "test", "on") else AGENT_TALK_MODE_DEFAULT
+
+
+def _at_today():
+    return datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
+
+
+def _at_load(k, default=None):
+    try:
+        return _pg.load_state(k, default) if _pg.enabled() else default
+    except Exception as _e:
+        _report_error("agent_talk.pg_load", _e, k)
+        return default
+
+
+def _at_save(k, v):
+    try:
+        if _pg.enabled():
+            _pg.save_state(k, v)
+            return True
+    except Exception as _e:
+        _report_error("agent_talk.pg_save", _e, k)
+    return False
+
+
+def _at_post(channel, text, thread_ts=None):
+    """One Slack post, in a thread when asked. Returns the ts or ''."""
+    if not SLACK_BOT_TOKEN:
+        return ""
+    payload = {"channel": channel, "text": text, "unfurl_links": False, "unfurl_media": False}
+    if thread_ts:
+        payload["thread_ts"] = str(thread_ts)
+    try:
+        r = http_requests.post("https://slack.com/api/chat.postMessage", json=payload,
+                               headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                                        "Content-Type": "application/json"}, timeout=10)
+        data = r.json()
+        if not data.get("ok"):
+            _report_error("agent_talk.slack_post", data.get("error", "?"), channel)
+            return ""
+        return data.get("ts", "")
+    except Exception as _e:
+        _report_error("agent_talk.slack_post", _e, channel)
+        return ""
+
+
+def _at_read_thread(channel, ts):
+    """conversations.replies -> raw rows (oldest first)."""
+    try:
+        r = http_requests.get("https://slack.com/api/conversations.replies",
+                              headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                              params={"channel": channel, "ts": str(ts), "limit": 60}, timeout=10)
+        data = r.json()
+        if not data.get("ok"):
+            _report_error("agent_talk.slack_read", data.get("error", "?"), f"{channel} {ts}")
+            return []
+        return data.get("messages", [])
+    except Exception as _e:
+        _report_error("agent_talk.slack_read", _e, f"{channel} {ts}")
+        return []
+
+
+def _at_index_add(cid):
+    idx = [c for c in (_at_load(_AT_INDEX, []) or []) if isinstance(c, str)]
+    if cid not in idx:
+        idx.append(cid)
+    _at_save(_AT_INDEX, idx[-50:])
+
+
+def _at_index_drop(cid):
+    idx = [c for c in (_at_load(_AT_INDEX, []) or []) if isinstance(c, str) and c != cid]
+    _at_save(_AT_INDEX, idx)
+
+
+def _at_conv_key(cid):
+    return "agent_talk:" + cid
+
+
+def _at_open_conversations():
+    out = []
+    for cid in (_at_load(_AT_INDEX, []) or []):
+        conv = _at_load(_at_conv_key(cid))
+        if isinstance(conv, dict) and conv.get("status") in ("open", "waiting_memory", "stalled"):
+            out.append(conv)
+        elif isinstance(conv, dict):
+            _at_index_drop(cid)
+    return out
+
+
+def _at_spend_today():
+    return _at_load(_at.spend_key(_at_today()), {}) or {}
+
+
+def _at_spend_month():
+    total = 0.0
+    rounds = 0
+    try:
+        rows = _pg.load_prefix("agent_talk_spend:", limit=60) if _pg.enabled() else []
+    except Exception:
+        rows = []
+    month = _at_today()[:7]
+    for k, v in (rows or {}).items():
+        if isinstance(k, str) and k.startswith("agent_talk_spend:" + month) and isinstance(v, dict):
+            total += float(v.get("usd", 0.0))
+            rounds += int(v.get("rounds", 0))
+    return {"usd": round(total, 4), "rounds": rounds}
+
+
+def _agent_talk_status():
+    bridge = _at_load(_AT_BRIDGE, {}) or {}
+    seen = bridge.get("last_seen")
+    dec = _at_load(_AT_DECISIONS, {}) or {}
+    open_dec = []
+    for n in (dec.get("ids") or [])[-20:]:
+        d = _at_load(f"agent_decision:{n}")
+        if isinstance(d, dict) and d.get("status") in ("open", "later"):
+            open_dec.append({"id": d["id"], "status": d["status"], "created": d.get("created")})
+    return {
+        "mode": _at_mode(), "cap_usd": AGENT_TALK_CAP_USD, "today": _at_spend_today(),
+        "month": _at_spend_month(), "models": AGENT_TALK_MODELS,
+        "open": [{"id": c["id"], "status": c["status"], "turn": c.get("turn"), "usd": c.get("usd"),
+                  "rounds": c.get("rounds")} for c in _at_open_conversations()],
+        "open_decisions": open_dec,
+        "bridge_seen_s_ago": (int(time.time() - seen) if seen else None),
+    }
+
+
+# ── starting ──────────────────────────────────────────────────────────
+def _agent_talk_maybe_start(channel_id, text, user_id, ts, thread_ts=None, via="slack"):
+    """A top-level message in an agent channel that reads as an ASSIGNMENT
+    opens a conversation (mode permitting). Returns the conversation or None."""
+    if thread_ts and str(thread_ts) != str(ts):
+        return None
+    parsed = _at.parse_assignment(text)
+    if not parsed:
+        return None
+    mode = _at_mode()
+    if mode == "off":
+        print(f"[AGENT-TALK] assignment ignored (mode off) in {channel_id}")
+        return None
+    if mode == "test" and not parsed.get("test") and via != "admin":
+        print(f"[AGENT-TALK] assignment ignored (mode test, kickoff not tagged [test]) in {channel_id}")
+        return None
+    cid = _at.conv_id(channel_id, ts)
+    if _at_load(_at_conv_key(cid)):
+        return None            # already running (Slack retried the event)
+    conv = _at.new_conversation(channel_id, ts, text, parsed, author_user=user_id or "")
+    _at_save(_at_conv_key(cid), conv)
+    _at_index_add(cid)
+    print(f"[AGENT-TALK] opened {cid}: owners {conv['owners']}, first {conv['turn']}, test={conv['test']}")
+    _at_post(channel_id, f"🤝 conversation open · owners {' + '.join(conv['owners'])} · {conv['turn']} speaks first "
+                         f"· max {conv['max_rounds']} rounds each · mode {mode}", thread_ts=ts)
+    threading.Thread(target=_agent_talk_advance, args=(cid,), daemon=True).start()
+    return conv
+
+
+# ── one round ─────────────────────────────────────────────────────────
+def _agent_talk_advance(cid):
+    """Move one conversation forward by one step: file a memory request if
+    none is pending, or run the round if the excerpt has arrived."""
+    with _at_lock:
+        conv = _at_load(_at_conv_key(cid))
+        if not isinstance(conv, dict) or conv.get("status") not in ("open", "waiting_memory", "stalled"):
+            return
+        agent = conv.get("turn")
+        if not agent:
+            return
+        spend = _at_spend_today()
+        if _at.capped(spend, AGENT_TALK_CAP_USD):
+            _agent_talk_close(conv, "capped")
+            return
+        req = conv.get("memreq")
+        if not req or req.get("served") is None:
+            if not req:
+                thread = _at.thread_messages(_at_read_thread(conv["channel"], conv["ts"]))
+                partner_text = thread[-1]["text"] if len(thread) > 1 else ""
+                req = _at.memory_request(conv, agent, partner_text=partner_text)
+                conv["memreq"] = req
+                conv["status"] = "waiting_memory"
+                _at_save(_at_conv_key(cid), conv)
+                _at_save(f"agent_talk_memreq:{req['id']}", req)
+                print(f"[AGENT-TALK] {cid}: memory request {req['id']} for {agent} ({len(req['keywords'])} keywords)")
+            return
+    # the excerpt is here: run the round outside the lock (the API call takes seconds)
+    _agent_talk_run_round(cid)
+
+
+def _agent_talk_run_round(cid):
+    conv = _at_load(_at_conv_key(cid))
+    if not isinstance(conv, dict) or conv.get("status") not in ("open", "waiting_memory", "stalled"):
+        return
+    agent = conv["turn"]
+    req = conv.get("memreq") or {}
+    result = (req.get("served") or {}) if isinstance(req, dict) else {}
+    excerpt = result.get("lines", "") if result.get("ok") else ""
+    note = "" if result.get("ok") else (result.get("error") or "bridge did not answer")
+    raw = _at_read_thread(conv["channel"], conv["ts"])
+    thread = _at.thread_messages(raw)
+    round_n = conv["rounds"].get(agent, 0) + 1
+    partners = [o for o in conv["owners"] if o != agent]
+    partner_text = ""
+    for m in reversed(thread[1:]):
+        if m["who"] in partners or m["who"].split(" ")[0] in partners:
+            partner_text = m["text"]
+            break
+    closing = round_n >= conv["max_rounds"]
+    tier = _at.model_for(agent, conv.get("kickoff", ""), partner_text, closing=closing)
+    model = AGENT_TALK_MODELS[tier]
+    system, messages = _at.build_prompt(conv, agent, thread, excerpt, round_n, memory_note=note)
+    t0 = time.time()
+    in_tok = out_tok = 0
+    text = ""
+    try:
+        try:
+            resp = client.messages.create(model=model, max_tokens=700, system=system, messages=messages)
+        except Exception as _e1:
+            # an unknown model id (a renamed snapshot, a typo in the env) falls back
+            # to the app's own models for this round, and says so in the log
+            fallback = MODEL_FAST if tier == "haiku" else MODEL_MAIN
+            if "model" in str(_e1).lower() and fallback != model:
+                print(f"[AGENT-TALK] model {model} refused ({str(_e1)[:80]}); falling back to {fallback}")
+                model = fallback
+                resp = client.messages.create(model=model, max_tokens=700, system=system, messages=messages)
+            else:
+                raise
+        text = "".join(getattr(b, "text", "") for b in resp.content)
+        in_tok = int(getattr(resp.usage, "input_tokens", 0) or 0)
+        out_tok = int(getattr(resp.usage, "output_tokens", 0) or 0)
+    except Exception as _e:
+        _report_error("agent_talk.api", _e, f"{cid} {agent} {model}")
+        conv["stalls"] = int(conv.get("stalls", 0)) + 1
+        conv["status"] = "open"
+        conv["memreq"] = req          # keep the excerpt; retry on the next pass
+        _at_save(_at_conv_key(cid), conv)
+        if conv["stalls"] >= _at.STALL_RETRIES_MAX:
+            _agent_talk_close(conv, "stalled", f"API refused {conv['stalls']} times: {str(_e)[:160]}")
+        return
+    secs = round(time.time() - t0, 1)
+    usd = _at.cost_usd(tier, in_tok, out_tok)
+    body, end, nxt = _at.enforce_ending(text, agent, round_n, partners, closing)
+    parsed = _at.parse_reply(body)
+    parsed["end"], parsed["next"] = end, nxt
+    mem_quoted, mem_verified = _at.memory_verified(parsed, agent, _at.excerpt_lines(excerpt))
+    posted = _at_post(conv["channel"], _at.reply_header(agent, round_n) + "\n" + body, thread_ts=conv["ts"])
+    conv["log"].append({"agent": agent, "round": round_n, "tier": tier, "model": model, "in": in_tok,
+                        "out": out_tok, "usd": usd, "secs": secs, "mem_quoted": mem_quoted,
+                        "mem_verified": mem_verified, "mem_lines": result.get("served", 0),
+                        "end": end, "ts": posted, "at": time.time()})
+    conv["usd"] = round(conv.get("usd", 0.0) + usd, 6)
+    conv["in_tok"] = int(conv.get("in_tok", 0)) + in_tok
+    conv["out_tok"] = int(conv.get("out_tok", 0)) + out_tok
+    conv["memreq"] = None
+    conv["stalls"] = 0
+    _at_save(_at.spend_key(_at_today()), _at.spend_add(_at_spend_today(), usd, tier))
+    status = _at.apply_reply(conv, agent, parsed)
+    _at_save(_at_conv_key(cid), conv)
+    print(f"[AGENT-TALK] {cid}: {agent} r{round_n} {tier} {in_tok} in/{out_tok} out ${usd:.4f} {secs}s "
+          f"memory {'verified' if mem_verified else ('quoted' if mem_quoted else 'none')} -> {end or 'turn'} {nxt}")
+    _TALLY.bump("agent_talk.round", tier)
+    if status == "closed":
+        _agent_talk_close(conv, conv.get("close_reason", ""), agreed_text=_at.section_after(body, conv.get("close_reason", "agreed"))
+                          if conv.get("close_reason") in ("agreed", "needs", "done") else "")
+    else:
+        threading.Thread(target=_agent_talk_advance, args=(cid,), daemon=True).start()
+
+
+def _agent_talk_close(conv, reason, note="", agreed_text=""):
+    """Close, post the scorecard, and turn AGREED/NEEDS/DONE into a decision."""
+    conv["status"] = "closed"
+    conv["closed"] = conv.get("closed") or time.time()
+    conv["close_reason"] = reason
+    conv["turn"] = ""
+    cid = conv["id"]
+    lines = [_at.footer(conv)]
+    if note:
+        lines.append(note)
+    if reason == "capped":
+        lines.append(f"⛔ daily cap ${AGENT_TALK_CAP_USD:.2f} reached — agents paused until midnight ET. Michael can raise AGENT_TALK_DAILY_CAP_USD.")
+        _at_cap_alert_once()
+    if reason == "rounds":
+        lines.append("⏸ NEEDS MICHAEL: round limit reached without AGREED — read the thread and decide.")
+        agreed_text = agreed_text or "The owners did not reach AGREED within the round limit; see the thread."
+        reason_for_decision = "needs"
+    else:
+        reason_for_decision = reason
+    decision = None
+    if reason in ("agreed", "needs", "rounds"):
+        decision = _agent_talk_decision(conv, agreed_text or "see the thread", kind=reason_for_decision)
+        if decision:
+            conv["decision_id"] = decision["id"]
+            lines.append(f"📱 decision {decision['id']} texted to Michael — his answer by text closes it "
+                         f"({'YES / NO / LATER' if reason_for_decision == 'agreed' else 'starting with D' + str(decision['id'])}).")
+    elif reason == "done":
+        lines.append("✅ DONE — report stays here and in the owner's channel (no text to Michael for a DONE).")
+    _at_save(_at_conv_key(cid), conv)
+    _at_index_drop(cid)
+    _at_post(conv["channel"], "\n".join(lines), thread_ts=conv["ts"])
+    if decision:
+        for o in conv["owners"]:
+            ch = _at.AGENTS.get(o, {}).get("channel")
+            if ch and ch != conv["channel"]:
+                _at_post(ch, f"📱 *Decision {decision['id']}* (from the {', '.join(conv['owners'])} thread in <#{conv['channel']}>): "
+                             f"{decision['text'][:600]}\n_Texted to Michael; nothing is acted on until he answers._")
+    print(f"[AGENT-TALK] {cid}: closed ({reason}) ${conv.get('usd', 0):.4f}")
+
+
+_at_cap_alerted = {"day": ""}
+
+
+def _at_cap_alert_once():
+    day = _at_today()
+    if _at_cap_alerted["day"] == day:
+        return
+    _at_cap_alerted["day"] = day
+    _operator_alert.alert("decision", f"MWM agents paused: the ${AGENT_TALK_CAP_USD:.2f}/day cap for agent conversations was reached. "
+                                      f"They resume at midnight. Raise AGENT_TALK_DAILY_CAP_USD in Railway if you want more today.")
+
+
+# ── decisions ─────────────────────────────────────────────────────────
+def _agent_talk_decision(conv, agreed_text, kind="agreed"):
+    dec = _at_load(_AT_DECISIONS, {}) or {}
+    n = int(dec.get("next", 1))
+    row = _at.new_decision(n, conv, agreed_text, kind=kind)
+    if not _at_save(f"agent_decision:{n}", row):
+        return None
+    dec["next"] = n + 1
+    dec["ids"] = ((dec.get("ids") or []) + [n])[-200:]
+    _at_save(_AT_DECISIONS, dec)
+    res = _operator_alert.alert("decision", row["sms"])
+    row["texted"] = [{"at": time.time(), "result": res.get("sms")}]
+    _at_save(f"agent_decision:{n}", row)
+    _TALLY.bump("agent_talk.decision", kind)
+    return row
+
+
+def _agent_talk_open_decisions():
+    dec = _at_load(_AT_DECISIONS, {}) or {}
+    out = []
+    for n in (dec.get("ids") or [])[-50:]:
+        d = _at_load(f"agent_decision:{n}")
+        if isinstance(d, dict) and d.get("status") in ("open", "later"):
+            out.append(d)
+    return out
+
+
+def _agent_talk_owner_text(frm, text):
+    """Michael's SMS, before Maya's command mode. True if it was an answer
+    to an open decision (receipt sent, thread + owners told)."""
+    try:
+        open_dec = _agent_talk_open_decisions()
+        if not open_dec:
+            return False
+        decision, answer = _at.owner_reply(text, open_dec)
+        if decision is None:
+            if answer in ("which", "unknown_number"):
+                _send_sms(frm, _at.which_receipt(open_dec), kind=SMS_KIND_OPERATOR)
+                return True
+            return False
+        _at.apply_answer(decision, answer, text)
+        _at_save(f"agent_decision:{decision['id']}", decision)
+        _send_sms(frm, _at.owner_receipt(decision, answer), kind=SMS_KIND_OPERATOR)
+        word = {"yes": "✅ YES", "no": "❌ NO", "later": "⏸ LATER (asked again in 24 h)", "note": "💬 ANSWERED"}[answer]
+        line = f"📱 Michael answered decision {decision['id']} by text: *{word}* — \"{text.strip()[:140]}\""
+        _at_post(decision["channel"], line, thread_ts=decision["ts"])
+        for o in decision.get("owners") or []:
+            ch = _at.AGENTS.get(o, {}).get("channel")
+            if ch and ch != decision["channel"]:
+                _at_post(ch, line)
+        _TALLY.bump("agent_talk.answer", answer)
+        print(f"[AGENT-TALK] decision {decision['id']} answered {answer}")
+        return True
+    except Exception as _e:
+        _report_error("agent_talk.owner_text", _e)
+        return False
+
+
+# ── the loop: memory timeouts, stalls, re-texts ───────────────────────
+def _agent_talk_pass(now=None):
+    now = now or time.time()
+    for conv in _at_open_conversations():
+        cid = conv["id"]
+        req = conv.get("memreq")
+        if conv.get("status") == "waiting_memory" and isinstance(req, dict) and req.get("served") is None:
+            age = now - float(req.get("created", now))
+            if age >= _at.MEMORY_WAIT_STALL_S:
+                conv["stalls"] = int(conv.get("stalls", 0)) + 1
+                if conv["stalls"] >= _at.STALL_RETRIES_MAX:
+                    conv["memreq"] = dict(req, served={"ok": False, "error": "memory bridge did not answer"})
+                    _at_save(_at_conv_key(cid), conv)
+                    _at_post(conv["channel"], f"⚠️ {conv['turn']}'s memory did not arrive from the Mac in "
+                                              f"{int(age // 60)} min (bridge down?) — this round runs without it.",
+                             thread_ts=conv["ts"])
+                    _operator_alert.alert("decision", f"MWM agents: the Mac memory bridge is not answering "
+                                                      f"({conv['turn']} waited {int(age // 60)} min). Is the Mac awake? "
+                                                      f"The round runs without memory.")
+                    threading.Thread(target=_agent_talk_run_round, args=(cid,), daemon=True).start()
+                    continue
+                conv["memreq"] = None       # re-file
+                _at_save(_at_conv_key(cid), conv)
+                _at_post(conv["channel"], f"⏳ still waiting for {conv['turn']}'s memory from the Mac ({int(age // 60)} min) — asking again.",
+                         thread_ts=conv["ts"])
+                threading.Thread(target=_agent_talk_advance, args=(cid,), daemon=True).start()
+            elif age >= _at.MEMORY_WAIT_RETRY_S and not req.get("nudged"):
+                req["nudged"] = True
+                conv["memreq"] = req
+                _at_save(_at_conv_key(cid), conv)
+                _at_save(f"agent_talk_memreq:{req['id']}", req)
+        elif conv.get("status") == "open" and conv.get("turn"):
+            # a turn that has nothing pending (e.g. the app restarted mid-round)
+            if now - float(conv.get("last_activity", now)) > 60:
+                threading.Thread(target=_agent_talk_advance, args=(cid,), daemon=True).start()
+    for d in _agent_talk_open_decisions():
+        txt = _at.retext_due(d, now)
+        if txt:
+            res = _operator_alert.alert("decision", txt)
+            d.setdefault("texted", []).append({"at": now, "result": res.get("sms")})
+        if txt or d.get("status") == "expired":
+            _at_save(f"agent_decision:{d['id']}", d)
+            if d.get("status") == "expired":
+                _at_post(d["channel"], f"⌛ decision {d['id']} expired unanswered after 72 h — the owners stand down; "
+                                       f"Michael can still answer it in his DEV session.", thread_ts=d["ts"])
+
+
+def _agent_talk_loop():
+    while True:
+        try:
+            _heartbeat("agent_talk")
+            _agent_talk_pass()
+        except Exception as _e:
+            _report_error("agent_talk.loop", _e)
+        time.sleep(15)
+
+
+_THREAD_STALE_OVERRIDES["agent_talk"] = 5
+threading.Thread(target=_agent_talk_loop, daemon=True, name="agent_talk").start()
+
+
+# ── admin ─────────────────────────────────────────────────────────────
+@app.route('/admin/agent-talk', methods=['GET'])
+def admin_agent_talk():
+    """GET /admin/agent-talk?secret=…[&conv=<channel:ts>|&decision=<n>] — status, one conversation, one decision."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    cid = request.args.get("conv", "")
+    if cid:
+        conv = _at_load(_at_conv_key(cid))
+        return jsonify({"ok": bool(conv), "conv": conv}), (200 if conv else 404)
+    dn = request.args.get("decision", "")
+    if dn:
+        d = _at_load(f"agent_decision:{dn}")
+        return jsonify({"ok": bool(d), "decision": d}), (200 if d else 404)
+    return jsonify({"ok": True, "status": _agent_talk_status()}), 200
+
+
+@app.route('/admin/agent-talk/start', methods=['POST'])
+def admin_agent_talk_start():
+    """POST /admin/agent-talk/start?secret=… {channel, text} — post a kickoff as the app and run it
+    (the way a test, or an agent session without Slack, starts a conversation); or {channel, ts} to adopt
+    a message already posted."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    channel = payload.get("channel") or request.form.get("channel") or ""
+    text = payload.get("text") or request.form.get("text") or ""
+    ts = payload.get("ts") or request.form.get("ts") or ""
+    if not channel:
+        return jsonify({"ok": False, "error": "channel is required"}), 400
+    if ts and not text:
+        rows = _at_read_thread(channel, ts)
+        text = (rows[0].get("text") if rows else "") or ""
+        if not text:
+            return jsonify({"ok": False, "error": "no such message"}), 404
+    elif text:
+        if not _at.parse_assignment(text):
+            return jsonify({"ok": False, "error": "text is not an assignment (needs ASSIGNMENT + Owners: X + Y)"}), 400
+        ts = _at_post(channel, text)
+        if not ts:
+            return jsonify({"ok": False, "error": "could not post the kickoff"}), 503
+    else:
+        return jsonify({"ok": False, "error": "text or ts is required"}), 400
+    conv = _agent_talk_maybe_start(channel, text, "", ts, via="admin")
+    if not conv:
+        return jsonify({"ok": False, "error": f"not started (mode {_at_mode()}, or already running)", "ts": ts}), 409
+    return jsonify({"ok": True, "conv": conv}), 200
+
+
+@app.route('/admin/agent-talk/memory-requests', methods=['GET'])
+def admin_agent_talk_memory_requests():
+    """The Mac bridge pulls pending memory requests (and is thereby seen)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _at_save(_AT_BRIDGE, {"last_seen": time.time(), "name": request.args.get("bridge", "")})
+    pending = []
+    for conv in _at_open_conversations():
+        req = conv.get("memreq")
+        if isinstance(req, dict) and req.get("served") is None:
+            pending.append({k: req.get(k) for k in ("id", "agent", "file", "keywords", "head", "tail", "match_lines", "created")})
+    return jsonify({"ok": True, "requests": pending}), 200
+
+
+@app.route('/admin/agent-talk/memory', methods=['POST'])
+def admin_agent_talk_memory():
+    """The Mac bridge posts one excerpt: {id, agent, result:{ok, lines, ...}}."""
+    if not _admin_secret_ok(request.values.get("secret", "") or (request.get_json(silent=True) or {}).get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    rid = str(payload.get("id") or "")
+    result = payload.get("result") or {}
+    if not rid or not isinstance(result, dict):
+        return jsonify({"ok": False, "error": "id and result are required"}), 400
+    with _at_lock:
+        for conv in _at_open_conversations():
+            req = conv.get("memreq")
+            if isinstance(req, dict) and req.get("id") == rid and req.get("served") is None:
+                lines = str(result.get("lines") or "")
+                if len(lines) > 60000:
+                    lines = lines[:60000]
+                req["served"] = {"ok": bool(result.get("ok")), "lines": lines, "error": str(result.get("error") or ""),
+                                 "served": int(result.get("served") or 0), "matched": int(result.get("matched") or 0),
+                                 "file_lines": result.get("file_lines"), "at": time.time()}
+                conv["memreq"] = req
+                conv["status"] = "open"
+                _at_save(_at_conv_key(conv["id"]), conv)
+                _at_save(_AT_BRIDGE, {"last_seen": time.time(), "name": payload.get("bridge", "")})
+                threading.Thread(target=_agent_talk_run_round, args=(conv["id"],), daemon=True).start()
+                return jsonify({"ok": True, "conv": conv["id"], "agent": req.get("agent")}), 200
+    return jsonify({"ok": False, "error": "no pending request with that id"}), 404
+
+
+@app.route('/admin/agent-talk/decide', methods=['POST'])
+def admin_agent_talk_decide():
+    """POST {id, answer: yes|no|later, text?} — record Michael's answer given in a session instead of by text."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    n = str(payload.get("id") or request.form.get("id") or "")
+    answer = str(payload.get("answer") or request.form.get("answer") or "").lower()
+    if answer not in ("yes", "no", "later", "note") or not n:
+        return jsonify({"ok": False, "error": "id and answer (yes|no|later|note) are required"}), 400
+    d = _at_load(f"agent_decision:{n}")
+    if not isinstance(d, dict):
+        return jsonify({"ok": False, "error": "no such decision"}), 404
+    _at.apply_answer(d, answer, payload.get("text") or f"(session) {answer}")
+    _at_save(f"agent_decision:{n}", d)
+    line = f"📱 Michael answered decision {d['id']} in his session: *{answer.upper()}*"
+    _at_post(d["channel"], line, thread_ts=d["ts"])
+    return jsonify({"ok": True, "decision": d}), 200
+
+
+@app.route('/admin/agent-talk/mode', methods=['POST'])
+def admin_agent_talk_mode():
+    """POST {mode: off|test|on} — Michael's switch (pg; overrides the env default)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    mode = str(payload.get("mode") or request.form.get("mode") or "").lower()
+    if mode not in ("off", "test", "on"):
+        return jsonify({"ok": False, "error": "mode must be off|test|on"}), 400
+    _at_save("agent_talk_mode", mode)
+    _at_post(SLACK_DEV_CHANNEL, f"🎚 agent-talk mode set to *{mode}*")
+    return jsonify({"ok": True, "mode": mode}), 200
 
 
 # ══════════════════════════════════════════════════════════════════════
