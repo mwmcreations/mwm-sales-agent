@@ -802,6 +802,35 @@ STRATEGY_CALL_LOCATION = os.getenv(
     "STRATEGY_CALL_LOCATION",
     "Phone / WhatsApp call — Michael will dial the number on this booking",
 )
+# PATCH #265 (Michael, Mon 2 Nov 21:30, via ERIC): two changes to how Maya
+# offers a time. (1) The whole open day from the calendar, not only the four
+# house times, when those are gone (slots.EXTRA_SLOT_TIMES). (2) A 15-minute
+# VIDEO CALL on Google Meet beside the studio visit, for the lead who
+# hesitates about coming in, is far away, or has no near in-person slot.
+# Both are switches (pg "maya_offers", env defaults OFF) — Michael sees the
+# exact wording on his phone and says yes before either is on.
+VIDEO_CALL_URL = os.getenv("VIDEO_CALL_URL", "")            # a standing Meet link, if Michael prefers one
+VIDEO_CALL_LOCATION_FALLBACK = os.getenv(
+    "VIDEO_CALL_LOCATION", "Google Meet — the join link is in your confirmation")
+MAYA_OFFERS_DEFAULT = {
+    "video_call": os.getenv("MAYA_VIDEO_CALL", "off").strip().lower() == "on",
+    "extended_hours": os.getenv("MAYA_EXTENDED_HOURS", "off").strip().lower() == "on",
+}
+_VIDEO_CALL_LINKS = {}      # event id -> Meet link, for the booking reply
+
+
+def _maya_offers():
+    """{video_call: bool, extended_hours: bool} — pg 'maya_offers' over the env defaults."""
+    out = dict(MAYA_OFFERS_DEFAULT)
+    try:
+        if _pgs.enabled():
+            saved = _pgs.load_state("maya_offers", {}) or {}
+            for k in out:
+                if k in saved:
+                    out[k] = bool(saved[k])
+    except Exception:
+        pass
+    return out
 # S-1 says "reject at creation." Strict rejection is enabled ONLY on the
 # production-shoot path. Paid portal bookings and live Maya conversations
 # create-and-report instead: refusing a booking a client has already paid for,
@@ -3988,8 +4017,8 @@ TOOLS = [
                 },
                 "appointment_type": {
                     "type": "string",
-                    "enum": ["studio_visit", "strategy_call"],
-                    "description": "Type of appointment: 'studio_visit' for in-person visits to MWM Studios, 'strategy_call' for remote video/phone calls."
+                    "enum": ["studio_visit", "strategy_call", "video_call"],
+                    "description": "Type of appointment: 'studio_visit' for in-person visits to MWM Studios, 'strategy_call' for remote phone calls Michael places, 'video_call' for a 15-minute Google Meet with Michael (offer it only when the VIDEO CALL OPTION block in your instructions says it is on; no phone number required — the join link goes out with the confirmation)."
                 },
                 "callback_phone": {
                     "type": "string",
@@ -4183,6 +4212,7 @@ def get_available_slots():
             count_fn=_count_bookings_on_date,
             max_per_day=MAX_BOOKINGS_PER_DAY,
             log=print,
+            extended=bool(_maya_offers().get("extended_hours")),   # PATCH #265
         )
         if fallback:
             _TALLY.bump("slots.no_48h", f"{len(slots)} nearest offered")
@@ -4280,7 +4310,7 @@ def _cleanup_phone_matches(cleanup_phone, ev):
 
 
 def _is_call_kind(appointment_type):
-    return appointment_type == "strategy_call"
+    return appointment_type in ("strategy_call", "video_call")   # PATCH #265: a video call has no address either
 
 
 def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=None, appointment_type="studio_visit", booked_via=None,
@@ -4350,7 +4380,11 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 raise
         tz = pytz.timezone(TIMEZONE)
         start_dt = datetime.fromisoformat(slot_id).astimezone(tz)
-        end_dt = start_dt + timedelta(minutes=60)
+        # PATCH #265 — a video call takes 15 minutes of the hour, not the hour.
+        end_dt = start_dt + timedelta(minutes=(event_rail.VIDEO_CALL_MINUTES
+                                               if appointment_type == "video_call" else 60))
+        _video = (appointment_type == "video_call")
+        _meet_url = VIDEO_CALL_URL if _video else ""
 
         # ── PATCH #104 — IDENTIFY the stale event here, DELETE it only after
         # the replacement exists.
@@ -4430,6 +4464,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         if appointment_type == "strategy_call":
             event_title = f"Strategy Call — {lead_name}"
             event_desc_header = "Strategy Call with Michael Moraes / MWM Creations"
+        elif _video:                                   # PATCH #265
+            event_title = f"Video Call — {lead_name}"
+            event_desc_header = "Video Call with Michael Moraes / MWM Creations"
         else:
             event_title = f"Studio Visit — {lead_name}"
             event_desc_header = "Studio Visit with Michael Moraes / MWM Creations Studios"
@@ -4456,6 +4493,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
         # rest moves to extendedProperties.private, which attendees cannot
         # read and our own tooling still can.
         _appt_kind = (KIND_STRATEGY_CALL if appointment_type == "strategy_call"
+                      else event_rail.KIND_VIDEO_CALL if _video
                       else KIND_STUDIO_VISIT)
         event_base = {
             "summary": event_title,
@@ -4464,6 +4502,7 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 studio_address=(None if _is_call_kind(appointment_type)
                                 else STUDIO_ADDRESS),
                 callback_number=_dial_number or None,
+                virtual_note=(_meet_url or None) if _video else None,
             ),
             "extendedProperties": {"private": {
                 "lead_name": str(lead_name or "")[:300],
@@ -4482,9 +4521,16 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             "start": {"dateTime": start_dt.isoformat(), "timeZone": TIMEZONE},
             "end": {"dateTime": end_dt.isoformat(), "timeZone": TIMEZONE},
             "location": (STRATEGY_CALL_LOCATION if appointment_type == "strategy_call"
+                         else (_meet_url or VIDEO_CALL_LOCATION_FALLBACK) if _video
                          else STUDIO_ADDRESS),
         }
-        _is_call = (appointment_type == "strategy_call")
+        _is_call = _is_call_kind(appointment_type)
+        if _video and not _meet_url:
+            # ask Google for a Meet room with the event; the link comes back on
+            # the created event (hangoutLink) and is written into the body below
+            event_base["conferenceData"] = {"createRequest": {
+                "requestId": f"mwm-vc-{int(time.time())}-{re.sub(r'[^a-z0-9]', '', str(lead_name).lower())[:12]}",
+                "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
 
         # S-1 gate. strict=False here on purpose: this is a live Maya
         # conversation and a lead who has just said yes should not be refused
@@ -4497,7 +4543,9 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 context="book_appointment",
                 strict=False,
                 reporter=_report_error,
-                default_location=(STRATEGY_CALL_LOCATION if _is_call else STUDIO_ADDRESS),
+                default_location=(STRATEGY_CALL_LOCATION if appointment_type == "strategy_call"
+                                  else (_meet_url or VIDEO_CALL_LOCATION_FALLBACK) if _video
+                                  else STUDIO_ADDRESS),
                 channel_hint=booked_via,
                 require_postal=not _is_call,
             )
@@ -4598,11 +4646,21 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
             else:
                 event.pop("attendees", None)
             try:
-                created = service.events().insert(
-                    calendarId=cal_id,
-                    body=event,
-                    sendUpdates=send_upd
-                ).execute(num_retries=3)
+                _ins = dict(calendarId=cal_id, body=event, sendUpdates=send_upd)
+                if event.get("conferenceData"):
+                    _ins["conferenceDataVersion"] = 1          # PATCH #265: create the Meet room
+                try:
+                    created = service.events().insert(**_ins).execute(num_retries=3)
+                except Exception as _conf_err:
+                    # a calendar that cannot mint Meet rooms (no DWD) still books the
+                    # call; the standing link / fallback text stays in the body
+                    if event.get("conferenceData") and "conference" in str(_conf_err).lower():
+                        print(f"[book_appointment] Meet creation refused ({str(_conf_err)[:120]}); booking without it")
+                        event.pop("conferenceData", None)
+                        _ins.pop("conferenceDataVersion", None)
+                        created = service.events().insert(**_ins).execute(num_retries=3)
+                    else:
+                        raise
                 _SA_CACHE.clear()  # S25d: new calendar booking invalidates availability cache
                 used_attendees = with_attendees
                 used_send_updates = send_upd
@@ -4619,6 +4677,30 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 print(f"[book_appointment] PATCH #104: kept existing event {_stale['id']} "
                       f"({_stale['summary']} @ {_stale['start']}) — booking did not proceed")
             return None
+
+        # PATCH #265 — the Meet link Google minted goes into the location and the
+        # body (the lead reads both), and into the private props for the ladder.
+        if _video and not _meet_url and created.get("hangoutLink"):
+            _meet_url = str(created.get("hangoutLink"))
+            try:
+                _priv = dict(((created.get("extendedProperties") or {}).get("private") or {}))
+                _priv["meet_url"] = _meet_url[:300]
+                service.events().patch(
+                    calendarId=used_calendar or CALENDAR_ID, eventId=created["id"],
+                    body={"location": _meet_url,
+                          "description": client_description(event_rail.KIND_VIDEO_CALL,
+                                                            callback_number=_dial_number or None,
+                                                            virtual_note=_meet_url),
+                          "extendedProperties": {"private": _priv}},
+                    sendUpdates="none").execute(num_retries=3)
+                print(f"[book_appointment] video call Meet link written: {_meet_url}")
+            except Exception as _mp_err:
+                print(f"[book_appointment] could not write the Meet link onto the event (non-fatal): {_mp_err}")
+        if _video:
+            try:
+                _VIDEO_CALL_LINKS[created["id"]] = _meet_url or ""
+            except Exception:
+                pass
 
         # ── PATCH #104 — the replacement now exists, so the old one may go ──
         # This delete used to run ~130 lines earlier, before anything had been
@@ -5895,7 +5977,28 @@ def handle_tool_call(tool_name, tool_input, sender=None):
                 }
             )
 
-            return {"success": True, "event_id": event_id}
+            _out = {"success": True, "event_id": event_id}
+            if tool_input.get("appointment_type") == "video_call":          # PATCH #265
+                _link = _VIDEO_CALL_LINKS.get(event_id, "")
+                _out["video_call"] = True
+                _out["meet_link"] = _link
+                _out["note"] = (f"Video call booked (15 min). Give the lead this Google Meet link in your reply: {_link}"
+                                if _link else "Video call booked (15 min). The join link will be in the calendar invite and the reminder.")
+                try:
+                    _rec = lead_data.get(sender) or {}
+                    if not _capi.is_test_record(_rec):
+                        _capi_send_async(_capi.build_event(
+                            "VideoCallBooked",
+                            _capi.user_data(_rec.get("email", "") or tool_input.get("lead_email", ""),
+                                            _rec.get("phone", "") or (sender if str(sender).startswith("whatsapp:") else ""),
+                                            *_capi.split_name(_rec.get("name", "") or tool_input.get("lead_name", "")),
+                                            lead_id=_rec.get("leadgen_id", "")),
+                            custom={"stage": "VideoCallBooked", "content_name": "video_call",
+                                    "scheduled_for": str(tool_input.get("slot_id", ""))},
+                            event_id=f"{sender}:VideoCallBooked"))
+                except Exception as _vcx:
+                    print(f"[CAPI] VideoCallBooked companion failed (non-fatal): {_vcx}")
+            return _out
         else:
             return {"success": False, "error": "Could not book the appointment. Please try again."}
 
@@ -7872,6 +7975,9 @@ You are replying by text message to a lead's phone. Rules for this channel:
             _rs_block = _reschedule_prompt_block(sender)
             if _rs_block:
                 _sys += "\n\n" + _rs_block
+            _vc_block = _video_call_prompt_block()          # PATCH #265
+            if _vc_block:
+                _sys += "\n\n" + _vc_block
     except Exception as _rsx:
         print(f"[RESCHEDULE] prompt block skipped: {_rsx}")
     if not is_owner:
@@ -12984,6 +13090,18 @@ def _reschedule_resolve(sender, event_id=None, slot_id=None, how="booked"):
     return True
 
 
+VIDEO_CALL_PROMPT_BLOCK = """VIDEO CALL OPTION (ON — Michael's rule, Nov 2026):
+Beside the studio visit you may offer a 15-MINUTE VIDEO CALL with Michael (Google Meet) — offer it when the lead hesitates about coming in, is far from Orlando (Tampa, Miami, out of state), or when no in-person time is near. Say it simply: "If coming in is a stretch, Michael also does a quick 15-minute video call — I can send you a Google Meet link." Use the same time options (the call takes the first 15 minutes of the slot). Book it with appointment_type="video_call" — no phone number is needed; the Meet link goes out with the confirmation. The studio visit stays the first offer for anyone in the Orlando area."""
+
+
+def _video_call_prompt_block():
+    """PATCH #265 — the block Maya sees only while Michael's switch is on."""
+    try:
+        return VIDEO_CALL_PROMPT_BLOCK if _maya_offers().get("video_call") else ""
+    except Exception:
+        return ""
+
+
 def _reschedule_prompt_block(sender):
     """The system-prompt block Maya gets while a lead's visit is being moved."""
     key, rec, rs = _reschedule_pending_for(sender)
@@ -13836,7 +13954,8 @@ def _lead_reminder_thread():
                 # the T-24 ask counts as the YES (Maya reads the words).
                 try:
                     if (kind in (event_rail.KIND_STUDIO_VISIT, event_rail.KIND_PORTAL_BOOKING,
-                                 event_rail.KIND_STRATEGY_CALL, event_rail.KIND_CLIENT_CALL)
+                                 event_rail.KIND_STRATEGY_CALL, event_rail.KIND_CLIENT_CALL,
+                                 event_rail.KIND_VIDEO_CALL)
                             and event_rail.unconfirmed_due(hours_until)
                             and f"{event_id}:unconfirmed" not in _lead_reminder_sent):
                         _lead_reminder_sent.add(f"{event_id}:unconfirmed")
@@ -14013,7 +14132,8 @@ def _lead_reminder_thread():
                     _time_str = event_start.strftime("%I:%M %p").lstrip("0")
                     _wa_body, _em_subject, _em_html = confirmation_copy(
                         stage_h, _fn, _when_long, _time_str,
-                        event.get("location") or "")
+                        event.get("location") or "",
+                        kind=kind)                                  # PATCH #265: a video call says so
                     if _lp and is_dialable("+" + _lp):
                         body = _wa_body
                         if send_whatsapp_meta(f"whatsapp:+{_lp}", body=body):
@@ -14022,9 +14142,12 @@ def _lead_reminder_thread():
                         # is closed: T-24 carries the YES ask, T-2 the address
                         # (#160's words, approved 14 Oct). Only while Meta lists
                         # it APPROVED+UTILITY; otherwise the generic below.
+                        # PATCH #265: the visit templates name the studio and
+                        # the address — a video call never uses them.
                         elif _wt.stage_template(stage_h) and _wa_visit_template_send(
                                 f"whatsapp:+{_lp}", _wt.stage_template(stage_h),
-                                _wt.stage_params(stage_h, _time_str, _when_long)):
+                                _wt.stage_params(stage_h, _time_str, _when_long)) \
+                                if kind != event_rail.KIND_VIDEO_CALL else False:
                             _sent_via = _wt.SENT_VIA
                         elif send_wa_utility_template(
                                 f"whatsapp:+{_lp}", "mwm_lara_shoot_reminder",
@@ -18952,8 +19075,8 @@ WEB_CHAT_TOOLS = [
                 "lead_business": {"type": "string", "description": "The lead's business name or description."},
                 "appointment_type": {
                     "type": "string",
-                    "enum": ["studio_visit", "strategy_call"],
-                    "description": "Type of appointment."
+                    "enum": ["studio_visit", "strategy_call", "video_call"],
+                    "description": "Type of appointment ('video_call' = 15-minute Google Meet with Michael; only when the VIDEO CALL OPTION block says it is on)."
                 },
                 "callback_phone": {
                     "type": "string",
@@ -20857,6 +20980,7 @@ def health_check():
         "booking_truth": booking_truth_stats, # S30
         "operator_remind": _operator_remind_status(),   # PATCH #254
         "agent_talk": _agent_talk_status(),             # PATCH #263
+        "maya_offers": _maya_offers(),                  # PATCH #265
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -24583,6 +24707,36 @@ def admin_agent_talk_stop():
         return jsonify({"ok": True, "conv": conv, "note": "already closed"}), 200
     _agent_talk_close(conv, "stopped", "⏹ stopped by Michael/DEV through the admin route.")
     return jsonify({"ok": True, "conv": conv}), 200
+
+
+@app.route('/admin/maya-offers', methods=['GET', 'POST'])
+def admin_maya_offers():
+    """PATCH #265 — Michael's switches for how Maya offers a time.
+    GET  -> {video_call, extended_hours}
+    POST {video_call: on|off, extended_hours: on|off} (either or both) -> the new state.
+    Flipped only after Michael has approved the wording on his phone."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if request.method == "GET":
+        return jsonify({"ok": True, "offers": _maya_offers(), "defaults": MAYA_OFFERS_DEFAULT}), 200
+    payload = request.get_json(silent=True) or {}
+    cur = _maya_offers()
+    changed = {}
+    for k in ("video_call", "extended_hours"):
+        v = payload.get(k, request.form.get(k))
+        if v is None:
+            continue
+        on = str(v).strip().lower() in ("1", "on", "true", "yes")
+        cur[k] = on
+        changed[k] = on
+    if not changed:
+        return jsonify({"ok": False, "error": "nothing to change (video_call / extended_hours = on|off)"}), 400
+    try:
+        _pgs.save_state("maya_offers", cur)
+    except Exception as _e:
+        return jsonify({"ok": False, "error": f"could not store: {_e}"}), 503
+    _post_to_slack_async(SLACK_DEV_CHANNEL, "🎚 Maya offers: " + ", ".join(f"{k} *{'on' if v else 'off'}*" for k, v in changed.items()) + " (Michael's OK)")
+    return jsonify({"ok": True, "offers": cur}), 200
 
 
 @app.route('/admin/agent-talk/mode', methods=['POST'])

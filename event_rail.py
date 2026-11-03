@@ -821,7 +821,16 @@ def client_description(kind, studio_address=None, callback_number=None,
     Written to be read by the person who booked, in their own calendar, three
     weeks from now, on a phone.
     """
-    if kind in (KIND_STRATEGY_CALL, KIND_CLIENT_CALL):
+    if kind == KIND_VIDEO_CALL:   # PATCH #265
+        lines = ["Video call (15 minutes) with Michael Moraes, MWM Creations.", ""]
+        if virtual_note:
+            lines.append("Join here at the time above: %s" % virtual_note)
+        else:
+            lines.append("The video link arrives with your confirmation.")
+        if callback_number:
+            lines.append("If the video link gives you trouble, Michael can call "
+                         "you at %s instead." % callback_number)
+    elif kind in (KIND_STRATEGY_CALL, KIND_CLIENT_CALL):
         lines = ["Strategy call with Michael Moraes, MWM Creations.", ""]
         if callback_number:
             lines.append("Michael will call you at %s at the time above."
@@ -1261,6 +1270,13 @@ def harden_event_body(body, source_identifier=None, attendee_email=None,
 
 KIND_STUDIO_VISIT = "studio_visit"
 KIND_STRATEGY_CALL = "strategy_call"
+# PATCH #265 (Michael, 2 Nov): "the 15-minute video call is definitely an
+# option" — a Google Meet call Maya can offer beside the studio visit, for the
+# lead who hesitates about coming in, is far away, or has no near in-person
+# slot. Virtual, 15 minutes, no phone number needed, same confirmation ladder
+# as a strategy call, the join link where a visit carries the address.
+KIND_VIDEO_CALL = "video_call"
+VIDEO_CALL_MINUTES = 15
 KIND_PRODUCTION_SHOOT = "production_shoot"
 KIND_PORTAL_BOOKING = "portal_booking"
 # Patch #33 — two kinds the Jul 29 backfill proved were missing.
@@ -1287,6 +1303,7 @@ KIND_UNKNOWN = "unknown"
 _TITLE_PATTERNS = [
     (KIND_STUDIO_VISIT, re.compile(r"^\s*studio visit\s*[—\-]", re.I)),
     (KIND_STRATEGY_CALL, re.compile(r"^\s*strategy call\s*[—\-]", re.I)),
+    (KIND_VIDEO_CALL, re.compile(r"^\s*video call\s*[—\-]", re.I)),          # PATCH #265
     (KIND_PORTAL_BOOKING, re.compile(r"studio:\s", re.I)),
     # A shoot AT our studio. Distinct from a production shoot on location:
     # same crew+client confirmation needs, but the venue IS our address.
@@ -1397,6 +1414,7 @@ CONFIRMATION_PLAN = {
     KIND_STUDIO_VISIT:     [("client", 168), ("client", 48), ("client", 24), ("client", 2)],
     KIND_PORTAL_BOOKING:   [("client", 168), ("client", 48), ("client", 24), ("client", 2)],
     KIND_STRATEGY_CALL:    [("client", 48), ("client", 24), ("client", 2)],
+    KIND_VIDEO_CALL:       [("client", 48), ("client", 24), ("client", 2)],   # PATCH #265
     KIND_CLIENT_CALL:      [("client", 48), ("client", 24), ("client", 2)],
     # A studio production needs the SAME crew rail as an on-location shoot —
     # Robinson's podcast has guests and an audience, Bolfer's is a 3h session.
@@ -1435,6 +1453,7 @@ EVENT_VENUE = {
     KIND_PORTAL_BOOKING:    VENUE_STUDIO,
     KIND_STUDIO_PRODUCTION: VENUE_STUDIO,     # a shoot, but at OUR address
     KIND_STRATEGY_CALL:     VENUE_VIRTUAL,
+    KIND_VIDEO_CALL:        VENUE_VIRTUAL,    # PATCH #265 — the join link is the place
     KIND_CLIENT_CALL:       VENUE_VIRTUAL,
     KIND_PRODUCTION_SHOOT:  VENUE_CLIENT_SITE,
 }
@@ -1503,6 +1522,14 @@ BOOKING_TYPES = {
         "default_minutes": 30,
         "billable": False,
     },
+    "video_call": {                      # PATCH #265
+        "label": "Video Call (15 min)",
+        "hint": "Google Meet with Michael. The join link is the location.",
+        "kind": KIND_VIDEO_CALL,
+        "title": "Video Call - {name}",
+        "default_minutes": VIDEO_CALL_MINUTES,
+        "billable": False,
+    },
     "studio_recording": {
         "label": "Studio Recording / Shoot",
         "hint": "Filming at OUR studio. Crew get their own 48h and 2h confirmations.",
@@ -1523,7 +1550,7 @@ BOOKING_TYPES = {
 
 # Ordered for display. dicts preserve insertion order, but the form's meaning
 # should not depend on that quietly.
-BOOKING_TYPE_ORDER = ["studio_visit", "strategy_call",
+BOOKING_TYPE_ORDER = ["studio_visit", "strategy_call", "video_call",
                       "studio_recording", "location_shoot"]
 
 # ── who is this person to us? ────────────────────────────────────────
@@ -2069,8 +2096,42 @@ def stage_horizon_phrase(stage_h):
     return "today"
 
 
-def confirmation_copy(stage_h, first_name, when_long, time_str, location=""):
+def _video_call_copy(h, fn, when_long, time_str, link, phrase):
+    """PATCH #265 — the ladder's words for a 15-minute video call."""
+    join = f" Join: {link}" if link else ""
+    join_html = f"<p>Join link: <a href=\"{link}\">{link}</a></p>" if link else ""
+    if h < 12:
+        wa = (f"Hi {fn}! Your video call with Michael Moraes is today at {time_str}."
+              f"{join} Reply here if anything changes.")
+        subject = f"Today at {time_str}: video call with Michael — MWM Creations"
+        html = (f"<p>Hi {fn},</p><p>Your video call with Michael Moraes is <b>today at "
+                f"{time_str}</b>.</p>{join_html}<p>Reply here if anything changes.</p>"
+                f"<p>— Maya, MWM Creations &amp; Studios</p>")
+    elif 12 <= h < 36:
+        wa = (f"Hi {fn}! Maya from MWM Creations here 😊 Reply YES to confirm your video "
+              f"call with Michael tomorrow at {time_str} ({when_long}).{join} Need to move "
+              f"it? Reply here and I'll find another time.")
+        subject = f"Reply YES to confirm — video call tomorrow at {time_str} with Michael"
+        html = (f"<p>Hi {fn},</p><p><b>Reply YES</b> to confirm your video call with Michael "
+                f"tomorrow at <b>{time_str}</b> ({when_long}).</p>{join_html}"
+                f"<p>Need to move it? Reply here and I'll find another time.</p>"
+                f"<p>— Maya, MWM Creations &amp; Studios</p>")
+    else:
+        wa = (f"Hi {fn}! Maya from MWM Creations here 😊 Reminder about your video call "
+              f"with Michael {phrase} — {when_long} at {time_str}. Could you reply YES to "
+              f"confirm?{join}")
+        subject = f"Confirming your video call — {when_long}"
+        html = (f"<p>Hi {fn},</p><p>Confirming your video call with Michael Moraes "
+                f"<b>{phrase}</b> — {when_long} at {time_str}.</p>{join_html}"
+                f"<p>Could you reply to confirm? If you need to move it, just tell me.</p>"
+                f"<p>— MWM Creations &amp; Studios</p>")
+    return wa, subject, html
+
+
+def confirmation_copy(stage_h, first_name, when_long, time_str, location="", kind=None):
     """(whatsapp_body, email_subject, email_html) for one client tier.
+    kind=KIND_VIDEO_CALL (PATCH #265): the words say "video call" and the
+    location is the join link, not an address.
 
     Pure on purpose: copy is the part most likely to be wrong and the part
     nobody notices is wrong, so it belongs where a test can read it.
@@ -2086,6 +2147,8 @@ def confirmation_copy(stage_h, first_name, when_long, time_str, location=""):
     except (TypeError, ValueError):
         h = 24.0
 
+    if kind == KIND_VIDEO_CALL:
+        return _video_call_copy(h, fn, when_long, time_str, location, phrase)
     # PATCH #157 (ERIC, 9 Oct): T-24 asks for the YES with Michael's name and
     # the time; T-2 carries the address and Michael's name.
     if h < 12:

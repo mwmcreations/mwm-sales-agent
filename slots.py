@@ -54,10 +54,31 @@ BUFFER_MINUTES = 15
 DEFAULT_MAX_SLOTS = 3
 DEFAULT_HORIZON_DAYS = 21
 
+# PATCH #265 (Michael, Mon 2 Nov 21:30, via ERIC): "Maya can and should always
+# offer visit time based on our calendar" — not only the four house times when
+# the calendar has other open hours. The studio's open hours are 9 to 5; the
+# house four stay FIRST (they spread visits the way Michael likes), the rest
+# of the open hours come after, in this order. Off by default in the pure
+# functions (extended=False) so nothing that reads these changes until the
+# app turns it on; the app passes extended=True once Michael has said yes.
+EXTRA_SLOT_TIMES = [(9, 0), (12, 0), (13, 0), (16, 0)]
 
-def slot_times_for(period):
-    """Candidate times for one day: preferred period first, then the other."""
-    return list(SLOT_PERIOD_ORDER.get(period, SLOT_PERIOD_ORDER["morning"]))
+
+def slot_times_for(period, extended=False):
+    """Candidate times for one day: preferred period first, then the other,
+    then (extended) the rest of the open hours."""
+    times = list(SLOT_PERIOD_ORDER.get(period, SLOT_PERIOD_ORDER["morning"]))
+    if extended:
+        times += [t for t in EXTRA_SLOT_TIMES if t not in times]
+    return times
+
+
+def all_slot_times(extended=False):
+    """Every candidate start time, chronological."""
+    base = {t for v in SLOT_PERIOD_ORDER.values() for t in v}
+    if extended:
+        base |= set(EXTRA_SLOT_TIMES)
+    return sorted(base)
 
 
 def period_for(slot_index):
@@ -147,7 +168,7 @@ def is_busy(candidate, busy_times, tz):
 
 def compute_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
                   max_slots=DEFAULT_MAX_SLOTS, horizon_days=DEFAULT_HORIZON_DAYS,
-                  log=None):
+                  log=None, extended=False):
     """
     Pick up to `max_slots` slots, one per business day, starting today.
 
@@ -174,7 +195,7 @@ def compute_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
                 log("[Capacity] %s has %s+ bookings — skipping" % (current_day, max_per_day))
             continue
 
-        for (hour, minute) in slot_times_for(period_for(len(slots))):
+        for (hour, minute) in slot_times_for(period_for(len(slots)), extended=extended):
             candidate = tz.localize(datetime(
                 current_day.year, current_day.month, current_day.day, hour, minute, 0
             ))
@@ -204,7 +225,7 @@ ALL_SLOT_TIMES = sorted({t for v in SLOT_PERIOD_ORDER.values() for t in v})
 
 def compute_slots_window(now, busy_times, tz, count_fn=None, max_per_day=4,
                          within_hours=WINDOW_HOURS_DEFAULT, max_slots=DEFAULT_MAX_SLOTS,
-                         log=None):
+                         log=None, extended=False):
     """Every free house time that STARTS inside the next `within_hours`, in
     order, up to `max_slots` (more than one per day is fine here — the point
     is soon). Pure. -> list of {"id", "display"}."""
@@ -219,7 +240,7 @@ def compute_slots_window(now, busy_times, tz, count_fn=None, max_per_day=4,
         if day_start > limit:
             break
         if day.weekday() < 5 and count_fn(day) < max_per_day:
-            for (hour, minute) in ALL_SLOT_TIMES:
+            for (hour, minute) in all_slot_times(extended):
                 candidate = tz.localize(datetime(day.year, day.month, day.day, hour, minute, 0))
                 if candidate <= now or candidate > limit:
                     continue
@@ -236,14 +257,16 @@ def compute_slots_window(now, busy_times, tz, count_fn=None, max_per_day=4,
 
 
 def offer_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
-                within_hours=WINDOW_HOURS_DEFAULT, max_slots=DEFAULT_MAX_SLOTS, log=None):
+                within_hours=WINDOW_HOURS_DEFAULT, max_slots=DEFAULT_MAX_SLOTS, log=None,
+                extended=False):
     """The slots Maya may OFFER: inside the window when any exist, otherwise
     the FALLBACK_SLOTS nearest (one per business day) with fallback=True so
-    the caller can say so in #eric. -> (slots, fallback: bool)."""
+    the caller can say so in #eric. -> (slots, fallback: bool).
+    extended=True (PATCH #265) also tries the rest of the open hours."""
     inside = compute_slots_window(now, busy_times, tz, count_fn, max_per_day,
-                                  within_hours, max_slots, log)
+                                  within_hours, max_slots, log, extended=extended)
     if inside:
         return inside, False
     nearest = compute_slots(now, busy_times, tz, count_fn=count_fn, max_per_day=max_per_day,
-                            max_slots=FALLBACK_SLOTS, log=log)
+                            max_slots=FALLBACK_SLOTS, log=log, extended=extended)
     return nearest, True
