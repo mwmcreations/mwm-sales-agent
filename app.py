@@ -7978,6 +7978,9 @@ You are replying by text message to a lead's phone. Rules for this channel:
             _vc_block = _video_call_prompt_block()          # PATCH #265
             if _vc_block:
                 _sys += "\n\n" + _vc_block
+            _ro_block = _reoffer_prompt_block(sender)         # PATCH #266
+            if _ro_block:
+                _sys += "\n\n" + _ro_block
     except Exception as _rsx:
         print(f"[RESCHEDULE] prompt block skipped: {_rsx}")
     if not is_owner:
@@ -13098,6 +13101,35 @@ def _video_call_prompt_block():
     """PATCH #265 — the block Maya sees only while Michael's switch is on."""
     try:
         return VIDEO_CALL_PROMPT_BLOCK if _maya_offers().get("video_call") else ""
+    except Exception:
+        return ""
+
+
+REOFFER_PROMPT_DAYS = 7
+
+
+def _reoffer_prompt_block(sender):
+    """PATCH #266 — the block Maya gets while a re-offer she sent is fresh:
+    the numbered times are THE times a "1" or "2" means."""
+    try:
+        rec = lead_data.get(sender) or {}
+        at = rec.get("reoffer_at")
+        opts = [o for o in (rec.get("offered_slots") or []) if isinstance(o, dict) and o.get("id")]
+        if not at or not opts:
+            return ""
+        when = datetime.fromisoformat(str(at))
+        if (datetime.now(pytz.timezone(TIMEZONE)) - when) > timedelta(days=REOFFER_PROMPT_DAYS):
+            return ""
+        lines = ["--- TIMES YOU ALREADY OFFERED (HARD RULE) ---",
+                 f"On {when.strftime('%A %B %d')} you sent this lead these studio-visit times, numbered:"]
+        for i, o in enumerate(opts, 1):
+            lines.append(f"  {i}. {o.get('display') or o.get('id')}  (slot_id {o.get('id')})")
+        lines += ["A reply of 1 / 2 (or that day or time) means THAT slot: call book_appointment with its slot_id "
+                  "and the name, email and business from the LEAD CONTEXT, then confirm in one line. "
+                  "A reply of VIDEO means the 15-minute video call: offer the same times and book with "
+                  "appointment_type=\"video_call\". Do not re-qualify them. If they propose another time, "
+                  "check it with check_specific_slot."]
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -24707,6 +24739,127 @@ def admin_agent_talk_stop():
         return jsonify({"ok": True, "conv": conv, "note": "already closed"}), 200
     _agent_talk_close(conv, "stopped", "⏹ stopped by Michael/DEV through the admin route.")
     return jsonify({"ok": True, "conv": conv}), 200
+
+
+@app.route('/admin/reoffer', methods=['POST'])
+def admin_reoffer():
+    """PATCH #266 — new times (and the video call) to leads who never picked one.
+         q       name | email | lead key (one lead), or several separated by ';'
+         apply=1 send; without it a DRY RUN returns the exact texts
+       Sends by WhatsApp when the window is open, otherwise SMS (consent rules),
+       and by email when there is one; remembers the numbered times on the
+       record so a "1"/"2" reply books that slot (Maya and the email reader);
+       posts #pipeline + #dev. Michael OKs the dry-run text first."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    apply = str(request.values.get("apply") or "") in ("1", "true", "yes")
+    qs = [x.strip().lower() for x in str(request.values.get("q") or "").split(";") if x.strip()]
+    if not qs:
+        return jsonify({"error": "q is required (name, email or lead key; ';' between several)"}), 400
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    offers = _maya_offers()
+    video = bool(offers.get("video_call"))
+    slots = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+             for s in (get_available_slots() or []) if isinstance(s, dict) and s.get("id")][:2]
+    results = []
+    for q in qs:
+        hits = []
+        for _k, _r in list(lead_data.items()):
+            if not isinstance(_r, dict):
+                continue
+            hay = " ".join([str(_k), str(_r.get("name") or ""), str(_r.get("email") or ""),
+                            str(_r.get("phone") or "")]).lower()
+            if q in hay:
+                hits.append((_k, _r))
+        if len(hits) == 2:
+            (k1, r1), (k2, r2) = hits
+            if r1.get("linked_wa_key") == k2 or r1.get("linked_form_key") == k2 \
+                    or r2.get("linked_wa_key") == k1 or r2.get("linked_form_key") == k1:
+                hits = [(k1, r1)] if r1.get("phone") or k1.startswith("whatsapp:") else [(k2, r2)]
+        if not hits:
+            results.append({"q": q, "error": "no lead matched"})
+            continue
+        if len(hits) > 1:
+            results.append({"q": q, "error": f"{len(hits)} leads matched — narrow q",
+                            "matches": [{"key": mask_contact(k), "name": r.get("name")} for k, r in hits]})
+            continue
+        key, rec = hits[0]
+        if rec.get("booked") and rec.get("event_id"):
+            results.append({"q": q, "lead": mask_contact(key), "name": rec.get("name"), "skipped": "already booked"})
+            continue
+        if _chase_is_client(key):
+            results.append({"q": q, "lead": mask_contact(key), "name": rec.get("name"), "skipped": "client, not a lead"})
+            continue
+        name = str(rec.get("name") or "").strip()
+        email = ""
+        for _e in emails_in_field(rec.get("email")):
+            email = _e
+            break
+        phone = _lead_phone_of(key, rec)
+        text = _lrp.reoffer_text(name, slots, video=video)
+        subj, html, _txt = _lrp.reoffer_email(name, slots, STUDIO_ADDRESS, video=video)
+        row = {"q": q, "lead": mask_contact(key), "name": name, "channels": {"whatsapp": bool(conversation_history.get(key) or key.startswith("whatsapp:")),
+               "sms": bool(phone), "email": bool(email)}, "text": text, "email_subject": subj, "dry": not apply}
+        if not apply:
+            results.append(row)
+            continue
+        sent = {}
+        wa_ok = False
+        if conversation_history.get(key) or key.startswith("whatsapp:"):
+            try:
+                _ok, _why = wa_send_eligibility(key, is_template=False)
+                if _ok:
+                    r = send_whatsapp_meta(key, text)
+                    wa_ok = bool(r)
+                    sent["whatsapp"] = "sent" if r else "failed"
+                    if r:
+                        conversation_history.setdefault(key, []).append({"role": "assistant", "content": text})
+                else:
+                    sent["whatsapp"] = f"skipped ({_why})"
+            except Exception as _wx:
+                sent["whatsapp"] = f"error ({type(_wx).__name__})"
+        if phone and not wa_ok:
+            try:
+                r = _send_sms(phone, _sms_copy.compose_reply(_sms_copy.ascii_fold(text)), kind=SMS_KIND_MARKETING) or {}
+                sent["sms"] = "sent" if r.get("ok") else f"refused ({r.get('reason')})"
+            except Exception as _sx:
+                sent["sms"] = f"error ({type(_sx).__name__})"
+        if email:
+            try:
+                r = _email_send(email, subj, html, via="reoffer", lead_key=key)
+                sent["email"] = "sent" if email_ok(r) else f"refused ({str(r.get('error', ''))[:60]})"
+            except Exception as _ex:
+                sent["email"] = f"error ({type(_ex).__name__})"
+        rec["offered_slots"] = slots
+        rec["reoffer_at"] = now.isoformat()
+        rec["reoffer_sent"] = sent
+        lead_data[key] = rec
+        tw = _lead_twin(rec)
+        if isinstance(tw, dict):
+            tw["offered_slots"] = slots
+            tw["reoffer_at"] = rec["reoffer_at"]
+        try:
+            _mirror_to_maya_shadow_async({"name": name or "lead", "phone": phone, "is_michael": False},
+                                         "outbound", f"[RE-OFFER] {text}")
+        except Exception:
+            pass
+        try:
+            _post_pipeline_event("REOFFER", lead_name=name, lead_phone=key, source=rec.get("source", ""),
+                                 old_stage="Engaged", new_stage="Engaged", assigned_agents=["Maya"],
+                                 context="Re-offered " + " / ".join(s["display"] for s in slots) + (" + video call" if video else ""),
+                                 extra_fields={})
+        except Exception:
+            pass
+        _TALLY.bump("reoffer.sent", ",".join(f"{k}:{v.split(' ')[0]}" for k, v in sent.items()) or "no_channel")
+        row["sent"] = sent
+        results.append(row)
+    if apply:
+        _post_to_slack_async(SLACK_DEV_CHANNEL, "📨 *Re-offer sent* (Michael's OK) — " + "; ".join(
+            f"{r.get('name') or r.get('q')}: " + ", ".join(f"{k} {v}" for k, v in (r.get("sent") or {}).items())
+            if r.get("sent") else f"{r.get('name') or r.get('q')}: {r.get('skipped') or r.get('error')}"
+            for r in results))
+    return jsonify({"ok": True, "video_call": video, "slots": slots, "results": results, "dry": not apply}), 200
 
 
 @app.route('/admin/maya-offers', methods=['GET', 'POST'])

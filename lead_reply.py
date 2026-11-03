@@ -602,3 +602,69 @@ def escalation_sms(name, phone, snippet, kind="reply"):
             if kind == "silent" else "Maya has stopped the chase; the reply is yours.")
     return (f"{nm} {what}." + (f' "{s}"' if s else "")
             + (f" Call {ph}." if ph else "") + " " + tail)
+
+
+# ── PATCH #266 — the re-offer: new times (and the video call) to a lead who
+# never picked one. Michael's words, Mon 2 Nov: "Maya can and should always
+# offer visit time based on our calendar … and the 15-minute video call is
+# definitely an option." Nine leads were waiting on a Thursday/Friday pair.
+def _when_short(slot):
+    d = _slot_dt(slot)
+    if d is None:
+        return str((slot or {}).get("display") or "")
+    return d.strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
+
+
+def reoffer_text(name, slots, video=False, who="Michael"):
+    """SMS / WhatsApp: two numbered times, the video call as a third way out.
+    Plain ASCII, inside two segments (<= 306 chars with two slots)."""
+    fn = _fn(name)
+    opts = [s for s in (slots or []) if isinstance(s, dict)][:2]
+    if len(opts) == 2:
+        times = f"1) {_when_short(opts[0])} 2) {_when_short(opts[1])}."
+        reply = "Reply 1 or 2"
+    elif len(opts) == 1:
+        times = f"{_when_short(opts[0])}."
+        reply = "Reply YES"
+    else:
+        times = "this week - send me a day and time."
+        reply = "Reply with a time"
+    if video:
+        return (f"Hi {fn}, it's Maya from {who} Moraes' team at MWM Creations. {who} opened more times "
+                f"for your studio visit: {times} If coming in is a stretch, he also does a quick 15-min "
+                f"video call (Google Meet). {reply}, or VIDEO, and I'll set it up.")
+    return (f"Hi {fn}, it's Maya from {who} Moraes' team at MWM Creations. {who} opened more times "
+            f"for your studio visit: {times} {reply}, or send a time that suits you.")
+
+
+def reoffer_email(name, slots, address="", video=False, who="Michael"):
+    """(subject, html, text) — the same offer by email, from info@."""
+    fn = _fn(name)
+    opts = [s for s in (slots or []) if isinstance(s, dict)][:3]
+    subject = ("New times for your studio visit" + (" (or a 15-minute video call)" if video else ""))
+    lines_txt = [f"Hi {fn},", "", f"{who} opened more times for your studio visit at MWM Creations & Studios.", ""]
+    li = "".join(f"<li>{_html.escape(_when(s))}</li>" for s in opts)
+    if opts:
+        lines_txt += ["Would one of these work for you?"] + [f"  {i + 1}. {_when(s)}" for i, s in enumerate(opts)]
+        ask_html = f"<p>Would one of these work for you?</p><ol>{li}</ol>"
+    else:
+        lines_txt += ["Which day this week or next would work for you?"]
+        ask_html = "<p>Which day this week or next would work for you?</p>"
+    if video:
+        vline = (f"If coming in is a stretch, {who} also does a quick 15-minute video call on Google Meet - "
+                 "just reply VIDEO and I'll send the link with a time.")
+        lines_txt += ["", vline]
+        ask_html += f"<p>{_html.escape(vline)}</p>"
+    lines_txt += ["", "Reply with the one that suits you (or another time that works) and the invite goes out right away."]
+    ask_html += "<p>Reply with the one that suits you (or another time that works) and the invite goes out right away.</p>"
+    if address:
+        lines_txt += ["", f"Studio: {address}"]
+    lines_txt += ["", "Best,", "Maya", "MWM Creations & Studios", "info@mwmcreations.com"]
+    html_body = (
+        '<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:23px;color:#222222;max-width:560px">'
+        f"<p>Hi {_html.escape(fn)},</p>"
+        f"<p>{_html.escape(who)} opened more times for your studio visit at MWM Creations &amp; Studios.</p>"
+        + ask_html
+        + (f"<p>Studio: {_html.escape(address)}</p>" if address else "")
+        + "<p>Best,<br>Maya<br>MWM Creations &amp; Studios<br>info@mwmcreations.com</p></div>")
+    return subject, html_body, "\n".join(lines_txt)
