@@ -533,14 +533,11 @@ def add_to_custom_audience(phone, audience_id=None):
         return False
     hashed = hashlib.sha256(digits.encode("utf-8")).hexdigest()
     try:
+        # PATCH #267 — `payload` is a JSON string in the form body. A dict
+        # here was form-encoded as its Python repr and never accepted.
         result = _meta_post(
             f"{audience_id}/users",
-            {
-                "payload": {
-                    "schema": ["PHONE_SHA256"],
-                    "data": [[hashed]],
-                }
-            },
+            {"payload": json.dumps({"schema": ["PHONE_SHA256"], "data": [[hashed]]})},
         )
         ok = bool(result) and not result.get("error")
         if not ok:
@@ -549,3 +546,28 @@ def add_to_custom_audience(phone, audience_id=None):
     except Exception as e:
         print(f"[Eric] Custom audience add error: {e}")
         return False
+
+
+def _meta_delete(endpoint, data=None, params=None):
+    """DELETE on the Graph API (PATCH #267 — audience removals)."""
+    if not META_ADS_TOKEN:
+        raise RuntimeError("META_ADS_TOKEN not configured")
+    params = dict(params or {})
+    params["access_token"] = META_ADS_TOKEN
+    url = f"{META_GRAPH_URL}/{endpoint.lstrip('/')}"
+    resp = http_requests.delete(url, params=params, data=data or {}, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def audience_users(audience_id, rows, schema, remove=False):
+    """PATCH #267 — add (or remove) a batch of already-hashed rows to a Custom
+    Audience. `rows` are lists in `schema` order (e.g. [[phone_sha, email_sha]]).
+    Returns Meta's response dict ({'num_received', 'num_invalid_entries', ...})
+    or raises."""
+    if not audience_id:
+        raise RuntimeError("audience_id required")
+    body = {"payload": json.dumps({"schema": list(schema), "data": [list(r) for r in rows]})}
+    if remove:
+        return _meta_delete(f"{audience_id}/users", body)
+    return _meta_post(f"{audience_id}/users", body)

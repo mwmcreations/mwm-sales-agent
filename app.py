@@ -52,6 +52,8 @@ import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
 import lead_reply as _lrp     # Patch #262 — a lead's answer by email is an answer
+import first_touch as _ft1    # Patch #267 — WhatsApp first, SMS as the backstop
+import meta_audience as _ma   # Patch #267 — who belongs in the cold-lead audience
 import call_now as _cn        # Patch #156 — speed to a human: the CALL NOW alert
 import reengage as _rg        # Patch #156/#158 — the one-off cold-list push (counts, then the send)
 import meta_capi as _capi     # Patch #145 — Lead / Schedule / Purchase back to Meta
@@ -8513,7 +8515,8 @@ def send_wa_utility_template(to, template_name, body_params, phone_number_id=Non
 # is — read from Meta's listing, cached an hour, last good answer kept when a
 # refresh fails. Anything not on the list falls back to what the rail did
 # before (#157: generic mwm_lara_shoot_reminder + the email beside it).
-_WA_VISIT_TPL = {"names": set(), "checked_at": 0.0, "error": "", "refreshed_at": ""}
+_WA_VISIT_TPL = {"names": set(), "checked_at": 0.0, "error": "", "refreshed_at": "",
+                 "approved_utility": set()}   # PATCH #267: every APPROVED+UTILITY name Meta lists
 _WA_VISIT_TPL_TTL = 3600          # a successful read is good for an hour
 _WA_VISIT_TPL_RETRY = 300         # a failed read is retried after five minutes
 
@@ -8534,6 +8537,13 @@ def _wa_visit_templates_usable(force=False):
         data = r.json() if r.content else {}
         if r.status_code == 200:
             _WA_VISIT_TPL["names"] = _wt.usable(data.get("data") or [])
+            # PATCH #267 — the first-touch template is not one of the rail's
+            # (wa_templates.TEMPLATES is the rail's fixed set); it is judged by
+            # the same rule — APPROVED and UTILITY — from the same listing.
+            _WA_VISIT_TPL["approved_utility"] = {
+                str((r or {}).get("name") or "") for r in (data.get("data") or [])
+                if str((r or {}).get("status") or "").upper() == "APPROVED"
+                and str((r or {}).get("category") or "").upper() == "UTILITY"}
             _WA_VISIT_TPL["error"] = ""
             _WA_VISIT_TPL["checked_at"] = _now
             _WA_VISIT_TPL["refreshed_at"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
@@ -8557,6 +8567,9 @@ def _wa_visit_template_send(to, name, params):
 def _wa_visit_templates_status():
     return {"usable": sorted(_WA_VISIT_TPL["names"]), "refreshed_at": _WA_VISIT_TPL["refreshed_at"],
             "error": _WA_VISIT_TPL["error"],
+            # PATCH #267 (globals().get: this function is lifted alone in test_patch250)
+            "first_touch": getattr(globals().get("_ft1"), "WA_TEMPLATE", "mwm_form_reply_times")
+                           in (_WA_VISIT_TPL.get("approved_utility") or set()),
             "rail": {"T-24": _wt.STAGE_TEMPLATE[24] if _wt.STAGE_TEMPLATE[24] in _WA_VISIT_TPL["names"] else "mwm_lara_shoot_reminder + email",
                      "T-2": _wt.STAGE_TEMPLATE[2] if _wt.STAGE_TEMPLATE[2] in _WA_VISIT_TPL["names"] else "mwm_lara_shoot_reminder + email",
                      "no-show": _wt.REBOOK_TEMPLATE if _wt.REBOOK_TEMPLATE in _WA_VISIT_TPL["names"] else "email"}}
@@ -8632,6 +8645,18 @@ def _handle_wa_statuses(value):
         recipient = st.get("recipient_id", "")
         rec_tail  = ("..." + recipient[-4:]) if recipient else "?"
         counters[status] = counters.get(status, 0) + 1
+        # PATCH #267 — a first-touch template's fate is written on the lead,
+        # so the SMS backstop knows whether to go.
+        try:
+            _ftm = globals().get("_ft1")
+            _ftk = f"whatsapp:+{recipient}" if recipient else ""
+            _ftr = lead_data.get(_ftk) if _ftk else None
+            if _ftm is not None and isinstance(_ftr, dict) and _ftm.note_status(
+                    _ftr, wamid, status, datetime.now(pytz.timezone(TIMEZONE))):
+                lead_data[_ftk] = _ftr
+                _TALLY.bump("lead_form.first_touch_wa_status", status)
+        except Exception as _ftx:
+            print(f"[WA-STATUS] first-touch note failed (non-fatal): {_ftx}")
         if status == "failed":
             _wa_status_streak["failed"] += 1
             errs = st.get("errors", []) or [{}]
@@ -13449,6 +13474,26 @@ def admin_visit_reschedule():
                        "booked_slot_id": rec.get("booked_slot_id"), "event_id": rec.get("event_id")})
         _reschedule_resolve(key, new_eid, rec.get("booked_slot_id"), how="confirmed_by_hand")
         _TALLY.bump("reschedule.confirmed_by_hand", mask_contact(key))
+        # PATCH #267 — a move made by hand on the calendar still has to reach
+        # the Leads Report row and the pipeline (Whitaker, 3 Nov: the row said
+        # "Rescheduling" after Michael had already moved her).
+        _cw = _lead_display_when(rec.get("booked_slot_id")) if rec.get("booked_slot_id") else "?"
+        try:
+            update_lead_columns(key, {"Status": booking_status_for("studio_visit"),
+                                      "WhatsApp Status": "Booked", "Appointment Booked": "Y",
+                                      "Lead Temperature": "Hot"})
+            plan["sheet"] = "updated"
+        except Exception as _shx:
+            plan["sheet"] = f"failed ({type(_shx).__name__})"
+        try:
+            _post_pipeline_event("STAGE_CHANGE", lead_name=name, lead_phone=key,
+                                 source=rec.get("source", ""), old_stage="Rescheduling", new_stage="Booked",
+                                 assigned_agents=["Maya", "LARA"],
+                                 context=f"Moved by hand on the calendar to {_cw} "
+                                         f"(event {new_eid or rec.get('event_id') or '?'}); confirmed via /admin/visit-reschedule.")
+        except Exception:
+            pass
+        plan["booked_display"] = _cw
         plan["ok"] = True
         return jsonify(plan)
 
@@ -21013,6 +21058,8 @@ def health_check():
         "operator_remind": _operator_remind_status(),   # PATCH #254
         "agent_talk": _agent_talk_status(),             # PATCH #263
         "maya_offers": _maya_offers(),                  # PATCH #265
+        "first_touch": _first_touch_status(),           # PATCH #267
+        "cold_audience": _cold_audience_status(),       # PATCH #267
         # PATCH #62 — WHICH BUILD IS THIS? Carried open since Jul 30.
         #
         # The standing rule on this board is "no deploy claims without a commit
@@ -21792,7 +21839,27 @@ def _meta_lead_intake(value, lead_meta=None):
                 lr["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
                                        for s in slots if isinstance(s, dict) and s.get("id")]
             plan = _lf.first_touch_plan(verdict, consent, dialable, bool(email))
+            # PATCH #267 — WhatsApp first when Meta lists the template
+            # APPROVED + UTILITY; the SMS is armed as the backstop inside.
+            # (globals().get: this rail is lifted alone into test harnesses — #256 et al.)
+            _ftm = globals().get("_ft1")
+            _ftr = globals().get("_first_touch_wa_ready")
+            if _ftm is not None:
+                plan = _ftm.plan(plan, dialable, consent, bool(_ftr and _ftr()))
             for chan, why in plan:
+                if chan == "whatsapp":
+                    try:
+                        _wbody = (_sh_first_touch_sms_body(name, rec["business"], ai, slots) if sh
+                                  else _first_touch_sms_body(name, rec["business"], ai, slots))
+                        _wcore = _wbody[len(_sms_copy.PREFIX):-len(_sms_copy.SUFFIX)]
+                    except ValueError as _bx:
+                        _report_error("lead_form.sms_copy", _bx, sender_key)
+                        _wcore = ""
+                    _wnote = _first_touch_wa_send(lr, sender_key, e164, name, rec["business"], slots, _wcore, now)
+                    # the email reads "I also messaged you" when a text or a WhatsApp is on its way
+                    sms_note = "sent" if _wnote.startswith("sent") else _wnote
+                    _TALLY.bump("lead_form.first_touch_wa", _wnote.split(" ")[0])
+                    continue
                 if chan == "sms":
                     try:
                         body = (_sh_first_touch_sms_body(name, rec["business"], ai, slots) if sh
@@ -22042,6 +22109,182 @@ def _chase_is_client(sender_key):
         return False
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH #267 — (1) the first touch goes to WhatsApp first, SMS as the backstop;
+# (2) the cold-lead Custom Audience is fed daily; (3) a visit moved by hand
+# reaches the sheet. Pure rules in first_touch.py and meta_audience.py.
+# ═══════════════════════════════════════════════════════════════════════════════
+FIRST_TOUCH_WHATSAPP = os.getenv("FIRST_TOUCH_WHATSAPP", "1").strip().lower() not in ("0", "false", "off", "no")
+COLD_AUDIENCE_SYNC_HOUR = int(os.getenv("COLD_AUDIENCE_SYNC_HOUR", "7"))
+COLD_AUDIENCE_SYNC_MINUTE = int(os.getenv("COLD_AUDIENCE_SYNC_MINUTE", "5"))
+_COLD_AUD = {"last_run": "", "last_result": None, "last_error": ""}
+
+
+def _first_touch_wa_ready():
+    """The template is sent only while Meta lists it APPROVED + UTILITY
+    (MARKETING does not deliver to US numbers) and the switch is on."""
+    if not FIRST_TOUCH_WHATSAPP:
+        return False
+    try:
+        _wa_visit_templates_usable()          # refreshes the listing when stale
+        return _ft1.WA_TEMPLATE in (_WA_VISIT_TPL.get("approved_utility") or set())
+    except Exception:
+        return False
+
+
+def _first_touch_wa_fire(lr, key, e164, params, core, now):
+    """Send the template now. On Meta's refusal the SMS goes instead, now.
+    Returns a note for the log: 'sent' | 'fell back to sms (…)' | 'not sent (…)'."""
+    resp = None
+    try:
+        resp = send_wa_utility_template(e164, _ft1.WA_TEMPLATE, params, lang=_ft1.WA_LANG)
+    except Exception as _wx:
+        _report_error("lead_form.first_touch_wa", _wx, mask_contact(key))
+    wamid = _ft1.wamid_from_response(resp)
+    lr.pop("first_touch_wa_pending", None)
+    if wamid:
+        lr["first_touch_wa"] = {"wamid": wamid, "status": "sent", "sent_at": now.isoformat(),
+                                "template": _ft1.WA_TEMPLATE}
+        if core:
+            lr["first_touch_sms_pending"] = _ft1.sms_pending_after_wa(core, now, wamid)
+        return "sent"
+    if not (core and e164):
+        return "not sent (no copy)"
+    res = _send_sms(e164, _sms_copy.compose(core), kind=SMS_KIND_TRANSACTIONAL) or {}
+    if res.get("ok"):
+        lr["first_touch_sms_at"] = now.isoformat()
+        return "fell back to sms (sent)"
+    if res.get("reason") in ("quiet_hours", "monthly_cap", "touch_state_check_failed", "exception") \
+            or str(res.get("reason", "")).startswith("api_"):
+        lr["first_touch_sms_pending"] = {"since": now.isoformat(), "core": core, "reason": res.get("reason")}
+        return f"fell back to sms (queued {res.get('reason')})"
+    return f"fell back to sms (refused {res.get('reason')})"
+
+
+def _first_touch_wa_send(lr, key, e164, name, business, slots, core, now):
+    """Intake entry: hold for the transactional window, else fire."""
+    params = _ft1.wa_params(name, business, slots)
+    if not _ft1.in_window(now, SMS_TXN_QUIET_START_H, SMS_TXN_QUIET_END_H):
+        lr["first_touch_wa_pending"] = _ft1.wa_pending(params, core, now)
+        return "queued (quiet_hours)"
+    return _first_touch_wa_fire(lr, key, e164, params, core, now)
+
+
+def _first_touch_status():
+    try:
+        s = _ft1.summary(lead_data)
+    except Exception as _e:
+        s = {"error": str(_e)[:80]}
+    s["whatsapp_first"] = _first_touch_wa_ready()
+    s["switch"] = FIRST_TOUCH_WHATSAPP
+    return s
+
+
+# ── the cold-lead audience ──────────────────────────────────────────────────
+def _cold_audience_sync(apply=False, force_all=False, now=None):
+    """Plan (and with apply, send) the day's membership changes. Never raises."""
+    import eric_meta as _em
+    tz = pytz.timezone(TIMEZONE)
+    now = now or datetime.now(tz)
+    aud = os.getenv("META_COLD_AUDIENCE_ID", "").strip()
+    try:
+        pl = _ma.plan(lead_data, now, is_client=lambda k, r: _chase_is_client(k),
+                      is_booked=_chase_booked, tz=tz, force_all=force_all)
+    except Exception as _px:
+        return {"ok": False, "error": f"plan failed: {_px}"[:200]}
+    out = {"ok": True, "as_of": now.isoformat(), "audience": aud or None, "dry": not apply,
+           "force_all": bool(force_all), "to_add": len(pl["add"]), "to_remove": len(pl["remove"]),
+           "skipped": pl["skipped"], "added": 0, "removed": 0, "errors": [],
+           "sample_add": [{"lead": mask_contact(k), "why": w} for k, _, w in pl["add"][:8]],
+           "sample_remove": [{"lead": mask_contact(k), "why": w} for k, _, w in pl["remove"][:8]]}
+    if not apply:
+        return out
+    if not aud:
+        out["errors"].append("META_COLD_AUDIENCE_ID not set")
+        out["ok"] = False
+        return out
+    for verb, items in (("add", pl["add"]), ("remove", pl["remove"])):
+        for i in range(0, len(items), _ma.BATCH):
+            chunk = items[i:i + _ma.BATCH]
+            rows = [r for _, r, _ in chunk if r]
+            if not rows:
+                continue
+            try:
+                res = _em.audience_users(aud, rows, _ma.SCHEMA, remove=(verb == "remove"))
+                if res.get("error"):
+                    raise RuntimeError(str(res.get("error"))[:160])
+                n = int(res.get("num_received") or len(rows))
+                out["added" if verb == "add" else "removed"] += n
+                for k, _, _ in chunk:
+                    rec = lead_data.get(k)
+                    if isinstance(rec, dict):
+                        _ma.stamp(rec, now, removed=(verb == "remove"))
+                        lead_data[k] = rec
+            except Exception as _ex:
+                out["errors"].append(f"{verb} batch {i // _ma.BATCH + 1}: {str(_ex)[:160]}")
+                _report_error("cold_audience.sync", _ex, f"{verb} batch {i // _ma.BATCH + 1}")
+    out["ok"] = not out["errors"]
+    _COLD_AUD["last_run"] = now.strftime("%Y-%m-%d")
+    _COLD_AUD["last_result"] = {k: out[k] for k in ("to_add", "to_remove", "added", "removed", "errors")}
+    try:
+        import pg_store as _cpg
+        if _cpg.enabled():
+            _cpg.save_state("cold_audience_last_run", _COLD_AUD["last_run"])
+    except Exception:
+        pass
+    try:
+        _post_to_slack_async(SLACK_ERIC_CHANNEL,
+            f"\U0001f916 S3b AUTO (daily): cold-lead audience sync — added {out['added']}, removed {out['removed']} "
+            f"(planned {out['to_add']}/{out['to_remove']}; skipped {sum(pl['skipped'].values())}). "
+            f"Audience {aud}." + (f" Errors: {len(out['errors'])}" if out["errors"] else ""))
+    except Exception:
+        pass
+    return out
+
+
+def _cold_audience_status():
+    last = _COLD_AUD["last_run"]
+    if not last:
+        try:
+            import pg_store as _cpg
+            if _cpg.enabled():
+                last = _cpg.load_state("cold_audience_last_run", "") or ""
+                _COLD_AUD["last_run"] = last
+        except Exception:
+            pass
+    return {"audience": os.getenv("META_COLD_AUDIENCE_ID", "").strip() or None,
+            "last_run": last, "last_result": _COLD_AUD["last_result"],
+            "runs_at": f"{COLD_AUDIENCE_SYNC_HOUR:02d}:{COLD_AUDIENCE_SYNC_MINUTE:02d} {TIMEZONE}"}
+
+
+def _cold_audience_loop():
+    while True:
+        try:
+            _heartbeat("cold_audience_sync")
+            now = datetime.now(pytz.timezone(TIMEZONE))
+            if _ma.due_today(_cold_audience_status()["last_run"], now,
+                             COLD_AUDIENCE_SYNC_HOUR, COLD_AUDIENCE_SYNC_MINUTE):
+                _cold_audience_sync(apply=True, now=now)
+        except Exception as _e:
+            _report_error("cold_audience.loop", _e)
+        time.sleep(600)
+
+
+_THREAD_STALE_OVERRIDES["cold_audience_sync"] = 30
+threading.Thread(target=_cold_audience_loop, daemon=True, name="cold_audience_sync").start()
+
+
+@app.route('/admin/cold-audience-sync', methods=['GET', 'POST'])
+def admin_cold_audience_sync():
+    """GET/POST /admin/cold-audience-sync?secret=&apply=1&all=1 — dry by default."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    apply = str(request.values.get("apply") or "") in ("1", "true", "yes")
+    force_all = str(request.values.get("all") or "") in ("1", "true", "yes")
+    return jsonify(_cold_audience_sync(apply=apply, force_all=force_all))
+
+
 def _chase_pass(now=None):
     """One pass over every armed lead. Returns the counts it saw."""
     import sms_consent as _sc
@@ -22052,6 +22295,27 @@ def _chase_pass(now=None):
     for key, rec in list(lead_data.items()):
         if not isinstance(rec, dict):
             continue
+        # ── PATCH #267: the WhatsApp first touch that waited for the window ──
+        # (globals().get: _chase_pass is lifted alone into test harnesses — #256)
+        _ftm = globals().get("_ft1")
+        wpend = rec.get("first_touch_wa_pending")
+        if _ftm is not None and isinstance(wpend, dict) and wpend.get("params"):
+            counts["pending_first_touch"] += 1
+            _we164 = _sc.to_e164(rec.get("phone"))
+            _wsince = _chase_aware(wpend.get("since"))
+            _winb = _chase_inbound(rec)
+            _wreplied = bool(_winb and _wsince and _winb > _wsince + timedelta(minutes=1))
+            if not _we164 or _ftm.wa_pending_expired(wpend, now) or _wreplied \
+                    or _chase_booked(rec) or isinstance(rec.get("disqualified"), dict):
+                rec["first_touch_wa_dropped"] = "replied" if _wreplied else "expired"
+                rec.pop("first_touch_wa_pending", None)
+                lead_data[key] = rec
+            elif _ftm.in_window(now, SMS_TXN_QUIET_START_H, SMS_TXN_QUIET_END_H):
+                _wnote = _first_touch_wa_fire(rec, key, _we164, wpend["params"], wpend.get("core") or "", now)
+                lead_data[key] = rec
+                _TALLY.bump("lead_form.first_touch_wa", "late_" + _wnote.split(" ")[0])
+                if _wnote.startswith("sent"):
+                    counts["sent"] += 1
         # ── the first-touch text that had to wait for the window ──
         pend = rec.get("first_touch_sms_pending")
         if isinstance(pend, dict) and pend.get("core"):
@@ -22061,12 +22325,22 @@ def _chase_pass(now=None):
             waited_h = ((now - since).total_seconds() / 3600.0 if since else 999)
             inbound = _chase_inbound(rec)                       # PATCH #256: either number
             replied = bool(inbound and since and inbound > since + timedelta(minutes=1))
+            # PATCH #267 — an SMS armed behind a WhatsApp template waits for
+            # WhatsApp's verdict: delivered → dropped; failed or 30 min of
+            # silence → it goes.
+            _due, _dwhy = (_ftm.sms_due(pend, (rec.get("first_touch_wa") or {}).get("status"), now)
+                           if _ftm is not None else ("send", ""))
             if not e164 or waited_h > _chase.FIRST_TOUCH_SMS_MAX_WAIT_H or replied \
-                    or _chase_booked(rec) or isinstance(rec.get("disqualified"), dict):
+                    or _chase_booked(rec) or isinstance(rec.get("disqualified"), dict) or _due == "drop":
                 rec["first_touch_sms_dropped"] = ("replied" if replied else
+                                                  _dwhy if _due == "drop" else
                                                   f"waited {waited_h:.0f}h")
                 rec.pop("first_touch_sms_pending", None)
                 lead_data[key] = rec
+                if _due == "drop":
+                    _TALLY.bump("lead_form.first_touch_sms", "dropped_wa_delivered")
+            elif _due == "wait":
+                pass
             else:
                 res = _send_sms(e164, _sms_copy.compose(pend["core"]),
                                 kind=SMS_KIND_TRANSACTIONAL)
@@ -22556,6 +22830,7 @@ def admin_chase():
             "first_touch_sms_at": rec.get("first_touch_sms_at", ""),
             "first_touch_email_at": rec.get("first_touch_email_at", ""),
             "first_touch_sms_pending": bool(pend),
+            "first_touch_wa": (rec.get("first_touch_wa") or {}).get("status", ""),   # PATCH #267
         })
     rows.sort(key=lambda r: r.get("armed_at", ""), reverse=True)
     return jsonify({"now": now.isoformat(), "count": len(rows),
