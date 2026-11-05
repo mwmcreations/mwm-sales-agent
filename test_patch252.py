@@ -50,9 +50,9 @@ check("AI Growth is the most popular", "AI Growth (the most popular)" in off)
 check("252g/255: AI Wall vs Full Immersion explained", "AI WALL = we replace the BACKGROUND" in off and "FULL IMMERSION = we transform EVERYTHING" in off
       and "The AI Wall changes the background, for long videos. Full Immersion transforms everything around you, even your clothes, for videos up to 30 seconds." in off)
 check("252e: called subscription plans", "SUBSCRIPTION PLANS" in off and "MONTHLY PLANS" not in off)
-check("3-month minimum; start this week on real sets, AI Wall Nov 2 (252b)", "3-month minimum" in off and "Start this week on our real sets; the AI Wall opens November 2" in off
+check("3-month minimum; new studio open, real sets + AI Wall now (268)", "3-month minimum" in off and "The new studio is open: real-set hours and AI Wall hours can be booked right away" in off
       and "The month starts on the day they pay" in off and "plans start November 2" not in off and "Apply now" not in off)
-check("252b base prompt: start this week", "start this week on our real sets (the AI Wall opens November 2)" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
+check("268 base prompt: start right away", "can start right away in our new studio (real sets and the AI Wall are open)" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
 check("10 shorts or 1 podcast per hour", "up to 10 edited short videos, or 1 podcast episode with 10 short cuts" in off)
 check("plan contents", "2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 Full Immersion video" in off
       and "up to 2 of them on the AI Wall" in off and "4 AI Wall hours + 2 Full Immersion videos" in off
@@ -65,7 +65,7 @@ check("252c: no $597 left", "$597" not in on and "eVq4gzaKlb5o6ej8kq9EI1l" not i
 check("Add a Full Immersion video $397", "Add a Full Immersion video: $397 per video" in off)
 check("252h: $397 add-on is for subscription-plan clients only", "ONLY for clients already on a subscription plan" in off and "SUBSCRIPTION-PLAN CLIENTS ONLY" in off and "added to a session or plan" not in off and "Subscription-plan clients can turn a video" in open(os.path.join(HERE, "app.py"), encoding="utf-8").read())
 check("Pack $1,497 = 1 h + 4 Spots", "Full Immersion Pack: $1,497 = 1 studio hour + 4 Full Immersion videos" in off)
-check("AI Wall Hour $599 = $349 + $250, from Nov 2", "AI Wall Hour: $599 ($349 studio hour with editing + $250 for the AI Wall), from November 2" in off)
+check("AI Wall Hour $599 = $349 + $250 (268: no start date)", "AI Wall Hour: $599 ($349 studio hour with editing + $250 for the AI Wall)." in off)
 check("252f: MWM Worlds off the menu, no $197", "$197" not in off and "NOT on the menu right now" in off)
 check("$6 per second custom, never computed", "from $6 per second" in off and "NEVER work out a per-second price" in off)
 
@@ -85,10 +85,10 @@ for k in ("$1,097", "$2,197", "$749", "+$250", "Want early access?", "NO date, N
 check("never name them", "no 2-hour plans (Studio Duo, AI Wall Duo)" in off and "no AI Wall Sessions monthly plan" in off)
 
 print("== founding date is a website line")
-check("on /ai-studio: commit by November 1, 2026", "commit by November 1, 2026" in on)
-check("ad channels: no date", "November 1" not in off and "November 1" not in wa)
+check("on /ai-studio: commit by November 30, 2026 (268)", "commit by November 30, 2026" in on)
+check("ad channels: no date", "November 30" not in off and "November 30" not in wa and "November 1," not in on)
 check("same menu otherwise", on.split("═══", 2)[2].replace(ai._FOUNDING_ON_PAGE, "") == off.split("═══", 2)[2])
-check("AI Wall hours not before Nov 2", "Never book an AI Wall hour before that" in off)
+check("268: AI Wall hours bookable now, no Nov 2 left", "AI Wall hours can be booked now in the new studio" in off and "November 2" not in off and "current studio" not in off)
 
 print("== branch triggers")
 check("'AI wall' triggers", ai.ai_lead(None, ["do you have an AI wall?"], "")[0])

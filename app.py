@@ -2805,7 +2805,7 @@ Includes: studio space, equipment, on-site technician, and editing.
 
 Full Immersion (add-on) — $397 per video  (PATCH #255 name, 19 Oct 2026; was "AI Wall Spot" #252 and "Hybrid AI video" #141)
 Subscription-plan clients can turn a video from any of their sessions into a Full Immersion video (the $397 add-on is for plan clients only; everyone else gets Full Immersion at $997 with filming included): the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round. On its own, filming included: $997 (on a monthly plan, Full Immersion videos are included or added for $397).
-Full Immersion Pack — $1,497: 1 studio hour + 4 Full Immersion videos (about $374 per video). AI monthly plans (AI Starter, AI Growth, AI Pro), from $1,297/month at the founding price, start this week on our real sets (the AI Wall opens November 2); the full list is on mwmcreations.com/ai-studio. Anything longer or custom is quoted at the Strategy Visit.
+Full Immersion Pack — $1,497: 1 studio hour + 4 Full Immersion videos (about $374 per video). AI monthly plans (AI Starter, AI Growth, AI Pro), from $1,297/month at the founding price, can start right away in our new studio (real sets and the AI Wall are open); the full list is on mwmcreations.com/ai-studio. Anything longer or custom is quoted at the Strategy Visit.
 General information only: if the lead is curious about AI, share it plainly and invite them to the visit. You are not selling it; Michael closes in the studio.
 
 HOW TO HANDLE PRICING QUESTIONS:

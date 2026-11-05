@@ -55,7 +55,7 @@ ok(SRC.count("except Exception as _aie") == 3, "every hook is non-fatal")
 ok("AI WALL STUDIO" in ai.maya_ai_context("", "asked") and "NOT 100% AI" in ai.maya_ai_context("https://mwmcreations.com/ai-studio/", ""), "252: AI Wall framing, still not 100% AI, in every AI block")
 
 _c = ai.maya_ai_context("https://mwmcreations.com/ai-studio/", "") + ai.maya_ai_context("", "asked")
-ok("October" not in _c and "November 1" not in off, "252: no founding deadline off the page")
+ok("October" not in _c and "November 30" not in off, "252: no founding deadline off the page")
 ok("paid before we generate" in _c.lower() and "MAX 30 seconds" in _c, "141: paid first, max 30 s per Full Immersion video")
 ok("30-minute Studio Strategy Visit" in _c, "140b: main CTA is the 30-minute Strategy Visit")
 ok("video like the demo" in _c, "140b: demo explanation (252: AI Sets early-access line retired)")

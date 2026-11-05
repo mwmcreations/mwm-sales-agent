@@ -29,7 +29,7 @@ for k in ("$249", "$349", "$1,200/month", "3-month minimum", "30 days' notice", 
     ok(k in on, "menu has " + k)
 for k in ("$749", "$2,197", "+$250"):
     ok(k not in on, "off-market price not in the prompt: " + k)
-ok("commit by November 1, 2026" in on and "November 1" not in off, "252: founding deadline only on the AI page")
+ok("commit by November 30, 2026" in on and "November 30" not in off, "252: founding deadline only on the AI page")
 print("\n== guardrails, objections, hand-offs")
 ok("MAX 30 seconds and MAX 3 scenes" in on and "2-minute video like the demo" in on, "30 s / 3 scenes cap, 2-minute = custom")
 ok("identical results twice" in on, "no exact looks promised")
