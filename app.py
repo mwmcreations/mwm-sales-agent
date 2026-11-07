@@ -22285,6 +22285,35 @@ def admin_cold_audience_sync():
     return jsonify(_cold_audience_sync(apply=apply, force_all=force_all))
 
 
+@app.route('/admin/studio-provision-custom', methods=['GET', 'POST'])
+def admin_studio_provision_custom():
+    """PATCH #269 — GET/POST /admin/studio-provision-custom?secret=&email=&name=&hours=&start=&end=
+    &label=&price_label=&term_label=&interval=week|month|none&amount=&cycles=&pace=&includes=
+    &extra=line|line&apply=1
+    The standard studio-client pipeline (portal account, regular welcome
+    email, lead record, alerts) for a client on a custom deal that is not a
+    package. Dry by default (returns the email as it would read)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    v = request.values
+    apply = str(v.get("apply") or "") in ("1", "true", "yes")
+    try:
+        res = _studio.provision_custom(
+            name=v.get("name") or "", email=v.get("email") or "",
+            hours=v.get("hours") or 0, start=v.get("start") or "", end=v.get("end") or "",
+            label=v.get("label") or "Custom studio plan",
+            price_label=v.get("price_label") or "", term_label=v.get("term_label") or "",
+            interval=v.get("interval") or "none", cycle_amount=v.get("amount") or 0,
+            cycles=v.get("cycles") or 0, pace_note=v.get("pace") or "",
+            includes_note=v.get("includes") or "",
+            extra_notes=[s for s in str(v.get("extra") or "").split("|") if s.strip()],
+            apply=apply)
+    except Exception as e:
+        _report_error("admin_studio_provision_custom", "custom provision failed", repr(e))
+        return jsonify({"ok": False, "error": repr(e)}), 500
+    return jsonify(res), (200 if res.get("ok") else 400)
+
+
 def _chase_pass(now=None):
     """One pass over every armed lead. Returns the counts it saw."""
     import sms_consent as _sc

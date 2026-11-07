@@ -276,7 +276,23 @@ def billing_dates(spec, start):
     if cycles < 1:
         return []
     start_d = start.date() if hasattr(start, "date") else start
+    # PATCH #269 — a weekly deal bills every 7 days from the day they paid.
+    if str(spec.get("interval") or "month") == "week":
+        return [start_d + timedelta(days=7 * i) for i in range(cycles)]
     return [_add_calendar_month(start_d, i) for i in range(cycles)]
+
+
+def _dates_by_month(dates):
+    """PATCH #269 — "November 6, 13, 20, 27; December 4, 11, 18, 25; January 1, 8"."""
+    groups = []
+    for d in dates:
+        label = d.strftime("%B") if hasattr(d, "strftime") else str(d)
+        day = str(d.day) if hasattr(d, "day") else ""
+        if groups and groups[-1][0] == label:
+            groups[-1][1].append(day)
+        else:
+            groups.append([label, [day]])
+    return "; ".join(f"{m} {', '.join(ds)}" for m, ds in groups)
 
 
 def billing_footer_html(spec, term):
@@ -292,6 +308,24 @@ def billing_footer_html(spec, term):
     dates = billing_dates(spec, (term or {}).get("start"))
     if not dates:
         return ""
+    if str(spec.get("interval") or "month") == "week":
+        # PATCH #269 — a weekly deal. The amount is the weekly charge, never
+        # the MRR figure; the dates are still listed, grouped by month, because
+        # the dates are the record (see the note above this function).
+        w_amount = int(spec.get("cycle_amount") or 0)
+        w_cycles = len(dates)
+        w_total = w_amount * w_cycles
+        return (
+            '<p style="font-size:12px;line-height:1.6;color:#888;margin-top:22px;'
+            'padding-top:14px;border-top:1px solid #e8e8e8;">'
+            f'Your plan is <strong style="color:#666;">${w_amount:,}/week for '
+            f'{w_cycles} weeks</strong> (${w_total:,} total), charged automatically to '
+            f'the card on file every {dates[0].strftime("%A")} — '
+            f'<strong style="color:#666;">{_dates_by_month(dates)}</strong>. '
+            f'Hours can be used at any point during the term and expire at the end '
+            f'of it, when we review the results together and decide the next step. '
+            f'<a href="{STUDIO_TERMS_URL}" style="color:#888;">Studio Terms →</a>'
+            '</p>')
     amount = int(spec.get("mrr") or 0)
     cycles = len(dates)
     total = amount * cycles
@@ -356,6 +390,10 @@ def revenue_split(clients):
 def term_phrase(spec):
     """How to describe the term to the client, in their words not ours."""
     spec = spec or {}
+    # PATCH #269 — a deal may carry the exact words it was sold with
+    # (13 weeks is "3 months" to the client, never "91 days").
+    if spec.get("term_label"):
+        return str(spec["term_label"])
     days = int(spec.get("term_days") or 0)
     if days and days % 30 == 0 and days >= 60:
         months = days // 30
@@ -483,7 +521,7 @@ def _session_bought_studio_package(session_id: str) -> bool:
 
 
 def provision_portal_client(name: str, email: str, spec: dict = None,
-                            dry_run: bool = False) -> dict:
+                            dry_run: bool = False, start=None) -> dict:
     """Create (or fetch) the portal account on WP page 1102's login store.
 
     Returns {'ok', 'access_code', 'existing', 'raw', 'status', 'term'} where
@@ -496,7 +534,9 @@ def provision_portal_client(name: str, email: str, spec: dict = None,
     """
     spec = spec or PACKAGES[STUDIO_PRICE_ID]
     et = pytz.timezone(TIMEZONE)
-    term = package_term(spec, datetime.now(et))
+    # PATCH #269 — `start` lets a by-hand provision run the term from the day
+    # the client paid, not the day somebody got round to it.
+    term = package_term(spec, start or datetime.now(et))
     payload = {
         "action": "mwm_studio_provision_client",
         "name": name,
@@ -580,6 +620,13 @@ def _welcome_email_html(first_name: str, access_code: str,
         # Appended to the hours line rather than added as a new bullet, so the
         # 3-month email's list length does not change at all.
         expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
+    # PATCH #269 — further lines a deal wants in the written record (referral
+    # hours, say). Empty for every package, so their emails do not change by
+    # a character.
+    for _note in (spec.get("extra_notes") or []):
+        _note = str(_note or "").strip()
+        if _note:
+            expiry_li = f"{expiry_li}</li>\n      <li>{_note}"
     return _welcome_email_body(first_name, access_code, headline, total_li,
                                expiry_li, billing_footer_html(spec, term))
 
@@ -661,7 +708,8 @@ def handle_stripe_event(event: dict) -> dict:
     return {"handled": False, "reason": "ignored-type", "type": etype}
 
 
-def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = None):
+def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = None,
+                          start=None):
     """Full purchase pipeline: portal account -> welcome email -> lead update -> alerts.
 
     PATCH #53 — `spec` defaults to the 3-month package, so the existing path is
@@ -671,7 +719,7 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
     first = name.split()[0] if name else "there"
 
     # 1 · Portal account (idempotent by email on the WP side)
-    prov = provision_portal_client(name, email, spec)
+    prov = provision_portal_client(name, email, spec, start=start)
     code = prov.get("access_code")
     term = prov.get("term") or {}
 
@@ -796,6 +844,119 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
         f"{term_phrase(spec)}"
         + (f", last bookable day {_deadline_str}" if _deadline_str else "")
         + f". Portal: {PORTAL_URL} · {prov_note}")
+    # PATCH #269 — callers that run this by hand want to know what happened.
+    return {"portal_ok": bool(prov.get("ok")), "existing": bool(prov.get("existing")),
+            "code_issued": bool(code), "welcome_email": bool(email_ok)}
+
+
+def custom_spec(label, hours, start, end, price_label="", term_label="",
+                interval="none", cycle_amount=0, cycles=0, pace_note="",
+                includes_note="", extra_notes=None, kind="custom"):
+    """PATCH #269 — a package spec for ONE client's deal, built from the deal's
+    own terms and never written into PACKAGES. Michael, Sat 7 Nov 2026, on
+    Shawnie Whitaker's $350-a-week partner plan: "pretty much a custom build…
+    an exception… not something that I want to make fixed among the other
+    plans" — but "everything related to his studio client portal stays the
+    same as a regular studio client portal… the hours, the email automation".
+    So the deal runs through the standard pipeline (portal account, the
+    regular welcome email, lead record, alerts) on a spec that exists only for
+    this call. Nothing here is a product: Maya never sees it, the webhook
+    never matches it, the canvas counts it as whatever package_by_name says.
+
+    `start`/`end` are dates; `end` is the portal's last bookable day. Billing:
+    interval "week" | "month" with cycle_amount and cycles → the footer lists
+    the dates; "none" → a one-off, no footer. Returns (spec, term)."""
+    days = (end - start).days
+    if days < 1:
+        raise ValueError("end must be after start")
+    hours = int(hours)
+    if hours < 1:
+        raise ValueError("hours must be at least 1")
+    interval = str(interval or "none").lower()
+    cycle_amount = int(cycle_amount or 0)
+    cycles = int(cycles or 0)
+    recurring = interval in ("week", "month") and cycle_amount > 0 and cycles > 0
+    if interval == "week":
+        mrr = int(round(cycle_amount * 52 / 12.0))
+    elif interval == "month":
+        mrr = cycle_amount
+    else:
+        mrr = 0
+    label = " ".join(str(label or "").split()) or "Custom studio plan"
+    spec = {
+        "kind": str(kind or "custom"),
+        "name": label,
+        "hours": hours,
+        "term_days": days,
+        "term_label": str(term_label or "").strip(),
+        "grace_days": 0,                 # `end` IS the last bookable day
+        "cycles": cycles if recurring else 0,
+        "interval": interval if recurring else "none",
+        "cycle_amount": cycle_amount if recurring else 0,
+        "recurring": recurring,
+        "mrr": mrr if recurring else 0,
+        "one_off": 0 if recurring else cycle_amount,
+        "price_label": str(price_label or "").strip() or label,
+        "sheet_status": f"Client — {label}",
+        "pace_note": str(pace_note or "").strip(),
+        "includes_note": str(includes_note or "").strip(),
+        "extra_notes": [str(n).strip() for n in (extra_notes or []) if str(n).strip()],
+        "credits_toward_contract": False,
+        "custom": True,
+    }
+    return spec, package_term(spec, start)
+
+
+def provision_custom(name, email, hours, start, end, label="Custom studio plan",
+                     price_label="", term_label="", interval="none", cycle_amount=0,
+                     cycles=0, pace_note="", includes_note="", extra_notes=None,
+                     apply=False):
+    """PATCH #269 — run the standard purchase pipeline for a client on a custom
+    deal (see custom_spec). Dry by default: returns the spec, the dates, the
+    subject and the welcome email as it would read, and asks WP whether the
+    account exists — creates nothing, sends nothing. With apply=True it is
+    exactly what the Stripe webhook does for a package, once per (email,
+    start): a second apply is answered "duplicate", because WP hands back no
+    code for an account that exists and the client would get a welcome email
+    with no way in. `start`/`end` are YYYY-MM-DD; start = the day they paid."""
+    email = str(email or "").strip().lower()
+    if not email or "@" not in email:
+        return {"ok": False, "error": "email required"}
+    name = " ".join(str(name or "").split()) or email
+    try:
+        start_d = datetime.strptime(str(start or "").strip(), "%Y-%m-%d").date()
+        end_d = datetime.strptime(str(end or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return {"ok": False, "error": "start and end must be YYYY-MM-DD"}
+    try:
+        spec, term = custom_spec(label, hours, start_d, end_d, price_label=price_label,
+                                 term_label=term_label, interval=interval,
+                                 cycle_amount=cycle_amount, cycles=cycles,
+                                 pace_note=pace_note, includes_note=includes_note,
+                                 extra_notes=extra_notes)
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+    first = name.split()[0] if name else "there"
+    out = {"ok": True, "dry": not apply, "email": email, "name": name,
+           "spec": {k: v for k, v in spec.items() if k != "extra_notes"},
+           "extra_notes": spec["extra_notes"],
+           "term_start": term["start"].isoformat(),
+           "booking_deadline": term["booking_deadline"].isoformat(),
+           "billing_dates": [d.isoformat() for d in billing_dates(spec, start_d)],
+           "subject": f"Welcome to MWM Studios — your {spec['name']} is active 🎬"}
+    if not apply:
+        probe = provision_portal_client(name, email, spec, dry_run=True, start=start_d)
+        out["wp"] = {"status": probe.get("status"), "existing": probe.get("existing"),
+                     "raw": probe.get("raw")}
+        out["welcome_html"] = _welcome_email_html(first, "XXXXXX", spec, term)
+        return out
+    marker = f"manual:{email}:{term['start'].isoformat()}"
+    if _already_processed(marker):
+        out.update(ok=False, error="duplicate", marker=marker)
+        return out
+    out["result"] = _on_package_purchased(name, email, marker, spec, start=start_d)
+    out["marker"] = marker
+    return out
 
 
 # ── Post-pitch follow-up sequence (EMAIL-FIRST — WABA is down Jul 2026) ─
