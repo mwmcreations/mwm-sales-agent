@@ -78,6 +78,7 @@ main { padding: 12px 0 8px; }
 .tag.noshow, .tag.lost { color: var(--bad); border-color: rgba(229,72,77,.4); }
 .tag.booked { color: var(--ok); border-color: rgba(76,195,138,.4); }
 .tag.test { color: var(--fg3); border-style: dashed; }
+.tag.temp { color: var(--fg3); } .tag.temp.hot, .tag.temp.scorching { color: #ff7a59; border-color: rgba(255,122,89,.45); } .tag.temp.warm { color: var(--accent); }
 
 /* lists */
 .chips { display: flex; gap: 8px; margin: 2px 0 12px; overflow-x: auto; }

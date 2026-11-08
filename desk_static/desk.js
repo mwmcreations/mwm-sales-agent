@@ -42,13 +42,15 @@
   const FLAG = {
     awaiting_reply: ["wait", "● awaiting reply"], michael: ["me", "Michael has it"], qualified: ["q", "qualified"],
     chasing: ["chase", "chasing"], first_touch_pending: ["chase", "first touch pending"], no_show: ["noshow", "no-show"],
-    times_offered: ["wait", "times offered"], error: ["lost", "record error"],
+    times_offered: ["wait", "times offered"], error: ["lost", "record error"], visit_passed: ["noshow", "slot passed — outcome?"],
   };
+  const TEMP = { scorching: "🔥 scorching", hot: "🔥 hot", warm: "warm", cool: "cool", cold: "cold" };
   function tags(c) {
     const out = [];
-    if (c.booking && c.booking.when) out.push(`<span class="tag booked">📅 ${esc(c.booking.when)}</span>`);
+    if (c.booking && c.booking.when) out.push(`<span class="tag ${c.booking.passed ? "" : "booked"}">📅 ${esc(c.booking.when)}${c.booking.passed ? " · passed" : ""}</span>`);
     (c.flags || []).forEach(f => { const m = FLAG[f]; if (m) out.push(`<span class="tag ${m[0]}">${esc(m[1])}</span>`); });
     if (c.product && c.stage === "Client") out.push(`<span class="tag">${esc(c.product)}</span>`);
+    if (c.temperature && TEMP[c.temperature]) out.push(`<span class="tag temp ${esc(c.temperature)}">${TEMP[c.temperature]}</span>`);
     if (c.test) out.push(`<span class="tag test">test</span>`);
     out.push(`<span class="tag src">${esc(c.source || "—")}</span>`);
     return out.join("");
@@ -140,8 +142,9 @@
       ${fact("First seen", L.first_seen ? when(L.first_seen) : "")}
       ${fact("Last activity", L.last_activity ? when(L.last_activity) : "")}
       ${fact("Qualified", L.qualified ? "yes" + (L.form && L.form.qualified_reason ? " — " + esc(L.form.qualified_reason) : "") : "")}
-      ${fact("Temperature", esc(L.temperature))}
-      ${L.booking ? fact("Booked", esc(L.booking.when || "see calendar") + (L.booking.kind ? ` · ${esc(L.booking.kind.replace(/_/g, " "))}` : ""), true) : ""}
+      ${fact("Maya's read", L.temperature ? (TEMP[L.temperature] || esc(L.temperature)) : "")}
+      ${L.quiet_days != null && L.quiet_days >= 7 ? fact("Quiet for", Math.round(L.quiet_days) + " days") : ""}
+      ${L.booking ? fact("Booked", esc(L.booking.when || "see calendar") + (L.booking.kind ? ` · ${esc(L.booking.kind.replace(/_/g, " "))}` : "") + (L.booking.passed && !L.outcome ? " · <b>the slot has passed — outcome not recorded</b>" : ""), true) : ""}
       ${L.outcome ? fact("Visit outcome", esc(L.outcome.last.replace(/_/g, " ")) + (L.outcome.at ? " · " + when(L.outcome.at) : ""), true) : ""}
       ${L.paid ? fact("Client since", when(L.paid.at) + (L.paid.product ? " · " + esc(L.paid.product) : ""), true) : ""}
       ${ftTxt ? fact("First touch", ftTxt, true) : ""}

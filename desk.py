@@ -47,6 +47,8 @@ except Exception:  # pragma: no cover
     QUALIFIED_VERDICTS = ("yes", "studio-hour")
 LOST_STOPS = ("disqualified", "no", "declined", "dnc", "do_not_contact")
 PAUSED_STOPS = ("not_now", "paused", "cold", "farewell")
+QUIET_DAYS = 30          # nothing heard or sent for this long → Paused
+VISIT_PASSED_GRACE_H = 12  # a booked slot this far in the past with no outcome → "outcome?"
 
 COOKIE = "desk_session"
 COOKIE_PATH = "/desk"
@@ -216,7 +218,27 @@ def is_qualified(rec):
     return _lower(_first(rec.get("status"), rec.get("whatsapp_status"))) == "qualified"
 
 
-def stage_of(rec, turns=None, dnc=False):
+def quiet_days(rec, turns=None, now=None):
+    """Days since the last thing that happened on the record; None when the
+    record carries no date at all (the oldest era)."""
+    last = last_activity(rec, turns)
+    if not last:
+        return None
+    e = epoch(last)
+    if not e:
+        return None
+    n = (now.timestamp() if isinstance(now, datetime) and now.tzinfo else
+         time.mktime(now.timetuple()) if isinstance(now, datetime) else time.time())
+    return max(0.0, (n - e) / 86400.0)
+
+
+def stage_of(rec, turns=None, dnc=False, now=None):
+    """Where the record sits on the board. Facts first (paid, blocked, visit
+    outcome, a booking), then the chase's own verdicts, then time: a lead
+    nobody has heard from in QUIET_DAYS is Paused, whatever Maya's
+    temperature score says — the temperature is a read on the lead, not a
+    stage, and it is shown as a badge instead (the first live board put 317
+    of 385 leads in Paused by reading it as one)."""
     rec = rec or {}
     chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else {}
     stopped = _lower(chase.get("stopped"))
@@ -224,19 +246,24 @@ def stage_of(rec, turns=None, dnc=False):
         return "Client"
     if dnc or rec.get("do_not_contact") or rec.get("do_not_sms"):
         return "Lost"
+    if _lower(rec.get("last_outcome")) in ("not_interested",):
+        return "Lost"
     if _lower(rec.get("last_outcome")) in VISIT_OUTCOMES:
         return "Visited"
     if rec.get("event_id"):
         return "Booked"
     if stopped in LOST_STOPS or _lower(rec.get("outcome")) in ("lost", "no", "declined"):
         return "Lost"
-    temp = _lower(_first(rec.get("temperature"), rec.get("lead_temperature")))
-    if stopped in PAUSED_STOPS or rec.get("cold_fired") or rec.get("farewell_sent_at") \
-            or temp == "cold" or _lower(rec.get("whatsapp_status")) == "cold":
+    if stopped in PAUSED_STOPS:
         return "Paused"
-    if has_inbound(rec, turns):
+    active_chase = bool(chase) and not stopped
+    inbound, outbound = has_inbound(rec, turns), has_outbound(rec, turns)
+    q = quiet_days(rec, turns, now)
+    if (inbound or outbound) and not active_chase and (q is None or q >= QUIET_DAYS):
+        return "Paused"
+    if inbound:
         return "Replied"
-    if has_outbound(rec, turns):
+    if outbound:
         return "Contacted"
     return "New"
 
@@ -256,10 +283,15 @@ def display_name(rec, key=""):
     return str(key)[:24] or "Lead"
 
 
+_SOURCE_LABELS = {"instagram dm": "Instagram DM", "instagram": "Instagram", "whatsapp": "WhatsApp",
+                  "meta lead ad": "Meta Lead Ad", "website chat": "Website chat", "lead form": "Lead form",
+                  "sms": "SMS", "email": "Email"}
+
+
 def source_of(rec, key=""):
-    s = str(rec.get("source") or "").strip()
+    s = " ".join(str(rec.get("source") or "").split())
     if s:
-        return s
+        return _SOURCE_LABELS.get(s.lower(), s)
     ch = _lower(rec.get("channel"))
     if ch:
         return ch.title()
@@ -317,16 +349,45 @@ def flags_for(rec, turns, stage, manual=False, now=None):
         out.append("first_touch_pending")
     if _lower(rec.get("last_outcome")) in ("no_show", "noshow", "no-show"):
         out.append("no_show")
+    bk = booking_of(rec, now)
+    if bk and bk.get("passed") and stage == "Booked" and not rec.get("last_outcome"):
+        out.append("visit_passed")          # the slot is behind us and nobody said what happened
     if rec.get("offered_slots") and stage not in ("Booked", "Visited", "Client"):
         out.append("times_offered")
     return out
 
 
-def booking_of(rec):
+def slot_display(iso_or_text):
+    """'Tue Nov 10 at 10:00 AM' from the slot's ISO time (booked_slot_id, #262);
+    anything that is not a date comes back as it was."""
+    d = parse_dt(iso_or_text)
+    if d is None:
+        return str(iso_or_text or "")
+    s = d.strftime("%a %b %d at %I:%M %p")
+    return s.replace(" 0", " ")
+
+
+def booking_of(rec, now=None):
     if not rec.get("event_id"):
         return None
+    slot = _first(rec.get("booked_slot_id"), rec.get("booked_slot"), rec.get("slot_id"))
+    slot_dt = parse_dt(slot)
+    when = str(_first(rec.get("booked_display"), rec.get("booking_display"), "") or "") or (slot_display(slot) if slot_dt else "")
+    passed = False
+    if slot_dt is not None:
+        n = now or datetime.now(slot_dt.tzinfo) if slot_dt.tzinfo else (now or datetime.now())
+        try:
+            if slot_dt.tzinfo and n.tzinfo is None:
+                n = n.replace(tzinfo=slot_dt.tzinfo)
+            elif slot_dt.tzinfo is None and n.tzinfo is not None:
+                n = n.replace(tzinfo=None)
+            passed = (n - slot_dt).total_seconds() > VISIT_PASSED_GRACE_H * 3600
+        except Exception:
+            passed = False
     return {"event_id": str(rec.get("event_id")),
-            "when": str(_first(rec.get("booked_display"), rec.get("booking_display"), "") or ""),
+            "when": when,
+            "slot_at": slot_dt.isoformat() if slot_dt else "",
+            "passed": passed,
             "at": iso(_first(rec.get("booked_at"), rec.get("last_outcome_at"))),
             "kind": str(_first(rec.get("booking_kind"), rec.get("visit_type"), "studio_visit") or ""),
             "link": str(rec.get("event_link") or rec.get("calendar_link") or "")}
@@ -377,7 +438,7 @@ def lead_view(key, rec, turns=None, manual=False, dnc=False, now=None):
     """One record → one clean shape for the board, the inbox and the card."""
     rec = rec if isinstance(rec, dict) else {}
     turns = turns or []
-    stage = stage_of(rec, turns, dnc=dnc)
+    stage = stage_of(rec, turns, dnc=dnc, now=now)
     last = last_activity(rec, turns)
     snippet = turns[-1]["text"] if turns else ""
     view = {
@@ -398,7 +459,8 @@ def lead_view(key, rec, turns=None, manual=False, dnc=False, now=None):
         "snippet": snippet[:160],
         "turns": len(turns),
         "flags": flags_for(rec, turns, stage, manual=manual, now=now),
-        "booking": booking_of(rec),
+        "booking": booking_of(rec, now),
+        "quiet_days": (lambda q: round(q, 1) if q is not None else None)(quiet_days(rec, turns, now)),
         "outcome": {"last": str(rec.get("last_outcome") or ""), "at": iso(rec.get("last_outcome_at"))}
                    if rec.get("last_outcome") else None,
         "chase": chase_of(rec),
@@ -451,7 +513,8 @@ def timeline(view, rec, turns):
         shown = ", ".join(str(s.get("display") if isinstance(s, dict) else s) for s in slots[:3])
         add("offer", view["offers"]["at"], f"Times offered: {shown}" if shown else "Times offered")
     if view.get("booking"):
-        add("booked", view["booking"]["at"], f"Booked — {view['booking']['when'] or 'see calendar'}")
+        b = view["booking"]
+        add("booked", b["at"], f"Booked — {b['when'] or 'see calendar'}" + (" · the slot has passed, no outcome recorded" if b.get("passed") and not view.get("outcome") else ""))
     if view.get("outcome"):
         add("outcome", view["outcome"]["at"], f"Visit outcome — {view['outcome']['last']}")
     if view.get("paid"):
@@ -489,7 +552,7 @@ def _views(lead_data, conversation_history, ig_history, manual_keys=None, dnc_ke
 def _card(v):
     keep = ("key", "name", "business", "phone", "email", "source", "channel", "stage", "qualified",
             "temperature", "first_seen", "last_activity", "last_turn_role", "snippet", "turns",
-            "flags", "booking", "outcome", "chase", "product", "test")
+            "flags", "booking", "outcome", "chase", "product", "test", "quiet_days")
     return {k: v.get(k) for k in keep}
 
 
@@ -500,7 +563,15 @@ def board(lead_data, conversation_history, ig_history, manual_keys=None, dnc_key
     for v in views:
         cols.setdefault(v["stage"], []).append(_card(v))
     for s in cols:
-        cols[s].sort(key=lambda c: epoch(c.get("last_activity")), reverse=True)
+        if s == "Booked":
+            def _bk(c):
+                b = c.get("booking") or {}
+                sa = epoch(b.get("slot_at"))
+                # upcoming first (soonest on top), then bookings without a time, then passed ones
+                return (1 if b.get("passed") else 0, sa if sa else float("inf")) if not b.get("passed") else (1, -sa)
+            cols[s].sort(key=_bk)
+        else:
+            cols[s].sort(key=lambda c: epoch(c.get("last_activity")), reverse=True)
     counts = {s: len(cols[s]) for s in cols}
     attention = sum(1 for v in views if "awaiting_reply" in v.get("flags", []))
     return {"stages": list(STAGES), "columns": {s: cols[s][:per_column] for s in cols},
@@ -512,8 +583,8 @@ def inbox(lead_data, conversation_history, ig_history, manual_keys=None, dnc_key
           limit=200, only=None, now=None):
     views = _views(lead_data, conversation_history, ig_history, manual_keys, dnc_keys, now=now)
     rows = [v for v in views if v.get("turns") or v.get("last_activity")]
-    if only == "attention":
-        rows = [v for v in rows if "awaiting_reply" in v["flags"] or "michael" in v["flags"]]
+    if only == "attention":   # what needs a human: a reply owed, Michael driving, a visit with no outcome
+        rows = [v for v in rows if any(f in v["flags"] for f in ("awaiting_reply", "michael", "visit_passed"))]
     elif only == "conversations":
         rows = [v for v in rows if v.get("turns")]
     rows.sort(key=lambda v: epoch(v.get("last_activity")), reverse=True)
