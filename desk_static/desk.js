@@ -31,11 +31,12 @@
     if (body !== undefined) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
     const r = await fetch(withAuth(path), opts);
     if (r.status === 401) {
-      let once = false; try { once = sessionStorage.getItem("desk.reloaded") === "1"; sessionStorage.setItem("desk.reloaded", "1"); } catch (e) {}
-      if (!once) location.reload(); else toast("Signed out — open /desk/ to sign in again");
+      // signed out (or a cookie that did not travel): reload ONCE a minute at most, never a loop
+      let last = 0; try { last = parseInt(sessionStorage.getItem("desk.reloaded_at") || "0", 10) || 0; } catch (e) {}
+      if (Date.now() - last > 60000) { try { sessionStorage.setItem("desk.reloaded_at", String(Date.now())); } catch (e) {} location.reload(); }
+      else toast("Signed out — open /desk/ to sign in again");
       throw new Error("signed out");
     }
-    try { sessionStorage.removeItem("desk.reloaded"); } catch (e) {}
     let j = null; try { j = await r.json(); } catch (e) { throw new Error(r.ok ? "Unreadable answer from the server" : `Server error (${r.status})`); }
     if (!j.ok) throw new Error(j.error || j.message || `Request failed (${r.status})`);
     return j;
@@ -81,13 +82,13 @@
   async function loadToday() {
     const el = $("#today"); if (!el) return;
     try {
-      const j = await api("/meeting-report/meetings?range=today");
+      const j = await api("/desk/api/report/meetings?range=today");
       const ms = j.meetings || [];
       el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}</span></div>` +
         (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev"><div class="t">${esc(m.time)}</div><div class="nm">${esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
           <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}">Report</button></div>`).join("")}</div>` : "");
       el.hidden = false;
-    } catch (e) { el.hidden = true; }
+    } catch (e) { el.hidden = true; }   // a report problem never touches the board
   }
   function renderBoard() {
     const j = state.board; if (!j) return;
@@ -237,7 +238,7 @@
     const body = { name: pre.name, business: pre.business || "", outcome, notes: $("#rep-notes").value.trim(), service: $("#rep-service").value.trim(), next_steps: $("#rep-next").value.trim(), event_id: pre.event_id || "" };
     try {
       state.busy = true;
-      const r = await fetch(withAuth("/meeting-report/submit"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(body) });
+      const r = await fetch(withAuth("/desk/api/report/submit"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.message || j.error || "The report was not accepted");
       toast(j.message || "Report filed"); closeSheet(); state.board = null;

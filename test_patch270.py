@@ -274,7 +274,7 @@ js = open(os.path.join(HERE, "desk_static/desk.js"), encoding="utf-8").read()
 check("page.refs", '/desk/static/desk.css' in html and '/desk/static/desk.js' in html and 'viewport' in html and "MWM Desk" in html)
 check("page.no_outside_scripts", "http://" not in html and "https://" not in html.replace("https://wa.me", ""))
 check("js.endpoints", all(p in js for p in ("/desk/api/board", "/desk/api/inbox", "/desk/api/search?q=", "/desk/api/lead/")) and "location.reload()" in js)
-check("js.writes_only_to_desk_api", all(("/desk/api/lead/" in l or "/meeting-report/submit" in l or "withAuth(path)" in l or "opts.method" in l)
+check("js.writes_only_to_desk_api", all(("/desk/api/lead/" in l or "/desk/api/report/" in l or "withAuth(path)" in l or "opts.method" in l)
       for l in js.splitlines() if "POST" in l))   # slice 2 writes, only through the Desk API and the report
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 check("app.import", "import desk as _desk" in SRC and "_desk.register(app, _admin_secret_ok, lead_data, conversation_history, ig_conversation_history," in SRC)

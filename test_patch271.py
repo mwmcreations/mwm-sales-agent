@@ -126,11 +126,14 @@ check("app.actions_wired", "def _desk_actions():" in SRC and "actions=_desk_acti
       and '"send_sms": lambda to, body: _send_sms(to, body, kind=SMS_KIND_TRANSACTIONAL)' in SRC
       and '"send_whatsapp": lambda to, body: send_whatsapp_meta(to, body=body)' in SRC
       and '"send_instagram": lambda to, body: send_instagram_dm(to, body=body)' in SRC
-      and '_pgd.save_state("manual_mode", _manual_mode)' in SRC and '_pgd.save_state(f"do_not_sms:+{d}", bool(on))' in SRC)
+      and '_pgd.save_state("manual_mode", _manual_mode)' in SRC and '_pgd.save_state(f"do_not_sms:+{d}", bool(on))' in SRC
+      and '"report_meetings": lambda: meeting_report_meetings()' in SRC and '"report_submit": lambda: meeting_report_submit()' in SRC)
 check("app.turn_defined_before_use", SRC.index("def _turn(role, content, by=None):") < SRC.index('.append(_turn("'))
 JS = open(os.path.join(HERE, "desk_static/desk.js"), encoding="utf-8").read()
 check("js.actions", all(x in JS for x in ('leadPath("note")', 'leadPath("stage")', 'leadPath("chase")', 'leadPath("takeover")', 'leadPath("send")',
-                                           '/meeting-report/meetings?range=today', '/meeting-report/submit', 'data-act="report"', "Send as Michael")))
+                                           '/desk/api/report/meetings?range=today', '/desk/api/report/submit', 'data-act="report"', "Send as Michael")))
+check("js.report_under_desk_path", "/meeting-report/" not in JS)       # the cookie is scoped to /desk — nothing may call outside it
+check("js.reload_guard", 'sessionStorage.getItem("desk.reloaded_at")' in JS and "> 60000" in JS and 'removeItem("desk.reloaded")' not in JS)
 check("js.no_slice1_placeholder", "arrive in slice 2" not in JS)
 HTML = open(os.path.join(HERE, "desk_static/desk.html"), encoding="utf-8").read()
 check("html.sheet_today", 'id="sheet"' in HTML and 'id="today"' in HTML)
@@ -198,6 +201,11 @@ try:
     check("route.dnc_lift", r.status_code == 200 and calls["dnc"][-1] == ("14075550103", False))
     r = c.post("/desk/api/lead/nobody/note?secret=k", json={"text": "x"})
     check("route.404", r.status_code == 404)
+    rules = {x.rule for x in _app.url_map.iter_rules()}
+    check("route.report_proxies", {"/desk/api/report/meetings", "/desk/api/report/submit"} <= rules)
+    check("route.report_needs_auth", c.get("/desk/api/report/meetings?range=today").status_code == 401
+          and c.post("/desk/api/report/submit", json={}).status_code == 401)
+    check("route.report_unwired_500", c.get("/desk/api/report/meetings?range=today&secret=k").status_code == 500)
     r = c.post(f"/desk/api/lead/4075550103/note?secret=k", json={"text": "by phone"})
     check("route.by_phone", r.status_code == 200 and r.get_json()["lead"]["key"] == K)
 except ImportError:

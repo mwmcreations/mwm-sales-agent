@@ -31227,6 +31227,10 @@ def _desk_actions():
         "send_instagram": lambda to, body: send_instagram_dm(to, body=body),
         "send_sms": lambda to, body: _send_sms(to, body, kind=SMS_KIND_TRANSACTIONAL),
         "manual_set": _manual_set, "manual_clear": _manual_clear, "dnc_sms": _dnc_sms,
+        # PATCH #271b — the Daily Event Report, reached under /desk so the Desk cookie
+        # travels (the handlers are the app's own and unchanged; _desk_auth_ok admits the session)
+        "report_meetings": lambda: meeting_report_meetings(),
+        "report_submit": lambda: meeting_report_submit(),
         "save": lambda: None,   # lead_data is write-through (leads_db); histories are snapshotted by the saver
     }
 

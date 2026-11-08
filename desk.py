@@ -1311,5 +1311,38 @@ def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None
         _log(rec, "send", f"{plan['as'].title()} sent on {plan['channel']}: {plan['text'][:120]}", _by(), now)
         return _done(k, rec, {"sent": {"channel": plan["channel"], "as": plan["as"]}})
 
+    # ── the Daily Event Report, under the Desk's own path ──
+    # The desk_session cookie is scoped to /desk, so a call to /meeting-report/*
+    # never carries it (the first live morning: a 401 → reload loop). The Desk
+    # proxies the two report calls here, with its own door, and hands the
+    # request to the app's unchanged handlers.
+    @app.route("/desk/api/report/meetings", methods=["GET"])
+    def desk_report_meetings():
+        bad = _need_auth()
+        if bad:
+            return bad
+        fn = acts.get("report_meetings")
+        if not fn:
+            return jsonify({"ok": False, "error": "report not wired"}), 500
+        try:
+            return fn()
+        except Exception as e:
+            _err("report_meetings", e)
+            return jsonify({"ok": False, "error": repr(e)}), 500
+
+    @app.route("/desk/api/report/submit", methods=["POST"])
+    def desk_report_submit():
+        bad = _need_auth()
+        if bad:
+            return bad
+        fn = acts.get("report_submit")
+        if not fn:
+            return jsonify({"ok": False, "error": "report not wired"}), 500
+        try:
+            return fn()
+        except Exception as e:
+            _err("report_submit", e)
+            return jsonify({"ok": False, "error": repr(e)}), 500
+
     print("[DESK] mounted at /desk/ (slice 2: see + act)")
     return True
