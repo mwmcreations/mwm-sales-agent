@@ -20,6 +20,7 @@
     return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
   function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => t.hidden = true, 2400); }
+  function shortDate(iso) { if (!iso) return ""; const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
   function phoneFmt(d) { if (!d) return ""; if (d.length === 11 && d[0] === "1") return `(${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`; return "+" + d; }
 
   // an agent (or a test) may open the page with the admin secret in the URL; carry it to the API
@@ -42,12 +43,13 @@
   const FLAG = {
     awaiting_reply: ["wait", "● awaiting reply"], michael: ["me", "Michael has it"], qualified: ["q", "qualified"],
     chasing: ["chase", "chasing"], first_touch_pending: ["chase", "first touch pending"], no_show: ["noshow", "no-show"],
-    times_offered: ["wait", "times offered"], error: ["lost", "record error"], visit_passed: ["noshow", "slot passed — outcome?"],
+    times_offered: ["wait", "times offered"], error: ["lost", "record error"], visit_passed: ["noshow", "visit passed — outcome?"], outcome_missing: ["", "outcome not recorded"],
   };
   const TEMP = { scorching: "🔥 scorching", hot: "🔥 hot", warm: "warm", cool: "cool", cold: "cold" };
   function tags(c) {
     const out = [];
-    if (c.booking && c.booking.when) out.push(`<span class="tag ${c.booking.passed ? "" : "booked"}">📅 ${esc(c.booking.when)}${c.booking.passed ? " · passed" : ""}</span>`);
+    if (c.booking) { const b = c.booking; const label = b.when || (b.at ? "booked " + shortDate(b.at) : "booked");
+      out.push(`<span class="tag ${b.passed ? "" : "booked"}">📅 ${esc(label)}${b.passed && b.when ? " · passed" : ""}</span>`); }
     (c.flags || []).forEach(f => { const m = FLAG[f]; if (m) out.push(`<span class="tag ${m[0]}">${esc(m[1])}</span>`); });
     if (c.product && c.stage === "Client") out.push(`<span class="tag">${esc(c.product)}</span>`);
     if (c.temperature && TEMP[c.temperature]) out.push(`<span class="tag temp ${esc(c.temperature)}">${TEMP[c.temperature]}</span>`);
@@ -144,7 +146,7 @@
       ${fact("Qualified", L.qualified ? "yes" + (L.form && L.form.qualified_reason ? " — " + esc(L.form.qualified_reason) : "") : "")}
       ${fact("Maya's read", L.temperature ? (TEMP[L.temperature] || esc(L.temperature)) : "")}
       ${L.quiet_days != null && L.quiet_days >= 7 ? fact("Quiet for", Math.round(L.quiet_days) + " days") : ""}
-      ${L.booking ? fact("Booked", esc(L.booking.when || "see calendar") + (L.booking.kind ? ` · ${esc(L.booking.kind.replace(/_/g, " "))}` : "") + (L.booking.passed && !L.outcome ? " · <b>the slot has passed — outcome not recorded</b>" : ""), true) : ""}
+      ${L.booking ? fact("Booked", esc(L.booking.when || (L.booking.at ? "on " + when(L.booking.at) + " (time not on record)" : "see calendar")) + (L.booking.kind ? ` · ${esc(L.booking.kind.replace(/_/g, " "))}` : "") + (L.booking.passed && !L.outcome ? " · <b>the visit is behind us — outcome not recorded</b>" : ""), true) : ""}
       ${L.outcome ? fact("Visit outcome", esc(L.outcome.last.replace(/_/g, " ")) + (L.outcome.at ? " · " + when(L.outcome.at) : ""), true) : ""}
       ${L.paid ? fact("Client since", when(L.paid.at) + (L.paid.product ? " · " + esc(L.paid.product) : ""), true) : ""}
       ${ftTxt ? fact("First touch", ftTxt, true) : ""}

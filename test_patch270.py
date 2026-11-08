@@ -84,8 +84,15 @@ LEADS = {
     "instagram:1789": {"name": "", "source": "", "ig_key": "instagram:1789", "last_message_time": H(6)},
     # a record with no dates at all (oldest era) — must still render, as New
     "whatsapp:+14075550111": {"name": "Old Record", "phone": "+14075550111"},
+    # booked in September, before slot times were recorded (#262); nothing since → passed, backlog
+    "whatsapp:+14075550114": {"name": "Alex Maldonado", "phone": "+14075550114", "source": "WhatsApp", "event_id": "evt_4",
+                              "booked_at": D(60), "last_message_time": D(60), "last_inbound_at": D(60)},
+    # an old WhatsApp record whose conversation was never kept — a date, no turns → Paused, not New
+    "whatsapp:+14075550115": {"name": "Quiet Quinn", "phone": "+14075550115", "source": "WhatsApp", "last_message_time": D(90)},
     # a test lead — never on the board
     "whatsapp:+10000000000": {"name": "<test lead: tool>", "phone": "+10000000000", "test_lead": True, "last_message_time": H(0)},
+    # Meta's Lead Ads Testing Tool dummy, caught by its name alone
+    "instagram:4593113990973865": {"name": "<test lead: dummy data for full_name>", "source": "Instagram", "last_message_time": H(0)},
     # garbage — skipped
     "junk": "not a record",
 }
@@ -125,6 +132,9 @@ check("stage.quiet_threshold", desk.stage_of({"last_inbound_at": D(29)}, now=NOW
       and desk.stage_of({"first_touch_sms_at": D(31)}, now=NOW) == "Paused")
 check("stage.active_chase_never_paused", desk.stage_of({"first_touch_sms_at": D(45), "chase": {"armed_at": D(45), "sent": {"a": D(45)}, "stopped": ""}}, now=NOW) == "Contacted")
 check("stage.undated_turns_paused", desk.stage_of({}, [{"role": "lead", "text": "hi", "at": ""}], now=NOW) == "Paused")
+check("stage.dated_no_turns_old", st("whatsapp:+14075550115") == "Paused" and desk.stage_of({"last_message_time": D(3)}, now=NOW) == "New")
+check("stage.old_slotless_booking", st("whatsapp:+14075550114") == "Booked")
+check("test.meta_dummy", desk.is_test(LEADS["instagram:4593113990973865"]) and desk.is_test(LEADS["whatsapp:+10000000000"]) and not desk.is_test(LEADS["whatsapp:+14075550101"]))
 check("stage.not_interested_lost", desk.stage_of({"event_id": "e", "last_outcome": "not_interested"}, now=NOW) == "Lost")
 check("quiet.days", round(desk.quiet_days({"last_inbound_at": D(3)}, now=NOW)) == 3 and desk.quiet_days({}, now=NOW) is None)
 check("stage.ig_replied", st("instagram:1789") == "Replied")
@@ -170,6 +180,12 @@ check("view.booking", v4["booking"]["when"] == "Tue Nov 10 at 10:00 AM" and v4["
       and "visit_passed" not in v4["flags"], json.dumps(v4["booking"]))
 v13 = desk.lead_view("whatsapp:+14075550113", LEADS["whatsapp:+14075550113"], [], now=NOW)
 check("view.passed_booking", v13["booking"]["passed"] is True and "visit_passed" in v13["flags"] and v13["booking"]["when"].startswith("Sat Oct 24"), json.dumps(v13["booking"]))
+v14 = desk.lead_view("whatsapp:+14075550114", LEADS["whatsapp:+14075550114"], [], now=NOW)
+check("view.slotless_old_booking", v14["booking"]["passed"] is True and v14["booking"]["when"] == "" and v14["booking"]["slot_at"] == ""
+      and "outcome_missing" in v14["flags"] and "visit_passed" not in v14["flags"], json.dumps(v14["booking"]) + str(v14["flags"]))
+check("view.slotless_recent_booking", "visit_passed" not in desk.lead_view("k", {"event_id": "e", "booked_at": D(3)}, [], now=NOW)["flags"]
+      and desk.lead_view("k", {"event_id": "e", "booked_at": D(3)}, [], now=NOW)["booking"]["passed"] is False
+      and "visit_passed" in desk.lead_view("k", {"event_id": "e", "booked_at": D(20)}, [], now=NOW)["flags"])
 check("view.slot_display", desk.slot_display("2026-11-10T10:00:00-05:00") == "Tue Nov 10 at 10:00 AM" and desk.slot_display("Tue Nov 10 at 10:00 AM") == "Tue Nov 10 at 10:00 AM"
       and desk.slot_display("2026-11-03T15:00:00") == "Tue Nov 3 at 3:00 PM")
 check("view.source_labels", desk.source_of({"source": "Instagram Dm"}) == "Instagram DM" and desk.source_of({"source": "Meta Lead Ad"}) == "Meta Lead Ad"
@@ -193,9 +209,10 @@ check("tl.paid", tl6["events"][-1]["kind"] == "paid" and "$350" in tl6["events"]
 
 # ── board / inbox / search / one ────────────────────────────────────────────
 b = desk.board(LEADS, CONV, IG, manual_keys=set(), now=NOW)
-check("board.total_skips_test_and_junk", b["total"] == 14 and all(c["key"] != "whatsapp:+10000000000" for col in b["columns"].values() for c in col))
-check("board.counts", b["counts"] == {"New": 2, "Contacted": 2, "Replied": 2, "Booked": 2, "Visited": 1, "Client": 2, "Paused": 1, "Lost": 2}, str(b["counts"]))
-check("board.booked_upcoming_first", [c["key"] for c in b["columns"]["Booked"]] == ["whatsapp:+14075550104", "whatsapp:+14075550113"])
+check("board.total_skips_test_and_junk", b["total"] == 16 and all(c["key"] not in ("whatsapp:+10000000000", "instagram:4593113990973865") for col in b["columns"].values() for c in col))
+check("board.counts", b["counts"] == {"New": 2, "Contacted": 2, "Replied": 2, "Booked": 3, "Visited": 1, "Client": 2, "Paused": 2, "Lost": 2}, str(b["counts"]))
+check("board.booked_upcoming_first", [c["key"] for c in b["columns"]["Booked"]] == ["whatsapp:+14075550104", "whatsapp:+14075550113", "whatsapp:+14075550114"],
+      str([c["key"] for c in b["columns"]["Booked"]]))
 check("board.sorted", [c["key"] for c in b["columns"]["New"]] == ["whatsapp:+14075550101", "whatsapp:+14075550111"])
 check("board.awaiting", b["awaiting_reply"] == 1 and b["as_of"] == NOW.isoformat())
 check("board.card_shape", set(b["columns"]["Booked"][0].keys()) >= {"key", "name", "stage", "flags", "booking", "last_activity", "snippet", "source"}
@@ -220,7 +237,7 @@ check("one.full", o["name"] == "Ana Souza" and len(o["timeline"]["turns"]) == 3 
 check("one.by_phone", desk.one(LEADS, CONV, IG, "4075550104", now=NOW)["key"] == "whatsapp:+14075550104")
 check("one.missing", desk.one(LEADS, CONV, IG, "whatsapp:+19999999999", now=NOW) is None)
 s = desk.status(LEADS, CONV, IG)
-check("status.line", s["leads"] == 14 and s["counts"]["Client"] == 2 and s["awaiting_reply"] == 1)
+check("status.line", s["leads"] == 16 and s["counts"]["Client"] == 2 and s["awaiting_reply"] == 1)
 
 # one bad record never blanks the board
 class Bad(dict):
@@ -229,7 +246,7 @@ class Bad(dict):
             raise RuntimeError("boom")
         return dict.get(self, k, d)
 bb = desk.board({"whatsapp:+14075550199": Bad({"phone": "+14075550199"}), **{k: v for k, v in LEADS.items() if k != "junk"}}, CONV, IG, now=NOW)
-check("board.bad_record_isolated", bb["total"] == 15 and any("error" in c["flags"] for c in bb["columns"]["New"]))
+check("board.bad_record_isolated", bb["total"] == 17 and any("error" in c["flags"] for c in bb["columns"]["New"]))
 
 # ── the door ────────────────────────────────────────────────────────────────
 secret = "s3cr3t"
@@ -278,7 +295,7 @@ try:
     check("flask.401_without_auth", r.status_code == 401)
     r = c.get("/desk/api/board?secret=k")
     j = r.get_json()
-    check("flask.board_with_secret", r.status_code == 200 and j["ok"] and j["total"] == 14 and j["awaiting_reply"] == 0)
+    check("flask.board_with_secret", r.status_code == 200 and j["ok"] and j["total"] == 16 and j["awaiting_reply"] == 0)
     r = c.get("/desk/api/lead/whatsapp:+14075550103?secret=k")
     check("flask.lead", r.status_code == 200 and r.get_json()["lead"]["name"] == "Ana Souza" and "michael" in r.get_json()["lead"]["flags"])
     r = c.get("/desk/api/lead/nobody?secret=k")

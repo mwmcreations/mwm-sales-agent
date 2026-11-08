@@ -49,6 +49,8 @@ LOST_STOPS = ("disqualified", "no", "declined", "dnc", "do_not_contact")
 PAUSED_STOPS = ("not_now", "paused", "cold", "farewell")
 QUIET_DAYS = 30          # nothing heard or sent for this long → Paused
 VISIT_PASSED_GRACE_H = 12  # a booked slot this far in the past with no outcome → "outcome?"
+BOOKING_STALE_DAYS = 14    # a booking with no slot time on record, older than this → treated as passed
+ATTENTION_DAYS = 45        # a passed visit this recent with no outcome is on the "Needs me" list
 
 COOKIE = "desk_session"
 COOKIE_PATH = "/desk"
@@ -132,7 +134,17 @@ def phone_key(key, rec):
 
 
 def is_test(rec):
-    return bool((rec or {}).get("test_lead") or (rec or {}).get("internal"))
+    rec = rec or {}
+    try:
+        if rec.get("test_lead") or rec.get("internal"):
+            return True
+        try:
+            from meta_capi import is_test_record  # Meta's Lead Ads Testing Tool dummies (#251b)
+            return bool(is_test_record(rec))
+        except ImportError:
+            return str(rec.get("name") or "").strip().lower().startswith("<test lead")
+    except Exception:
+        return False      # a record that cannot even be read is handled (and marked) by the view
 
 
 # ── conversations ───────────────────────────────────────────────────────────
@@ -259,8 +271,11 @@ def stage_of(rec, turns=None, dnc=False, now=None):
     active_chase = bool(chase) and not stopped
     inbound, outbound = has_inbound(rec, turns), has_outbound(rec, turns)
     q = quiet_days(rec, turns, now)
-    if (inbound or outbound) and not active_chase and (q is None or q >= QUIET_DAYS):
-        return "Paused"
+    if not active_chase:
+        if q is not None and q >= QUIET_DAYS:
+            return "Paused"               # whatever happened, it was a month ago or more
+        if q is None and (inbound or outbound):
+            return "Paused"               # a conversation with no date on it is an old one
     if inbound:
         return "Replied"
     if outbound:
@@ -351,7 +366,10 @@ def flags_for(rec, turns, stage, manual=False, now=None):
         out.append("no_show")
     bk = booking_of(rec, now)
     if bk and bk.get("passed") and stage == "Booked" and not rec.get("last_outcome"):
-        out.append("visit_passed")          # the slot is behind us and nobody said what happened
+        # the visit is behind us and nobody said what happened: recent ones are on the
+        # "Needs me" list, the older backlog is only marked
+        age = quiet_days({"booked_at": bk.get("slot_at") or bk.get("at")}, None, now)
+        out.append("visit_passed" if (age is not None and age <= ATTENTION_DAYS) else "outcome_missing")
     if rec.get("offered_slots") and stage not in ("Booked", "Visited", "Client"):
         out.append("times_offered")
     return out
@@ -374,6 +392,10 @@ def booking_of(rec, now=None):
     slot_dt = parse_dt(slot)
     when = str(_first(rec.get("booked_display"), rec.get("booking_display"), "") or "") or (slot_display(slot) if slot_dt else "")
     passed = False
+    if slot_dt is None:
+        # bookings before #262 carry no slot time; after two weeks the visit is behind us either way
+        bq = quiet_days({"booked_at": rec.get("booked_at")}, None, now) if rec.get("booked_at") else None
+        passed = bool(bq is not None and bq >= BOOKING_STALE_DAYS)
     if slot_dt is not None:
         n = now or datetime.now(slot_dt.tzinfo) if slot_dt.tzinfo else (now or datetime.now())
         try:
