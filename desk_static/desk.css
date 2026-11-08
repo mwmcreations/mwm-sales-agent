@@ -150,3 +150,48 @@ main { padding: 12px 0 8px; }
 .toast { position: fixed; left: 50%; bottom: calc(var(--tabs-h) + var(--sa-bot) + 14px); transform: translateX(-50%); z-index: 50;
   background: var(--bg3); border: 1px solid var(--line2); color: var(--fg); padding: 10px 14px; border-radius: 12px; font-size: 13px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
 .skel { color: var(--fg3); text-align: center; padding: 40px 10px; }
+
+/* ── slice 2: actions ── */
+.acts2 { margin-top: -6px; grid-template-columns: repeat(5, 1fr); }
+.act { cursor: pointer; }
+.act.off { opacity: .35; pointer-events: none; }
+.hint { background: #2a2213; border: 1px solid #4a3a1a; color: #f3d9a4; border-radius: 12px; padding: 9px 12px; font-size: 13px; margin: -4px 0 14px; }
+.btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 10px; padding: 9px 14px; font-weight: 600; font-size: 14px; }
+.btn[disabled] { opacity: .4; }
+.btn.ghost { background: var(--bg3); color: var(--fg); border: 1px solid var(--line2); }
+.btn.small { padding: 6px 10px; font-size: 12px; margin-top: 6px; }
+.sendbox { margin-top: 14px; background: var(--bg2); border: 1px solid var(--line); border-radius: 14px; padding: 10px; }
+.sendbox textarea, .sheet textarea, .sheet input { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line2); color: var(--fg); border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 15px; resize: vertical; }
+.sendbox textarea:focus, .sheet textarea:focus, .sheet input:focus { outline: none; border-color: var(--accent); }
+.send-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.send-row .grow { flex: 1; }
+.bub.michael { align-self: flex-end; background: #1d2a3a; border: 1px solid #2d4a6a; border-bottom-right-radius: 6px; }
+.ev.note::before { background: var(--fg2); } .ev.stage::before { background: var(--violet); } .ev.send::before { background: var(--info); }
+.ev.takeover::before { background: var(--violet); } .ev.dnc::before { background: var(--bad); }
+
+/* sheet (modal) */
+.sheet { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; justify-content: center; }
+@media (min-width: 900px) { .sheet { align-items: center; } }
+.sheet-card { position: relative; width: 100%; max-width: 520px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 18px 18px 0 0; padding: 18px 16px calc(18px + var(--sa-bot)); max-height: 88vh; overflow-y: auto; animation: up .18s ease-out; }
+@media (min-width: 900px) { .sheet-card { border-radius: 18px; } }
+@keyframes up { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+.sheet h3 { margin: 0 0 6px; font-size: 17px; }
+.sheet .muted { margin-bottom: 12px; }
+.sheet-x { position: absolute; top: 10px; right: 10px; }
+.sheet input, .sheet textarea { margin-top: 10px; }
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opts.outcomes { display: grid; grid-template-columns: 1fr 1fr; }
+.opt { text-align: left; background: var(--bg3); border: 1px solid var(--line2); border-radius: 12px; padding: 11px 13px; display: flex; flex-direction: column; gap: 2px; color: var(--fg); }
+.opt span { color: var(--fg3); font-size: 12px; }
+.opt.on { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(245,165,36,.25); }
+.opt.danger b { color: var(--bad); }
+
+/* today strip */
+.today { margin: 0 2px 12px; background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+.today-head { display: flex; justify-content: space-between; font-weight: 600; }
+.today-head .n { color: var(--fg3); font-weight: 400; font-size: 13px; }
+.today-row { display: flex; gap: 8px; overflow-x: auto; margin-top: 8px; padding-bottom: 2px; }
+.today-ev { flex: 0 0 auto; min-width: 150px; background: var(--bg3); border: 1px solid var(--line2); border-radius: 12px; padding: 8px 10px; }
+.today-ev .t { color: var(--accent); font-size: 12px; font-weight: 600; }
+.today-ev .nm { font-weight: 600; margin-top: 2px; }
+.today-ev .biz { color: var(--fg3); font-size: 12px; }

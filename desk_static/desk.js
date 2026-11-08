@@ -26,16 +26,18 @@
   // an agent (or a test) may open the page with the admin secret in the URL; carry it to the API
   const SECRET = new URLSearchParams(location.search).get("secret") || "";
   function withAuth(path) { return SECRET ? path + (path.indexOf("?") >= 0 ? "&" : "?") + "secret=" + encodeURIComponent(SECRET) : path; }
-  async function api(path) {
-    const r = await fetch(withAuth(path), { credentials: "same-origin", headers: { "Accept": "application/json" } });
+  async function api(path, body) {
+    const opts = { credentials: "same-origin", headers: { "Accept": "application/json" } };
+    if (body !== undefined) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    const r = await fetch(withAuth(path), opts);
     if (r.status === 401) {
       let once = false; try { once = sessionStorage.getItem("desk.reloaded") === "1"; sessionStorage.setItem("desk.reloaded", "1"); } catch (e) {}
       if (!once) location.reload(); else toast("Signed out — open /desk/ to sign in again");
       throw new Error("signed out");
     }
     try { sessionStorage.removeItem("desk.reloaded"); } catch (e) {}
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || "request failed");
+    let j = null; try { j = await r.json(); } catch (e) { throw new Error(r.ok ? "Unreadable answer from the server" : `Server error (${r.status})`); }
+    if (!j.ok) throw new Error(j.error || j.message || `Request failed (${r.status})`);
     return j;
   }
 
@@ -58,7 +60,7 @@
     return out.join("");
   }
   function card(c) {
-    const who = c.last_turn_role === "lead" ? "them" : (c.last_turn_role === "maya" ? "Maya" : "");
+    const who = c.last_turn_role === "lead" ? "them" : (c.last_turn_role === "maya" ? "Maya" : (c.last_turn_role === "michael" ? "Michael" : ""));
     const snip = c.snippet ? `<div class="snip ${c.last_turn_role === "lead" ? "lead" : ""}">${who ? `<span class="who">${who}: </span>` : ""}${esc(c.snippet)}</div>` : "";
     return `<button class="card" data-key="${esc(c.key)}">
       <div class="row1"><span class="nm">${esc(c.name)}</span><span class="when">${rel(c.last_activity)}</span></div>
@@ -76,8 +78,20 @@
       const b = $("#inbox-badge"); if (j.awaiting_reply) { b.textContent = j.awaiting_reply; b.hidden = false; } else b.hidden = true;
     } catch (e) { el.innerHTML = `<div class="skel">Could not load the board — ${esc(e.message)}</div>`; }
   }
+  async function loadToday() {
+    const el = $("#today"); if (!el) return;
+    try {
+      const j = await api("/meeting-report/meetings?range=today");
+      const ms = j.meetings || [];
+      el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}</span></div>` +
+        (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev"><div class="t">${esc(m.time)}</div><div class="nm">${esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
+          <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}">Report</button></div>`).join("")}</div>` : "");
+      el.hidden = false;
+    } catch (e) { el.hidden = true; }
+  }
   function renderBoard() {
     const j = state.board; if (!j) return;
+    loadToday();
     const main = j.stages.filter(s => ["Paused", "Lost"].indexOf(s) < 0), side = ["Paused", "Lost"];
     $("#board-summary").innerHTML = `<span class="pill"><b>${j.total}</b> leads</span>` +
       `<span class="pill ${j.awaiting_reply ? "hot" : ""}"><b>${j.awaiting_reply}</b> awaiting a reply</span>` +
@@ -125,12 +139,24 @@
     $("#p-name").textContent = L.name; $("#p-sub").textContent = [L.business && L.business !== L.name ? L.business : "", L.source].filter(Boolean).join(" · ");
     const st = $("#p-stage"); st.textContent = L.stage; st.dataset.s = L.stage;
     const ph = L.phone ? "+" + L.phone : "";
+    const manual = !!(L.flags || []).includes("michael");
+    const chasing = L.chase && !L.chase.stopped;
+    const canResume = L.chase && (L.chase.stopped === "manual" || L.chase.stopped === "manual_paused");
     const acts = `<div class="actions">
       <a class="${ph ? "" : "off"}" href="tel:${esc(ph)}"><span class="ico">📞</span>Call</a>
       <a class="${ph ? "" : "off"}" href="sms:${esc(ph)}"><span class="ico">💬</span>Text</a>
       <a class="${ph ? "" : "off"}" href="https://wa.me/${esc(L.phone || "")}" target="_blank" rel="noopener"><span class="ico">🟢</span>WhatsApp</a>
       <a class="${L.email ? "" : "off"}" href="mailto:${esc(L.email || "")}"><span class="ico">✉️</span>Email</a>
-    </div>`;
+    </div>
+    <div class="actions acts2">
+      <button class="act" data-act="report"><span class="ico">📋</span>Report</button>
+      <button class="act" data-act="move"><span class="ico">↔</span>Move</button>
+      <button class="act" data-act="note"><span class="ico">✎</span>Note</button>
+      ${L.chase ? `<button class="act ${(!chasing && !canResume) ? "off" : ""}" data-act="${chasing ? "chase-pause" : "chase-resume"}"><span class="ico">${chasing ? "⏸" : "▶"}</span>${chasing ? "Pause chase" : "Resume chase"}</button>`
+                : `<button class="act off"><span class="ico">⏸</span>No chase</button>`}
+      <button class="act ${ph ? "" : "off"}" data-act="${manual ? "release" : "takeover"}"><span class="ico">${manual ? "🤖" : "🙋"}</span>${manual ? "Give back" : "Take over"}</button>
+    </div>
+    ${manual && L.manual_until ? `<div class="hint">You have this conversation; Maya holds replies until ${when(L.manual_until)}.</div>` : ""}`;
     const ft = L.first_touch || {};
     const ftTxt = ft.whatsapp ? `WhatsApp ${esc(ft.whatsapp.status)}${ft.whatsapp.at ? " · " + when(ft.whatsapp.at) : ""}` :
       ft.sms ? `SMS · ${when(ft.sms.at)}` : (ft.sms_pending ? `SMS waiting (${esc(ft.sms_pending.reason)})` : (ft.whatsapp_pending ? "WhatsApp waiting for the window" : ""));
@@ -161,13 +187,62 @@
     const flags = (L.flags || []).map(f => { const m = FLAG[f]; return m ? `<span class="tag ${m[0]}">${esc(m[1])}</span>` : ""; }).join(" ");
     const notes = (L.notes || []).length ? `<div class="section"><h3>Notes</h3></div>` + L.notes.map(n => `<div class="note">${esc(typeof n === "object" ? (n.text || JSON.stringify(n)) : n)}</div>`).join("") : "";
     const tl = L.timeline || { events: [], turns: [] };
-    const events = tl.events.length ? `<div class="tl">${tl.events.map(e => `<div class="ev ${esc(e.kind)}"><div class="t">${e.at ? when(e.at) : "—"}</div><div class="x">${esc(e.text)}</div></div>`).join("")}</div>` : `<div class="muted">No dated events on this record yet.</div>`;
-    const turns = tl.turns.length ? `<div class="conv">${tl.turns.map(t => `<div class="bub ${t.role}"><span class="who">${t.role === "lead" ? L.name : "Maya"}</span>${esc(t.text)}${t.at ? `<span class="at">${when(t.at)}</span>` : ""}</div>`).join("")}</div>`
+    const events = tl.events.length ? `<div class="tl">${tl.events.map(e => `<div class="ev ${esc(e.kind)}"><div class="t">${e.at ? when(e.at) : "—"}${e.by ? ` · ${esc(e.by)}` : ""}</div><div class="x">${esc(e.text)}</div></div>`).join("")}</div>` : `<div class="muted">No dated events on this record yet.</div>`;
+    const turns = tl.turns.length ? `<div class="conv">${tl.turns.map(t => `<div class="bub ${t.role}"><span class="who">${t.role === "lead" ? L.name : (t.role === "michael" ? "Michael" : "Maya")}</span>${esc(t.text)}${t.at ? `<span class="at">${when(t.at)}</span>` : ""}</div>`).join("")}</div>`
       : `<div class="muted">No conversation on this channel yet.</div>`;
+    const chan = L.key.startsWith("instagram:") ? "Instagram DM" : (L.channel === "sms" ? "SMS" : "WhatsApp");
+    const sendBox = L.stage === "Lost" && (L.consent || {}).do_not_contact ? `<div class="hint">Do-not-contact: no messages from here.</div>` :
+      `<div class="sendbox"><textarea id="send-text" rows="2" placeholder="Write to ${esc(L.name)} on ${chan}…"></textarea>
+       <div class="send-row"><span class="muted">${chan}</span><span class="grow"></span>
+       <button class="btn ghost" data-act="send-maya">Send as Maya</button><button class="btn" data-act="send-michael">Send as Michael</button></div></div>`;
     $("#panel-body").innerHTML = acts + (flags ? `<div class="meta" style="margin:-4px 0 12px;display:flex;gap:6px;flex-wrap:wrap">${flags}</div>` : "") + facts + notes +
       `<div class="section"><h3>Timeline</h3><span class="n">${tl.events.length} ${tl.events.length === 1 ? "event" : "events"}</span></div>${events}` +
-      `<div class="section"><h3>Conversation</h3><span class="n">${tl.turns.length} ${tl.turns.length === 1 ? "message" : "messages"}</span></div>${turns}` +
-      `<div class="soon">Actions (move stage, note, pause the chase, take over, send) arrive in slice 2.</div>`;
+      `<div class="section"><h3>Conversation</h3><span class="n">${tl.turns.length} ${tl.turns.length === 1 ? "message" : "messages"}</span></div>${turns}` + sendBox;
+  }
+
+  // ── actions (slice 2) ──
+  async function act(path, body, okMsg) {
+    if (state.busy) return; state.busy = true;
+    try { const j = await api(path, body || {}); if (j.lead) { state.lead = j.lead; renderLead(j.lead); } toast(okMsg || "Done"); state.board = null; return j; }
+    catch (e) { toast(e.message || "That did not work"); }
+    finally { state.busy = false; }
+  }
+  function leadPath(suffix) { return "/desk/api/lead/" + encodeURIComponent(state.lead.key) + "/" + suffix; }
+  function sheet(html) { const s = $("#sheet"); $("#sheet-body").innerHTML = html; s.hidden = false; }
+  function closeSheet() { $("#sheet").hidden = true; }
+  function moveSheet(L) {
+    sheet(`<h3>Move ${esc(L.name)}</h3><p class="muted">Booked, Visited and Client come from a booking, a report or a payment — this parks or closes a lead by hand.</p>
+      <div class="opts">
+        <button class="opt" data-stage="Paused"><b>Paused</b><span>Park it; the chase stops; it stays searchable</span></button>
+        <button class="opt" data-stage="Lost"><b>Lost</b><span>Close it; the chase stops; no do-not-contact</span></button>
+        <button class="opt" data-stage="Reopen"><b>Reopen</b><span>Back to where the facts put it; a paused chase resumes</span></button>
+        <button class="opt danger" data-dnc="${(L.consent || {}).do_not_contact ? "0" : "1"}"><b>${(L.consent || {}).do_not_contact ? "Lift do-not-contact" : "Do not contact"}</b><span>${(L.consent || {}).do_not_contact ? "Allow messages again" : "Blocks every automated message and SMS to this person"}</span></button>
+      </div><input id="move-reason" placeholder="Reason (optional)">`);
+  }
+  function noteSheet(L) { sheet(`<h3>Note on ${esc(L.name)}</h3><textarea id="note-text" rows="4" placeholder="What you want the record to remember…"></textarea><div class="send-row"><span class="grow"></span><button class="btn" data-act="note-save">Save note</button></div>`); setTimeout(() => $("#note-text").focus(), 50); }
+  function takeoverSheet(L) { sheet(`<h3>Take over ${esc(L.name)}</h3><p class="muted">Maya holds her replies on this phone while you talk. She picks the thread back up when the time runs out, or when you hand it back.</p>
+    <div class="opts"><button class="opt" data-hours="1"><b>1 hour</b></button><button class="opt" data-hours="2"><b>2 hours</b></button><button class="opt" data-hours="8"><b>Rest of the day</b><span>8 hours</span></button><button class="opt" data-hours="24"><b>Until tomorrow</b><span>24 hours</span></button></div>`); }
+  const OUTCOMES = [["client_won", "🎉 Client won"], ["follow_up", "🔄 Follow-up needed"], ["studio_package_pitched", "📦 Studio package pitched"], ["completed", "✅ Completed (existing client)"], ["not_interested", "❌ Not interested"], ["no_show", "🚫 No-show"]];
+  function reportSheet(pre) {
+    state.report = pre;
+    sheet(`<h3>Daily Event Report</h3><p class="muted">${esc(pre.name)}${pre.business ? " · " + esc(pre.business) : ""}${pre.event_id ? "" : " · no calendar event linked"}</p>
+      <div class="opts outcomes">${OUTCOMES.map(([v, l]) => `<button class="opt" data-outcome="${v}"><b>${l}</b></button>`).join("")}</div>
+      <input id="rep-service" placeholder="Service discussed (optional)">
+      <textarea id="rep-notes" rows="3" placeholder="Notes"></textarea>
+      <textarea id="rep-next" rows="2" placeholder="Next steps (optional)"></textarea>
+      <div class="send-row"><span class="muted" id="rep-chosen">Pick the outcome</span><span class="grow"></span><button class="btn" data-act="report-submit" disabled>File report</button></div>`);
+  }
+  async function submitReport() {
+    const pre = state.report || {}; const outcome = pre.outcome; if (!outcome) { toast("Pick the outcome first"); return; }
+    const body = { name: pre.name, business: pre.business || "", outcome, notes: $("#rep-notes").value.trim(), service: $("#rep-service").value.trim(), next_steps: $("#rep-next").value.trim(), event_id: pre.event_id || "" };
+    try {
+      state.busy = true;
+      const r = await fetch(withAuth("/meeting-report/submit"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.message || j.error || "The report was not accepted");
+      toast(j.message || "Report filed"); closeSheet(); state.board = null;
+      if (state.lead && pre.key === state.lead.key) openLead(state.lead.key); else refresh();
+    } catch (e) { toast(e.message); } finally { state.busy = false; }
   }
 
   // ── tabs & wiring ──
@@ -185,9 +260,41 @@
     const ch = e.target.closest(".chip"); if (ch) { $$(".chip").forEach(x => x.classList.toggle("on", x === ch)); state.only = ch.dataset.only || ""; state.inbox = null; loadInbox(); return; }
     if (e.target.closest("#panel-close")) { closeLead(); return; }
     if (e.target.closest("#refresh")) { refresh(); toast("Refreshed"); return; }
+    if (e.target.closest("#sheet-close") || e.target === $("#sheet")) { closeSheet(); return; }
+    const rev = e.target.closest(".report-ev"); if (rev) { reportSheet({ name: rev.dataset.name, business: rev.dataset.business, event_id: rev.dataset.event }); return; }
+    const a = e.target.closest("[data-act]"); if (a && state.lead) {
+      const L = state.lead, act_ = a.dataset.act;
+      if (act_ === "report") reportSheet({ key: L.key, name: L.name, business: L.business, event_id: L.booking ? L.booking.event_id : "" });
+      else if (act_ === "move") moveSheet(L);
+      else if (act_ === "note") noteSheet(L);
+      else if (act_ === "note-save") { const t = $("#note-text").value.trim(); if (t) { closeSheet(); act(leadPath("note"), { text: t }, "Note saved"); } }
+      else if (act_ === "chase-pause") act(leadPath("chase"), { action: "pause" }, "Chase paused");
+      else if (act_ === "chase-resume") act(leadPath("chase"), { action: "resume" }, "Chase resumed");
+      else if (act_ === "takeover") takeoverSheet(L);
+      else if (act_ === "release") act(leadPath("takeover"), { action: "release" }, "Handed back to Maya");
+      else if (act_ === "send-maya" || act_ === "send-michael") { const t = $("#send-text").value.trim(); if (!t) { toast("Write something first"); return; }
+        act(leadPath("send"), { text: t, as: act_ === "send-maya" ? "maya" : "michael" }, "Sent").then(j => { if (j && j.ok) { const tb = $("#send-text"); if (tb) tb.value = ""; } }); }
+      else if (act_ === "report-submit") submitReport();
+      return;
+    }
+    const oc0 = e.target.closest(".opt[data-outcome]"); if (oc0) {
+      $$(".outcomes .opt").forEach(x => x.classList.toggle("on", x === oc0)); state.report = Object.assign(state.report || {}, { outcome: oc0.dataset.outcome });
+      $("#rep-chosen").textContent = oc0.querySelector("b").textContent; const b = $("[data-act='report-submit']"); if (b) b.disabled = false; return;
+    }
+    const rs = e.target.closest("[data-act='report-submit']"); if (rs) { submitReport(); return; }
+    const opt = e.target.closest(".opt"); if (opt && state.lead) {
+      if (opt.dataset.stage) { const reason = ($("#move-reason") || {}).value || ""; closeSheet(); act(leadPath("stage"), { stage: opt.dataset.stage, reason }, "Moved"); }
+      else if (opt.dataset.dnc !== undefined) { closeSheet(); act(leadPath("dnc"), { on: opt.dataset.dnc === "1" }, opt.dataset.dnc === "1" ? "Do-not-contact set" : "Do-not-contact lifted"); }
+      else if (opt.dataset.hours) { closeSheet(); act(leadPath("takeover"), { action: "take", hours: opt.dataset.hours }, "You have the conversation"); }
+      return;
+    }
+    const oc = e.target.closest(".opt[data-outcome]"); if (oc) {
+      $$(".outcomes .opt").forEach(x => x.classList.toggle("on", x === oc)); state.report = Object.assign(state.report || {}, { outcome: oc.dataset.outcome });
+      $("#rep-chosen").textContent = oc.querySelector("b").textContent; const b = $("[data-act='report-submit']"); if (b) b.disabled = false; return;
+    }
   });
   $("#q").addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(doSearch, 220); });
-  document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#panel").hidden) closeLead(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { if (!$("#sheet").hidden) closeSheet(); else if (!$("#panel").hidden) closeLead(); } });
   window.addEventListener("popstate", () => { if (!$("#panel").hidden) closeLead(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 

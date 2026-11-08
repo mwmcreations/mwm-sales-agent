@@ -113,7 +113,7 @@ check("webhook.after_interactive", blk.index('elif msg_type == "interactive":') 
 # ── 3 · the empty-inbound door ─────────────────────────────────────────────
 j = SRC.index('if not str(incoming_msg or "").strip():\n        _TALLY.bump("maya.empty_inbound"')
 check("door.before_history", SRC.index("Thanks for the file! How can I help you today?") < j
-      < SRC.index('conversation_history[sender].append({"role": "user", "content": incoming_msg})'))
+      < SRC.index('conversation_history[sender].append(_turn("user", incoming_msg))'))   # #271: stamped
 door = SRC[j:j + 900]
 check("door.replies_and_returns", "could you type it for me?" in door and "could you send it as text?" in door
       and "send_whatsapp_meta(sender, body=(" in door and door.count("return") >= 1)

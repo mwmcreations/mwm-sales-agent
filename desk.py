@@ -183,8 +183,8 @@ def turns_for(key, rec, conversation_history, ig_history):
         content = str(content or "").strip()
         if not content:
             continue
-        turns.append({"role": "lead" if role == "user" else "maya",
-                      "text": content, "at": iso(t.get("at") or t.get("ts") or t.get("time"))})
+        who = "lead" if role == "user" else ("michael" if _lower(t.get("by")) == "michael" else "maya")
+        turns.append({"role": who, "text": content, "at": iso(t.get("at") or t.get("ts") or t.get("time"))})
     return turns
 
 
@@ -197,7 +197,7 @@ def has_inbound(rec, turns):
 
 
 def has_outbound(rec, turns):
-    if any(t["role"] == "maya" for t in (turns or [])):
+    if any(t["role"] in ("maya", "michael") for t in (turns or [])):
         return True
     ft = rec.get("first_touch_wa")
     if isinstance(ft, dict) and ft.get("wamid"):
@@ -244,8 +244,32 @@ def quiet_days(rec, turns=None, now=None):
     return max(0.0, (n - e) / 86400.0)
 
 
+SOFT_STAGES = ("New", "Contacted", "Replied", "Paused")
+OVERRIDE_STAGES = ("Paused", "Lost")        # what a hand can set; Booked/Visited/Client come from facts
+
+
+def _fact_time(rec):
+    """When the record's last HARD fact happened (booking, visit outcome,
+    payment, block) — a hand-set stage older than that no longer applies."""
+    return latest(rec.get("booked_at"), rec.get("last_outcome_at"), rec.get("paid_at"),
+                  rec.get("won_at"), rec.get("dnc_at"))
+
+
 def stage_of(rec, turns=None, dnc=False, now=None):
-    """Where the record sits on the board. Facts first (paid, blocked, visit
+    """Where the record sits on the board. A stage Michael set by hand
+    (desk_stage, slice 2) wins over the soft stages, and over a hard fact only
+    when it is newer than that fact — a booking made after he parked a lead
+    un-parks it."""
+    fact = _fact_stage(rec, turns, dnc=dnc, now=now)
+    ov = rec.get("desk_stage") if isinstance(rec, dict) and isinstance(rec.get("desk_stage"), dict) else None
+    if ov and ov.get("stage") in OVERRIDE_STAGES:
+        if fact in SOFT_STAGES or epoch(ov.get("at")) > epoch(_fact_time(rec)):
+            return ov["stage"]
+    return fact
+
+
+def _fact_stage(rec, turns=None, dnc=False, now=None):
+    """The stage the facts alone say. Facts first (paid, blocked, visit
     outcome, a booking), then the chase's own verdicts, then time: a lead
     nobody has heard from in QUIET_DAYS is Paused, whatever Maya's
     temperature score says — the temperature is a read on the lead, not a
@@ -494,6 +518,10 @@ def lead_view(key, rec, turns=None, manual=False, dnc=False, now=None):
         "paid": {"at": iso(_first(rec.get("paid_at"), rec.get("won_at"))),
                  "product": str(_first(rec.get("paid_product"), rec.get("product"), "") or ""),
                  "value": rec.get("paid_value")} if (rec.get("paid_at") or rec.get("won_at")) else None,
+        "desk_stage": rec.get("desk_stage") if isinstance(rec.get("desk_stage"), dict) else None,
+        "desk_log": [e for e in (rec.get("desk_log") or []) if isinstance(e, dict)][-20:]
+                    if isinstance(rec.get("desk_log"), list) else [],
+        "manual_until": iso(rec.get("manual_until")) if rec.get("manual_until") else "",
         "notes": [n for n in (rec.get("notes") or []) if isinstance(n, (str, dict))][-20:]
                  if isinstance(rec.get("notes"), list) else ([str(rec.get("notes"))] if rec.get("notes") else []),
         "form": {k: rec.get(k) for k in ("role_raw", "revenue_raw", "must_understand", "website",
@@ -542,6 +570,8 @@ def timeline(view, rec, turns):
     if view.get("paid"):
         p = view["paid"]
         add("paid", p["at"], f"Paid — {p['product'] or 'package'}" + (f" (${p['value']})" if p.get("value") else ""))
+    for e in (view.get("desk_log") or []):
+        add(str(e.get("kind") or "desk"), e.get("at"), str(e.get("text") or ""), by=str(e.get("by") or ""))
     ev.sort(key=lambda e: epoch(e["at"]) if e["at"] else float("inf"))
     return {"events": ev, "turns": turns}
 
@@ -743,14 +773,163 @@ def door_html(message="", sent=False, error=False):
     return DOOR_HTML.replace("__MESSAGE__", m)
 
 
+# ── actions (slice 2) — pure: they change the record and say what they did ──
+#
+# Michael, Sun 8 Nov 00:46: "Let's move to slice 2." Every action writes the
+# record the rails already read (chase.stopped, do_not_contact, notes…) plus a
+# line in desk_log, so the machine and the screen never disagree. Nothing here
+# sends anything: the sends go through the app's own senders (register()).
+
+LOG_MAX = 50
+MANUAL_DEFAULT_HOURS = 2
+
+
+def _log(rec, kind, text, by, now, **extra):
+    e = {"kind": kind, "text": text, "by": by or "desk", "at": now.isoformat()}
+    e.update(extra)
+    log = rec.get("desk_log") if isinstance(rec.get("desk_log"), list) else []
+    log.append(e)
+    rec["desk_log"] = log[-LOG_MAX:]
+    return e
+
+
+def apply_note(rec, text, by, now):
+    text = " ".join(str(text or "").split())
+    if not text:
+        return {"ok": False, "error": "empty note"}
+    notes = rec.get("notes") if isinstance(rec.get("notes"), list) else ([str(rec["notes"])] if rec.get("notes") else [])
+    notes.append({"text": text[:2000], "by": by, "at": now.isoformat()})
+    rec["notes"] = notes[-100:]
+    _log(rec, "note", text[:140], by, now)
+    return {"ok": True, "notes": len(rec["notes"])}
+
+
+def apply_stage(rec, stage, by, now, reason="", turns=None):
+    """Park (Paused), close (Lost) or reopen a lead by hand. Booked, Visited and
+    Client are facts, not opinions: they come from a booking, a report or a
+    payment, never from this button."""
+    before = stage_of(rec, turns, now=now)
+    stage = str(stage or "").strip().title()
+    if stage in ("Reopen", "Open", "Active"):
+        rec.pop("desk_stage", None)
+        chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else None
+        if chase and chase.get("stopped") in ("manual", "manual_lost", "manual_paused"):
+            chase["stopped"] = ""
+        after = stage_of(rec, turns, now=now)
+        _log(rec, "stage", f"Reopened ({before} → {after})" + (f" — {reason}" if reason else ""), by, now)
+        return {"ok": True, "before": before, "after": after}
+    if stage not in OVERRIDE_STAGES:
+        return {"ok": False, "error": f"a hand can set {', '.join(OVERRIDE_STAGES)} or Reopen; "
+                                      f"Booked, Visited and Client come from a booking, a report or a payment"}
+    rec["desk_stage"] = {"stage": stage, "by": by, "at": now.isoformat(), "reason": str(reason or "")[:300]}
+    chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else None
+    if chase and not chase.get("stopped"):
+        chase["stopped"] = "manual_lost" if stage == "Lost" else "manual_paused"
+    after = stage_of(rec, turns, now=now)
+    _log(rec, "stage", f"{before} → {after}" + (f" — {reason}" if reason else ""), by, now)
+    return {"ok": True, "before": before, "after": after}
+
+
+def apply_chase(rec, action, by, now):
+    chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else None
+    if not chase:
+        return {"ok": False, "error": "no chase on this lead"}
+    action = _lower(action)
+    if action in ("pause", "stop"):
+        if chase.get("stopped"):
+            return {"ok": True, "stopped": chase["stopped"], "changed": False}
+        chase["stopped"] = "manual"
+        _log(rec, "chase", "Chase paused", by, now)
+        return {"ok": True, "stopped": "manual", "changed": True}
+    if action in ("resume", "start"):
+        if chase.get("stopped") and chase["stopped"] not in ("manual", "manual_paused"):
+            return {"ok": False, "error": f"the chase ended on its own ({chase['stopped']}); re-offer instead"}
+        chase["stopped"] = ""
+        _log(rec, "chase", "Chase resumed", by, now)
+        return {"ok": True, "stopped": "", "changed": True}
+    return {"ok": False, "error": "action must be pause or resume"}
+
+
+def apply_dnc(rec, on, by, now):
+    on = bool(on)
+    rec["do_not_contact"] = on
+    if on:
+        rec["dnc_at"] = now.isoformat()
+        chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else None
+        if chase and not chase.get("stopped"):
+            chase["stopped"] = "dnc"
+        _log(rec, "dnc", "Do not contact — set", by, now)
+    else:
+        rec.pop("dnc_at", None)
+        _log(rec, "dnc", "Do not contact — lifted", by, now)
+    return {"ok": True, "do_not_contact": on}
+
+
+def send_plan(key, rec, text, as_who="maya"):
+    """Which sender, to whom, for a message typed in the Desk. The channel is
+    the lead's own: Instagram leads get a DM, phone leads WhatsApp; SMS only
+    when the record says the WhatsApp side is not usable or it is an SMS lead."""
+    text = str(text or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty message"}
+    if len(text) > 4000:
+        return {"ok": False, "error": "message too long"}
+    as_who = "michael" if _lower(as_who) == "michael" else "maya"
+    k = str(key or "")
+    if k.startswith("instagram:"):
+        return {"ok": True, "channel": "instagram", "to": k.split(":", 1)[1], "as": as_who, "text": text}
+    d = phone_key(k, rec)
+    if not d:
+        return {"ok": False, "error": "no phone or Instagram id on this lead"}
+    ch = _lower((rec or {}).get("channel"))
+    if ch in ("sms", "text") or (rec or {}).get("wa_unreachable"):
+        return {"ok": True, "channel": "sms", "to": f"+{d}", "as": as_who, "text": text}
+    return {"ok": True, "channel": "whatsapp", "to": f"whatsapp:+{d}", "as": as_who, "text": text}
+
+
+def _until_iso(epoch_s):
+    """An epoch from the app's manual-mode switch → ISO, '' when it is not a sane time."""
+    try:
+        e = float(epoch_s or 0)
+        if e <= 0:
+            return ""
+        return datetime.fromtimestamp(e).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def turn(role, content, by=None, now=None):
+    """A conversation turn with a clock on it (and who typed it, for a human
+    send). The API-bound copy is made with api_safe()."""
+    t = {"role": role, "content": content, "at": (now or datetime.now()).isoformat()}
+    if by:
+        t["by"] = by
+    return t
+
+
+def api_safe(messages):
+    """Only role + content go to the model — extra keys are refused there."""
+    out = []
+    for m in messages or []:
+        if isinstance(m, dict) and "role" in m and "content" in m:
+            out.append({"role": m["role"], "content": m["content"]})
+        else:
+            out.append(m)
+    return out
+
+
 # ── routes ──────────────────────────────────────────────────────────────────
 
 def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None,
              send_email=None, report_error=None, notify=None, static_dir=None,
-             manual_keys=None, dnc_keys=None):
+             manual_keys=None, dnc_keys=None, actions=None):
     """Mount the Desk on the Flask app. `lead_data` / histories are the live
     dicts (read only here); `manual_keys()` and `dnc_keys()` are callables that
-    return the lead keys Michael took over and the do-not-contact keys."""
+    return the lead keys Michael took over and the do-not-contact keys.
+    `actions` (slice 2) is a dict of the app's own callables the Desk acts
+    through: pipeline_event(event_type, **kw), send_whatsapp(to, body),
+    send_instagram(igsid, body), send_sms(phone, body), manual_set(digits,
+    hours) → until_epoch, manual_clear(digits), save() (persist now)."""
     from flask import request, jsonify, make_response, redirect, send_from_directory, Response
     try:
         import victory_auth as va
@@ -967,5 +1146,170 @@ def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None
             _err("lead", e, key)
             return jsonify({"ok": False, "error": repr(e)}), 500
 
-    print("[DESK] mounted at /desk/ (slice 1: see)")
+    # ── actions (slice 2) ──
+    acts = actions or {}
+
+    def _rec_for(key):
+        rec = (lead_data or {}).get(key)
+        if isinstance(rec, dict):
+            return key, rec
+        d = digits(key)
+        if d:
+            if len(d) == 10:
+                d = "1" + d
+            for cand in (f"whatsapp:+{d}", f"sms:+{d}"):
+                if isinstance((lead_data or {}).get(cand), dict):
+                    return cand, lead_data[cand]
+        return None, None
+
+    def _by():
+        role, email = _who()
+        return (email.split("@")[0] if email else ("agent" if role == "admin" else "desk"))
+
+    def _act(fn):
+        try:
+            fn()
+        except Exception as e:
+            _err("after_action", e)
+
+    def _json_body():
+        return request.get_json(silent=True) or request.form.to_dict() or {}
+
+    def _done(key, rec, extra=None):
+        _act(lambda: acts.get("save") and acts["save"]())
+        v = one(lead_data, conversation_history, ig_history, key, manual_keys=_manual(), dnc_keys=_dnc())
+        out = {"ok": True, "lead": v}
+        if extra:
+            out.update(extra)
+        return jsonify(out)
+
+    @app.route("/desk/api/lead/<path:key>/note", methods=["POST"])
+    def desk_api_note(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        r = apply_note(rec, _json_body().get("text"), _by(), datetime.now())
+        if not r.get("ok"):
+            return jsonify(r), 400
+        return _done(k, rec, r)
+
+    @app.route("/desk/api/lead/<path:key>/stage", methods=["POST"])
+    def desk_api_stage(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        body = _json_body()
+        turns = turns_for(k, rec, conversation_history, ig_history)
+        r = apply_stage(rec, body.get("stage"), _by(), datetime.now(), reason=body.get("reason", ""), turns=turns)
+        if not r.get("ok"):
+            return jsonify(r), 400
+        if r["before"] != r["after"] and acts.get("pipeline_event"):
+            _act(lambda: acts["pipeline_event"]("STAGE_CHANGE", lead_name=display_name(rec, k),
+                                                lead_phone=phone_key(k, rec), source=source_of(rec, k),
+                                                old_stage=r["before"], new_stage=r["after"],
+                                                context=f"by {_by()} via Desk" + (f": {body.get('reason')}" if body.get("reason") else "")))
+        return _done(k, rec, r)
+
+    @app.route("/desk/api/lead/<path:key>/chase", methods=["POST"])
+    def desk_api_chase(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        r = apply_chase(rec, _json_body().get("action"), _by(), datetime.now())
+        if not r.get("ok"):
+            return jsonify(r), 400
+        return _done(k, rec, r)
+
+    @app.route("/desk/api/lead/<path:key>/dnc", methods=["POST"])
+    def desk_api_dnc(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        on = str(_json_body().get("on", "1")).lower() in ("1", "true", "yes", "on")
+        r = apply_dnc(rec, on, _by(), datetime.now())
+        if acts.get("dnc_sms"):
+            _act(lambda: acts["dnc_sms"](phone_key(k, rec), on))
+        return _done(k, rec, r)
+
+    @app.route("/desk/api/lead/<path:key>/takeover", methods=["POST"])
+    def desk_api_takeover(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        body = _json_body()
+        d = phone_key(k, rec)
+        if not d:
+            return jsonify({"ok": False, "error": "take-over works on phone leads (Maya holds WhatsApp/SMS replies)"}), 400
+        action = _lower(body.get("action") or "take")
+        now = datetime.now()
+        if action in ("take", "takeover", "hold"):
+            try:
+                hours = float(body.get("hours") or MANUAL_DEFAULT_HOURS)
+            except (TypeError, ValueError):
+                hours = MANUAL_DEFAULT_HOURS
+            hours = min(max(hours, 0.25), 72)
+            until = acts["manual_set"](d, hours) if acts.get("manual_set") else None
+            rec["manual_until"] = _until_iso(until) or (now + timedelta(hours=hours)).isoformat()
+            _log(rec, "takeover", f"{_by()} took the conversation (Maya holds for {hours:g} h)", _by(), now)
+        else:
+            if acts.get("manual_clear"):
+                acts["manual_clear"](d)
+            rec.pop("manual_until", None)
+            _log(rec, "takeover", "Handed back to Maya", _by(), now)
+        return _done(k, rec, {"action": action})
+
+    @app.route("/desk/api/lead/<path:key>/send", methods=["POST"])
+    def desk_api_send(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        body = _json_body()
+        plan = send_plan(k, rec, body.get("text"), body.get("as") or "maya")
+        if not plan.get("ok"):
+            return jsonify(plan), 400
+        if rec.get("do_not_contact"):
+            return jsonify({"ok": False, "error": "this lead is marked do-not-contact"}), 400
+        sender = acts.get("send_" + plan["channel"])
+        if not sender:
+            return jsonify({"ok": False, "error": f"no sender wired for {plan['channel']}"}), 500
+        now = datetime.now()
+        try:
+            res = sender(plan["to"], plan["text"])
+        except Exception as e:
+            _err("send", e, k)
+            return jsonify({"ok": False, "error": f"{plan['channel']} send failed: {e!r}"}), 502
+        if isinstance(res, dict) and (res.get("error") or res.get("ok") is False):
+            return jsonify({"ok": False, "error": str(res.get("reason") or res.get("error") or "refused"), "channel": plan["channel"]}), 400
+        # the turn goes into the history the rails read, with a clock and a signature
+        hist = ig_history if plan["channel"] == "instagram" else conversation_history
+        hk = k if plan["channel"] == "instagram" else f"whatsapp:+{phone_key(k, rec)}"
+        hist.setdefault(hk, []).append(turn("assistant", plan["text"], by=plan["as"], now=now))
+        rec["last_message_time"] = now.isoformat()
+        if plan["as"] == "michael" and acts.get("manual_set") and plan["channel"] != "instagram":
+            # a human is talking: Maya holds this thread for a while
+            until = acts["manual_set"](phone_key(k, rec), MANUAL_DEFAULT_HOURS)
+            if _until_iso(until):
+                rec["manual_until"] = _until_iso(until)
+        _log(rec, "send", f"{plan['as'].title()} sent on {plan['channel']}: {plan['text'][:120]}", _by(), now)
+        return _done(k, rec, {"sent": {"channel": plan["channel"], "as": plan["as"]}})
+
+    print("[DESK] mounted at /desk/ (slice 2: see + act)")
     return True

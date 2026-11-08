@@ -762,6 +762,26 @@ GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send",
                 "https://www.googleapis.com/auth/gmail.readonly"]
 TIMEZONE = "America/New_York"  # Orlando, Florida
 
+
+# PATCH #271 — every conversation turn gets a clock. The Desk showed six
+# months of Maya conversations with no times on them: the history dicts were
+# {role, content} and nothing else. From here on a turn carries `at` (and
+# `by` when a human typed it from the Desk); the copy that goes to the model
+# is stripped back to role + content by _api_safe, because the API refuses
+# extra keys. Old turns stay as they are.
+def _turn(role, content, by=None):
+    t = {"role": role, "content": content,
+         "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()}
+    if by:
+        t["by"] = by
+    return t
+
+
+def _api_safe(messages):
+    return [({"role": m["role"], "content": m["content"]}
+             if isinstance(m, dict) and "role" in m and "content" in m else m)
+            for m in (messages or [])]
+
 # Patch #30 / S-1: the studio's postal address. Five consecutive client events
 # (Anderson, Ehmcke, Rafael, Dondrique, Berger) were created with an empty
 # `location`, so the address existed nowhere on the event and the T-60 calendar
@@ -2056,7 +2076,7 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
         _ig_sender = f"instagram:{_igsid}"
         if _ig_sender not in ig_conversation_history:
             ig_conversation_history[_ig_sender] = []
-        ig_conversation_history[_ig_sender].append({"role": "assistant", "content": text})
+        ig_conversation_history[_ig_sender].append(_turn("assistant", text))
         _channel_label = "[IG DM] "
     else:
         # ── WhatsApp: send via WhatsApp API ──
@@ -2094,7 +2114,7 @@ def _handle_shadow_relay(channel_id: str, text: str, user_id: str, thread_ts: st
         # Add to conversation_history so Maya stays in sync
         if wa_sender not in conversation_history:
             conversation_history[wa_sender] = []
-        conversation_history[wa_sender].append({"role": "assistant", "content": text})
+        conversation_history[wa_sender].append(_turn("assistant", text))
         _channel_label = ""
 
     # Post confirmation in the Slack thread
@@ -7870,7 +7890,11 @@ def _normalize_history(hist):
             continue
 
         if text:
-            cleaned.append({"role": role, "content": text})
+            _ct = {"role": role, "content": text}
+            for _k in ("at", "by"):           # PATCH #271 — the clock survives a repair
+                if msg.get(_k):
+                    _ct[_k] = msg[_k]
+            cleaned.append(_ct)
 
     # The API requires alternating roles — merge consecutive same-role turns.
     merged = []
@@ -8007,7 +8031,9 @@ You are replying by text message to a lead's phone. Rules for this channel:
                     max_tokens=1024,
                     system=_sys,
                     tools=TOOLS,
-                    messages=messages
+                    # PATCH #271: role + content only. globals().get — test harnesses lift
+                    # this function alone (#257), the same way #256 guards _ft1.
+                    messages=globals().get("_api_safe", lambda _m: _m)(messages)
                 )
                 last_err = None
                 break  # success
@@ -8046,7 +8072,8 @@ You are replying by text message to a lead's phone. Rules for this channel:
                     final_text += block.text
 
             # Append final assistant reply to history (text only for storage)
-            messages.append({"role": "assistant", "content": final_text})
+            messages.append((globals().get("_turn") or (lambda r, c, by=None: {"role": r, "content": c}))(
+                "assistant", final_text))   # PATCH #271: with a clock (guarded for lifted harnesses)
             return final_text, messages
 
 
@@ -9856,7 +9883,7 @@ def _handle_incoming_sms(frm, body):
         lead_data[key]["channel"] = "SMS"
         if key not in conversation_history:
             conversation_history[key] = []
-        conversation_history[key].append({"role": "user", "content": text})
+        conversation_history[key].append(_turn("user", text))
         if len(conversation_history[key]) > 20:
             conversation_history[key] = conversation_history[key][-20:]
         ident = {"phone": e164, "name": (rec or {}).get("name", ""),
@@ -10467,7 +10494,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             _first_inbound_seen.add(sender)
         if _history_missing:
             conversation_history[sender] = []
-        conversation_history[sender].append({"role": "user", "content": incoming_msg})
+        conversation_history[sender].append(_turn("user", incoming_msg))
         if (not is_new_sender) and (not is_michael):
             # PATCH #72 — the gate that may be the whole bug. `is_new_sender`
             # is computed from an IN-MEMORY dict, so it means "new since the
@@ -11206,7 +11233,7 @@ def _ig_attachment_only(sender_id, att_type):
         send_instagram_dm(sender_id, body=_open)
         if sender not in ig_conversation_history:
             ig_conversation_history[sender] = []
-        ig_conversation_history[sender].append({"role": "assistant", "content": _open})
+        ig_conversation_history[sender].append(_turn("assistant", _open))
         _TALLY.bump("ig.no_text_opener", "ai" if _ai_on else "standard")
     except Exception as _ax:
         print(f"[Relationship] attachment path failed, opener sent plain: {_ax}")
@@ -11328,7 +11355,7 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
         _first_inbound_seen.add(sender)
     if _history_missing:
         ig_conversation_history[sender] = []
-    ig_conversation_history[sender].append({"role": "user", "content": incoming_msg})
+    ig_conversation_history[sender].append(_turn("user", incoming_msg))
 
     # ── Lead data init + IG profile auto-lookup ──
     if sender not in lead_data:
@@ -13574,7 +13601,7 @@ def admin_visit_reschedule():
                 r = send_whatsapp_meta(key, text)
                 sent["whatsapp"] = "sent" if r else "failed"
                 if r:
-                    conversation_history.setdefault(key, []).append({"role": "assistant", "content": text})
+                    conversation_history.setdefault(key, []).append(_turn("assistant", text))
             else:
                 sent["whatsapp"] = f"skipped ({_why})"
         except Exception as _wx:
@@ -18731,7 +18758,7 @@ def admin_send_maya_message():
         # Also append to conversation history so Maya has context
         if phone not in conversation_history:
             conversation_history[phone] = []
-        conversation_history[phone].append({"role": "assistant", "content": message})
+        conversation_history[phone].append(_turn("assistant", message))
         return jsonify({"ok": True, "sent_to": phone})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -21487,7 +21514,7 @@ def form_webhook():
             # Add to conversation history
             if wa_target not in conversation_history:
                 conversation_history[wa_target] = []
-            conversation_history[wa_target].append({"role": "assistant", "content": greeting})
+            conversation_history[wa_target].append(_turn("assistant", greeting))
             print(f"[Form] Auto-greeting sent to {wa_target}")
         except Exception as e:
             print(f"[Form] WhatsApp greeting error (non-fatal): {e}")
@@ -25120,7 +25147,7 @@ def admin_reoffer():
                     wa_ok = bool(r)
                     sent["whatsapp"] = "sent" if r else "failed"
                     if r:
-                        conversation_history.setdefault(key, []).append({"role": "assistant", "content": text})
+                        conversation_history.setdefault(key, []).append(_turn("assistant", text))
                 else:
                     sent["whatsapp"] = f"skipped ({_why})"
             except Exception as _wx:
@@ -27640,6 +27667,22 @@ def _capi_send_async(event):
     threading.Thread(target=_go, daemon=True).start()
 
 
+def _desk_auth_ok():
+    """PATCH #271 — a signed-in MWM Desk session (or the admin secret) is as good as
+    the meeting-report PIN: the Daily Event Report is filed from the Desk now."""
+    try:
+        _d = globals().get("_desk")
+        if not _d:
+            return False
+        import victory_store as _vs2
+        role, _ = _d.session_ok(request.cookies.get(_d.COOKIE, ""), _vs2.session_secret(create=False),
+                                request.values.get("secret", "") or request.headers.get("X-Admin-Secret", ""),
+                                _admin_secret_ok)
+        return bool(role)
+    except Exception:
+        return False
+
+
 @app.route('/meeting-report', methods=['GET'])
 def meeting_report_page():
     """Serve the meeting report form."""
@@ -27667,7 +27710,7 @@ def meeting_report_verify():
 def meeting_report_meetings():
     """Fetch today's or this week's calendar events for the meeting picker."""
     token = request.headers.get('X-MR-Token', '')
-    if not _mr_verify_token(token):
+    if not _mr_verify_token(token) and not _desk_auth_ok():   # PATCH #271
         return jsonify({"ok": False, "error": "auth"}), 401
 
     range_param = request.args.get('range', 'today')
@@ -27778,7 +27821,7 @@ def meeting_report_submit():
     data = request.get_json(silent=True) or {}
 
     # Auth check
-    if not _mr_verify_token(data.get('token', '')):
+    if not _mr_verify_token(data.get('token', '')) and not _desk_auth_ok():   # PATCH #271
         return jsonify({"ok": False, "error": "auth"}), 401
 
     test_mode = data.get('test_mode', False)
@@ -31152,11 +31195,47 @@ def _desk_manual_keys():
         return set()
 
 
+def _desk_actions():
+    """PATCH #271 — the app's own senders and switches, handed to the Desk. Every
+    send goes through the same gates as Maya's (SMS consent + window, WhatsApp
+    eligibility); manual mode is the S2.5 one; nothing new to the rails."""
+    import pg_store as _pgd
+
+    def _manual_set(d, hours):
+        until = time.time() + float(hours) * 3600
+        _manual_mode[str(d)] = until
+        try:
+            _pgd.save_state("manual_mode", _manual_mode)
+        except Exception:
+            pass
+        return until
+
+    def _manual_clear(d):
+        _manual_mode.pop(str(d), None)
+        try:
+            _pgd.save_state("manual_mode", _manual_mode)
+        except Exception:
+            pass
+
+    def _dnc_sms(d, on):
+        if d and _pgd.enabled():
+            _pgd.save_state(f"do_not_sms:+{d}", bool(on))
+
+    return {
+        "pipeline_event": _post_pipeline_event,
+        "send_whatsapp": lambda to, body: send_whatsapp_meta(to, body=body),
+        "send_instagram": lambda to, body: send_instagram_dm(to, body=body),
+        "send_sms": lambda to, body: _send_sms(to, body, kind=SMS_KIND_TRANSACTIONAL),
+        "manual_set": _manual_set, "manual_clear": _manual_clear, "dnc_sms": _dnc_sms,
+        "save": lambda: None,   # lead_data is write-through (leads_db); histories are snapshotted by the saver
+    }
+
+
 try:
     import desk as _desk
     _desk.register(app, _admin_secret_ok, lead_data, conversation_history, ig_conversation_history,
                    send_email=_vi_send_email, report_error=_report_error, notify=_vi_notify,
-                   manual_keys=_desk_manual_keys)
+                   manual_keys=_desk_manual_keys, actions=_desk_actions())
 except Exception as _dkx:
     _desk = None
     print(f"[DESK] wiring skipped (non-fatal): {_dkx!r}")

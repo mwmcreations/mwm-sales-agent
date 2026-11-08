@@ -23,6 +23,7 @@
 <main>
   <section id="view-board" class="view">
     <div class="summary" id="board-summary"></div>
+    <div id="today" class="today" hidden></div>
     <div class="board" id="board"></div>
   </section>
 
@@ -60,6 +61,13 @@
   </div>
   <div class="panel-body" id="panel-body"></div>
 </aside>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-card">
+    <button id="sheet-close" class="icon sheet-x" aria-label="Close">✕</button>
+    <div id="sheet-body"></div>
+  </div>
+</div>
 
 <div id="toast" class="toast" hidden></div>
 <script src="/desk/static/desk.js"></script>
