@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MWM Desk">
+<title>MWM Desk</title>
+<link rel="stylesheet" href="/desk/static/desk.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span>MWM Desk</div>
+  <div class="top-right">
+    <span id="asof" class="asof">—</span>
+    <button id="refresh" class="icon" title="Refresh" aria-label="Refresh">↻</button>
+    <a href="/desk/logout" class="icon" title="Sign out" aria-label="Sign out">⎋</a>
+  </div>
+</header>
+
+<main>
+  <section id="view-board" class="view">
+    <div class="summary" id="board-summary"></div>
+    <div class="board" id="board"></div>
+  </section>
+
+  <section id="view-inbox" class="view" hidden>
+    <div class="chips" id="inbox-chips">
+      <button class="chip on" data-only="">All</button>
+      <button class="chip" data-only="attention">Needs me</button>
+      <button class="chip" data-only="conversations">Conversations</button>
+    </div>
+    <div class="list" id="inbox"></div>
+  </section>
+
+  <section id="view-search" class="view" hidden>
+    <div class="searchbar">
+      <input id="q" type="search" placeholder="Name, business, phone or email" autocomplete="off" inputmode="search">
+    </div>
+    <div class="list" id="results"><div class="empty">Type to search 387 leads.</div></div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button class="tab on" data-tab="board"><span class="ico">▦</span>Board</button>
+  <button class="tab" data-tab="inbox"><span class="ico">✉</span>Inbox<span id="inbox-badge" class="badge" hidden></span></button>
+  <button class="tab" data-tab="search"><span class="ico">⌕</span>Search</button>
+</nav>
+
+<aside id="panel" class="panel" hidden>
+  <div class="panel-head">
+    <button id="panel-close" class="icon" aria-label="Back">←</button>
+    <div class="panel-title">
+      <div id="p-name" class="p-name">—</div>
+      <div id="p-sub" class="p-sub"></div>
+    </div>
+    <span id="p-stage" class="stage"></span>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+</aside>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/desk/static/desk.js"></script>
+</body>
+</html>

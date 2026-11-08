@@ -21145,6 +21145,8 @@ def health_check():
                       "studio_hour_track_live": _studio_hour_track_live()},
         "lead_chase": dict(_LEAD_CHASE_LAST),
         "capi": _capi.status(),                    # PATCH #145
+        "desk": (globals().get("_desk").status(lead_data, conversation_history, ig_conversation_history)
+                 if globals().get("_desk") else {"off": True}),   # PATCH #270
         "operator_alert": _operator_alert.status(),  # PATCH #149
         "call_now": {**_CALL_NOW_LAST, "window_et": f"{_cn.WINDOW_START_H:02d}:00-{_cn.WINDOW_END_H:02d}:00"},  # PATCH #156
         "reengage_oct12": dict(_REENGAGE_LAST),                 # PATCH #158
@@ -31130,6 +31132,34 @@ try:
 except Exception as _vix:
     # A Victory Intelligence problem must never stop the sales machine booting.
     print(f"[VI] wiring skipped (non-fatal): {_vix!r}")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PATCH #270 — MWM Desk, slice 1 (desk.py): the window on the Sales Machine.
+# Michael, Sat 7 Nov 23:12: "We need to close that gap… go ahead and start now
+# with the admin page of our own." Board, inbox, lead card and search over
+# the LIVE lead_data / conversation dicts — read only in this slice. The door
+# is the VI one (one-time link to an @mwmcreations.com address, or the admin
+# secret for the agents); nothing new to trust. Like VI, a Desk problem must
+# never stop the machine booting.
+# ═════════════════════════════════════════════════════════════════════
+def _desk_manual_keys():
+    """Phone digits Michael is driving right now (S2.5 manual mode)."""
+    try:
+        _now = time.time()
+        return {str(d) for d, until in dict(_manual_mode).items() if _now < float(until or 0)}
+    except Exception:
+        return set()
+
+
+try:
+    import desk as _desk
+    _desk.register(app, _admin_secret_ok, lead_data, conversation_history, ig_conversation_history,
+                   send_email=_vi_send_email, report_error=_report_error, notify=_vi_notify,
+                   manual_keys=_desk_manual_keys)
+except Exception as _dkx:
+    _desk = None
+    print(f"[DESK] wiring skipped (non-fatal): {_dkx!r}")
 
 
 # ══════════════════════════════════════════════════════════════════════
