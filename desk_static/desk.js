@@ -165,6 +165,7 @@
     h += j.needs_outcome.length ? j.needs_outcome.map(card).join("") : `<div class="empty">Every past visit has its report. 🙌</div>`;
     h += `<div class="section"><h3>Outcomes · last 14 days</h3><span class="n">${j.counts.recent}</span></div>`;
     h += j.recent.length ? j.recent.map(card).join("") : `<div class="empty">No reports filed in the last two weeks.</div>`;
+    if ((j.undated || []).length) h += `<details class="ended"><summary>Booked with no time on record · ${j.undated.length} — older bookings from before the calendar kept the slot; open one and file its report</summary>${j.undated.map(card).join("")}</details>`;
     $("#visits").innerHTML = h;
   }
 

@@ -1013,18 +1013,18 @@ def visits(lead_data, conversation_history, ig_history, manual_keys=None, dnc_ke
     without an outcome, and the outcomes of the last two weeks."""
     now = now or datetime.now()
     views = _views(lead_data, conversation_history, ig_history, manual_keys, dnc_keys, now=now)
-    upcoming, needs, recent = [], [], []
+    upcoming, needs, recent, undated = [], [], [], []
     for v in views:
         b = v.get("booking")
         oc = v.get("outcome")
         if b:
             d = _days_between(b.get("slot_at") or b.get("at"), now)
-            if not b.get("passed") and b.get("slot_at") and d is not None and 0 - (VISIT_PASSED_GRACE_H / 24.0) <= d <= days_ahead:
+            if b.get("slot_at") and not b.get("passed") and d is not None and 0 - (VISIT_PASSED_GRACE_H / 24.0) <= d <= days_ahead:
                 upcoming.append(_card(v))
-            elif not b.get("passed") and not b.get("slot_at") and not oc and v.get("stage") == "Booked":
-                upcoming.append(_card(v))          # booked, time not on record yet
             elif b.get("passed") and not oc and v.get("stage") == "Booked":
                 needs.append(_card(v))
+            elif not b.get("slot_at") and not b.get("passed") and not oc and v.get("stage") == "Booked":
+                undated.append(_card(v))           # a booking with no time (and no date) on record — pre-#262
         if oc and oc.get("at"):
             d = _days_between(oc["at"], now)
             if d is not None and -days_back <= d <= 0.5:
@@ -1032,15 +1032,15 @@ def visits(lead_data, conversation_history, ig_history, manual_keys=None, dnc_ke
     upcoming.sort(key=lambda c: epoch((c.get("booking") or {}).get("slot_at")) or float("inf"))
     needs.sort(key=lambda c: epoch((c.get("booking") or {}).get("slot_at") or (c.get("booking") or {}).get("at")), reverse=True)
     recent.sort(key=lambda c: epoch((c.get("outcome") or {}).get("at")), reverse=True)
+    undated.sort(key=lambda c: epoch(c.get("last_activity")), reverse=True)
     by_day = {}
     for c in upcoming:
-        sa = (c.get("booking") or {}).get("slot_at")
-        d = parse_dt(sa)
+        d = parse_dt((c.get("booking") or {}).get("slot_at"))
         label = d.strftime("%a %b %d").replace(" 0", " ") if d else "Time not on record"
         by_day.setdefault(label, []).append(c)
     return {"upcoming": upcoming, "upcoming_by_day": [{"day": k, "cards": v} for k, v in by_day.items()],
-            "needs_outcome": needs, "recent": recent,
-            "counts": {"upcoming": len(upcoming), "needs_outcome": len(needs), "recent": len(recent)},
+            "needs_outcome": needs, "recent": recent, "undated": undated,
+            "counts": {"upcoming": len(upcoming), "needs_outcome": len(needs), "recent": len(recent), "undated": len(undated)},
             "as_of": now.isoformat()}
 
 
