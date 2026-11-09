@@ -27616,6 +27616,19 @@ def _report_drives_record(outcome, key, rec, email, name, service, notes, next_s
         return plan
     rec["last_outcome"] = outcome
     rec["last_outcome_at"] = now.isoformat()
+    # PATCH #276 — the same visit lives on both numbers (#256 twins: the form
+    # record and the WhatsApp record). The outcome is written to the twin too,
+    # so neither keeps asking for a report that was filed. The chain arms once.
+    try:
+        for _tk in (rec.get("linked_wa_key"), rec.get("linked_form_key")):
+            _tw = lead_data.get(_tk) if _tk else None
+            if isinstance(_tw, dict) and _tk != key:
+                _tw["last_outcome"] = outcome
+                _tw["last_outcome_at"] = now.isoformat()
+                _tw["outcome_via_twin"] = key
+                lead_data[_tk] = _tw
+    except Exception as _twx:
+        _report_error("p276.twin_outcome", _twx, key)
     # PATCH #251 — the visit happened (any outcome but no_show) is the
     # StudioVisitCompleted stage; client_won is Converted. Dark until configured.
     try:

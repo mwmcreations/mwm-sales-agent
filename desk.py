@@ -1007,6 +1007,26 @@ def _days_between(a_iso, now):
     return (e - n) / 86400.0
 
 
+def twin_losers(views):
+    """PATCH #276 — one visit, two records (#256 twins share the calendar event).
+    Returns the keys to leave out when counting visits: for each event the
+    record that carries the outcome wins, else the one with a conversation."""
+    best = {}
+    for v in views:
+        ev = ((v.get("booking") or {}).get("event_id") or "").strip()
+        if not ev:
+            continue
+        rank = (1 if v.get("outcome") else 0, 1 if v.get("turns") else 0)
+        if ev not in best or rank > best[ev][0]:
+            best[ev] = (rank, v["key"])
+    losers = set()
+    for v in views:
+        ev = ((v.get("booking") or {}).get("event_id") or "").strip()
+        if ev and best[ev][1] != v["key"]:
+            losers.add(v["key"])
+    return losers
+
+
 def visits(lead_data, conversation_history, ig_history, manual_keys=None, dnc_keys=None,
            now=None, days_ahead=30, days_back=14):
     """The visits calendar from the records: what is coming, what passed
@@ -1014,7 +1034,10 @@ def visits(lead_data, conversation_history, ig_history, manual_keys=None, dnc_ke
     now = now or datetime.now()
     views = _views(lead_data, conversation_history, ig_history, manual_keys, dnc_keys, now=now)
     upcoming, needs, recent, undated = [], [], [], []
+    _losers = twin_losers(views)   # PATCH #276
     for v in views:
+        if v["key"] in _losers:
+            continue   # the twin carries this visit
         b = v.get("booking")
         oc = v.get("outcome")
         if b:
@@ -1194,8 +1217,10 @@ def stats(lead_data, conversation_history, ig_history, manual_keys=None, dnc_key
     first_touch_minutes = []
     stage_counts = {s: 0 for s in STAGES}
     awaiting = 0
+    _losers = twin_losers(views)   # PATCH #276: a visit is counted once
     for v in views:
         rec = recs.get(v["key"]) if isinstance(recs.get(v["key"]), dict) else {}
+        _twin_loser = v["key"] in _losers
         stage_counts[v["stage"]] = stage_counts.get(v["stage"], 0) + 1
         if "awaiting_reply" in (v.get("flags") or []):
             awaiting += 1
@@ -1210,13 +1235,13 @@ def stats(lead_data, conversation_history, ig_history, manual_keys=None, dnc_key
                 if _in_window(at, start_e, end_e):
                     chase_sent += 1
         b = v.get("booking") or {}
-        if b and _in_window(b.get("at"), start_e, end_e):
+        if b and not _twin_loser and _in_window(b.get("at"), start_e, end_e):
             booked_ev += 1
         oc = v.get("outcome") or {}
-        if oc and _in_window(oc.get("at"), start_e, end_e):
+        if oc and not _twin_loser and _in_window(oc.get("at"), start_e, end_e):
             visits_by[oc["last"]] = visits_by.get(oc["last"], 0) + 1
         p = v.get("paid") or {}
-        if (p and _in_window(p.get("at"), start_e, end_e)) or (oc and oc.get("last") == "client_won" and _in_window(oc.get("at"), start_e, end_e)):
+        if (p and _in_window(p.get("at"), start_e, end_e)) or (oc and not _twin_loser and oc.get("last") == "client_won" and _in_window(oc.get("at"), start_e, end_e)):
             won_ev += 1
         if not _in_window(v.get("first_seen"), start_e, end_e):
             continue

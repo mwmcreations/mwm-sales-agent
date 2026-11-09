@@ -160,7 +160,21 @@ def stop_reason(state, lead, now, last_inbound=None, is_client=False,
             or lead.get("paid_at") or str(lead.get("outcome") or "").lower() == "won":
         return STOP_CLIENT
     if lead.get("booked") or lead.get("appointment_booked"):
-        return STOP_BOOKED
+        # PATCH #276 — a post-visit chain follows a visit that was itself booked
+        # (Vicente, 8 Nov: armed 22:56, stopped 'booked' a minute later — no
+        # post-visit chain had ever sent). Only a booking made AFTER the arming
+        # stops it; every other kind stops on any booking, as before.
+        if state.get("kind") != KIND_POST_VISIT:
+            return STOP_BOOKED
+        _bat = _parse(lead.get("booked_at"))
+        _arm = _parse(state.get("armed_at"))
+        if _bat is not None and _arm is not None:
+            if _bat.tzinfo is None and _arm.tzinfo is not None:
+                _bat = _bat.replace(tzinfo=_arm.tzinfo)
+            if _arm.tzinfo is None and _bat.tzinfo is not None:
+                _arm = _arm.replace(tzinfo=_bat.tzinfo)
+            if _bat > _arm + timedelta(minutes=1):
+                return STOP_BOOKED
     if isinstance(lead.get("disqualified"), dict):
         return STOP_DISQUALIFIED
     armed = _parse(state.get("armed_at"))
