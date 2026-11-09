@@ -65,6 +65,9 @@ KIND_POST_VISIT = "post_visit"
 # PATCH #148 — the studio-hour track: the form chain's cadence and stops,
 # studio-hour copy (studio_visit.sh_chase_email / sh_chase_sms).
 KIND_STUDIO_HOUR = "studio_hour"
+# PATCH #274 — the Instagram kind: an IG lead whose DM window closed and who
+# left an email. The form cadence (email steps only), studio_visit.ig_chase_email.
+KIND_IG = "ig"
 STEPS_POST_VISIT = (
     ("e1", EMAIL, 2, 1),        # +2h  thanks, the plan in one paragraph
     ("s1", SMS, 24 * 2, 1),     # day 2  one text, one question

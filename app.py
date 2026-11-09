@@ -11986,7 +11986,10 @@ def _cold_lead_checker():
                 hours_silent = (now - last_msg).total_seconds() / 3600
 
                 # ── Session 30.13: At 24h, add to re-engagement queue ──
-                if hours_silent >= 24 and not data.get("reengagement_enqueued"):
+                # PATCH #274 — an Instagram lead is enqueued at IG_T1_HOURS (inside the
+                # 24 h window) when the IG rail is live; everyone else at 24 h as before
+                _enq_h = IG_T1_HOURS if (str(phone).startswith("instagram:") and _ig_chase_live()) else 24
+                if hours_silent >= _enq_h and not data.get("reengagement_enqueued"):
                     _re_name = data.get("name") or ""
                     _re_biz = data.get("business") or ""
                     _re_last = last_msg.strftime("%Y-%m-%d %H:%M")
@@ -14693,6 +14696,9 @@ def _reengagement_checker():
                 stages = ["T1", "T2", "T3", "T4", "T5", "T6", "T7"]
                 sent_flags = {s: entry.get(f"{s} Sent", "").strip() for s in stages}
 
+                # ── Session 41: IG DM channel detection ──
+                _is_ig = phone.startswith("instagram:")
+
                 # Find next unsent stage
                 next_stage = None
                 for s in stages:
@@ -14700,12 +14706,11 @@ def _reengagement_checker():
                         # Check if all previous stages are sent
                         idx = stages.index(s)
                         if idx == 0 or all(sent_flags[stages[j]] for j in range(idx)):
-                            if hours_since >= REENGAGEMENT_CADENCE[s]:
+                            # PATCH #274 — IG T1 inside the window when the rail is live
+                            _due_h = IG_T1_HOURS if (_is_ig and s == "T1" and _ig_chase_live()) else REENGAGEMENT_CADENCE[s]
+                            if hours_since >= _due_h:
                                 next_stage = s
                         break
-
-                # ── Session 41: IG DM channel detection ──
-                _is_ig = phone.startswith("instagram:")
 
                 # ── Session 41: IG DM window expiry check ──
                 # Instagram messaging window is 7 days max. If we're past that
@@ -14724,6 +14729,12 @@ def _reengagement_checker():
                         _report_error("_reengagement_checker:L7892", _sx)  # S6.5 silent-except sweep
                     print(f"[Re-engagement] [IG DM] {phone} ({name}) — window expired at {int(hours_since)}h, marked Cold")
                     _mirror_reengagement_to_shadow(phone, name, "COLD", None, is_cold=True, is_ig=True)
+                    if _ig_chase_live():   # PATCH #274 — when Instagram closes, email opens
+                        try:
+                            _ig_why = _ig_arm_email_chase(phone, name, now)
+                            print(f"[Re-engagement] [IG DM] {phone} email chain: {_ig_why}")
+                        except Exception as _ax:
+                            _report_error("ig_chase.arm", _ax, phone)
                     continue
 
                 # S6.1: catch-up throttle — after the 15-day outage, overdue leads
@@ -21171,6 +21182,7 @@ def health_check():
                       # PATCH #148 — the studio-hour track's switch, visible here
                       "studio_hour_track_live": _studio_hour_track_live()},
         "lead_chase": dict(_LEAD_CHASE_LAST),
+        "ig_chase": {"live": _ig_chase_live(), "t1_hours": IG_T1_HOURS},   # PATCH #274 (dark until Michael OKs the copy)
         "capi": _capi.status(),                    # PATCH #145
         "desk": (globals().get("_desk").status(lead_data, conversation_history, ig_conversation_history)
                  if globals().get("_desk") else {"off": True}),   # PATCH #270
@@ -22037,6 +22049,49 @@ def _first_touch_sms_body(name, business, ai, slots):
 # PATCH #148 — the studio-hour track's switch and copy. The flag is read on
 # every lead so Michael's OK on the copy goes live with a Railway variable,
 # not a deploy (a deploy drops any text Twilio delivers in the gap).
+# PATCH #274 — Instagram leads never heard a second word: Meta closes the DM
+# window 24 h after their last message, and the re-engagement T1 came due at
+# 24 h, so the checker marked them Cold at the exact moment it would have
+# written. 172 IG leads on the board, 145 with no email or phone (8 Nov).
+# DARK until Michael OKs the copy — IG_CHASE_LIVE=1 in Railway turns on:
+#   (a) T1 by DM at IG_T1_HOURS, inside the window (the cold checker enqueues
+#       an IG lead at that hour instead of 24);
+#   (b) when the window closes, an IG lead who left an email gets the
+#       studio-hour email chain with an Instagram opening (lead_chase.KIND_IG,
+#       studio_visit.ig_chase_email), from the chase loop, same stops.
+IG_T1_HOURS = int(os.getenv("IG_T1_HOURS", "20"))
+
+
+def _ig_chase_live():
+    return str(os.getenv("IG_CHASE_LIVE", "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ig_arm_email_chase(key, name, now):
+    """PATCH #274 — when Instagram closes, email opens. Returns why not, or 'armed'."""
+    rec = lead_data.get(key)
+    if not isinstance(rec, dict):
+        return "no record"
+    if isinstance(rec.get("chase"), dict) and rec["chase"].get("armed_at"):
+        return "already armed"
+    email = ""
+    for _e in emails_in_field(rec.get("email")):
+        email = _e
+        break
+    if not email:
+        return "no email"
+    if email_is_suppressed(email)[0]:
+        return "suppressed"
+    if rec.get("booked") or rec.get("event_id") or rec.get("do_not_contact") or _chase_is_client(key):
+        return "booked, blocked or client"
+    rec["chase"] = _chase.arm(now, channels=[_chase.EMAIL], verdict="ig", kind=_chase.KIND_IG)
+    lead_data[key] = rec
+    _TALLY.bump("ig_chase.armed", str(key)[-6:])
+    _post_to_slack_async(SLACK_DEV_CHANNEL,
+        f":incoming_envelope: *IG lead* {name or key} — DM window closed; email chain armed "
+        f"({_chase_mask(email)}) · chain: {_chase.summary(rec['chase'], now)}")
+    return "armed"
+
+
 def _studio_hour_track_live():
     return str(os.getenv("STUDIO_HOUR_TRACK_LIVE", "")).strip().lower() in ("1", "true", "yes", "on")
 
@@ -22531,6 +22586,11 @@ def _chase_pass(now=None):
                                                          state.get("agreed_next", ""))
                 elif state.get("kind") == _chase.KIND_STUDIO_HOUR:
                     subj, html, _ = _sv.sh_chase_email(copy_step, rec.get("name"),
+                                                       rec.get("business"),
+                                                       rec.get("must_understand"),
+                                                       ai=bool(rec.get("ai_interest")))
+                elif state.get("kind") == _chase.KIND_IG:   # PATCH #274
+                    subj, html, _ = _sv.ig_chase_email(copy_step, rec.get("name"),
                                                        rec.get("business"),
                                                        rec.get("must_understand"),
                                                        ai=bool(rec.get("ai_interest")))

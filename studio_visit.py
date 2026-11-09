@@ -845,6 +845,26 @@ def sh_chase_email(step, name, business="", must_understand="", ai=False):
     return subject, _as_html(body), "\n".join(body)
 
 
+# PATCH #274 — the same five emails for a lead who came in by Instagram DM and
+# left an email: the studio-hour copy (no price, no program) with the opening
+# told the way it happened. Nothing else in the body moves.
+IG_OPENINGS = (
+    ("You applied for a Studio Strategy Visit, so let me tell you exactly what happens in those 30 minutes.",
+     "You messaged us on Instagram about the studio, so let me tell you exactly what a free 30-minute Studio Strategy Visit looks like."),
+    ("Two weeks ago you applied for a Studio Strategy Visit. The offer has not changed, so here it is in one paragraph.",
+     "Two weeks ago you messaged us on Instagram about the studio. The offer has not changed, so here it is in one paragraph."),
+)
+
+
+def ig_chase_email(step, name, business="", must_understand="", ai=False):
+    """(subject, html, text) for an Instagram lead's chase email 1..5."""
+    subject, html, text = sh_chase_email(step, name, business, must_understand, ai=ai)
+    for old, new in IG_OPENINGS:
+        html = html.replace(_html.escape(old), _html.escape(new))
+        text = text.replace(old, new)
+    return subject, html, text
+
+
 def sh_chase_sms(step, name, slots=None):
     """Core of the studio-hour day-2 / day-9 texts (wrapped by sms_copy.compose)."""
     fn = first_name(name)
