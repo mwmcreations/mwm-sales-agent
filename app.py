@@ -22464,7 +22464,15 @@ def admin_studio_provision_custom():
             cycles=v.get("cycles") or 0, pace_note=v.get("pace") or "",
             includes_note=v.get("includes") or "",
             extra_notes=[s for s in str(v.get("extra") or "").split("|") if s.strip()],
-            apply=apply)
+            apply=apply,
+            # PATCH #277 — ongoing monthly wording + an already-booked first session
+            ongoing=str(v.get("ongoing") or "") in ("1", "true", "yes"),
+            monthly_hours=v.get("monthly_hours") or 0,
+            footer_note=v.get("footer") or "",
+            first_session=({"title": v.get("fs_title") or "", "when": v.get("fs_when") or "",
+                            "time": v.get("fs_time") or "", "place": v.get("fs_place") or "",
+                            "notes": [s for s in str(v.get("fs_note") or "").split("|") if s.strip()]}
+                           if (v.get("fs_when") or "").strip() else None))
     except Exception as e:
         _report_error("admin_studio_provision_custom", "custom provision failed", repr(e))
         return jsonify({"ok": False, "error": repr(e)}), 500

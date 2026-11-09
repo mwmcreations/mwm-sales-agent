@@ -23,6 +23,7 @@ from app.py (no circulars).
 """
 import os
 import json
+import html as _html
 import hmac
 import hashlib
 import threading
@@ -326,6 +327,29 @@ def billing_footer_html(spec, term):
             f'of it, when we review the results together and decide the next step. '
             f'<a href="{STUDIO_TERMS_URL}" style="color:#888;">Studio Terms →</a>'
             '</p>')
+    if spec.get("ongoing"):
+        # PATCH #277 — an ongoing monthly plan (Michael, Mon 9 Nov 2026, on
+        # David's welcome: "I want to make sure that clients understand this is
+        # an ongoing project"). No "for N months", no total: the monthly price,
+        # the day it is charged, the next charge, and the commitment in the
+        # deal's own words.
+        o_amount = int(spec.get("mrr") or 0)
+        o_today = datetime.now(pytz.timezone("America/New_York")).date()
+        o_next = next((d for d in dates if d >= o_today), None)
+        o_day = dates[0].day
+        o_suffix = "th" if 11 <= o_day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(o_day % 10, "th")
+        o_next_txt = (f" (next charge: <strong style=\"color:#666;\">"
+                      f"{o_next.strftime('%B')} {o_next.day}</strong>)") if o_next else ""
+        o_note = str(spec.get("footer_note") or "").strip()
+        return (
+            '<p style="font-size:12px;line-height:1.6;color:#888;margin-top:22px;'
+            'padding-top:14px;border-top:1px solid #e8e8e8;">'
+            f'Your plan is <strong style="color:#666;">${o_amount:,}/month</strong>, '
+            f'charged automatically to the card on file on the {o_day}{o_suffix} of each '
+            f'month{o_next_txt}. '
+            + (f'{_html.escape(o_note)} ' if o_note else '') +
+            f'<a href="{STUDIO_TERMS_URL}" style="color:#888;">Studio Package Terms →</a>'
+            '</p>')
     amount = int(spec.get("mrr") or 0)
     cycles = len(dates)
     total = amount * cycles
@@ -623,17 +647,61 @@ def _welcome_email_html(first_name: str, access_code: str,
     # PATCH #269 — further lines a deal wants in the written record (referral
     # hours, say). Empty for every package, so their emails do not change by
     # a character.
+    if spec.get("ongoing"):
+        # PATCH #277 — an ongoing monthly plan speaks per month, never in
+        # totals or end dates: the portal still holds a total and a last
+        # bookable day (ROB tops it up), but the client reads a partnership.
+        _m = int(spec.get("monthly_hours") or 0) or hours
+        headline = (f"Your <strong>{spec['name']}</strong> is active — {_m} hours of "
+                    f"professional studio time every month, as an ongoing partnership.")
+        total_li = (f"{_m} studio hours every month"
+                    + (f" ({_pace})" if _pace else ""))
+        expiry_li = ("Your plan continues month after month, and your portal always "
+                     "shows the hours you have available to book")
+        if _includes:
+            expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
     for _note in (spec.get("extra_notes") or []):
         _note = str(_note or "").strip()
         if _note:
             expiry_li = f"{expiry_li}</li>\n      <li>{_note}"
+    _fs = spec.get("first_session") or None
+    if _fs:
+        return _welcome_email_body(first_name, access_code, headline, total_li,
+                                   expiry_li, billing_footer_html(spec, term),
+                                   highlight_html=_first_session_html(_fs),
+                                   book_title="Book your next sessions",
+                                   book_text=("Your first session is already on the "
+                                              "calendar. For the next ones, log in, pick a "
+                                              "time on the booking calendar, done. Your hours "
+                                              "are tracked automatically."))
     return _welcome_email_body(first_name, access_code, headline, total_li,
                                expiry_li, billing_footer_html(spec, term))
 
 
+def _first_session_html(fs):
+    """PATCH #277 — the first session, already booked, as the most visible
+    thing in the welcome email (Michael: "make it more visible visually")."""
+    e = lambda v: _html.escape(str(v or "").strip())
+    notes = [e(n) for n in (fs.get("notes") or []) if str(n or "").strip()]
+    return (
+        '<div style="margin:20px 0 24px;border:2px solid #C8A96E;border-radius:12px;'
+        'background:#111;color:#fff;padding:20px 22px;">'
+        '<div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;'
+        f'color:#C8A96E;font-weight:bold;">&#128197; {e(fs.get("title")) or "Your first session is booked"}</div>'
+        f'<div style="font-size:26px;font-weight:bold;margin:10px 0 2px;color:#fff;">{e(fs.get("when"))}</div>'
+        f'<div style="font-size:21px;font-weight:bold;color:#E3C88E;margin-bottom:12px;">{e(fs.get("time"))}</div>'
+        + (f'<div style="font-size:14px;color:#ccc;">&#128205; {e(fs.get("place"))}</div>' if fs.get("place") else "")
+        + (f'<p style="font-size:14px;line-height:1.6;color:#ddd;margin:12px 0 0;">{"<br>".join(notes)}</p>' if notes else "")
+        + '</div>')
+
+
 def _welcome_email_body(first_name: str, access_code: str, headline: str,
                         total_li: str, expiry_li: str,
-                        billing_footer: str = "") -> str:
+                        billing_footer: str = "", highlight_html: str = "",
+                        book_title: str = "Book your first session",
+                        book_text: str = ("All booking happens right in your portal —\n"
+                                          "    log in, pick a time on the booking calendar, "
+                                          "done. Your hours are tracked automatically.")) -> str:
     code_block = (
         f'<div style="background:#111;color:#fff;font-size:28px;letter-spacing:6px;'
         f'padding:18px 24px;border-radius:10px;display:inline-block;font-family:monospace;">'
@@ -649,15 +717,14 @@ def _welcome_email_body(first_name: str, access_code: str, headline: str,
               border-radius:0 0 12px 12px;">
     <p style="font-size:16px;">Hi {first_name},</p>
     <p style="font-size:15px;line-height:1.6;">{headline}
-    Here's everything you need:</p>
+    Here's everything you need:</p>{highlight_html}
     <h3 style="margin-bottom:6px;">1 · Your client portal</h3>
     <p style="font-size:15px;line-height:1.6;">Track your hours, see upcoming sessions, and
     manage bookings at<br><a href="{PORTAL_URL}">{PORTAL_URL}</a></p>
     <p style="font-size:15px;">Log in with this email address and your access code:</p>
     <p style="text-align:center;margin:18px 0;">{code_block}</p>
-    <h3 style="margin-bottom:6px;">2 · Book your first session</h3>
-    <p style="font-size:15px;line-height:1.6;">All booking happens right in your portal —
-    log in, pick a time on the booking calendar, done. Your hours are tracked automatically.</p>
+    <h3 style="margin-bottom:6px;">2 · {book_title}</h3>
+    <p style="font-size:15px;line-height:1.6;">{book_text}</p>
     <h3 style="margin-bottom:6px;">3 · How it works</h3>
     <ul style="font-size:15px;line-height:1.7;">
       <li>{total_li}</li>
@@ -851,7 +918,8 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
 
 def custom_spec(label, hours, start, end, price_label="", term_label="",
                 interval="none", cycle_amount=0, cycles=0, pace_note="",
-                includes_note="", extra_notes=None, kind="custom"):
+                includes_note="", extra_notes=None, kind="custom",
+                ongoing=False, monthly_hours=0, footer_note="", first_session=None):
     """PATCH #269 — a package spec for ONE client's deal, built from the deal's
     own terms and never written into PACKAGES. Michael, Sat 7 Nov 2026, on
     Shawnie Whitaker's $350-a-week partner plan: "pretty much a custom build…
@@ -904,13 +972,23 @@ def custom_spec(label, hours, start, end, price_label="", term_label="",
         "credits_toward_contract": False,
         "custom": True,
     }
+    # PATCH #277 — an ongoing monthly plan and an already-booked first session.
+    # Absent unless asked for, so every earlier spec renders exactly as before.
+    if ongoing:
+        spec["ongoing"] = True
+        spec["monthly_hours"] = int(monthly_hours or 0)
+        spec["footer_note"] = str(footer_note or "").strip()
+    if first_session and str((first_session or {}).get("when") or "").strip():
+        spec["first_session"] = {k: first_session.get(k) for k in
+                                 ("title", "when", "time", "place", "notes")}
     return spec, package_term(spec, start)
 
 
 def provision_custom(name, email, hours, start, end, label="Custom studio plan",
                      price_label="", term_label="", interval="none", cycle_amount=0,
                      cycles=0, pace_note="", includes_note="", extra_notes=None,
-                     apply=False):
+                     apply=False, ongoing=False, monthly_hours=0, footer_note="",
+                     first_session=None):
     """PATCH #269 — run the standard purchase pipeline for a client on a custom
     deal (see custom_spec). Dry by default: returns the spec, the dates, the
     subject and the welcome email as it would read, and asks WP whether the
@@ -933,12 +1011,15 @@ def provision_custom(name, email, hours, start, end, label="Custom studio plan",
                                  term_label=term_label, interval=interval,
                                  cycle_amount=cycle_amount, cycles=cycles,
                                  pace_note=pace_note, includes_note=includes_note,
-                                 extra_notes=extra_notes)
+                                 extra_notes=extra_notes, ongoing=ongoing,
+                                 monthly_hours=monthly_hours, footer_note=footer_note,
+                                 first_session=first_session)
     except (TypeError, ValueError) as e:
         return {"ok": False, "error": str(e)}
     first = name.split()[0] if name else "there"
     out = {"ok": True, "dry": not apply, "email": email, "name": name,
-           "spec": {k: v for k, v in spec.items() if k != "extra_notes"},
+           "spec": {k: v for k, v in spec.items() if k not in ("extra_notes", "first_session")},
+           "first_session": spec.get("first_session"),
            "extra_notes": spec["extra_notes"],
            "term_start": term["start"].isoformat(),
            "booking_deadline": term["booking_deadline"].isoformat(),
