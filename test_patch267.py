@@ -156,7 +156,7 @@ check("app.fire_falls_back", "res = _send_sms(e164, _sms_copy.compose(core), kin
 send = SRC[SRC.index("def _first_touch_wa_send("):SRC.index("def _first_touch_status(")]
 check("app.send_holds_quiet", "if not _ft1.in_window(now, SMS_TXN_QUIET_START_H, SMS_TXN_QUIET_END_H):" in send
       and 'lr["first_touch_wa_pending"] = _ft1.wa_pending(params, core, now)' in send)
-cp = SRC[SRC.index("def _chase_pass(now=None):"):SRC.index("def _chase_pass(now=None):") + 6000]
+cp = SRC[SRC.index("def _chase_pass(now=None):"):SRC.index("def _chase_pass(now=None):") + 12000]   # #272: the held email sits above
 check("app.chase_wa_pending", 'wpend = rec.get("first_touch_wa_pending")' in cp and "_first_touch_wa_fire(rec, key, _we164, wpend[\"params\"], wpend.get(\"core\") or \"\", now)" in cp
       and "_ftm.wa_pending_expired(wpend, now)" in cp and '_ftm = globals().get("_ft1")' in cp)
 check("app.chase_sms_waits", "_due, _dwhy = (_ftm.sms_due(pend, (rec.get(\"first_touch_wa\") or {}).get(\"status\"), now)" in cp

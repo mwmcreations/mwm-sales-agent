@@ -73,7 +73,7 @@ ok("Smile American" in s2, "case study picks the dental client for a dental busi
 s2m, _, _ = sv.chase_email(2, "Ana", "Victory Jiu-Jitsu Academy", "")
 ok("Victory Martial Arts" in s2m, "case study picks Victory for a martial-arts business")
 s3, _, t3 = sv.chase_email(3, "Ana", "Smile Dental", "")
-ok("three videos every Smile Dental needs" in s3 and "1. The problem video" in t3, "day-10 email names the three videos")
+ok("three videos every dental practice needs" in s3 and "1. The problem video" in t3, "day-10 email names the three videos")   # #272
 s4, _, t4 = sv.chase_email(4, "Ana", "", "")
 ok("$1,200 a month: four studio hours" in t4 and "30-minute" in t4, "day-14 recap carries the price line")
 s5, _, t5 = sv.chase_email(5, "Ana", "", "")

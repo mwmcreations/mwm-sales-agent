@@ -21620,6 +21620,21 @@ def _meta_lead_fetch(leadgen_id):
     return r.json()
 
 
+# PATCH #272 — the first-touch email keeps office hours. Karl Maiwaldt's form
+# came in at 4:39 AM on a Sunday and the email left at 4:39 AM: instant, which
+# is the point, but a 4:39 AM timestamp reads as a machine (Michael, 8 Nov).
+# Between 10 PM and 7 AM the email is held on the record and the chase loop
+# sends it at 7 — the first-touch text already waits for its own window the
+# same way. Daytime forms are untouched: the email still leaves in seconds.
+FIRST_TOUCH_EMAIL_QUIET_FROM_H = int(os.getenv("FIRST_TOUCH_EMAIL_QUIET_FROM_H", "22"))
+FIRST_TOUCH_EMAIL_QUIET_TO_H = int(os.getenv("FIRST_TOUCH_EMAIL_QUIET_TO_H", "7"))
+
+
+def _first_touch_email_overnight(now):
+    h = now.hour
+    return h >= FIRST_TOUCH_EMAIL_QUIET_FROM_H or h < FIRST_TOUCH_EMAIL_QUIET_TO_H
+
+
 def _meta_lead_intake(value, lead_meta=None):
     """One form submission, start to finish. Never raises past this frame.
 
@@ -21915,6 +21930,14 @@ def _meta_lead_intake(value, lead_meta=None):
                         sms_note = f"refused ({res.get('reason')})"
                     _TALLY.bump("lead_form.first_touch_sms", sms_note.split(" ")[0])
                 elif chan == "email":
+                    # PATCH #272 — held until 7 AM (globals().get: this rail is lifted alone into
+                    # test harnesses, #143/#256 style; without the rule the email leaves at once)
+                    if (globals().get("_first_touch_email_overnight") or (lambda _n: False))(now):
+                        lr["first_touch_email_pending"] = {"since": now.isoformat(), "sh": bool(sh),
+                                                           "ai": bool(ai)}
+                        email_note = "queued (overnight, sends at 7 AM)"
+                        _TALLY.bump("lead_form.first_touch_email", "queued")
+                        continue
                     _ft_email = _sv.sh_first_touch_email if sh else _sv.form_first_touch_email
                     subj, html, _ = _ft_email(
                         name, rec["business"], rec["must_understand"], ai, slots,
@@ -22374,6 +22397,51 @@ def _chase_pass(now=None):
                 _TALLY.bump("lead_form.first_touch_wa", "late_" + _wnote.split(" ")[0])
                 if _wnote.startswith("sent"):
                     counts["sent"] += 1
+        # ── PATCH #272: the first-touch email that waited for 7 AM ──
+        # (globals().get: _chase_pass is lifted alone into test harnesses — #256)
+        _ovn = globals().get("_first_touch_email_overnight") or (lambda _n: False)
+        pend_e = rec.get("first_touch_email_pending")
+        if isinstance(pend_e, dict):
+            counts["pending_first_touch"] += 1
+        if isinstance(pend_e, dict) and not _ovn(now):
+            _esince = _chase_aware(pend_e.get("since"))
+            _ewaited = ((now - _esince).total_seconds() / 3600.0 if _esince else 999)
+            _einb = _chase_inbound(rec)
+            _ereplied = bool(_einb and _esince and _einb > _esince + timedelta(minutes=1))
+            _eaddr = str(rec.get("email") or "").strip()
+            _enosend = (not _eaddr) or email_is_suppressed(_eaddr)[0]
+            if _enosend or _ewaited > _chase.FIRST_TOUCH_SMS_MAX_WAIT_H or _ereplied \
+                    or _chase_booked(rec) or isinstance(rec.get("disqualified"), dict):
+                rec["first_touch_email_dropped"] = ("replied" if _ereplied else
+                                                    "no sendable email" if _enosend else
+                                                    f"waited {_ewaited:.0f}h")
+                rec.pop("first_touch_email_pending", None)
+                lead_data[key] = rec
+            else:
+                try:
+                    _eslots = (get_available_slots() or [])[:2]
+                except Exception:
+                    _eslots = []
+                if _eslots:   # the record remembers the offer (#262)
+                    rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+                                            for s in _eslots if isinstance(s, dict) and s.get("id")]
+                _esh = bool(pend_e.get("sh"))
+                _eft = _sv.sh_first_touch_email if _esh else _sv.form_first_touch_email
+                _esubj, _ehtml, _ = _eft(rec.get("name"), rec.get("business"), rec.get("must_understand"),
+                                         bool(pend_e.get("ai")), _eslots,
+                                         sms_sent=bool(rec.get("first_touch_sms_at")))
+                _eres = _email_send(_eaddr, _esubj, _ehtml,
+                                    via=("lead_form_first_touch_sh" if _esh else "lead_form_first_touch"),
+                                    lead_key=key)
+                if email_ok(_eres):
+                    rec["first_touch_email_at"] = now.isoformat()
+                    rec.pop("first_touch_email_pending", None)
+                    counts["sent"] += 1
+                    _TALLY.bump("lead_form.first_touch_email", "sent_7am")
+                elif _eres.get("suppressed"):   # will not change; a transport error retries next pass
+                    rec["first_touch_email_dropped"] = "suppressed"
+                    rec.pop("first_touch_email_pending", None)
+                lead_data[key] = rec
         # ── the first-touch text that had to wait for the window ──
         pend = rec.get("first_touch_sms_pending")
         if isinstance(pend, dict) and pend.get("core"):
@@ -22873,7 +22941,7 @@ def admin_chase():
             continue
         st = rec.get("chase")
         pend = rec.get("first_touch_sms_pending")
-        if not st and not pend:
+        if not st and not pend and not rec.get("first_touch_email_pending"):   # PATCH #272
             continue
         rows.append({
             "lead": key if str(key).startswith("meta_lead_") else _chase_mask_key(key),
@@ -22888,6 +22956,8 @@ def admin_chase():
             "first_touch_sms_at": rec.get("first_touch_sms_at", ""),
             "first_touch_email_at": rec.get("first_touch_email_at", ""),
             "first_touch_sms_pending": bool(pend),
+            "first_touch_email_pending": bool(rec.get("first_touch_email_pending")),   # PATCH #272
+            "push_h": (st or {}).get("push_h", 0), "touches": (st or {}).get("touches", []),
             "first_touch_wa": (rec.get("first_touch_wa") or {}).get("status", ""),   # PATCH #267
         })
     rows.sort(key=lambda r: r.get("armed_at", ""), reverse=True)
@@ -25167,6 +25237,14 @@ def admin_reoffer():
         rec["offered_slots"] = slots
         rec["reoffer_at"] = now.isoformat()
         rec["reoffer_sent"] = sent
+        # PATCH #272 — a hand-sent re-offer is a chase touch (Michael, 8 Nov 22:40):
+        # the chain records it and every remaining step waits 3 more days.
+        _rst = rec.get("chase")
+        if isinstance(_rst, dict) and _rst.get("armed_at") and not _rst.get("stopped") \
+                and any(str(v) == "sent" for v in sent.values()):
+            _chase.note_touch(_rst, now, label="reoffer", push_h=_chase.PUSH_AFTER_TOUCH_H)
+            rec["chase"] = _rst
+            row["chase"] = _chase.summary(_rst, now)
         lead_data[key] = rec
         tw = _lead_twin(rec)
         if isinstance(tw, dict):

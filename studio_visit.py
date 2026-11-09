@@ -437,13 +437,70 @@ def case_study_for(business, must_understand=""):
     return _DEFAULT_CASE
 
 
+# PATCH #272 — the day-10 subject used to print the business NAME where an
+# industry word belongs ("The three videos every K.T.M. TOYS & GrApHiCs needs").
+# Michael, 8 Nov: fall back to "every business" when there is no industry.
+# A small lexicon, most specific first; anything it does not know is
+# "business". The name itself is never printed here.
+_INDUSTRY_WORDS = (
+    (("mortgage", "lending", " loan"), "mortgage business"),
+    (("real estate", "realtor", "realty", "brokerage", "property", " homes"), "real estate brokerage"),
+    (("title company", "title agency"), "title company"),
+    (("dental", "dentist", "orthodont"), "dental practice"),
+    (("chiro",), "chiropractic practice"),
+    (("med spa", "medspa", "aesthetic", "wellness", "therapy", "clinic", "medical", "doctor", "physician", "health"), "practice"),
+    (("martial", "dojo", "karate", "jiu", "taekwondo", "kung fu"), "martial arts school"),
+    ((" gym", "fitness", "crossfit", "personal train"), "gym"),
+    (("yoga", "pilates"), "studio"),
+    (("dance",), "dance studio"),
+    (("law firm", "law office", "law group", "attorney", "lawyer", "legal", " law "), "law firm"),
+    (("insurance",), "insurance agency"),
+    (("accounting", "cpa", "bookkeep", " tax "), "accounting firm"),
+    (("financial", "wealth", "advisor", "investment"), "financial advisor"),
+    (("roof",), "roofing company"),
+    (("plumb",), "plumbing company"),
+    (("hvac", "air conditioning", "cooling", "heating"), "HVAC company"),
+    (("electric",), "electrical contractor"),
+    (("solar",), "solar company"),
+    (("landscap", " lawn", "tree service"), "landscaping company"),
+    ((" pool",), "pool company"),
+    ((" pest",), "pest control company"),
+    (("cleaning", " maid", "janitorial"), "cleaning company"),
+    (("construction", "builder", "remodel", "renovation", "contractor", "flooring", "cabinet"), "contractor"),
+    (("alarm", "security", "surveillance"), "security company"),
+    (("auto", " car ", "mechanic", " tire", "body shop", "collision", "detailing"), "auto shop"),
+    (("dealer",), "dealership"),
+    (("restaurant", "bistro", "grill", "pizza", "sushi", "taco", "kitchen", "eatery"), "restaurant"),
+    (("bakery", " cafe", " café", "coffee"), "cafe"),
+    (("catering", "caterer"), "catering business"),
+    (("salon", "barber", " hair", "nails", " lash", " brow ", "beauty", " spa "), "salon"),
+    (("church", "ministry", "ministries"), "ministry"),
+    (("nonprofit", "non-profit", "foundation", "charity"), "nonprofit"),
+    (("academy", "school", "tutoring", "education", "learning", "lesson"), "academy"),
+    (("coach", "mentor"), "coaching practice"),
+    (("consult",), "consulting firm"),
+    (("travel", " tour", "tickets", "vacation"), "travel business"),
+    (("print",), "print shop"),
+    (("photo", "video", "media", "studio", "production", "podcast"), "creative business"),
+    (("marketing", "agency", "branding", "advertising"), "agency"),
+    ((" pet ", " pets", "grooming", "veterinar", "dog ", "puppy"), "pet business"),
+    (("moving", "movers"), "moving company"),
+    (("logistics", "trucking", "freight"), "logistics company"),
+)
+
+
 def industry_word(business):
-    """A short noun for '[industry]' in the day-10 subject. Falls back to
-    'business' rather than guessing."""
+    """A short industry noun for '[industry]' in the day-10 subject, or
+    'business'. Never the business name (PATCH #272). Reads the name only:
+    a wrong industry is worse than a generic word."""
     b = clean_business(business)
-    if not b or len(b) > 40:
+    if not b:
         return "business"
-    return b
+    hay = " " + b.lower() + " "
+    for words, noun in _INDUSTRY_WORDS:
+        if any(w in hay for w in words):
+            return noun
+    return "business"
 
 
 def chase_email(step, name, business="", must_understand="", ai=False):

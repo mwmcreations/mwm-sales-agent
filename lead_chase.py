@@ -92,6 +92,24 @@ STOP_DISQUALIFIED = "disqualified"
 STOP_CLOSED = "closed"
 STOP_MANUAL = "manual"
 
+# PATCH #272 — a message sent outside the chain (Michael's hand re-offer,
+# #266) is still a touch the lead felt. Karl Maiwaldt got the day-9 text at
+# 10:03 and the re-offer by text and email at 11:51 the same morning; the
+# chain never knew. note_touch() records it and every remaining step waits
+# PUSH_AFTER_TOUCH_H longer. The arming clock itself is NOT moved: stop_reason
+# reads armed_at to see a reply, and a reply tomorrow must still stop the
+# chain. The push lives in `push_h` and only hours_since_armed() reads it.
+PUSH_AFTER_TOUCH_H = 72
+
+
+def note_touch(state, now, label="touch", push_h=PUSH_AFTER_TOUCH_H):
+    if not isinstance(state, dict):
+        return state
+    state.setdefault("touches", []).append({"at": now.isoformat(), "label": str(label),
+                                            "push_h": float(push_h)})
+    state["push_h"] = float(state.get("push_h") or 0) + float(push_h)
+    return state
+
 
 def arm(now, channels=("email", "sms"), verdict="yes", kind=KIND_FORM):
     """A fresh chain state. `channels` says which rails this lead can use:
@@ -122,7 +140,8 @@ def hours_since_armed(state, now):
         return None
     if at.tzinfo is None and now.tzinfo is not None:
         at = at.replace(tzinfo=now.tzinfo)
-    return (now - at).total_seconds() / 3600.0
+    # PATCH #272: touches outside the chain push the schedule (note_touch)
+    return (now - at).total_seconds() / 3600.0 - float((state or {}).get("push_h") or 0)
 
 
 def stop_reason(state, lead, now, last_inbound=None, is_client=False,
@@ -206,5 +225,7 @@ def summary(state, now):
     when = ("due now" if wait <= 0 else
             f"in {wait:.0f}h" if wait < 48 else f"in {wait / 24:.0f}d")
     kind = state.get("kind") or KIND_FORM
+    pushed = (f"; pushed {float(state['push_h']) / 24:.0f}d after {len(state.get('touches') or [])} touch(es)"
+              if state.get("push_h") else "")   # PATCH #272
     return (f"{kind}: next {key} ({chan}) {when}; sent {len(state.get('sent') or {})}, "
-            f"skipped {len(state.get('skipped') or {})}")
+            f"skipped {len(state.get('skipped') or {})}{pushed}")

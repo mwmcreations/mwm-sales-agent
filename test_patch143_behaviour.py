@@ -293,7 +293,8 @@ ok(len(calls["email"]) == 5 and len(calls["sms"]) == 2 and sorted(rec["chase"]["
 G["_chase_pass"](at(31))
 ok(rec["chase"]["stopped"] == "closed", "then closed")
 subjects = [e[1] for e in calls["email"]]
-ok(any("three videos every Smile Dental needs" in s for s in subjects) and any("still open" in s for s in subjects) and any("door stays open" in s for s in subjects), "the five subjects")
+ok(any("three videos every dental practice needs" in s for s in subjects)   # #272: an industry, not the name
+   and any("still open" in s for s in subjects) and any("door stays open" in s for s in subjects), "the five subjects")
 # a step missed by more than 72h is skipped, the chain continues
 rec = armed_lead("L11")
 G["_chase_pass"](at(8, 11, 0))

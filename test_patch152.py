@@ -136,7 +136,7 @@ for step in (1, 2, 3, 4, 5):
 s3, _, _ = sv.sh_chase_email(3, "Duncan", "owner_/_founder_/_partner", "")
 check("chase3.subject_fallback", s3 == "The three videos every business needs before the customer buys", s3)
 s3b, _, _ = sv.sh_chase_email(3, "Duncan", "iD8", "")
-check("chase3.subject_name", s3b == "The three videos every iD8 needs before the customer buys", s3b)
+check("chase3.subject_name", s3b == "The three videos every business needs before the customer buys", s3b)   # #272: a name is not an industry
 check("disq.text", "marketing_lead" not in sv.disqualify_text("Daphnee", "marketing_lead") and "sounds great" not in sv.disqualify_text("Daphnee", "marketing_lead"))
 _, _, dt = sv.disqualify_email("Daphnee", "marketing_lead")
 check("disq.email", "marketing_lead" not in dt and "_/_" not in dt)
