@@ -27869,6 +27869,10 @@ def meeting_report_meetings():
                     "time": time_str,
                     "date_label": date_label,
                     "event_id": ev.get("id", ""),
+                    # PATCH #273 — which calendar and the raw title, so the Desk can tell
+                    # a studio visit from a personal appointment (the picker ignores both)
+                    "calendar": "mwm" if cal_id == mwm_cal else "personal",
+                    "summary": summary,
                 })
 
     # Deduplicate by event_id
@@ -31309,6 +31313,10 @@ def _desk_actions():
         # travels (the handlers are the app's own and unchanged; _desk_auth_ok admits the session)
         "report_meetings": lambda: meeting_report_meetings(),
         "report_submit": lambda: meeting_report_submit(),
+        # PATCH #273 — the studio portal ledger (read-only, cached in the Desk) and the
+        # package table, for the Clients tab and the MRR tile
+        "portal_clients": lambda: _studio.wp_list_clients(),
+        "package_by_name": lambda n: _studio.package_by_name(n),
         "save": lambda: None,   # lead_data is write-through (leads_db); histories are snapshotted by the saver
     }
 

@@ -1,9 +1,10 @@
-/* MWM Desk — slice 1: see. Vanilla JS, no build step. */
+/* MWM Desk — slices 1–3: see, act, measure. Vanilla JS, no build step. */
 (function () {
   "use strict";
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
-  const state = { tab: "board", only: "", board: null, inbox: null, lead: null, q: "", timer: null, busy: false };
+  const state = { tab: "board", only: "", board: null, inbox: null, lead: null, q: "", timer: null, busy: false,
+                  visits: null, visitsCal: null, clients: null, stats: null, days: 30 };
 
   // ── helpers ──
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -55,6 +56,7 @@
       out.push(`<span class="tag ${b.passed ? "" : "booked"}">📅 ${esc(label)}${b.passed && b.when ? " · passed" : ""}</span>`); }
     (c.flags || []).forEach(f => { const m = FLAG[f]; if (m) out.push(`<span class="tag ${m[0]}">${esc(m[1])}</span>`); });
     if (c.product && c.stage === "Client") out.push(`<span class="tag">${esc(c.product)}</span>`);
+    if (c.outcome && c.outcome.last) out.push(`<span class="tag ${c.outcome.last === "no_show" || c.outcome.last === "not_interested" ? "lost" : "booked"}">${esc(OUTCOME_LABEL[c.outcome.last] || c.outcome.last.replace(/_/g, " "))}</span>`);
     if (c.temperature && TEMP[c.temperature]) out.push(`<span class="tag temp ${esc(c.temperature)}">${TEMP[c.temperature]}</span>`);
     if (c.test) out.push(`<span class="tag test">test</span>`);
     out.push(`<span class="tag src">${esc(c.source || "—")}</span>`);
@@ -84,9 +86,10 @@
     try {
       const j = await api("/desk/api/report/meetings?range=today");
       const ms = j.meetings || [];
-      el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}</span></div>` +
-        (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev"><div class="t">${esc(m.time)}</div><div class="nm">${esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
-          <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}">Report</button></div>`).join("")}</div>` : "");
+      const hid = j.hidden || 0;
+      el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}${hid ? `<span class="muted"> · ${hid} personal hidden</span>` : ""}</span></div>` +
+        (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev ${m.lead_key ? "linked" : ""}"><div class="t">${esc(m.time)}</div><div class="nm">${m.lead_key ? `<button class="lnk" data-key="${esc(m.lead_key)}">${esc(m.name)}</button>` : esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
+          <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}" data-key="${esc(m.lead_key || "")}">Report</button></div>`).join("")}</div>` : "");
       el.hidden = false;
     } catch (e) { el.hidden = true; }   // a report problem never touches the board
   }
@@ -125,6 +128,110 @@
     if (!q) { el.innerHTML = `<div class="empty">Type to search.</div>`; return; }
     try { const j = await api("/desk/api/search?q=" + encodeURIComponent(q)); el.innerHTML = j.rows.length ? j.rows.map(card).join("") : `<div class="empty">No lead matches “${esc(q)}”.</div>`; }
     catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  }
+
+  // ── slice 3: visits · clients · stats ──
+  const OUTCOME_LABEL = { client_won: "🎉 client won", follow_up: "🔄 follow-up", studio_package_pitched: "📦 package pitched", completed: "✅ completed", not_interested: "❌ not interested", no_show: "🚫 no-show" };
+  function money(n) { n = Math.round(Number(n) || 0); return "$" + n.toLocaleString("en-US"); }
+  function tile(label, value, sub, cls) { return `<div class="tile ${cls || ""}"><div class="k">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`; }
+  function hbar(label, n, max, cls, sub) { const pct = max ? Math.max(2, Math.round(n / max * 100)) : 0;
+    return `<div class="hbar ${cls || ""}"><span class="lbl">${esc(label)}</span><div class="trk"><i style="width:${n ? pct : 0}%"></i></div><span class="val">${n}${sub ? `<small>${esc(sub)}</small>` : ""}</span></div>`; }
+  function dayLabel(iso) { if (!iso) return ""; const d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
+
+  async function loadVisits() {
+    const el = $("#visits"); if (!state.visits) el.innerHTML = `<div class="skel">Loading the visits…</div>`;
+    try {
+      const [j, cal] = await Promise.all([api("/desk/api/visits"), api("/desk/api/report/meetings?range=week").catch(() => null)]);
+      state.visits = j; state.visitsCal = cal; renderVisits();
+      const b = $("#visits-badge"); const n = (j.counts || {}).needs_outcome || 0; if (n) { b.textContent = n; b.hidden = false; } else b.hidden = true;
+    } catch (e) { el.innerHTML = `<div class="skel">Could not load the visits — ${esc(e.message)}</div>`; }
+  }
+  function renderVisits() {
+    const j = state.visits; if (!j) return;
+    const cal = state.visitsCal;
+    let h = "";
+    h += `<div class="section"><h3>Coming up</h3><span class="n">${j.counts.upcoming} booked · next 30 days</span></div>`;
+    h += j.upcoming_by_day.length ? j.upcoming_by_day.map(g => `<div class="day">${esc(g.day)}</div>` + g.cards.map(card).join("")).join("") : `<div class="empty">Nothing booked ahead.</div>`;
+    if (cal && cal.ok) {
+      const ms = cal.meetings || [];
+      h += `<div class="section"><h3>On the calendar this week</h3><span class="n">${ms.length} ${ms.length === 1 ? "event" : "events"}${cal.hidden ? ` · ${cal.hidden} personal hidden` : ""}</span></div>`;
+      h += ms.length ? `<div class="cal">${ms.map(m => `<div class="cal-ev ${m.lead_key ? "linked" : ""}">
+          <div class="when"><b>${esc(m.date_label || "Today")}</b> ${esc(m.time)}</div>
+          <div class="who">${m.lead_key ? `<button class="lnk" data-key="${esc(m.lead_key)}">${esc(m.name)}</button>` : esc(m.name)}${m.business ? ` <span class="muted">· ${esc(m.business)}</span>` : ""}</div>
+          <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}" data-key="${esc(m.lead_key || "")}">Report</button>
+        </div>`).join("")}</div>` : `<div class="empty">Nothing on the calendar this week.</div>`;
+    }
+    h += `<div class="section"><h3>Needs an outcome</h3><span class="n">${j.counts.needs_outcome} ${j.counts.needs_outcome === 1 ? "visit" : "visits"} behind us, nothing recorded</span></div>`;
+    h += j.needs_outcome.length ? j.needs_outcome.map(card).join("") : `<div class="empty">Every past visit has its report. 🙌</div>`;
+    h += `<div class="section"><h3>Outcomes · last 14 days</h3><span class="n">${j.counts.recent}</span></div>`;
+    h += j.recent.length ? j.recent.map(card).join("") : `<div class="empty">No reports filed in the last two weeks.</div>`;
+    $("#visits").innerHTML = h;
+  }
+
+  async function loadClients(force) {
+    const el = $("#clients"); if (!state.clients) el.innerHTML = `<div class="skel">Reading the portal ledger…</div>`;
+    try { const j = await api("/desk/api/clients" + (force ? "?refresh=1" : "")); state.clients = j; renderClients(); }
+    catch (e) { el.innerHTML = `<div class="skel">Could not read the portal ledger — ${esc(e.message)}</div>`; }
+  }
+  function clientRow(c) {
+    const st = { active: "active", expiring: `ends in ${c.days_left}d`, ended: "ended", unknown: "no end date" }[c.status] || c.status;
+    const ends = c.end ? (c.status === "ended" ? "ended " + dayLabel(c.end + "T12:00:00") : "ends " + dayLabel(c.end + "T12:00:00")) : "";
+    return `<button class="crow ${c.status}" ${c.key ? `data-key="${esc(c.key)}"` : "disabled"}>
+      <div class="row1"><span class="nm">${esc(c.name)}</span><span class="st ${c.status}">${esc(st)}</span></div>
+      <div class="biz">${esc(c.package)}${ends ? ` · ${ends}` : ""}</div>
+      <div class="bar"><i style="width:${c.pct}%"></i></div>
+      <div class="meta2"><span>${c.used % 1 ? c.used.toFixed(1) : c.used} of ${c.hours % 1 ? c.hours.toFixed(1) : c.hours} h used</span><span>${c.left % 1 ? c.left.toFixed(1) : c.left} h left</span><span>${c.mrr ? money(c.mrr) + "/mo" : (c.one_off ? money(c.one_off) + " one-off" : "")}</span></div>
+    </button>`;
+  }
+  function renderClients() {
+    const j = state.clients; if (!j) return;
+    const s = j.summary || {};
+    const live = j.rows.filter(c => c.status === "active" || c.status === "expiring" || c.status === "unknown");
+    const ended = j.rows.filter(c => c.status === "ended");
+    $("#clients").innerHTML = `<div class="tiles">${tile("Active contracts", s.active || 0, s.expiring ? `${s.expiring} ending within 14 days` : "", "")}${tile("Monthly recurring", money(s.mrr), "active contracts, the deal's own number", "gold")}${tile("Hours left", s.hours_left, `of ${s.hours_bought} bought`, "")}${tile("Ended", s.ended || 0, "contracts past their end date", "")}</div>` +
+      (j.note ? `<div class="hint">${esc(j.note)}</div>` : "") +
+      `<div class="section"><h3>Contracts</h3><span class="n">${live.length} live · tap a name for the lead</span></div>` +
+      (live.length ? live.map(clientRow).join("") : `<div class="empty">No live contracts in the portal.</div>`) +
+      (ended.length ? `<details class="ended"><summary>Ended · ${ended.length}</summary>${ended.map(clientRow).join("")}</details>` : "") +
+      `<div class="muted small">Source: the studio portal ledger, read ${j.as_of ? when(j.as_of) : ""}. Hours are what the portal enforces on bookings.</div>`;
+  }
+
+  async function loadStats() {
+    const el = $("#stats"); if (!state.stats) el.innerHTML = `<div class="skel">Counting…</div>`;
+    try { const j = await api("/desk/api/stats?days=" + state.days); state.stats = j; renderStats(); }
+    catch (e) { el.innerHTML = `<div class="skel">Could not count — ${esc(e.message)}</div>`; }
+  }
+  function renderStats() {
+    const j = state.stats; if (!j) return;
+    const c = j.cohort, ev = j.events, ft = j.first_touch, ch = j.chase, now = j.now, cl = j.clients;
+    const d = j.days;
+    let h = `<div class="tiles">` +
+      tile("New leads", c.new, `last ${d} days`) +
+      tile("Replied", c.replied, c.reply_rate != null ? `${c.reply_rate}% of ${c.contacted} contacted` : "none contacted yet") +
+      tile("Booked", ev.booked, `${c.booked} from this cohort${c.book_rate != null ? ` · ${c.book_rate}%` : ""}`, "green") +
+      tile("Visits done", ev.visits, Object.keys(ev.visits_by_outcome || {}).length ? Object.entries(ev.visits_by_outcome).map(([k, v]) => `${v} ${(OUTCOME_LABEL[k] || k).replace(/^\S+\s/, "")}`).join(" · ") : "no reports in the window") +
+      tile("Won", ev.won, `payments or client-won reports`, "gold") +
+      (cl ? tile("Monthly recurring", money(cl.mrr), `${cl.active} active contracts`, "gold") : tile("Awaiting a reply", now.awaiting_reply, "right now", now.awaiting_reply ? "hot" : "")) +
+      `</div>`;
+    const mx = Math.max(1, c.new);
+    h += `<div class="section"><h3>The funnel · leads who arrived in the last ${d} days</h3></div><div class="bars">` +
+      hbar("Arrived", c.new, mx) + hbar("Contacted", c.contacted, mx) + hbar("Replied", c.replied, mx) + hbar("Booked", c.booked, mx) + hbar("Visited", c.visited, mx) + hbar("Client", c.won, mx) + `</div>`;
+    const sm = Math.max(1, ...(j.by_source || []).map(x => x.n));
+    h += `<div class="section"><h3>Where they came from</h3><span class="n">${c.new} leads</span></div><div class="bars">` + ((j.by_source || []).map(x => hbar(x.source, x.n, sm)).join("") || `<div class="empty">No new leads in the window.</div>`) + `</div>`;
+    if (ft.form_leads) {
+      const fm = Math.max(1, ft.form_leads);
+      h += `<div class="section"><h3>First touch · ${ft.form_leads} form leads</h3><span class="n">${ft.median_minutes != null ? `median ${ft.median_minutes < 60 ? ft.median_minutes + " min" : Math.round(ft.median_minutes / 60) + " h"} to the first message` : ""}</span></div><div class="bars">` +
+        hbar("Email sent", ft.email, fm) + hbar("Text sent", ft.sms, fm) + hbar("WhatsApp", ft.whatsapp, fm) + (ft.waiting ? hbar("Waiting (window)", ft.waiting, fm, "dim") : "") + (ft.none ? hbar("Nothing sent", ft.none, fm, "bad") : "") + `</div>`;
+    }
+    h += `<div class="section"><h3>The chase</h3><span class="n">${ch.active} chains running</span></div><div class="tiles two">` +
+      tile("Steps sent", ch.sent, `emails and texts, last ${d} days`) +
+      tile("Chains stopped", Object.values(ch.stopped || {}).reduce((a, b) => a + b, 0), Object.entries(ch.stopped || {}).map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`).join(" · ") || "none in the window") + `</div>`;
+    const stg = now.stages || {};
+    const smx = Math.max(1, ...Object.values(stg));
+    h += `<div class="section"><h3>The board right now</h3><span class="n">${now.leads} leads · ${now.awaiting_reply} awaiting a reply</span></div><div class="bars stages">` +
+      ["New", "Contacted", "Replied", "Booked", "Visited", "Client", "Paused", "Lost"].map(s => hbar(s, stg[s] || 0, smx, "s-" + s.toLowerCase())).join("") + `</div>`;
+    h += `<div class="muted small">Counted from the lead records at ${when(j.as_of)}. Cohort = leads first seen in the window; bookings, visits and wins are counted by when they happened.</div>`;
+    $("#stats").innerHTML = h;
   }
 
   // ── lead panel ──
@@ -250,19 +357,25 @@
   function show(tab) {
     state.tab = tab; $$(".tab").forEach(t => t.classList.toggle("on", t.dataset.tab === tab));
     $$(".view").forEach(v => v.hidden = v.id !== "view-" + tab);
-    if (tab === "board") loadBoard(); else if (tab === "inbox") loadInbox(); else if (tab === "search") setTimeout(() => $("#q").focus(), 50);
+    if (tab === "board") loadBoard(); else if (tab === "inbox") loadInbox(); else if (tab === "visits") loadVisits();
+    else if (tab === "clients") loadClients(); else if (tab === "stats") loadStats(); else if (tab === "search") setTimeout(() => $("#q").focus(), 50);
     try { localStorage.setItem("desk.tab", tab); } catch (e) {}
   }
-  function refresh() { if (state.tab === "board") loadBoard(); else if (state.tab === "inbox") loadInbox(); else doSearch(); }
+  function refresh() { if (state.tab === "board") loadBoard(); else if (state.tab === "inbox") loadInbox(); else if (state.tab === "visits") loadVisits();
+    else if (state.tab === "clients") loadClients(true); else if (state.tab === "stats") loadStats(); else doSearch(); }
 
   document.addEventListener("click", e => {
     const c = e.target.closest(".card"); if (c) { openLead(c.dataset.key); return; }
     const t = e.target.closest(".tab"); if (t) { show(t.dataset.tab); return; }
-    const ch = e.target.closest(".chip"); if (ch) { $$(".chip").forEach(x => x.classList.toggle("on", x === ch)); state.only = ch.dataset.only || ""; state.inbox = null; loadInbox(); return; }
+    const ch = e.target.closest(".chip"); if (ch) {
+      if (ch.dataset.days) { $$("#stats-chips .chip").forEach(x => x.classList.toggle("on", x === ch)); state.days = parseInt(ch.dataset.days, 10) || 30; state.stats = null; loadStats(); return; }
+      $$("#inbox-chips .chip").forEach(x => x.classList.toggle("on", x === ch)); state.only = ch.dataset.only || ""; state.inbox = null; loadInbox(); return; }
+    const lk = e.target.closest(".lnk"); if (lk && lk.dataset.key) { openLead(lk.dataset.key); return; }
+    const cr = e.target.closest(".crow"); if (cr && cr.dataset.key) { openLead(cr.dataset.key); return; }
     if (e.target.closest("#panel-close")) { closeLead(); return; }
     if (e.target.closest("#refresh")) { refresh(); toast("Refreshed"); return; }
     if (e.target.closest("#sheet-close") || e.target === $("#sheet")) { closeSheet(); return; }
-    const rev = e.target.closest(".report-ev"); if (rev) { reportSheet({ name: rev.dataset.name, business: rev.dataset.business, event_id: rev.dataset.event }); return; }
+    const rev = e.target.closest(".report-ev"); if (rev) { reportSheet({ name: rev.dataset.name, business: rev.dataset.business, event_id: rev.dataset.event, key: rev.dataset.key || "" }); return; }
     const a = e.target.closest("[data-act]"); if (a && state.lead) {
       const L = state.lead, act_ = a.dataset.act;
       if (act_ === "report") reportSheet({ key: L.key, name: L.name, business: L.business, event_id: L.booking ? L.booking.event_id : "" });

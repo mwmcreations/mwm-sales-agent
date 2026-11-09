@@ -1,4 +1,4 @@
-"""desk.py — PATCH #270 — MWM Desk, slice 1: SEE.
+"""desk.py — PATCH #270 — MWM Desk, slice 1: SEE (slice 2 #271: ACT; slice 3 #273: MEASURE).
 
 Michael, Sat 7 Nov 2026, 23:12: "We need to close that gap. That exactly what
 makes me frustrated around our system. Go ahead and start now with the admin
@@ -458,6 +458,10 @@ def first_touch_of(rec):
                            "at": iso(_first(ft.get("sent_at"), ft.get("at")))}
     if rec.get("first_touch_sms_at"):
         out["sms"] = {"at": iso(rec.get("first_touch_sms_at"))}
+    if rec.get("first_touch_email_at"):   # #273 (the email waits for 7 AM since #272)
+        out["email"] = {"at": iso(rec.get("first_touch_email_at"))}
+    if isinstance(rec.get("first_touch_email_pending"), dict):
+        out["email_pending"] = {"since": iso(rec["first_touch_email_pending"].get("since"))}
     if isinstance(rec.get("first_touch_sms_pending"), dict):
         out["sms_pending"] = {"reason": str(rec["first_touch_sms_pending"].get("reason") or ""),
                               "not_before": iso(rec["first_touch_sms_pending"].get("not_before"))}
@@ -920,6 +924,355 @@ def api_safe(messages):
 
 # ── routes ──────────────────────────────────────────────────────────────────
 
+# ── slice 3 (PATCH #273): visits, clients, stats ────────────────────────────
+# Michael, Sun 8 Nov 23:44: "do the slice-3 list". Three more windows over the
+# same records (nothing here writes): the visits calendar, the clients' hours
+# ledger (the WP portal, read live and cached five minutes), and the numbers.
+# Plus the Today strip learns the difference between a studio visit and
+# "📚 Michael Jr.": his personal calendar is read for the report, so an event
+# from it is shown only when it names a lead or sounds like studio business.
+
+VISIT_WORDS = ("studio", "visit", "strategy", "meeting", "consult", "call", "shoot", "record",
+               "recording", "podcast", "session", "client", "mwm", "zoom", "meet", "filming",
+               "interview", "tour", "walkthrough", "discovery", "onboarding", "presentation")
+PORTAL_CACHE_S = 300
+EXPIRING_DAYS = 14
+_PORTAL_CACHE = {"at": 0.0, "rows": None, "error": ""}
+
+
+def _name_tokens(name):
+    toks = [t for t in re.split(r"[^a-z0-9]+", _lower(name)) if len(t) >= 3]
+    return toks
+
+
+def _lead_names(lead_data):
+    """Token lists for every named lead (and their business) — the match set
+    for calendar titles. Two tokens or more: a single word ("Michael") would
+    claim half the calendar."""
+    out = []
+    for key, rec in list((lead_data or {}).items()):
+        if not isinstance(rec, dict) or is_test(rec):
+            continue
+        for n in (rec.get("name"), rec.get("business")):
+            toks = _name_tokens(n)
+            if len(toks) >= 2 and _lower(n) not in ("unknown", "n/a", "none"):
+                out.append((toks, str(key)))
+    return out
+
+
+def event_matches_lead(summary, names):
+    """The lead key when a calendar title carries two words of a lead's (or
+    their business's) name as whole words — else ''."""
+    s = " " + re.sub(r"[^a-z0-9]+", " ", _lower(summary)) + " "
+    if not s.strip():
+        return ""
+    for toks, key in names:
+        if sum(1 for t in toks if (" " + t + " ") in s) >= 2:
+            return key
+    return ""
+
+
+def is_studio_event(summary):
+    s = _lower(summary)
+    return any(w in s for w in VISIT_WORDS)
+
+
+def calendar_filter(meetings, lead_data, show_all=False):
+    """Keep every event from the MWM calendar; from Michael's own calendar
+    keep only what names a lead or sounds like studio business. Each kept
+    event learns `lead_key` when a lead matched. Returns (kept, hidden)."""
+    names = _lead_names(lead_data)
+    kept, hidden = [], 0
+    for m in (meetings or []):
+        if not isinstance(m, dict):
+            continue
+        title = str(m.get("summary") or "") or " ".join(filter(None, [m.get("name"), m.get("business")]))
+        lk = event_matches_lead(title, names)
+        m = dict(m)
+        m["lead_key"] = lk
+        personal = _lower(m.get("calendar")) == "personal"
+        if show_all or not personal or lk or is_studio_event(title):
+            kept.append(m)
+        else:
+            hidden += 1
+    return kept, hidden
+
+
+def _days_between(a_iso, now):
+    e = epoch(a_iso)
+    if not e:
+        return None
+    n = now.timestamp() if isinstance(now, datetime) and now.tzinfo else (
+        time.mktime(now.timetuple()) if isinstance(now, datetime) else time.time())
+    return (e - n) / 86400.0
+
+
+def visits(lead_data, conversation_history, ig_history, manual_keys=None, dnc_keys=None,
+           now=None, days_ahead=30, days_back=14):
+    """The visits calendar from the records: what is coming, what passed
+    without an outcome, and the outcomes of the last two weeks."""
+    now = now or datetime.now()
+    views = _views(lead_data, conversation_history, ig_history, manual_keys, dnc_keys, now=now)
+    upcoming, needs, recent = [], [], []
+    for v in views:
+        b = v.get("booking")
+        oc = v.get("outcome")
+        if b:
+            d = _days_between(b.get("slot_at") or b.get("at"), now)
+            if not b.get("passed") and b.get("slot_at") and d is not None and 0 - (VISIT_PASSED_GRACE_H / 24.0) <= d <= days_ahead:
+                upcoming.append(_card(v))
+            elif not b.get("passed") and not b.get("slot_at") and not oc and v.get("stage") == "Booked":
+                upcoming.append(_card(v))          # booked, time not on record yet
+            elif b.get("passed") and not oc and v.get("stage") == "Booked":
+                needs.append(_card(v))
+        if oc and oc.get("at"):
+            d = _days_between(oc["at"], now)
+            if d is not None and -days_back <= d <= 0.5:
+                recent.append(_card(v))
+    upcoming.sort(key=lambda c: epoch((c.get("booking") or {}).get("slot_at")) or float("inf"))
+    needs.sort(key=lambda c: epoch((c.get("booking") or {}).get("slot_at") or (c.get("booking") or {}).get("at")), reverse=True)
+    recent.sort(key=lambda c: epoch((c.get("outcome") or {}).get("at")), reverse=True)
+    by_day = {}
+    for c in upcoming:
+        sa = (c.get("booking") or {}).get("slot_at")
+        d = parse_dt(sa)
+        label = d.strftime("%a %b %d").replace(" 0", " ") if d else "Time not on record"
+        by_day.setdefault(label, []).append(c)
+    return {"upcoming": upcoming, "upcoming_by_day": [{"day": k, "cards": v} for k, v in by_day.items()],
+            "needs_outcome": needs, "recent": recent,
+            "counts": {"upcoming": len(upcoming), "needs_outcome": len(needs), "recent": len(recent)},
+            "as_of": now.isoformat()}
+
+
+def portal_rows(fetch, force=False, now_s=None):
+    """The WP ledger, cached PORTAL_CACHE_S seconds — a tab refresh every 30 s
+    must not hit WordPress every time. `fetch()` is the app's wp_list_clients."""
+    now_s = now_s if now_s is not None else time.time()
+    c = _PORTAL_CACHE
+    if not force and c["rows"] is not None and now_s - c["at"] < PORTAL_CACHE_S:
+        return c["rows"], True, c["error"]
+    rows, err = None, ""
+    try:
+        rows = fetch() if callable(fetch) else None
+    except Exception as e:
+        err = repr(e)
+    if rows is None:
+        if c["rows"] is not None:
+            return c["rows"], True, err or "portal unreachable; showing the last read"
+        return None, False, err or "portal unreachable"
+    c.update(at=now_s, rows=rows, error="")
+    return rows, False, ""
+
+
+def _mask_match(masked, email):
+    """'cam…@gmail.com' matches 'camila@gmail.com'."""
+    m, e = _lower(masked), _lower(email)
+    if not m or not e or "@" not in m or "@" not in e:
+        return False
+    if "…" not in m:
+        return m == e
+    head, dom = m.split("@", 1)
+    head = head.replace("…", "")
+    eh, ed = e.split("@", 1)
+    return ed == dom and eh.startswith(head)
+
+
+def _client_money(rec):
+    """Monthly value of a client record: the deal's own number when the
+    purchase wrote one (studio_package.mrr — a $350/week plan is $1,517, not
+    $1,200), else None (the caller falls back to the package name)."""
+    sp = rec.get("studio_package") if isinstance(rec, dict) and isinstance(rec.get("studio_package"), dict) else None
+    if sp and sp.get("recurring") is False:
+        return 0, int(sp.get("one_off") or 0)
+    if sp and sp.get("mrr") not in (None, ""):
+        try:
+            return int(sp["mrr"]), 0
+        except Exception:
+            pass
+    return None, None
+
+
+def clients(rows, lead_data, now=None, package_lookup=None, default_mrr=1200):
+    """The ledger merged with the lead records. `rows` come from the portal
+    (name, masked email, package_name, contract_hours, hours_used, dates,
+    active). A row's end date is the truth: the portal never flips `active`.
+    `package_lookup(name)` → spec with recurring/mrr/one_off, or None."""
+    now = now or datetime.now()
+    today = now.date() if isinstance(now, datetime) else now
+    leads = [(k, r) for k, r in list((lead_data or {}).items()) if isinstance(r, dict) and not is_test(r)]
+    out = []
+    mrr_active = 0
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        name = " ".join(str(row.get("name") or "").split())
+        if _lower(name).startswith("qa test"):
+            continue
+        key, rec = "", None
+        for k, r in leads:
+            if _lower(r.get("name")) == _lower(name) or _mask_match(row.get("email"), r.get("email")):
+                key, rec = str(k), r
+                break
+        try:
+            hours = float(row.get("contract_hours") or 0)
+        except Exception:
+            hours = 0.0
+        try:
+            used = float(row.get("hours_used") or 0)
+        except Exception:
+            used = 0.0
+        end = parse_dt(row.get("contract_end_date"))
+        start = parse_dt(row.get("contract_start_date"))
+        days_left = (end.date() - today).days if end else None
+        if days_left is None:
+            status = "unknown"
+        elif days_left < 0:
+            status = "ended"
+        elif days_left <= EXPIRING_DAYS:
+            status = "expiring"
+        else:
+            status = "active"
+        mrr, one_off = _client_money(rec) if rec else (None, None)
+        if mrr is None:
+            spec = package_lookup(row.get("package_name")) if callable(package_lookup) else None
+            if spec:
+                mrr = int(spec.get("mrr") or 0) if spec.get("recurring") else 0
+                one_off = 0 if spec.get("recurring") else int(spec.get("one_off") or 0)
+            else:
+                mrr, one_off = default_mrr, 0
+        if status in ("active", "expiring"):
+            mrr_active += int(mrr or 0)
+        out.append({"name": name, "email": str(row.get("email") or ""), "package": str(row.get("package_name") or ""),
+                    "hours": hours, "used": used, "left": max(0.0, hours - used),
+                    "pct": (min(100, round(used / hours * 100)) if hours else 0),
+                    "start": start.date().isoformat() if start else "", "end": end.date().isoformat() if end else "",
+                    "days_left": days_left, "status": status, "mrr": int(mrr or 0), "one_off": int(one_off or 0),
+                    "key": key, "lead_stage": (stage_of(rec) if rec else "")})
+    order = {"expiring": 0, "active": 1, "unknown": 2, "ended": 3}
+    # live contracts: soonest end first; ended ones: the most recently ended first
+    out.sort(key=lambda c: (order.get(c["status"], 9),
+                            (-(c["days_left"]) if c["status"] == "ended" else c["days_left"]) if c["days_left"] is not None else 9999))
+    active = [c for c in out if c["status"] in ("active", "expiring")]
+    return {"rows": out,
+            "summary": {"active": len(active), "expiring": sum(1 for c in out if c["status"] == "expiring"),
+                        "ended": sum(1 for c in out if c["status"] == "ended"),
+                        "mrr": mrr_active, "hours_left": round(sum(c["left"] for c in active), 1),
+                        "hours_bought": round(sum(c["hours"] for c in active), 1)},
+            "as_of": now.isoformat() if isinstance(now, datetime) else str(now)}
+
+
+def _in_window(at, start_e, end_e):
+    e = epoch(at)
+    return bool(e and start_e <= e <= end_e)
+
+
+def stats(lead_data, conversation_history, ig_history, manual_keys=None, dnc_keys=None,
+          days=30, now=None, ledger_summary=None):
+    """The numbers for one window: the cohort that arrived in it (by source,
+    how the first touch went, who replied, who booked), the events that
+    happened in it (bookings, visits by outcome, wins), the chase, and the
+    board as it stands now."""
+    now = now or datetime.now()
+    try:
+        days = int(days) if days not in (None, "") else 30
+    except Exception:
+        days = 30
+    days = max(1, min(365, days))
+    end_e = now.timestamp() if now.tzinfo else time.mktime(now.timetuple())
+    start_e = end_e - days * 86400
+    views = _views(lead_data, conversation_history, ig_history, manual_keys, dnc_keys, now=now)
+    recs = lead_data or {}
+    by_source, cohort = {}, []
+    ft = {"email": 0, "sms": 0, "whatsapp": 0, "waiting": 0, "none": 0, "form_leads": 0}
+    contacted = replied = booked_c = visited_c = won_c = 0
+    booked_ev = 0
+    visits_by = {}
+    won_ev = 0
+    chase_sent = 0
+    chase_active = 0
+    chase_stops = {}
+    first_touch_minutes = []
+    stage_counts = {s: 0 for s in STAGES}
+    awaiting = 0
+    for v in views:
+        rec = recs.get(v["key"]) if isinstance(recs.get(v["key"]), dict) else {}
+        stage_counts[v["stage"]] = stage_counts.get(v["stage"], 0) + 1
+        if "awaiting_reply" in (v.get("flags") or []):
+            awaiting += 1
+        ch = rec.get("chase") if isinstance(rec.get("chase"), dict) else {}
+        if ch:
+            if ch.get("stopped"):
+                if _in_window(ch.get("stopped_at"), start_e, end_e):
+                    chase_stops[str(ch["stopped"])] = chase_stops.get(str(ch["stopped"]), 0) + 1
+            elif ch.get("armed_at"):
+                chase_active += 1
+            for at in (ch.get("sent") or {}).values():
+                if _in_window(at, start_e, end_e):
+                    chase_sent += 1
+        b = v.get("booking") or {}
+        if b and _in_window(b.get("at"), start_e, end_e):
+            booked_ev += 1
+        oc = v.get("outcome") or {}
+        if oc and _in_window(oc.get("at"), start_e, end_e):
+            visits_by[oc["last"]] = visits_by.get(oc["last"], 0) + 1
+        p = v.get("paid") or {}
+        if (p and _in_window(p.get("at"), start_e, end_e)) or (oc and oc.get("last") == "client_won" and _in_window(oc.get("at"), start_e, end_e)):
+            won_ev += 1
+        if not _in_window(v.get("first_seen"), start_e, end_e):
+            continue
+        cohort.append(v)
+        src = v.get("source") or "—"
+        by_source[src] = by_source.get(src, 0) + 1
+        turns = turns_for(v["key"], rec, conversation_history, ig_history)
+        out_ = has_outbound(rec, turns)
+        in_ = has_inbound(rec, turns) or (_lower(ch.get("stopped")) == "replied")
+        if out_:
+            contacted += 1
+        if in_:
+            replied += 1
+        if b:
+            booked_c += 1
+        if oc:
+            visited_c += 1
+        if v.get("stage") == "Client":
+            won_c += 1
+        if rec.get("meta_lead_ad") or _lower(rec.get("source")) == "meta lead ad":
+            ft["form_leads"] += 1
+            wa = rec.get("first_touch_wa") if isinstance(rec.get("first_touch_wa"), dict) else {}
+            if wa.get("wamid") and _lower(wa.get("status")) in ("delivered", "read", "sent"):
+                ft["whatsapp"] += 1
+            if rec.get("first_touch_sms_at"):
+                ft["sms"] += 1
+            if rec.get("first_touch_email_at"):
+                ft["email"] += 1
+            if isinstance(rec.get("first_touch_sms_pending"), dict) or isinstance(rec.get("first_touch_wa_pending"), dict) \
+                    or isinstance(rec.get("first_touch_email_pending"), dict):
+                ft["waiting"] += 1
+            if not (wa.get("wamid") or rec.get("first_touch_sms_at") or rec.get("first_touch_email_at")):
+                ft["none"] += 1
+            t0 = epoch(rec.get("lead_form_at"))
+            t1 = min([e for e in (epoch(rec.get("first_touch_email_at")), epoch(rec.get("first_touch_sms_at")),
+                                  epoch(wa.get("sent_at"))) if e] or [0])
+            if t0 and t1 and t1 >= t0:
+                first_touch_minutes.append((t1 - t0) / 60.0)
+    src_rows = sorted(by_source.items(), key=lambda kv: -kv[1])
+    n = len(cohort)
+    med = sorted(first_touch_minutes)[len(first_touch_minutes) // 2] if first_touch_minutes else None
+    return {
+        "days": days, "as_of": now.isoformat(),
+        "cohort": {"new": n, "contacted": contacted, "replied": replied, "booked": booked_c,
+                   "visited": visited_c, "won": won_c,
+                   "reply_rate": (round(replied / contacted * 100) if contacted else None),
+                   "book_rate": (round(booked_c / n * 100) if n else None)},
+        "by_source": [{"source": s, "n": c} for s, c in src_rows],
+        "first_touch": dict(ft, median_minutes=(round(med, 1) if med is not None else None)),
+        "events": {"booked": booked_ev, "visits": sum(visits_by.values()), "visits_by_outcome": visits_by, "won": won_ev},
+        "chase": {"active": chase_active, "sent": chase_sent, "stopped": chase_stops},
+        "now": {"stages": stage_counts, "awaiting_reply": awaiting, "leads": len(views)},
+        "clients": ledger_summary or None,
+    }
+
+
 def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None,
              send_email=None, report_error=None, notify=None, static_dir=None,
              manual_keys=None, dnc_keys=None, actions=None):
@@ -1325,7 +1678,20 @@ def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None
         if not fn:
             return jsonify({"ok": False, "error": "report not wired"}), 500
         try:
-            return fn()
+            resp = fn()
+            # PATCH #273 — the report reads Michael's own calendar too; the Desk shows a
+            # personal event only when it names a lead or sounds like studio business
+            r0, status = (resp[0], resp[1]) if isinstance(resp, tuple) else (resp, 200)
+            body = None
+            try:
+                body = r0.get_json(silent=True) if hasattr(r0, "get_json") else None
+            except Exception:
+                body = None
+            if status == 200 and isinstance(body, dict) and body.get("ok"):
+                kept, hidden = calendar_filter(body.get("meetings") or [], lead_data,
+                                               show_all=str(request.args.get("all") or "") in ("1", "true"))
+                return jsonify(dict(body, meetings=kept, hidden=hidden))
+            return resp
         except Exception as e:
             _err("report_meetings", e)
             return jsonify({"ok": False, "error": repr(e)}), 500
@@ -1344,5 +1710,64 @@ def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None
             _err("report_submit", e)
             return jsonify({"ok": False, "error": repr(e)}), 500
 
-    print("[DESK] mounted at /desk/ (slice 2: see + act)")
+    # ── slice 3 (PATCH #273): visits · clients · stats ──
+    def _lookup_pkg(name):
+        fn = acts.get("package_by_name")
+        try:
+            return fn(name) if callable(fn) else None
+        except Exception:
+            return None
+
+    def _ledger(force=False):
+        rows, cached, err = portal_rows(acts.get("portal_clients"), force=force)
+        if rows is None:
+            return None, err
+        return clients(rows, lead_data, package_lookup=_lookup_pkg), err
+
+    @app.route("/desk/api/visits", methods=["GET"])
+    def desk_api_visits():
+        bad = _need_auth()
+        if bad:
+            return bad
+        try:
+            return jsonify(dict(ok=True, **visits(lead_data, conversation_history, ig_history,
+                                                  manual_keys=_manual(), dnc_keys=_dnc())))
+        except Exception as e:
+            _err("visits", e)
+            return jsonify({"ok": False, "error": repr(e)}), 500
+
+    @app.route("/desk/api/clients", methods=["GET"])
+    def desk_api_clients():
+        bad = _need_auth()
+        if bad:
+            return bad
+        try:
+            led, err = _ledger(force=str(request.args.get("refresh") or "") in ("1", "true"))
+            if led is None:
+                return jsonify({"ok": False, "error": err or "portal ledger unreachable"}), 502
+            led["note"] = err
+            return jsonify(dict(ok=True, **led))
+        except Exception as e:
+            _err("clients", e)
+            return jsonify({"ok": False, "error": repr(e)}), 500
+
+    @app.route("/desk/api/stats", methods=["GET"])
+    def desk_api_stats():
+        bad = _need_auth()
+        if bad:
+            return bad
+        try:
+            days = int(request.args.get("days") or 30)
+        except Exception:
+            days = 30
+        try:
+            led, _ = _ledger()
+            return jsonify(dict(ok=True, **stats(lead_data, conversation_history, ig_history,
+                                                 manual_keys=_manual(), dnc_keys=_dnc(), days=days,
+                                                 ledger_summary=(led or {}).get("summary") if led else None)))
+        except Exception as e:
+            _err("stats", e)
+            return jsonify({"ok": False, "error": repr(e)}), 500
+
+    print("[DESK] mounted at /desk/ (slice 3: see + act + measure)")
     return True
