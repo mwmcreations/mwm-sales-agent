@@ -6548,9 +6548,9 @@ def handle_command_tool_call(tool_name, tool_input):
             template_num = tool_input.get("template_number", 1)
             if not phone or not lead_name:
                 return {"error": "Missing required fields: phone, lead_name"}
-            from maya_actions import REENGAGEMENT_TEMPLATES, send_reengagement_template as _send_re_template
+            from maya_actions import REENGAGEMENT_TEMPLATES, REENGAGEMENT_TEMPLATES_V3, send_reengagement_template as _send_re_template
             template_key = f"T{template_num}"
-            template_name = REENGAGEMENT_TEMPLATES.get(template_key)
+            template_name = (REENGAGEMENT_TEMPLATES_V3 if _wa_reengage_v3() else REENGAGEMENT_TEMPLATES).get(template_key)   # PATCH #275
             if not template_name:
                 return {"error": f"Invalid template number {template_num}. Valid: 1, 2, 3, 4, 5, 6, 7"}
             try:
@@ -10423,7 +10423,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
             except Exception as _sx:
                 _report_error("_handle_incoming:L5925", _sx)  # S6.5 silent-except sweep
 
-            if _msg_lower == "not right now":
+            if _msg_lower in ("not right now", "not now"):   # PATCH #275: v3 button "Not now"
                 # Terminal opt-out — acknowledge and return without entering Maya conversation
                 try:
                     mark_reengagement_opted_out(sender)
@@ -10436,7 +10436,7 @@ def _handle_incoming(sender: str, incoming_msg: str, num_media: int,
                 # Inject context so Maya knows this came from a re-engagement button
                 incoming_msg = "I'd like to schedule a call with MWM Creations please."
 
-            elif _msg_lower == "visit the studio":
+            elif _msg_lower in ("visit the studio", "pick a day"):   # PATCH #275: v3 button "Pick a day"
                 # Inject context so Maya handles studio visit scheduling
                 incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
 
@@ -11312,12 +11312,12 @@ def _handle_incoming_instagram(sender_id: str, incoming_msg: str):
 
     # ── Re-engagement QUICK_REPLY handling ──
     _msg_lower = (incoming_msg or "").strip().lower()
-    if _msg_lower == "not right now":
+    if _msg_lower in ("not right now", "not now"):   # PATCH #275
         send_instagram_dm(sender_id, body="No problem at all! We're here whenever you're ready. Feel free to message us anytime.")
         return
     if _msg_lower == "schedule a call":
         incoming_msg = "I'd like to schedule a call with MWM Creations please."
-    elif _msg_lower == "visit the studio":
+    elif _msg_lower in ("visit the studio", "pick a day"):   # PATCH #275
         incoming_msg = "I'd like to visit the MWM Creations studio. What times are available?"
 
     # ── Human escalation detection ──
@@ -14476,7 +14476,8 @@ def _notify_cold_lead_pipeline(phone, name, business):
 # Instagram messaging window: 24h standard, up to 7 days with HUMAN_AGENT tag.
 # T5-T7 (days 10-14) will likely be outside the window — handled gracefully.
 IG_REENGAGEMENT_MESSAGES = {
-    "T1": "Hey {name}! Just checking in — you seemed interested in our studio. Still thinking about a project? We'd love to help! \U0001f3ac",
+    # PATCH #275 — the one DM that can go out (20 h, inside Meta's window): Maya, concrete
+    "T1": "Hi {name}, Maya from Michael Moraes' team at MWM Studios. Still happy to set up your free 30-minute Studio Strategy Visit: you walk the studio, Michael maps the one or two videos your customers need to see first, and you leave with a plan on one page. Which day this week works for you?",
     "T2": "Hi {name}! Wanted to share — we've been creating some amazing content lately, from brand videos to podcasts. Check out our work on our page! Would love to chat about what you have in mind \U0001f3a5",
     "T3": "Hey {name}, circling back! We've got some exciting availability at the studio. If you're still exploring options for video content, I'd love to hear what you're working on \U0001f60a",
     "T4": "Hi {name}! Quick thought — our recent clients have been seeing great results with professional video content. Would love to help you create something amazing too. Want to chat about it? \u2728",
@@ -14499,14 +14500,17 @@ IG_DM_WINDOW_HOURS = 24
 # one segment, sender identified, and an opt-out in every message rather than
 # only the first. We are four weeks out of a rejection for consent handling;
 # this is not the place to be clever.
+# PATCH #275 — the form chain's voice (Michael OK'd 9 Nov 06:47): the 30-minute Studio
+# Strategy Visit, a plan on one page, the three videos, the 15-minute video call.
+# Each fits one GSM segment with an 8-letter name; brand in front, STOP at the back.
 SMS_REENGAGEMENT_MESSAGES = {
-    "T1": "MWM Creations: Hi {name}, still thinking about your video project? Happy to help whenever you are ready. Reply STOP to opt out.",
-    "T2": "MWM Creations: Hi {name}, we have been shooting brand videos and podcasts this month. Want to talk through your idea? Reply STOP to opt out.",
-    "T3": "MWM Creations: Hi {name}, we have studio time opening up. If you are still exploring video, tell us what you are working on. Reply STOP to opt out.",
-    "T4": "MWM Creations: Hi {name}, clients are seeing real results from professional video. Happy to help you build something. Reply STOP to opt out.",
-    "T5": "MWM Creations: Hi {name}, consultations are free right now. No pressure, just a look at what video could do for your brand. Reply STOP to opt out.",
-    "T6": "MWM Creations: Hi {name}, short-form video is the fastest way to build awareness right now. Glad to brainstorm with you. Reply STOP to opt out.",
-    "T7": "MWM Creations: Hi {name}, last note from us. We would love to work together whenever the timing is right. Reply STOP to opt out.",
+    "T1": "MWM Creations: Hi {name}, Maya here. Still happy to book your free 30-minute Studio Strategy Visit with Michael. Which day works? Reply STOP to opt out.",
+    "T2": "MWM Creations: Hi {name}, one studio hour makes up to 8 short videos. Want to see how, in 30 minutes at the studio? Reply with a day. Reply STOP to opt out.",
+    "T3": "MWM Creations: Hi {name}, Michael has time this week for your Studio Strategy Visit. You leave with a plan on one page. Which day? Reply STOP to opt out.",
+    "T4": "MWM Creations: Hi {name}, the three videos every business needs: problem, process, proof. We map yours at the visit. Shall we? Reply STOP to opt out.",
+    "T5": "MWM Creations: Hi {name}, if coming in is a stretch, Michael also does a 15-minute video call. Reply VIDEO, or a day for the studio. Reply STOP to opt out.",
+    "T6": "MWM Creations: Hi {name}, our clients record a month of videos in one session and send them before the sale. Want that? Name a day. Reply STOP to opt out.",
+    "T7": "MWM Creations: Hi {name}, last note from Maya. The visit stays free and 30 minutes whenever the timing is right. Reply when ready. Reply STOP to opt out.",
 }
 
 
@@ -14798,7 +14802,9 @@ def _reengagement_checker():
                                           f"lead=...{re.sub(r'[^0-9]', '', phone)[-4:] or '????'} name={str(name)[:20]}")
                             print(f"[Re-engagement] QUARANTINED {phone} ({name}) — invalid phone, removed from queue eligibility")
                             continue
-                        _tmpl = REENGAGEMENT_TEMPLATES[next_stage]
+                        # PATCH #275 — the new copy once Meta approved it (switch wa_reengage_v3)
+                        _tmpl = (_maya_actions_mod.REENGAGEMENT_TEMPLATES_V3 if _wa_reengage_v3()
+                                 else REENGAGEMENT_TEMPLATES)[next_stage]
                         # S6.1: media template with no configured URL — skip AND
                         # advance (send_reengagement_template returns False for
                         # these, which used to stall the whole chain here forever;
@@ -21182,7 +21188,8 @@ def health_check():
                       # PATCH #148 — the studio-hour track's switch, visible here
                       "studio_hour_track_live": _studio_hour_track_live()},
         "lead_chase": dict(_LEAD_CHASE_LAST),
-        "ig_chase": {"live": _ig_chase_live(), "t1_hours": IG_T1_HOURS},   # PATCH #274 (dark until Michael OKs the copy)
+        "ig_chase": {"live": _ig_chase_live(), "t1_hours": IG_T1_HOURS},   # PATCH #274/#275
+        "switches": {n: _switch_on(n) for n in SWITCHES},   # PATCH #275
         "capi": _capi.status(),                    # PATCH #145
         "desk": (globals().get("_desk").status(lead_data, conversation_history, ig_conversation_history)
                  if globals().get("_desk") else {"off": True}),   # PATCH #270
@@ -22062,8 +22069,51 @@ def _first_touch_sms_body(name, business, ai, slots):
 IG_T1_HOURS = int(os.getenv("IG_T1_HOURS", "20"))
 
 
+# PATCH #275 — a switch is on when its Railway variable says so OR when the stored
+# flag does (pg `switch:<name>`, set through POST /admin/switch from the Mac
+# mailbox). Michael's OK flips it without a deploy and without the Railway console.
+SWITCHES = {
+    "ig_chase_live": "IG_CHASE_LIVE",       # #274 — Instagram leads get a second word
+    "wa_reengage_v3": "WA_REENGAGE_V3",     # #275 — the seven new WhatsApp templates
+}
+
+
+def _switch_on(name):
+    env = SWITCHES.get(name, "")
+    if env and str(os.getenv(env, "")).strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return bool(_pgs.load_state(f"switch:{name}", False))
+    except Exception:
+        return False
+
+
 def _ig_chase_live():
-    return str(os.getenv("IG_CHASE_LIVE", "")).strip().lower() in ("1", "true", "yes", "on")
+    return _switch_on("ig_chase_live")
+
+
+def _wa_reengage_v3():
+    return _switch_on("wa_reengage_v3")
+
+
+@app.route("/admin/switch", methods=["GET", "POST"])
+def admin_switch():
+    """PATCH #275 — read or set the stored switches. POST {name, on}."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"error": "forbidden"}), 403
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        name = str(data.get("name") or request.values.get("name") or "").strip()
+        on_raw = data.get("on", request.values.get("on", ""))
+        if name not in SWITCHES:
+            return jsonify({"ok": False, "error": f"unknown switch; known: {sorted(SWITCHES)}"}), 400
+        on = str(on_raw).strip().lower() in ("1", "true", "yes", "on")
+        if not _pgs.save_state(f"switch:{name}", on):
+            return jsonify({"ok": False, "error": "state store unavailable"}), 503
+        _post_to_slack_async(SLACK_DEV_CHANNEL, f":toggle_on: switch *{name}* set to *{'ON' if on else 'off'}* (admin)")
+    return jsonify({"ok": True, "switches": {n: {"on": _switch_on(n), "env": SWITCHES[n],
+                                                 "stored": bool(_pgs.load_state(f"switch:{n}", False))}
+                                             for n in SWITCHES}})
 
 
 def _ig_arm_email_chase(key, name, now):

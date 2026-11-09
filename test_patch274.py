@@ -64,10 +64,10 @@ check("copy.3.industry_rule_holds", sv.ig_chase_email(3, "Karl", "K.T.M. TOYS & 
 # ── 3. app.py: the switch, the arm helper (lifted), the pins ────────────────
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 tree = ast.parse(SRC)
-want = {"_ig_chase_live", "_ig_arm_email_chase", "_chase_mask"}
+want = {"_ig_chase_live", "_ig_arm_email_chase", "_chase_mask", "_switch_on"}   # #275: the switch helper
 fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
-consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "IG_T1_HOURS" for t in n.targets)]
-check("lift.found", len(fns) == 3 and len(consts) == 1, (len(fns), len(consts)))
+consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in ("IG_T1_HOURS", "SWITCHES") for t in n.targets)]
+check("lift.found", len(fns) == 4 and len(consts) == 2, (len(fns), len(consts)))
 slack, tally = [], []
 
 
@@ -77,6 +77,7 @@ class Tally:
 
 LD = {}
 G = dict(os=os, lead_data=LD, _chase=lc, _TALLY=Tally(), SLACK_DEV_CHANNEL="#dev",
+         _pgs=type("PG", (), {"load_state": lambda self, k, d=None: d, "save_state": lambda self, k, v: True})(),   # #275
          _post_to_slack_async=lambda ch, msg: slack.append((ch, msg)),
          emails_in_field=lambda v: [x.strip().lower() for x in str(v or "").replace("/", ",").split(",") if "@" in x],
          email_is_suppressed=lambda e: ("nope" in e, ""),
@@ -129,8 +130,7 @@ check("app.health", '"ig_chase": {"live": _ig_chase_live(), "t1_hours": IG_T1_HO
 check("app.dark_everywhere", SRC.count("_ig_chase_live()") >= 4)
 check("app.studio_hour_switch_intact", "def _studio_hour_track_live():" in SRC)
 # old T1-T7 copy untouched this patch (the rewrite waits for Michael's OK)
-check("app.copy_untouched", 'IG_REENGAGEMENT_MESSAGES = {' in SRC and 'SMS_REENGAGEMENT_MESSAGES = {' in SRC
-      and '"T1": "Hey {name}! Just checking in' in SRC)
+check("app.copy_tables", 'IG_REENGAGEMENT_MESSAGES = {' in SRC and 'SMS_REENGAGEMENT_MESSAGES = {' in SRC)   # #275 rewrote the copy
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 r_ = subprocess.run([sys.executable, os.path.join(HERE, "test_patch273.py")], capture_output=True, text=True)

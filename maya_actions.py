@@ -679,6 +679,20 @@ REENGAGEMENT_TEMPLATES = {
     "T7": "maya_reengagement_3",        # Day 14 — CLOSE: Final friendly close (text)
 }
 
+# PATCH #275 — the same seven days in the form chain's voice (Michael OK'd the
+# copy 9 Nov 06:47). Submitted to Meta 9 Nov; app.py picks this table once the
+# wa_reengage_v3 switch is on (after approval). Same headers as before: T2/T4
+# video, T5/T6 image, the sample media reused from the approved templates.
+REENGAGEMENT_TEMPLATES_V3 = {
+    "T1": "maya_reengage_v3_t1",   # Day 1  — the visit, in one breath (text)
+    "T2": "maya_reengage_v3_t2",   # Day 3  — what one studio hour makes (video)
+    "T3": "maya_reengage_v3_t3",   # Day 5  — Michael has time this week (text)
+    "T4": "maya_reengage_v3_t4",   # Day 7  — hear it from a client (video)
+    "T5": "maya_reengage_v3_t5",   # Day 10 — the 15-minute video call (image)
+    "T6": "maya_reengage_v3_t6",   # Day 12 — a tip from the studio (image)
+    "T7": "maya_reengage_v3_t7",   # Day 14 — last note from Maya (text)
+}
+
 # Header type for each template — "text" means the template has a text header
 # with a variable (e.g., "Hi {{1}}"), "video"/"image" mean media header,
 # None means the template has no header component.
@@ -694,6 +708,14 @@ REENGAGEMENT_TEMPLATE_HEADERS = {
     "maya_reengagement_5": "image",         # T5: image header
     "maya_reengagement_6": "image",         # T6: image header
     "maya_reengagement_3": None,            # T7: body-only (no header in approved template)
+    # PATCH #275 — the v3 set, same shapes
+    "maya_reengage_v3_t1": None,
+    "maya_reengage_v3_t2": "video",
+    "maya_reengage_v3_t3": None,
+    "maya_reengage_v3_t4": "video",
+    "maya_reengage_v3_t5": "image",
+    "maya_reengage_v3_t6": "image",
+    "maya_reengage_v3_t7": None,
 }
 
 # Media URLs for templates with video/image headers.
@@ -704,6 +726,11 @@ REENGAGEMENT_MEDIA_URLS = {
     "maya_reengagement_4": os.getenv("REENGAGEMENT_T4_VIDEO_URL", ""),
     "maya_reengagement_5": os.getenv("REENGAGEMENT_T5_IMAGE_URL", ""),
     "maya_reengagement_6": os.getenv("REENGAGEMENT_T6_IMAGE_URL", ""),
+    # PATCH #275 — the v3 media templates use the same files
+    "maya_reengage_v3_t2": os.getenv("REENGAGEMENT_T2_VIDEO_URL", ""),
+    "maya_reengage_v3_t4": os.getenv("REENGAGEMENT_T4_VIDEO_URL", ""),
+    "maya_reengage_v3_t5": os.getenv("REENGAGEMENT_T5_IMAGE_URL", ""),
+    "maya_reengage_v3_t6": os.getenv("REENGAGEMENT_T6_IMAGE_URL", ""),
 }
 
 # Cadence: hours since last INBOUND message from the lead
