@@ -1051,6 +1051,44 @@ _SEQ = [
     (timedelta(days=6), "nudge"),
 ]
 
+# PATCH #280 — the three emails above describe ONE product: the 3-month Studio
+# Package ($1,200/mo). Ayodele Pompey (12 Nov) was pitched AI Pro and the
+# recap would have quoted him the wrong plan at midnight. The sequence now
+# records what the report said was pitched, sends only for the package it
+# was written for, keeps office hours, and can be held for a lead who asked
+# for time. Copy for the AI plans is a separate, Michael-approved change.
+PITCH_SEQ_KINDS_WITH_COPY = ("studio_3mo",)
+PITCH_SEQ_SEND_HOURS = (9, 18)      # ET, Mon-Fri
+
+
+def pitch_package_kind(service) -> str:
+    """'Studio Package' / '$1,200' -> studio_3mo · 'AI Pro' -> ai_pro · '' -> ''
+    (unknown/legacy) · anything else -> other. Never guesses a plan from silence."""
+    s = str(service or "").strip().lower()
+    if not s:
+        return ""
+    if "ai pro" in s:
+        return "ai_pro"
+    if "ai growth" in s:
+        return "ai_growth"
+    if "ai starter" in s:
+        return "ai_starter"
+    if "trial" in s:
+        return "studio_trial_1mo"
+    if "studio package" in s or "3-month" in s or "3 month" in s or "1,200" in s or "1200" in s:
+        return "studio_3mo"
+    return "other"
+
+
+def _now_et():
+    return datetime.now(pytz.timezone(TIMEZONE))
+
+
+def pitch_seq_in_hours(now_et=None) -> bool:
+    """Mon-Fri, 9:00-17:59 ET. A pitch recap at 00:06 reads as a robot."""
+    t = now_et or _now_et()
+    return t.weekday() < 5 and PITCH_SEQ_SEND_HOURS[0] <= t.hour < PITCH_SEQ_SEND_HOURS[1]
+
 
 def _seq_email(stage: str, first_name: str) -> tuple:
     if stage == "recap":
@@ -1090,13 +1128,16 @@ the moment you're in.</p>
 <p>— Michael, MWM Creations</p></div>""")
 
 
-def start_pitch_sequence(lead_key: str, rec: dict):
-    """Called when outcome=studio_package_pitched is recorded."""
+def start_pitch_sequence(lead_key: str, rec: dict, service=None):
+    """Called when outcome=studio_package_pitched is recorded.
+    PATCH #280: `service` is what the report says was pitched."""
     try:
         rec["studio_pitch"] = {
             "date": datetime.utcnow().isoformat(),
             "next_stage": 0,
             "done": False,
+            "package": str(service or "").strip()[:120],
+            "kind": pitch_package_kind(service),
         }
         _deps["pipeline_event"]("PACKAGE_PITCHED",
                                 lead_name=rec.get("name", ""),
@@ -1142,6 +1183,30 @@ def _sequence_pass():
             stage_i = int(sp.get("next_stage", 0))
             if stage_i >= len(_SEQ):
                 sp["done"] = True
+                continue
+            # PATCH #280 — only the package the copy was written for. A record
+            # armed before this patch has no `kind` -> unknown -> halted too.
+            _kind = sp.get("kind")
+            if _kind is None:
+                _kind = pitch_package_kind(sp.get("package"))
+            if _kind not in PITCH_SEQ_KINDS_WITH_COPY:
+                sp["done"] = True
+                sp["halted"] = {"at": now.isoformat(), "why": "no copy for this package",
+                                "package": sp.get("package") or "", "kind": _kind or "unknown"}
+                _deps["post_slack"](_deps["matt_channel"],
+                    f"\U0001F4E6 \u23F8 Studio pitch follow-up for *{rec.get('name', key)}* HALTED before "
+                    f"the first email — the written sequence describes the 3-month Studio Package "
+                    f"($1,200/mo) and the report says: {sp.get('package') or 'no package recorded'}. "
+                    f"Nothing was sent. Michael: follow up personally, or ask DEV for copy for this plan.")
+                continue
+            _hold = sp.get("hold_until")
+            if _hold:
+                try:
+                    if now < datetime.fromisoformat(str(_hold)):
+                        continue
+                except ValueError:
+                    pass
+            if not pitch_seq_in_hours():
                 continue
             email = (rec.get("email") or "").strip()
             if not email:

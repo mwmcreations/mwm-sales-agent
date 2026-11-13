@@ -28350,7 +28350,7 @@ def meeting_report_submit():
         if _p39_key and _p39_rec:
             _sp_found = _p39_key
             if not test_mode:
-                _studio.start_pitch_sequence(_p39_key, _p39_rec)
+                _studio.start_pitch_sequence(_p39_key, _p39_rec, service=service)   # PATCH #280
                 post_to_slack(SLACK_MATT_CHANNEL,
                     f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
                     f"(lead record: {_p39_key} · {_p39_email or 'no email'}) — "
@@ -28878,6 +28878,65 @@ def _send_post_visit_template(phone, name, outcome, notes=""):
 # clear do_not_contact is a compliance hole with a URL attached.
 LEAD_UPDATE_ALLOWED = ("name", "business", "email", "phone", "title",
                        "address", "website", "linkedin", "instagram", "note")
+
+
+# ── PATCH #280 — the post-pitch sequence can be held, stopped or resumed ──
+@app.route("/admin/pitch-seq", methods=["GET", "POST"])
+def admin_pitch_seq():
+    """GET/POST /admin/pitch-seq?secret=…&q=<name|email|key>&action=status|stop|hold|resume[&until=YYYY-MM-DD]
+    hold: no sequence email until 9 AM ET on `until`. resume: clears the hold
+    (and un-does a halt only if the package has copy). stop: done for good."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    _q = str(request.values.get("q") or "").strip().lower()
+    _action = str(request.values.get("action") or "status").strip().lower()
+    if not _q:
+        return jsonify({"ok": False, "error": "q is required"}), 400
+    if _action not in ("status", "stop", "hold", "resume"):
+        return jsonify({"ok": False, "error": "action must be status|stop|hold|resume"}), 400
+    _hits = []
+    for _k, _r in list(lead_data.items()):
+        if not isinstance(_r, dict) or not isinstance(_r.get("studio_pitch"), dict):
+            continue
+        _hay = " ".join([str(_k), str(_r.get("name") or ""), str(_r.get("email") or ""),
+                         str(_r.get("phone") or "")]).lower()
+        if _q in _hay:
+            _hits.append((_k, _r))
+    if not _hits:
+        return jsonify({"ok": True, "matched": 0, "note": "no lead with a pitch sequence matched"}), 200
+    if len(_hits) > 3:
+        return jsonify({"ok": False, "error": f"{len(_hits)} leads matched — narrow the query"}), 400
+    _out = []
+    _now_utc = datetime.utcnow()
+    for _k, _r in _hits:
+        _sp = dict(_r.get("studio_pitch") or {})
+        if _action == "stop":
+            _sp["done"] = True
+            _sp["stopped"] = {"at": _now_utc.isoformat(), "by": "admin/pitch-seq"}
+        elif _action == "hold":
+            _until = str(request.values.get("until") or "").strip()
+            try:
+                _d = datetime.strptime(_until, "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"ok": False, "error": "hold needs until=YYYY-MM-DD"}), 400
+            _et = pytz.timezone(TIMEZONE).localize(_d.replace(hour=9, minute=0))
+            _sp["hold_until"] = _et.astimezone(pytz.UTC).replace(tzinfo=None).isoformat()
+            _sp["done"] = False
+            _sp.pop("halted", None)
+        elif _action == "resume":
+            _sp.pop("hold_until", None)
+            _sp.pop("halted", None)
+            _sp["done"] = False
+        if _action != "status":
+            _nr = dict(_r)
+            _nr["studio_pitch"] = _sp
+            lead_data[_k] = _nr
+            _post_to_slack_async(SLACK_DEV_CHANNEL,
+                f":package: pitch sequence *{_action}* for {_r.get('name') or _k}"
+                + (f" until {request.values.get('until')}" if _action == "hold" else "")
+                + " · via /admin/pitch-seq (Patch #280)")
+        _out.append({"key": _k, "name": _r.get("name"), "studio_pitch": _sp})
+    return jsonify({"ok": True, "action": _action, "matched": len(_out), "leads": _out}), 200
 
 
 @app.route('/admin/lead-update', methods=['POST'])

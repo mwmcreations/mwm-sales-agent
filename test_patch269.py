@@ -182,12 +182,12 @@ finally:
 # ── app wiring (static) ────────────────────────────────────────────────────
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()
 check("app.route", "@app.route('/admin/studio-provision-custom', methods=['GET', 'POST'])" in SRC)
-blk = SRC[SRC.index("def admin_studio_provision_custom():"):SRC.index("def admin_studio_provision_custom():") + 2000]
+blk = SRC[SRC.index("def admin_studio_provision_custom():"):SRC.index("def admin_studio_provision_custom():") + 3600]   # #280: the call grew in #277
 check("app.secret", '_admin_secret_ok(request.values.get("secret", ""))' in blk and '"unauthorized"' in blk)
 check("app.dry_default", 'apply = str(v.get("apply") or "") in ("1", "true", "yes")' in blk)
 check("app.fields", "_studio.provision_custom(" in blk and 'hours=v.get("hours") or 0' in blk and 'end=v.get("end") or ""' in blk
       and 'interval=v.get("interval") or "none"' in blk and 'cycle_amount=v.get("amount") or 0' in blk
-      and 'extra_notes=[s for s in str(v.get("extra") or "").split("|") if s.strip()]' in blk and "apply=apply)" in blk)
+      and 'extra_notes=[s for s in str(v.get("extra") or "").split("|") if s.strip()]' in blk and ("apply=apply)" in blk or "apply=apply," in blk))   # #280: more keyword args follow since #277
 check("app.status_codes", "return jsonify(res), (200 if res.get(\"ok\") else 400)" in blk)
 SPSRC = open(os.path.join(HERE, "studio_package.py"), encoding="utf-8").read()
 check("sp.purchased_passes_start", "prov = provision_portal_client(name, email, spec, start=start)" in SPSRC
