@@ -743,7 +743,8 @@ for _oc in ("client_won", "follow_up", "studio_package_pitched",
             "completed", "no_show"):
     _p = outcome_plan(_oc, CH_WHATSAPP, True)
     check_true(f"{_oc} is automated",
-               bool(_p["steps"]) or _p["internal_only"] or _p["editing"])
+               bool(_p["steps"]) or _p["internal_only"] or _p["editing"]
+               or bool(_p.get("owned_by")))   # #281: pitched+email is automated by the Studio Package rail
 
 print("\n== #39: EVERY sequence has an ending (the Ezechiel rule) ==")
 for _oc in ("follow_up", "studio_package_pitched", "completed", "no_show"):
@@ -787,9 +788,11 @@ print("\n== #39: 83% of leads have no email — pitch must not evaporate ==")
 _pn = outcome_plan("studio_package_pitched", CH_WHATSAPP, False)
 check("pitched w/o email -> ask for one FIRST, on their own channel",
       (_pn["steps"][0][1], _pn["steps"][0][2]), (CH_WHATSAPP, STEP_EMAIL_ASK))
-check("pitched WITH email -> the existing 3-email rail, unchanged",
+check("pitched WITH email -> NOTHING on this rail (#281: the Studio Package rail owns it)",
       [(h, k) for h, _c, k in outcome_plan("studio_package_pitched", CH_WEB, True)["steps"]],
-      [(1, STEP_RECAP), (48, STEP_VALUE), (144, STEP_NUDGE)])
+      [])
+check("pitched WITH email -> the plan says who owns it (#281)",
+      outcome_plan("studio_package_pitched", CH_WEB, True).get("owned_by"), "studio_package")
 
 print("\n== #39: reply on the channel they ARRIVED on ==")
 check("WhatsApp lead is answered on WhatsApp",

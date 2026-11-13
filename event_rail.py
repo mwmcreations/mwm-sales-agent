@@ -2420,11 +2420,20 @@ def outcome_plan(outcome, channel=CH_UNKNOWN, has_email=False,
         plan["close_after_days"] = 10
         plan["owner"] = "SUSAN"
         if has_email:
-            plan["steps"] = [(1, CH_WEB, STEP_RECAP),
-                             (24 * 2, CH_WEB, STEP_VALUE),
-                             (24 * 6, CH_WEB, STEP_NUDGE)]
-            plan["why"] = ("existing T+1h / T+2d / T+6d email rail, now with a "
-                           "close condition at day 10.")
+            # PATCH #281 — nothing is armed HERE. studio_package.py arms its own
+            # recap / value / nudge for this outcome (the written package
+            # sequence, gated by #280), and until 13 Nov 2026 this branch armed a
+            # second, generic one on top of it: Ayodele Pompey got "a quick recap
+            # of what we discussed" ("we film at our Orlando studio…") at 08:07
+            # the morning after his pitch, from a rail nobody meant to send.
+            # #44B's own header says this outcome "has its own sender"; the plan
+            # has to say it too. One lead, one sequence.
+            plan["steps"] = []
+            plan["owned_by"] = "studio_package"
+            plan["why"] = ("pitched with an email on file — the Studio Package "
+                           "rail (studio_package.py) owns the follow-up; nothing "
+                           "is armed on the outcome rail, so the lead gets one "
+                           "sequence, not two.")
         else:
             # 83% of leads have no email. Pitching one of them and then
             # arming an email sequence is how a pitch evaporates in silence.

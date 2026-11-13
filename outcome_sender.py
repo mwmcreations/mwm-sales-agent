@@ -55,6 +55,11 @@ from event_rail import (CH_INSTAGRAM, CH_UNKNOWN, CH_WEB, CH_WHATSAPP,
 HEARTBEAT_NAME = "outcome_sender"
 CYCLE_SECONDS = 20 * 60          # 20 min: finest step granularity is 0h (no-show)
 MAX_SENDS_PER_PASS = 12          # blast radius cap; a runaway loop stays small
+# PATCH #281 — Michael, 12 Nov 2026 23:22: "send from 7 a.m. to 6 p.m. and then
+# anything outside that should wait for the next day." This rail only; the lead
+# chase keeps event_rail's default window.
+OUTCOME_SEND_HOURS = (7, 18)     # ET, every day
+PITCHED_EMAIL_RAIL = {STEP_RECAP, STEP_VALUE, STEP_NUDGE}
 
 BOOK_URL = "https://mwmcreations.com/book-studio/"
 # Google review page for MWM Creations. Verified 18 Sep 2026: resolves to the
@@ -405,6 +410,17 @@ def _escalate(key, rec, seq, kind, why):
 # THE PASS
 # ══════════════════════════════════════════════════════════════════════════
 
+def _pitched_double_rail(seq):
+    """PATCH #281 — True when this `outcome_seq` is the generic recap / value /
+    nudge rail armed for a PITCHED lead, i.e. the duplicate of the sequence
+    studio_package.py already runs for the same person. The email-ask variant
+    (pitched, no address on file) is not a duplicate and is left alone."""
+    if str(seq.get("outcome") or "") != "studio_package_pitched":
+        return False
+    kinds = [str(st[2]) for st in (seq.get("steps") or []) if isinstance(st, (list, tuple)) and len(st) >= 3]
+    return bool(kinds) and all(k in PITCHED_EMAIL_RAIL for k in kinds)
+
+
 def _pass(now=None):
     """One scan over lead_data. Returns a summary dict for logging/tests."""
     lead_data = _deps.get("lead_data") or {}
@@ -418,7 +434,7 @@ def _pass(now=None):
 
     # QUIET HOURS. Bookkeeping (closing finished sequences, honouring stop
     # reasons) still runs — only client-facing sends are held until morning.
-    _sendable = within_send_window(now)
+    _sendable = within_send_window(now, OUTCOME_SEND_HOURS[0], OUTCOME_SEND_HOURS[1])   # PATCH #281
 
     for key, rec in list(lead_data.items()):
         if out["sent"] >= MAX_SENDS_PER_PASS:
@@ -444,6 +460,28 @@ def _pass(now=None):
                 _report("reopened", "sequence reopened by #49C",
                         f"lead={rec.get('name') or key}")
             if seq.get("done"):
+                continue
+
+            # PATCH #281 — a pitched lead's follow-up belongs to the Studio
+            # Package rail. A sequence armed here for that outcome before #281
+            # (Ayodele Pompey, 12 Nov: the generic recap went at 08:07 on top of
+            # the package rail) is closed on sight, once, and said out loud —
+            # its remaining value / nudge must not go.
+            if _pitched_double_rail(seq):
+                _left = [str(st[2]) for st in (seq.get("steps") or [])[int(seq.get("next_step") or 0):]
+                         if isinstance(st, (list, tuple)) and len(st) >= 3]
+                seq["done"] = True
+                seq["closed_reason"] = "owned by the Studio Package rail (Patch #281)"
+                seq["closed_at"] = now.isoformat()
+                out["stopped"] += 1
+                try:
+                    _deps["pg_save"]("outcome_seq:" + str(key), seq)
+                except Exception:
+                    pass
+                _slack("dev_channel", (
+                    f":no_entry: outcome rail closed for *{rec.get('name') or key}* — "
+                    f"pitched outcome, the Studio Package rail owns the follow-up "
+                    f"(Patch #281). Not sending: {', '.join(_left) or 'nothing left'}."))
                 continue
 
             # PATCH #48B — a booking recorded on a DUPLICATE record has to

@@ -30142,11 +30142,14 @@ def admin_pg_lead():
                                  "requeued": _leads_db.requeue_stats()}}), 200
 
 
-@app.route('/admin/lead-seq', methods=['GET'])
+@app.route('/admin/lead-seq', methods=['GET', 'POST'])
 def admin_lead_seq():
     """PATCH #47 — read-only: what is armed on ONE lead, and when it fires.
+    PATCH #281 — POST action=stop closes the outcome sequence on ≤3 matches
+    and tells #dev. Until 13 Nov 2026 there was no switch for this rail:
+    Ayodele's unwanted value/nudge could only be stopped by a deploy.
 
-    /admin/lead-seq?secret=<UPLOAD_SECRET>&q=<name | email | lead key>
+    /admin/lead-seq?secret=<UPLOAD_SECRET>&q=<name | email | lead key>[&action=status|stop]
 
     Exists because `outcome_seq` lives in process memory, so every question
     about whether a sequence armed has had to be answered by INFERENCE — the
@@ -30158,12 +30161,15 @@ def admin_lead_seq():
     this reports what the sender will actually do rather than a second opinion
     that can drift out of step with it.
     """
-    if not _admin_secret_ok(request.args.get("secret")):
+    if not _admin_secret_ok(request.values.get("secret")):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-    _q = (request.args.get("q") or "").strip().lower()
+    _q = (request.values.get("q") or "").strip().lower()
     if not _q:
         return jsonify({"ok": False, "error": "q is required (name, email or lead key)"}), 400
+    _action = str(request.values.get("action") or "status").strip().lower()   # PATCH #281
+    if _action not in ("status", "stop"):
+        return jsonify({"ok": False, "error": "action must be status|stop"}), 400
 
     _hits = []
     for _k, _r in list(lead_data.items()):
@@ -30180,6 +30186,29 @@ def admin_lead_seq():
     if len(_hits) > 5:
         return jsonify({"ok": True, "found": len(_hits), "matches": [],
                         "note": f"{len(_hits)} leads matched — narrow the query"}), 200
+
+    if _action == "stop":   # PATCH #281
+        if len(_hits) > 3:
+            return jsonify({"ok": False, "error": f"{len(_hits)} leads matched — narrow the query"}), 400
+        _stopped = []
+        for _k, _r in _hits:
+            _seq = _r.get("outcome_seq")
+            if not isinstance(_seq, dict) or _seq.get("done"):
+                continue
+            _ns = dict(_seq)
+            _ns["done"] = True
+            _ns["closed_reason"] = "stopped via /admin/lead-seq (Patch #281)"
+            _ns["closed_at"] = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+            _nr = dict(_r)
+            _nr["outcome_seq"] = _ns
+            lead_data[_k] = _nr
+            _stopped.append({"key": mask_contact(_k), "name": _r.get("name") or "",
+                             "outcome": _seq.get("outcome"), "next_step": _seq.get("next_step")})
+            _post_to_slack_async(SLACK_DEV_CHANNEL,
+                f":no_entry: outcome sequence *stopped* for {_r.get('name') or _k} "
+                f"({_seq.get('outcome')}) · via /admin/lead-seq (Patch #281)")
+        return jsonify({"ok": True, "action": "stop", "stopped": _stopped,
+                        "note": "" if _stopped else "matched, but nothing was armed or it was already done"}), 200
 
     _tz = pytz.timezone(TIMEZONE)
     _now = datetime.now(_tz)
@@ -30244,8 +30273,9 @@ def admin_lead_seq():
                 "due_at": _due_at.strftime("%a %b %d, %I:%M %p %Z"),
                 "status": _status,
             }
-            if _status == "due" and not within_send_window(_now):
-                _entry["verdict"] = ("DUE — held until 08:00, quiet hours "
+            if _status == "due" and not within_send_window(
+                    _now, *_outcome_seq.OUTCOME_SEND_HOURS):   # PATCH #281: 7–18 ET
+                _entry["verdict"] = ("DUE — held until 07:00, quiet hours "
                                      "(the step is held, never skipped)")
             else:
                 _entry["verdict"] = {
