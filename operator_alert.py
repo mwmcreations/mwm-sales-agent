@@ -39,6 +39,7 @@ KINDS = {
     "hold":     {"eric": False},   # PATCH #261: a lead replied while Michael is driving the thread
     "reply":    {"eric": True},    # PATCH #262: a lead's email needs a human, or a reschedule went unanswered
     "decision": {"eric": False},   # PATCH #263: the agents agreed (or need him) — Michael only, never #eric
+    "quiet":    {"eric": False},   # PATCH #285: a lead has been quiet 10 days — Michael only
     "test":     {"eric": False},
 }
 SMS_MAX = 640              # ~4-5 segments; enough for a booking or a brief

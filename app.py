@@ -51,6 +51,7 @@ import icp as _icp            # S31 — who we are for
 import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
+import quiet_lead as _ql      # Patch #285 — the quiet-lead rail, decided purely
 import lead_reply as _lrp     # Patch #262 — a lead's answer by email is an answer
 import first_touch as _ft1    # Patch #267 — WhatsApp first, SMS as the backstop
 import meta_audience as _ma   # Patch #267 — who belongs in the cold-lead audience
@@ -21101,6 +21102,7 @@ def health_check():
         "booking_truth": booking_truth_stats, # S30
         "operator_remind": _operator_remind_status(),   # PATCH #254
         "agent_talk": _agent_talk_status(),             # PATCH #263
+        "quiet_rail": _quiet_status(),                  # PATCH #285
         "maya_offers": _maya_offers(),                  # PATCH #265
         "first_touch": _first_touch_status(),           # PATCH #267
         "cold_audience": _cold_audience_status(),       # PATCH #267
@@ -22076,6 +22078,7 @@ SWITCHES = {
     "ig_chase_live": "IG_CHASE_LIVE",       # #274 — Instagram leads get a second word
     "wa_reengage_v3": "WA_REENGAGE_V3",     # #275 — the seven new WhatsApp templates
 }
+SWITCHES["quiet_rail_live"] = "QUIET_RAIL_LIVE"   # PATCH #285 — the quiet-lead rail may send (dark until Michael OKs the copy)
 
 
 def _switch_on(name):
@@ -22743,6 +22746,355 @@ def _chase_mask(email):
     return a[:2] + "…@" + b
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #285 — THE QUIET-LEAD RAIL (quiet_lead.py)
+#
+# Michael, Tue 17 Nov 2026, by voice: "we need to be more proactive on
+# chasing these leads." The chase chain (#143) stops the moment a lead
+# replies, books, or Michael takes over — and from then on nothing but the
+# #susan digest (S28, sends nothing) ever looked at the lead. Vicente
+# Orellana: replied 29 Oct, offered video-call times 10 Nov, silence until
+# Michael texted by hand on 17 Nov. This rail closes that gap: a lead in
+# Replied (or Visited with a follow-up outcome and the post-visit chain
+# done, or Contacted after Michael's manual take-over) who has been quiet
+# QUIET_DAYS gets one touch (text with consent, else a short email), every
+# QUIET_DAYS after that, Michael is texted once at ESCALATE_DAY, and after
+# MAX_TOUCHES the rail closes and the lead goes to the re-engagement list.
+# Any new activity resets the count. Twins count once; test records never.
+#
+# DARK BY DEFAULT: switch `quiet_rail_live` (pg, /admin/switch). While off
+# the pass computes and /admin/quiet-rail lists what WOULD go, with the copy,
+# so Michael reads it before the first text leaves (his rule: nothing unread
+# goes out). A daily cap bounds the first live day.
+# ══════════════════════════════════════════════════════════════════════
+QUIET_RAIL_CYCLE_S = int(os.getenv("QUIET_RAIL_CYCLE_S", "3600") or 3600)
+QUIET_RAIL_DAILY_CAP = int(os.getenv("QUIET_RAIL_DAILY_CAP", "8") or 8)
+QUIET_RAIL_STAGES = ("Replied", "Visited", "Contacted")
+_QUIET_LAST = {"at": "", "passes": 0, "errors": 0, "on_rail": 0, "due": 0, "sent": 0, "sent_total": 0,
+               "escalated_total": 0, "day": "", "sent_today": 0, "would": [], "skipped": {}, "off_rail": {},
+               "last_send": "", "last_error": ""}
+_quiet_lock = threading.Lock()
+
+
+def _quiet_rail_live():
+    return _switch_on("quiet_rail_live")
+
+
+def _quiet_other_rail(rec):
+    """Another machine already talking to this lead? -> its name or ''."""
+    seq = rec.get("outcome_seq")
+    if isinstance(seq, dict) and seq.get("steps") and not seq.get("done"):
+        return "outcome sequence"
+    sp = rec.get("studio_pitch")
+    if isinstance(sp, dict) and not sp.get("done"):
+        return "studio pitch sequence"
+    return ""
+
+
+def _quiet_sms_ok(e164):
+    """Could a marketing text go to this number (window aside)? -> (ok, reason)."""
+    if not e164:
+        return False, "no dialable phone"
+    try:
+        ok, why = _sms_gates(e164, SMS_KIND_MARKETING)
+    except Exception as _e:
+        return False, f"gate error {type(_e).__name__}"
+    if ok or why in ("quiet_hours", "monthly_cap"):
+        return True, why
+    return False, why
+
+
+def _quiet_pass(now=None):
+    """One pass over the board. Returns what it saw and did."""
+    import sms_consent as _sc
+    tz = pytz.timezone(TIMEZONE)
+    now = now or datetime.now(tz)
+    desk = globals().get("_desk")
+    if desk is None:
+        return {"error": "desk not wired"}
+    live = _quiet_rail_live()
+    day = now.strftime("%Y-%m-%d")
+    if _QUIET_LAST["day"] != day:
+        _QUIET_LAST["day"] = day
+        _QUIET_LAST["sent_today"] = 0
+    views = desk._views(lead_data, conversation_history, ig_conversation_history,
+                        manual_keys=_desk_manual_keys(), now=now)
+    try:
+        losers = set(desk.twin_losers(views) or ())
+    except Exception:
+        losers = set()
+    out = {"on_rail": 0, "due": 0, "sent": 0, "escalated": 0, "closed": 0, "would": [], "skipped": {}, "off_rail": {}}
+    escal = []
+
+    def _skip(why):
+        out["skipped"][why] = out["skipped"].get(why, 0) + 1
+
+    for v in views:
+        key = v.get("key")
+        rec = lead_data.get(key)
+        if not isinstance(rec, dict) or key in losers or v.get("test"):
+            continue
+        stage = str(v.get("stage") or "")
+        st = rec.get("quiet_rail") if isinstance(rec.get("quiet_rail"), dict) else None
+        if stage not in QUIET_RAIL_STAGES:
+            out["off_rail"][stage] = out["off_rail"].get(stage, 0) + 1
+            if st and not st.get("stopped"):           # the lead left the rail's stages
+                _ql.stop(st, now, "stage " + stage)
+                rec["quiet_rail"] = st
+                lead_data[key] = rec
+            continue
+        other = _quiet_other_rail(rec)
+        ok, why = _ql.eligible(rec, stage, v.get("booking"), other_rail_active=bool(other),
+                               is_client=_chase_is_client(key))
+        if not ok:
+            if st and not st.get("stopped"):
+                _ql.stop(st, now, why)
+                rec["quiet_rail"] = st
+                lead_data[key] = rec
+            _skip(why if not other else "another rail: " + other)
+            continue
+        turns = desk.turns_for(key, rec, conversation_history, ig_conversation_history)
+        since = _ql.latest(_ql.activity_stamps(rec) + [t.get("at") for t in turns if t.get("at")], like=now)
+        if since is None:
+            _skip("no dated activity")
+            continue
+        if st is None:
+            st = _ql.arm(now, since)
+        else:
+            _ql.refresh(st, since)
+        rec["quiet_rail"] = st
+        lead_data[key] = rec
+        if st.get("stopped"):
+            _skip("stopped: " + str(st["stopped"]))
+            continue
+        out["on_rail"] += 1
+        acts = _ql.next_actions(st, now)
+        if not acts:
+            continue
+        email = str(v.get("email") or "").strip()
+        has_email = bool(email) and "@" in email and not email_is_suppressed(email)[0]
+        e164 = _sc.to_e164(rec.get("phone"))
+        sms_ok, sms_why = _quiet_sms_ok(e164)
+        if st.get("no_sms"):
+            sms_ok = False
+        ch_used = ""
+        for a in acts:
+            if a[0] == "close":
+                _ql.stop(st, now, a[1])
+                rec["quiet_rail"] = st
+                lead_data[key] = rec
+                out["closed"] += 1
+                _TALLY.bump("quiet_rail.closed", a[1])
+                if live:
+                    _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                                         f":white_circle: quiet rail closed for *{v.get('name')}* — {a[1]}, "
+                                         f"{len(st.get('touches') or [])} touches, no answer. Re-engagement list has them. (#285)")
+                continue
+            if a[0] == "touch":
+                n = int(a[1])
+                ch = _ql.channel_for(n, has_email, sms_ok)
+                out["due"] += 1
+                item = {"key": _chase_mask_key(key), "name": v.get("name"), "business": v.get("business"),
+                        "stage": stage, "why": why, "quiet_days": round(_ql.days_quiet(st, now) or 0, 1),
+                        "touch": n, "channel": ch or "none", "sms": sms_why,
+                        "copy": (_ql.touch_sms(n, v.get("name")) if ch == _ql.SMS
+                                 else (_ql.touch_email(n, v.get("name"), v.get("business"))[0] if ch == _ql.EMAIL else ""))}
+                if not ch:
+                    # no road to the lead: Michael hears once, the count still moves
+                    if not st.get("escalated_at"):
+                        escal.append((v, st, "no channel", key))
+                    _ql.note_touch(st, now, n, "none")
+                    rec["quiet_rail"] = st
+                    lead_data[key] = rec
+                    item["held"] = "no channel — Michael told"
+                    out["would"].append(item)
+                    continue
+                ch_used = ch
+                if not live:
+                    item["held"] = "switch off"
+                    out["would"].append(item)
+                    continue
+                if not _ql.within_hours(now):
+                    item["held"] = "outside 8–18 ET"
+                    out["would"].append(item)
+                    continue
+                if _QUIET_LAST["sent_today"] >= QUIET_RAIL_DAILY_CAP:
+                    item["held"] = "daily cap"
+                    out["would"].append(item)
+                    continue
+                _ql.note_touch(st, now, n, ch)            # stamp BEFORE the send
+                rec["quiet_rail"] = st
+                lead_data[key] = rec
+                sent_ok = False
+                res = {}
+                try:
+                    if ch == _ql.EMAIL:
+                        subj, lines = _ql.touch_email(n, v.get("name"), v.get("business"))
+                        res = _email_send(email, subj, _sv._as_html(lines), via=f"quiet_rail_t{n}", lead_key=key)
+                        sent_ok = email_ok(res)
+                    else:
+                        body = _sms_body_that_fits((lambda: _ql.touch_sms(n, v.get("name")),
+                                                    lambda: _ql.touch_sms(n, "")))
+                        res = _send_sms(e164, body, kind=SMS_KIND_MARKETING)
+                        sent_ok = bool(res.get("ok"))
+                except Exception as _sx:
+                    res = {"error": repr(_sx)[:120]}
+                if sent_ok:
+                    out["sent"] += 1
+                    _QUIET_LAST["sent_today"] += 1
+                    _TALLY.bump("quiet_rail.sent", f"t{n}_{ch}")
+                    _QUIET_LAST["last_send"] = f"t{n} {ch} to {v.get('name')} at {now.strftime('%H:%M')}"
+                    print(f"[QuietRail] {_chase_mask_key(key)}: touch {n} by {ch} sent")
+                    _post_to_slack_async(SLACK_SUSAN_CHANNEL,
+                                         f":arrow_right: quiet rail touch {n} by {ch} → *{v.get('name')}* "
+                                         f"({v.get('business') or stage}; quiet {item['quiet_days']}d). (#285)")
+                else:
+                    (st.get("touches") or [None]).pop()      # give the stamp back
+                    reason = str(res.get("reason") or res.get("error") or "")[:80]
+                    if ch == _ql.SMS and (res.get("reason") in ("no_consent", "no_consent_marketing", "do_not_sms")):
+                        st["no_sms"] = res.get("reason")       # never try this road again
+                    rec["quiet_rail"] = st
+                    lead_data[key] = rec
+                    _TALLY.bump("quiet_rail.FAILED", f"{ch}:{reason[:30]}")
+                    item["held"] = "send failed: " + reason
+                    out["would"].append(item)
+            elif a[0] == "escalate":
+                escal.append((v, st, ch_used or ("sms" if sms_ok else "email" if has_email else ""), key))
+
+    # Michael hears once per lead, all in one text (the first live pass may find several)
+    if escal:
+        names = []
+        for v, st, road, key in escal:
+            d = int(_ql.days_quiet(st, now) or 0)
+            names.append(f"{v.get('name')} ({d}d{', no channel' if road == 'no channel' else ''})")
+            if live:
+                st["escalated_at"] = now.isoformat()
+                rec = lead_data.get(key)
+                if isinstance(rec, dict):
+                    rec["quiet_rail"] = st
+                    lead_data[key] = rec
+        if live:
+            text = ("MWM quiet leads, 10+ days since you last spoke: " + "; ".join(names[:6])
+                    + (f"; +{len(names) - 6} more" if len(names) > 6 else "")
+                    + ". The rail keeps touching every 5 days. Call them, or tell DEV 'stop <name>'.")
+            try:
+                _operator_alert.alert("quiet", text)
+            except Exception as _ex:
+                _report_error("quiet_rail.escalate", _ex)
+            _post_to_slack_async(SLACK_MATT_CHANNEL,
+                                 ":hourglass: *Quiet 10+ days* (#285) — " + "; ".join(names) +
+                                 ". Michael texted once; the rail keeps going.")
+            out["escalated"] = len(escal)
+        else:
+            out["would"].append({"escalate": names, "held": "switch off"})
+    return out
+
+
+def _quiet_tick():
+    """Called from the chase loop every pass; runs the rail once per QUIET_RAIL_CYCLE_S."""
+    try:
+        last = _QUIET_LAST.get("at")
+        if last:
+            age = (datetime.now(pytz.timezone(TIMEZONE)) - datetime.fromisoformat(last)).total_seconds()
+            if age < QUIET_RAIL_CYCLE_S:
+                return None
+        with _quiet_lock:
+            out = _quiet_pass()
+        _QUIET_LAST.update({
+            "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
+            "passes": _QUIET_LAST["passes"] + 1,
+            "on_rail": out.get("on_rail", 0), "due": out.get("due", 0), "sent": out.get("sent", 0),
+            "sent_total": _QUIET_LAST["sent_total"] + out.get("sent", 0),
+            "escalated_total": _QUIET_LAST["escalated_total"] + out.get("escalated", 0),
+            "would": out.get("would", [])[:40], "skipped": out.get("skipped", {}),
+            "off_rail": out.get("off_rail", {}),
+        })
+        return out
+    except Exception as _e:
+        _QUIET_LAST["errors"] += 1
+        _QUIET_LAST["last_error"] = repr(_e)[:160]
+        try:
+            _report_error("quiet_rail", _e)
+        except Exception:
+            pass
+        return None
+
+
+def _quiet_status():
+    return {"live": _quiet_rail_live(), "cycle_s": QUIET_RAIL_CYCLE_S, "daily_cap": QUIET_RAIL_DAILY_CAP,
+            "days": {"touch_every": _ql.QUIET_DAYS, "escalate": _ql.ESCALATE_DAY, "max_touches": _ql.MAX_TOUCHES},
+            "last_pass": _QUIET_LAST["at"], "passes": _QUIET_LAST["passes"], "errors": _QUIET_LAST["errors"],
+            "on_rail": _QUIET_LAST["on_rail"], "due": _QUIET_LAST["due"], "would": len(_QUIET_LAST["would"]),
+            "sent_today": _QUIET_LAST["sent_today"], "sent_total": _QUIET_LAST["sent_total"],
+            "escalated_total": _QUIET_LAST["escalated_total"], "last_send": _QUIET_LAST["last_send"],
+            "last_error": _QUIET_LAST["last_error"]}
+
+
+@app.route("/admin/quiet-rail", methods=["GET", "POST"])
+def admin_quiet_rail():
+    """PATCH #285 — the rail's own window.
+
+    GET  /admin/quiet-rail?secret=…            status + what the last pass would send (masked)
+    GET  /admin/quiet-rail?secret=…&run=1      run a pass now (dry while the switch is off)
+    GET  /admin/quiet-rail?secret=…&q=<name>   one lead's rail state
+    POST /admin/quiet-rail?secret=…&q=<name>&action=stop|resume   (≤3 matches, posts #dev)
+    """
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    q = (request.values.get("q") or "").strip().lower()
+    action = str(request.values.get("action") or ("status" if request.method == "GET" else "")).strip().lower()
+    if request.method == "GET" and not q:
+        out = None
+        if str(request.values.get("run") or "") in ("1", "true", "yes"):
+            with _quiet_lock:
+                out = _quiet_pass(now)
+            if isinstance(out, dict) and "error" not in out:
+                _QUIET_LAST.update({"at": now.isoformat(), "passes": _QUIET_LAST["passes"] + 1,
+                                    "on_rail": out.get("on_rail", 0), "due": out.get("due", 0),
+                                    "sent": out.get("sent", 0),
+                                    "sent_total": _QUIET_LAST["sent_total"] + out.get("sent", 0),
+                                    "escalated_total": _QUIET_LAST["escalated_total"] + out.get("escalated", 0),
+                                    "would": out.get("would", [])[:40], "skipped": out.get("skipped", {}),
+                                    "off_rail": out.get("off_rail", {})})
+        return jsonify({"ok": True, "status": _quiet_status(), "would": _QUIET_LAST["would"],
+                        "skipped": _QUIET_LAST["skipped"], "off_rail": _QUIET_LAST["off_rail"], "ran": bool(out),
+                        "copy": {"sms": [_ql.touch_sms(n, "Ana") for n in (1, 2, 3, 4)],
+                                 "email": [{"subject": _ql.touch_email(n, "Ana", "Ana's Bakery")[0],
+                                            "lines": _ql.touch_email(n, "Ana", "Ana's Bakery")[1]} for n in (1, 2, 3, 4)]}}), 200
+    if not q:
+        return jsonify({"ok": False, "error": "q is required (name, email or lead key)"}), 400
+    if action not in ("status", "stop", "resume"):
+        return jsonify({"ok": False, "error": "action must be status|stop|resume"}), 400
+    hits = []
+    for k, r in list(lead_data.items()):
+        if not isinstance(r, dict):
+            continue
+        hay = " ".join([str(k), str(r.get("name") or ""), str(r.get("email") or ""), str(r.get("phone") or "")]).lower()
+        if q in hay:
+            hits.append((k, r))
+    if len(hits) > (3 if action != "status" else 5):
+        return jsonify({"ok": False, "found": len(hits), "error": "narrow the query"}), 400
+    rows = []
+    for k, r in hits:
+        st = r.get("quiet_rail") if isinstance(r.get("quiet_rail"), dict) else None
+        if action == "stop" and st and not st.get("stopped"):
+            _ql.stop(st, now, "stopped via /admin/quiet-rail (Patch #285)")
+            r["quiet_rail"] = st
+            lead_data[k] = r
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f":no_entry: quiet rail stopped for *{r.get('name') or _chase_mask_key(k)}* via /admin/quiet-rail (Patch #285)")
+        elif action == "resume" and st and st.get("stopped"):
+            st["stopped"] = ""
+            st["stopped_at"] = ""
+            r["quiet_rail"] = st
+            lead_data[k] = r
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f":arrow_forward: quiet rail resumed for *{r.get('name') or _chase_mask_key(k)}* via /admin/quiet-rail (Patch #285)")
+        rows.append({"lead_key": _chase_mask_key(k), "name": r.get("name"), "business": r.get("business"),
+                     "email": _chase_mask(str(r.get("email") or "")), "state": st,
+                     "summary": _ql.summary(st, now)})
+    return jsonify({"ok": True, "found": len(hits), "action": action, "matches": rows}), 200
+
+
 def _lead_chase_loop():
     import time as _t
     print(f"[Chase] loop started (every {LEAD_CHASE_CYCLE_S}s)")
@@ -22753,6 +23105,7 @@ def _lead_chase_loop():
             _call_now_flush()             # PATCH #156 — the overnight CALL NOW texts, at 8 AM
             _reengage_tick()              # PATCH #158 — the armed one-off send, when its time comes
             counts = _chase_pass()
+            _quiet_tick()               # PATCH #285 — the quiet-lead rail, once an hour
             _LEAD_CHASE_LAST.update({
                 "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
                 "armed": counts["armed"], "active": counts["active"],
