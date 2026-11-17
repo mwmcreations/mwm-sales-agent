@@ -67,6 +67,39 @@ AGENTS = {
               "lane": "editing: cuts, deliveries, render queues, post-production"},
 }
 MAX_ROUNDS_DEFAULT = 4          # per agent
+
+
+def channels_from(value, agents=None):
+    """PATCH #286 — a channel allowlist from a list or a comma/space string of
+    channel ids or agent names ('SUSAN, DEV' -> their channels). Blanks and
+    unknown names are dropped; a set of channel ids comes back (empty = no limit)."""
+    agents = agents if agents is not None else AGENTS
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        parts = re.split(r"[,\s;+]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(p) for p in value]
+    else:
+        return set()
+    out = set()
+    for p in parts:
+        p = p.strip().strip("#")
+        if not p:
+            continue
+        a = agents.get(p.upper())
+        if a and a.get("channel"):
+            out.add(a["channel"])
+        elif re.fullmatch(r"[CG][A-Z0-9]{6,}", p):
+            out.add(p)
+    return out
+
+
+def channel_names(channel_ids, agents=None):
+    """PATCH #286 — channel ids -> agent names where known (sorted), for humans."""
+    agents = agents if agents is not None else AGENTS
+    by = {v["channel"]: k for k, v in agents.items() if v.get("channel")}
+    return sorted(by.get(c, c) for c in channel_ids)
 REPLY_WORDS_MAX = 220
 MEMORY_LINE_MAX = 400           # chars per excerpt line the bridge sends
 MEMORY_WAIT_RETRY_S = 90        # re-file a memory request after this

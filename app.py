@@ -24630,6 +24630,24 @@ def _at_mode():
     return m if m in ("off", "test", "on") else AGENT_TALK_MODE_DEFAULT
 
 
+AGENT_TALK_CHANNELS_DEFAULT = os.getenv("AGENT_TALK_CHANNELS", "").strip()   # PATCH #286: "" = every agent channel
+
+
+def _at_live_channels():
+    """PATCH #286 — where an untagged kickoff opens a conversation in mode on
+    (Michael, Tue 17 Nov: the bridge goes live for #susan and #dev first).
+    pg 'agent_talk_channels' (list of channel ids) overrides the env default;
+    empty = every agent channel, as before. [test] kickoffs and /admin starts
+    are not limited by it."""
+    try:
+        v = _pg.load_state("agent_talk_channels", None) if _pg.enabled() else None
+    except Exception:
+        v = None
+    if v is None or v == "":
+        v = AGENT_TALK_CHANNELS_DEFAULT
+    return _at.channels_from(v)
+
+
 def _at_today():
     return datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
 
@@ -24747,6 +24765,7 @@ def _agent_talk_status():
             open_dec.append({"id": d["id"], "status": d["status"], "created": d.get("created")})
     return {
         "mode": _at_mode(), "cap_usd": AGENT_TALK_CAP_USD, "today": _at_spend_today(),
+        "live_channels": _at.channel_names(_at_live_channels()),   # PATCH #286: [] = every agent channel
         "month": _at_spend_month(), "models": AGENT_TALK_MODELS,
         "open": [{"id": c["id"], "status": c["status"], "turn": c.get("turn"), "usd": c.get("usd"),
                   "rounds": c.get("rounds")} for c in _at_open_conversations()],
@@ -24771,6 +24790,11 @@ def _agent_talk_maybe_start(channel_id, text, user_id, ts, thread_ts=None, via="
     if mode == "test" and not parsed.get("test") and via != "admin":
         print(f"[AGENT-TALK] assignment ignored (mode test, kickoff not tagged [test]) in {channel_id}")
         return None
+    if mode == "on" and not parsed.get("test") and via != "admin":   # PATCH #286
+        _live = _at_live_channels()
+        if _live and channel_id not in _live:
+            print(f"[AGENT-TALK] assignment ignored (mode on, channel not live: {_at.channel_names(_live)}) in {channel_id}")
+            return None
     cid = _at.conv_id(channel_id, ts)
     if _at_load(_at_conv_key(cid)):
         return None            # already running (Slack retried the event)
@@ -25431,8 +25455,15 @@ def admin_agent_talk_mode():
     if mode not in ("off", "test", "on"):
         return jsonify({"ok": False, "error": "mode must be off|test|on"}), 400
     _at_save("agent_talk_mode", mode)
-    _at_post(SLACK_DEV_CHANNEL, f"🎚 agent-talk mode set to *{mode}*")
-    return jsonify({"ok": True, "mode": mode}), 200
+    # PATCH #286 — optional `channels`: agent names or channel ids; [] or "all" = every agent channel
+    _ch = payload.get("channels") if "channels" in payload else request.form.get("channels")
+    _ch_line = ""
+    if _ch is not None:
+        _ids = set() if (isinstance(_ch, str) and _ch.strip().lower() in ("all", "*")) else _at.channels_from(_ch)
+        _at_save("agent_talk_channels", sorted(_ids))
+        _ch_line = " · live channels: " + (", ".join(_at.channel_names(_ids)) if _ids else "every agent channel")
+    _at_post(SLACK_DEV_CHANNEL, f"🎚 agent-talk mode set to *{mode}*{_ch_line}")
+    return jsonify({"ok": True, "mode": mode, "live_channels": _at.channel_names(_at_live_channels())}), 200
 
 
 # ══════════════════════════════════════════════════════════════════════
