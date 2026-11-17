@@ -87,14 +87,15 @@ MEET = [
 ]
 kept, hidden = desk.calendar_filter(MEET, LEADS)
 ids = [m["event_id"] for m in kept]
-check("cal.mwm_always", "evt_1" in ids and "m2" in ids)
-check("cal.personal_hidden", "p1" not in ids and "p2" not in ids and "p5" not in ids and hidden == 3, (ids, hidden))
+check("cal.mwm_studio_kept", "evt_1" in ids and "m2" not in ids)   # #279: the calendar says nothing, the title does
+check("cal.personal_hidden", "p1" not in ids and "p2" not in ids and "p5" not in ids and hidden == 4, (ids, hidden))   # #279: + "Whatever"
 check("cal.lead_name_kept", "p3" in ids and [m for m in kept if m["event_id"] == "p3"][0]["lead_key"] == "whatsapp:+14075550102")
 check("cal.keyword_kept", "p4" in ids)
 check("cal.lead_key_on_mwm", [m for m in kept if m["event_id"] == "evt_1"][0]["lead_key"] == "whatsapp:+14075550101")
 k2, h2 = desk.calendar_filter(MEET, LEADS, show_all=True)
 check("cal.show_all", len(k2) == len(MEET) and h2 == 0)
-check("cal.no_calendar_field_kept", desk.calendar_filter([{"name": "X", "summary": "X", "event_id": "z"}], LEADS)[0][0]["event_id"] == "z")
+check("cal.no_calendar_field_judged_by_title", desk.calendar_filter([{"name": "X", "summary": "Studio visit X", "event_id": "z"}], LEADS)[0][0]["event_id"] == "z"
+      and desk.calendar_filter([{"name": "X", "summary": "X", "event_id": "z"}], LEADS)[1] == 1)   # #279
 check("cal.single_word_name_never_matches", desk.event_matches_lead("📚 Michael Jr.", desk._lead_names({"k": {"name": "Michael"}})) == "")
 check("cal.two_words_match", desk.event_matches_lead("Lunch, Pedro Alves!", desk._lead_names(LEADS)) == "whatsapp:+14075550101")
 check("cal.business_match", desk.event_matches_lead("Alves Dental — tour", desk._lead_names(LEADS)) == "whatsapp:+14075550101")
@@ -250,7 +251,7 @@ try:
     check("route.stats", r.status_code == 200 and j["cohort"]["new"] >= 1 and j["clients"] and j["clients"]["mrr"] > 0, r.get_data()[:200])
     r = c.get("/desk/api/report/meetings?range=today&secret=k")
     j = r.get_json()
-    check("route.meetings_filtered", r.status_code == 200 and j["hidden"] == 3 and all(m["event_id"] not in ("p1", "p2", "p5") for m in j["meetings"]), r.get_data()[:300])
+    check("route.meetings_filtered", r.status_code == 200 and j["hidden"] == 4 and all(m["event_id"] not in ("p1", "p2", "p5", "m2") for m in j["meetings"]), r.get_data()[:300])   # #279
     r = c.get("/desk/api/report/meetings?range=today&all=1&secret=k")
     check("route.meetings_all", r.get_json()["hidden"] == 0 and len(r.get_json()["meetings"]) == len(MEET))
     acts["portal_clients"] = lambda: None

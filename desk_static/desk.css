@@ -244,3 +244,7 @@ details.ended { margin-top: 6px; }
 details.ended summary { color: var(--fg3); font-size: 13px; padding: 8px 2px; cursor: pointer; }
 .muted.small { font-size: 12px; margin: 10px 2px 4px; }
 .today-head .n .muted { font-weight: 400; }
+/* #279 — personal events, when shown on request */
+.today-ev.personal, .cal-ev.personal { opacity: .55; border-style: dashed; }
+.today-ev.personal .btn, .cal-ev.personal .btn { display: none; }
+.cal-toggle { font-size: inherit; font-weight: 400; text-decoration-style: dotted; }

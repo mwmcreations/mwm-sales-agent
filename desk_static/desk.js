@@ -4,7 +4,7 @@
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
   const state = { tab: "board", only: "", board: null, inbox: null, lead: null, q: "", timer: null, busy: false,
-                  visits: null, visitsCal: null, clients: null, stats: null, days: 30 };
+                  visits: null, visitsCal: null, clients: null, stats: null, days: 30, calAll: false };
 
   // ── helpers ──
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -84,11 +84,11 @@
   async function loadToday() {
     const el = $("#today"); if (!el) return;
     try {
-      const j = await api("/desk/api/report/meetings?range=today");
+      const j = await api("/desk/api/report/meetings?range=today" + (state.calAll ? "&all=1" : ""));
       const ms = j.meetings || [];
       const hid = j.hidden || 0;
-      el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}${hid ? `<span class="muted"> · ${hid} personal hidden</span>` : ""}</span></div>` +
-        (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev ${m.lead_key ? "linked" : ""}"><div class="t">${esc(m.time)}</div><div class="nm">${m.lead_key ? `<button class="lnk" data-key="${esc(m.lead_key)}">${esc(m.name)}</button>` : esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
+      el.innerHTML = `<div class="today-head"><span>Today</span><span class="n">${ms.length ? ms.length + (ms.length === 1 ? " event" : " events") : "nothing on the calendar"}${hid ? `<button class="lnk muted cal-toggle"> · ${hid} personal hidden</button>` : (state.calAll ? `<button class="lnk muted cal-toggle"> · hide personal</button>` : "")}</span></div>` +
+        (ms.length ? `<div class="today-row">${ms.map(m => `<div class="today-ev ${m.lead_key ? "linked" : ""} ${m.personal ? "personal" : ""}"><div class="t">${esc(m.time)}</div><div class="nm">${m.lead_key ? `<button class="lnk" data-key="${esc(m.lead_key)}">${esc(m.name)}</button>` : esc(m.name)}</div>${m.business ? `<div class="biz">${esc(m.business)}</div>` : ""}
           <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}" data-key="${esc(m.lead_key || "")}">Report</button></div>`).join("")}</div>` : "");
       el.hidden = false;
     } catch (e) { el.hidden = true; }   // a report problem never touches the board
@@ -141,7 +141,7 @@
   async function loadVisits() {
     const el = $("#visits"); if (!state.visits) el.innerHTML = `<div class="skel">Loading the visits…</div>`;
     try {
-      const [j, cal] = await Promise.all([api("/desk/api/visits"), api("/desk/api/report/meetings?range=week").catch(() => null)]);
+      const [j, cal] = await Promise.all([api("/desk/api/visits"), api("/desk/api/report/meetings?range=week" + (state.calAll ? "&all=1" : "")).catch(() => null)]);
       state.visits = j; state.visitsCal = cal; renderVisits();
       const b = $("#visits-badge"); const n = (j.counts || {}).needs_outcome || 0; if (n) { b.textContent = n; b.hidden = false; } else b.hidden = true;
     } catch (e) { el.innerHTML = `<div class="skel">Could not load the visits — ${esc(e.message)}</div>`; }
@@ -154,8 +154,8 @@
     h += j.upcoming_by_day.length ? j.upcoming_by_day.map(g => `<div class="day">${esc(g.day)}</div>` + g.cards.map(card).join("")).join("") : `<div class="empty">Nothing booked ahead.</div>`;
     if (cal && cal.ok) {
       const ms = cal.meetings || [];
-      h += `<div class="section"><h3>On the calendar this week</h3><span class="n">${ms.length} ${ms.length === 1 ? "event" : "events"}${cal.hidden ? ` · ${cal.hidden} personal hidden` : ""}</span></div>`;
-      h += ms.length ? `<div class="cal">${ms.map(m => `<div class="cal-ev ${m.lead_key ? "linked" : ""}">
+      h += `<div class="section"><h3>On the calendar this week</h3><span class="n">${ms.length} ${ms.length === 1 ? "event" : "events"}${cal.hidden ? ` <button class="lnk muted cal-toggle">· ${cal.hidden} personal hidden</button>` : (state.calAll ? ` <button class="lnk muted cal-toggle">· hide personal</button>` : "")}</span></div>`;
+      h += ms.length ? `<div class="cal">${ms.map(m => `<div class="cal-ev ${m.lead_key ? "linked" : ""} ${m.personal ? "personal" : ""}">
           <div class="when"><b>${esc(m.date_label || "Today")}</b> ${esc(m.time)}</div>
           <div class="who">${m.lead_key ? `<button class="lnk" data-key="${esc(m.lead_key)}">${esc(m.name)}</button>` : esc(m.name)}${m.business ? ` <span class="muted">· ${esc(m.business)}</span>` : ""}</div>
           <button class="btn small report-ev" data-name="${esc(m.name)}" data-business="${esc(m.business || "")}" data-event="${esc(m.event_id)}" data-key="${esc(m.lead_key || "")}">Report</button>
@@ -371,6 +371,7 @@
     const ch = e.target.closest(".chip"); if (ch) {
       if (ch.dataset.days) { $$("#stats-chips .chip").forEach(x => x.classList.toggle("on", x === ch)); state.days = parseInt(ch.dataset.days, 10) || 30; state.stats = null; loadStats(); return; }
       $$("#inbox-chips .chip").forEach(x => x.classList.toggle("on", x === ch)); state.only = ch.dataset.only || ""; state.inbox = null; loadInbox(); return; }
+    const ct = e.target.closest(".cal-toggle"); if (ct) { state.calAll = !state.calAll; if (state.tab === "visits") loadVisits(); else loadToday(); return; }
     const lk = e.target.closest(".lnk"); if (lk && lk.dataset.key) { openLead(lk.dataset.key); return; }
     const cr = e.target.closest(".crow"); if (cr && cr.dataset.key) { openLead(cr.dataset.key); return; }
     if (e.target.closest("#panel-close")) { closeLead(); return; }

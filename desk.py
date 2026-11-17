@@ -977,9 +977,30 @@ def is_studio_event(summary):
     return any(w in s for w in VISIT_WORDS)
 
 
+# PATCH #279 — the family's events live on the MWM calendar too (Michael, 9 Nov
+# 21:45: Julie's gymnastics and tutoring in Today). The calendar an event sits
+# on says nothing; the title does. A lead's name always wins; otherwise a
+# personal word hides the event, and only a studio word shows it.
+PERSONAL_WORDS = (
+    "ginástica", "ginastica", "gymnast", "tutoring", "tutor ", "em casa", "dentist", "dentista",
+    "pediatr", "médic", "medico", "doctor", "igreja", "church", "escola", "aniversário", "aniversario",
+    "birthday", "futebol", "soccer", "ballet", "piano", "natação", "natacao", "swim", "vacation",
+    "férias", "ferias", "haircut", "homework", "pickup", "pick-up", "drop-off", "dropoff", "playdate",
+    "julie", "michael jr", "family", "família", "familia", "personal", "pessoal", "vet ", "groomer",
+)
+_WEEKDAY_CODES = re.compile(r"^[^\w]*\s*(SEG|TER|QUA|QUI|SEX|S[ÁA]B|DOM)(\s*/\s*(SEG|TER|QUA|QUI|SEX|S[ÁA]B|DOM))*\b", re.I)
+
+
+def is_personal_event(summary):
+    s = " " + _lower(summary) + " "
+    if any(w in s for w in PERSONAL_WORDS):
+        return True
+    return bool(_WEEKDAY_CODES.match(str(summary or "").strip()))
+
+
 def calendar_filter(meetings, lead_data, show_all=False):
-    """Keep every event from the MWM calendar; from Michael's own calendar
-    keep only what names a lead or sounds like studio business. Each kept
+    """Keep an event when it names a lead, or when it sounds like studio
+    business and not like family life — on ANY calendar (#279). Each kept
     event learns `lead_key` when a lead matched. Returns (kept, hidden)."""
     names = _lead_names(lead_data)
     kept, hidden = [], 0
@@ -990,8 +1011,8 @@ def calendar_filter(meetings, lead_data, show_all=False):
         lk = event_matches_lead(title, names)
         m = dict(m)
         m["lead_key"] = lk
-        personal = _lower(m.get("calendar")) == "personal"
-        if show_all or not personal or lk or is_studio_event(title):
+        m["personal"] = bool(not lk and (is_personal_event(title) or not is_studio_event(title)))   # #279
+        if show_all or not m["personal"]:
             kept.append(m)
         else:
             hidden += 1
