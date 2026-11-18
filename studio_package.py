@@ -225,8 +225,10 @@ ONEOFF_SERVICE_DAYS = 60
 ANNUAL_TERM_DAYS = 365
 PLAN_EDIT_NOTE = ("Editing is included: each hour gives you up to 10 edited short videos "
                   "or 1 podcast episode with 10 short cuts")
-PLAN_FOOTER_NOTE = ("Plans have a 3-month minimum; after that your plan continues month "
-                    "to month, with 30 days' notice to cancel.")
+# PATCH #289 — the disclaimer, in Michael's words (18 Nov): the contract side lives
+# here, once, in the welcome; the creative side never counts to 12.
+PLAN_FOOTER_NOTE = ("This is a 3-month minimum agreement; after that your plan is recurring "
+                    "month to month, and you can stop at any time with 30 days' notice.")
 # Real Sets' Founding price IS STUDIO_PRICE_ID (ROB reused the $1,200 price for
 # the website link). The old 3-month package keeps that price in PACKAGES; a
 # checkout is Real Sets when it came through a Real Sets link or the
@@ -246,8 +248,9 @@ def _monthly_plan(kind, name, m, mrr, pace, includes, founding):
         "sheet_status": f"Client — {name}",
         "pace_note": pace, "includes_note": includes,
         "extra_notes": [PLAN_EDIT_NOTE,
-                        f"Unused hours roll over to the next month: you can hold up to "
-                        f"{cap} hours at a time"],
+                        # PATCH #289 — no total: "two months' worth", not "8 hours"
+                        "Unused studio time rolls over to the next month (you can hold up "
+                        "to two months' worth)"],
         "credits_toward_contract": False,
         "ongoing": True,
         "footer_note": PLAN_FOOTER_NOTE + (" Your Founding price stays locked while your "
@@ -282,8 +285,8 @@ _P_REAL = "on our real sets"
 _P_START = "1 on our real sets, 1 on the AI Wall"
 _P_GROW = "up to 2 of them on the AI Wall"
 _P_PRO = "all on the AI Wall"
-_FI1 = "Your plan includes 1 Full Immersion video"
-_FI2 = "Your plan includes 2 Full Immersion videos"
+_FI1 = "Your plan includes 1 Full Immersion video every month"      # PATCH #289 — Michael 18 Nov 10:46
+_FI2 = "Your plan includes 2 Full Immersion videos every month"
 
 _PLAN_ROWS = (
     # kind, name, monthly hours, pace, includes, founding price, $, regular price, $
@@ -826,9 +829,10 @@ def _hours_added_email_html(first_name: str, spec: dict, term: dict, topup: dict
         avail_txt = ""
     deadline = (term or {}).get("booking_deadline")
     if plan == "monthly":
-        lead = (f"Your <strong>{e(spec['name'])}</strong> is active: "
-                f"{spec['monthly_hours']} hours of professional studio time every month, as "
-                f"an ongoing partnership. This month's hours are already in your portal.")
+        # PATCH #289 — monthly, never a quota headline
+        lead = (f"Your <strong>{e(spec['name'])}</strong> is active: an ongoing creative "
+                f"partnership with MWM Studios, renewed every month. This month's studio "
+                f"time is already in your portal.")
     elif plan == "annual":
         lead = (f"Your <strong>{e(spec['name'])}</strong> is active: "
                 f"{spec['monthly_hours']} hours every month for the next 12 months. All "
@@ -975,12 +979,14 @@ def _welcome_email_html(first_name: str, access_code: str,
         # totals or end dates: the portal still holds a total and a last
         # bookable day (ROB tops it up), but the client reads a partnership.
         _m = int(spec.get("monthly_hours") or 0) or hours
-        headline = (f"Your <strong>{spec['name']}</strong> is active — {_m} hours of "
-                    f"professional studio time every month, as an ongoing partnership.")
-        total_li = (f"{_m} studio hours every month"
+        # PATCH #289 — Michael, 18 Nov 10:31: the creative side speaks monthly, never
+        # in totals; the monthly figure appears once, as what the portal refreshes.
+        headline = (f"Your <strong>{spec['name']}</strong> is active: an ongoing creative "
+                    f"partnership with MWM Studios, renewed every month.")
+        total_li = (f"Your monthly studio time: {_m} hours, refreshed every month"
                     + (f" ({_pace})" if _pace else ""))
         expiry_li = ("Your plan continues month after month, and your portal always "
-                     "shows the hours you have available to book")
+                     "shows the studio time you have available to book")
         if _includes:
             expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
     if spec.get("plan") == "oneoff":
@@ -1205,22 +1211,40 @@ def _prepaid_bucket_covers(email, period_start_epoch):
     return {"convert": True, "key": key, "rec": rec}
 
 
+def _record_plan(email, spec):
+    """PATCH #288 — the plan the client was GIVEN: a courtesy_plan on the lead
+    record wins over the plan the Stripe price names (Camila pays Real Sets,
+    holds AI Growth). Falls back to the price's spec."""
+    try:
+        _k, rec = _deps["lead_lookup_by_email"](email)
+    except Exception:
+        rec = None
+    spr = rec.get("studio_package") if isinstance(rec, dict) else None
+    court = spec_by_kind((spr or {}).get("courtesy_plan")) if isinstance(spr, dict) else None
+    return court if (court and court.get("plan") == "monthly") else spec
+
+
 def _convert_bucket_record(key, rec, spec):
     """PATCH #287 — the bucket is spent: from here on the record is the rolling plan."""
     try:
         old = dict(rec.get("studio_package") or {})
-        rec["studio_package"] = dict(old, variant=spec["kind"], package_name=spec["name"],
-                                     hours=spec["hours"], term_days=spec["term_days"], mrr=old.get("mrr", spec["mrr"]),
+        # PATCH #288 — a courtesy upgrade rolls into the plan she was GIVEN, at the price she pays.
+        court = spec_by_kind(old.get("courtesy_plan")) if old.get("courtesy_plan") else None
+        plan = court if (court and court.get("plan") == "monthly") else spec
+        rec["studio_package"] = dict(old, variant=plan["kind"], package_name=plan["name"],
+                                     hours=plan["hours"], term_days=plan["term_days"], mrr=old.get("mrr", spec["mrr"]),
                                      model="rolling", converted_at=datetime.utcnow().isoformat(),
                                      bucket_deadline=old.get("booking_deadline", ""), booking_deadline="")
-        rec["product"] = spec["name"]
+        rec["product"] = plan["name"]
         ld = _deps.get("lead_data")
         if isinstance(ld, dict) and key:
             ld[key] = rec
         _deps["post_slack"](_deps["matt_channel"],
                             f"🔁 *{rec.get('name') or key}*: prepaid 12-hour package finished — from this charge on "
-                            f"the account is the rolling *{spec['name']}* ({spec['monthly_hours']}h a month, holds up to "
-                            f"{spec['cap_hours']}h). (#287)")
+                            f"the account is the rolling *{plan['name']}* ({plan['monthly_hours']}h a month, holds up to "
+                            f"{plan['cap_hours']}h)"
+                            + (f" — courtesy upgrade, pays the {spec['name']} price" if plan is not spec else "")
+                            + ". (#287)")
     except Exception as e:
         _report("studio.convert_bucket", e, f"key={key}")
 
@@ -1273,6 +1297,7 @@ def _on_invoice_paid(inv: dict, event_id: str) -> dict:
                     "package": spec["kind"]}
         if _cov.get("convert"):
             _convert_bucket_record(_cov["key"], _cov["rec"], spec)
+        spec = _record_plan(email, spec)   # PATCH #288 — a courtesy plan's hours, not the price's
         if pend:
             end = datetime.fromtimestamp(int(pend), pytz.timezone(TIMEZONE)).date() \
                 + timedelta(days=PLAN_TOPUP_WINDOW_DAYS)
@@ -1431,6 +1456,10 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
                                      if term.get("booking_deadline") else ""),
             }
             lead_name = rec.get("name") or name
+            # PATCH #288 — matched by name and no email on file: keep the payer's, so the
+            # monthly charges find this record (Camila, 17 Nov: matched by name, email empty).
+            if _matched_on == "name" and email and not str(rec.get("email") or "").strip():
+                rec["email"] = email
             _deps["update_sheet_status"](lead_name, spec["sheet_status"])
             if _matched_on != "email":
                 _deps["post_slack"](_deps["matt_channel"],

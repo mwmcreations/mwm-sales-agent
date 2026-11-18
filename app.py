@@ -29609,6 +29609,9 @@ def admin_register_client():
        "source": "...", "variant": "studio_trial_1mo",
        "purchased_at": "2026-08-05T13:29:00-04:00",   # optional
        "stripe_event": "evt_...",                      # optional, for the audit
+       "mrr": 1200,                                    # optional (#287): the price actually paid
+       "courtesy_plan": "plan_ai_growth",              # optional (#288): the plan given for free
+       "courtesy_note": "...",                         # optional (#288)
        "update_existing": false}                       # must be explicit
 
     `variant` must be a key in studio_package.PACKAGES. The hours, term and
@@ -29640,6 +29643,19 @@ def admin_register_client():
                    "guess which product someone bought",
         }), 400
 
+    # PATCH #288 — a courtesy upgrade: the plan the client was GIVEN, at the price
+    # they pay (Michael, 18 Nov 09:51: Camila bought Real Sets, holds AI Growth,
+    # pays $1,200). The variant keeps the maths (hours, deadline, bucket); the
+    # courtesy plan is what the record, the sheet and the team call it.
+    _court = None
+    if str(_p.get("courtesy_plan") or "").strip():
+        _court = _studio.spec_by_kind(str(_p.get("courtesy_plan")).strip())
+        if _court is None or _court.get("plan") != "monthly":
+            return jsonify({"ok": False, "error": "unknown courtesy_plan",
+                            "allowed": sorted({s["kind"] for s in _studio.PLANS.values() if s.get("plan") == "monthly"}
+                                              | {_studio.REAL_SETS_FOUNDING["kind"]})}), 400
+    _shown = _court or _spec
+
     # ── refuse to duplicate ──
     _existing_key, _existing = _find_lead_by_email(_email)
     if not _existing_key and _phone_digits:
@@ -29657,8 +29673,12 @@ def admin_register_client():
 
     # ── the term, from the same maths the purchase path uses ──
     _tz = pytz.timezone(TIMEZONE)
+    # PATCH #288 — an update without purchased_at keeps the purchase the record already has
+    _bought_src = str(_p.get("purchased_at") or "").strip()
+    if not _bought_src and _existing_key and isinstance((_existing or {}).get("studio_package"), dict):
+        _bought_src = str(_existing["studio_package"].get("purchased") or "").strip()
     try:
-        _bought = datetime.fromisoformat(str(_p.get("purchased_at") or "").strip())
+        _bought = datetime.fromisoformat(_bought_src)
         if _bought.tzinfo is None:
             _bought = _tz.localize(_bought)
     except Exception:
@@ -29670,7 +29690,9 @@ def admin_register_client():
         "purchased": _bought.isoformat(),
         "stripe_event": str(_p.get("stripe_event") or "").strip(),
         "variant": _spec["kind"],
-        "package_name": _spec["name"],
+        "package_name": _shown["name"],
+        "courtesy_plan": (_court["kind"] if _court else ""),            # PATCH #288
+        "courtesy_note": str(_p.get("courtesy_note") or "").strip(),   # PATCH #288
         "hours": _spec["hours"],
         "term_days": _spec["term_days"],
         "recurring": bool(_spec["recurring"]),
@@ -29723,7 +29745,7 @@ def admin_register_client():
         _rec = lead_data[_key]
         _created = True
 
-    _rec["product"] = _spec["name"]
+    _rec["product"] = _shown["name"]   # PATCH #288 — the plan she was given
     _rec["outcome"] = "Won"
     _rec["status"] = "client"
     _rec["relationship"] = _rel          # #52 — keeps the sales rail off them
@@ -29739,10 +29761,11 @@ def admin_register_client():
         _update_lead_sheet_status(
             _rec.get("name") or _name,
             _spec["sheet_status"],
-            notes=(f"{_spec['name']} — {_spec['hours']}h, purchased "
+            notes=(f"{_shown['name']} — {_spec['hours']}h, purchased "
                    f"{_bought.strftime('%b %d, %Y')}; books until "
-                   f"{_term['booking_deadline'].strftime('%b %d, %Y')}"),
-            service=_spec["name"],
+                   f"{_term['booking_deadline'].strftime('%b %d, %Y')}"
+                   + (f"; courtesy upgrade from {_spec['name']}, pays ${_box['mrr']:,.0f}/mo" if _court else "")),
+            service=_shown["name"],
             next_steps="Client onboarded — portal access issued; LARA owns delivery",
         )
     except Exception as _shx:
@@ -29752,10 +29775,11 @@ def admin_register_client():
         _post_to_slack_async(SLACK_DEV_CHANNEL, (
             f":busts_in_silhouette: *Client record {'created' if _created else 'updated'}* "
             f"— *{_rec.get('name')}* (`{mask_contact(_key)}`)\n"
-            f"{_spec['name']} · {_spec['hours']}h · books until "
-            f"{_term['booking_deadline'].strftime('%b %d, %Y')}\n"
+            f"{_shown['name']} · {_spec['hours']}h · books until "
+            f"{_term['booking_deadline'].strftime('%b %d, %Y')}"
+            + (f" · courtesy upgrade from {_spec['name']} (#288)" if _court else "") + "\n"
             f"relationship=`{_rel}` (sales rail OFF) · "
-            f"{'one-off $' + format(_spec.get('one_off', 0), ',') if not _spec['recurring'] else '$' + format(_spec['mrr'], ',') + '/mo'}\n"
+            f"{'one-off $' + format(_spec.get('one_off', 0), ',') if not _spec['recurring'] else '$' + format(_box['mrr'], ',.0f') + '/mo'}\n"
             f"_via /admin/register-client (Patch #55A) — the repair path the "
             f"PAID CLIENT NOT LINKED alarm never had._"))
     except Exception:
@@ -29768,7 +29792,7 @@ def admin_register_client():
     # its success response is the thing a human trusts instead of checking.
     _stored = lead_data.get(_key) or {}
     _sbox = _stored.get("studio_package") or {}
-    _verified = (_stored.get("product") == _spec["name"]
+    _verified = (_stored.get("product") == _shown["name"]
                  and _stored.get("outcome") == "Won"
                  and bool(_stored.get("booked"))
                  and _sbox.get("variant") == _spec["kind"])

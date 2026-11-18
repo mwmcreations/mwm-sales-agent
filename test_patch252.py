@@ -101,7 +101,7 @@ check("podcast price stays off", not ai.ai_lead(None, ["hi, how much is a podcas
 print("== languages / length")
 check("PT + ES key lines", "primeiro estúdio com AI Wall de Orlando" in off and "primer estudio con AI Wall de Orlando" in off)
 check("names stay in English", "Product names stay in English in every language" in off)
-check("block stays compact (252g: 10,500 with the Wall vs Spot block)", len(on) < 10500)
+check("block stays compact (252g: 10,500 with the Wall vs Spot block; #289 adds 'every month' to the three plan lines)", len(on) < 10560)
 
 print("== app.py + studio_visit.py")
 SRC = open(os.path.join(HERE, "app.py"), encoding="utf-8").read()

@@ -60,8 +60,8 @@ dspec, dterm = sp.custom_spec("AI Starter", 6, date(2026, 10, 16), date(2027, 1,
                               footer_note="The first 3 months are the minimum commitment.",
                               first_session=FS)
 dh = sp._welcome_email_html("David", "ABC123", dspec, dterm)
-check("ongoing.per_month", "2 hours of professional studio time every month" in dh)
-check("ongoing.hours_li", "<li>2 studio hours every month (1 on our real sets and 1 on the AI Wall)</li>" in dh)
+check("ongoing.per_month", "an ongoing creative partnership with MWM Studios, renewed every month" in dh)   # #289
+check("ongoing.hours_li", "<li>Your monthly studio time: 2 hours, refreshed every month (1 on our real sets and 1 on the AI Wall)</li>" in dh)   # #289
 for bad in ("6 hours", "must be used within", "for 3 months", "total)", "January 16", "next 3"):
     check(f"ongoing.no[{bad}]", bad not in dh)
 check("ongoing.includes_kept", "1 Full Immersion video every month" in dh)

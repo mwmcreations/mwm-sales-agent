@@ -76,9 +76,9 @@ check("revenue_split", (rn, mrr, on, ot) == (2, 1297 + 1200, 1, 599), (rn, mrr, 
 today = datetime.now(sp.pytz.timezone("America/New_York")).date()
 st = sp.PLANS["price_1UR0ipDAWlnEb9RfSTYiE4VE"]
 h = sp._welcome_email_html("Ana", "ABC123", st, sp.package_term(st, today))
-check("mail.monthly.per_month", "Your <strong>AI Starter Plan</strong> is active — 2 hours of professional studio time every month" in h)
-check("mail.monthly.pace", "<li>2 studio hours every month (1 on our real sets, 1 on the AI Wall)</li>" in h)
-check("mail.monthly.rollover", "you can hold up to 4 hours at a time" in h)
+check("mail.monthly.per_month", "Your <strong>AI Starter Plan</strong> is active: an ongoing creative partnership with MWM Studios, renewed every month" in h)   # #289
+check("mail.monthly.pace", "<li>Your monthly studio time: 2 hours, refreshed every month (1 on our real sets, 1 on the AI Wall)</li>" in h)   # #289
+check("mail.monthly.rollover", "you can hold up to two months' worth" in h and "4 hours at a time" not in h)   # #289
 check("mail.monthly.fi", "Your plan includes 1 Full Immersion video" in h and "up to 10 edited short videos" in h)
 for bad in ("must be used within", "total across", "next 60 days", "60 days"):
     check(f"mail.monthly.no[{bad}]", bad not in h)
@@ -194,7 +194,7 @@ sp.handle_stripe_event({"id": "evt_gr", "type": "checkout.session.completed", "d
 tp = [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client"]
 check("co.upgrade", tp and tp[0]["package"] == "AI Growth Plan" and tp[0]["monthly_hours"] == "4"
       and tp[0]["cap_hours"] == "8" and tp[0]["add_hours"] == "4", tp)
-check("co.upgrade.mail", "This month's hours are already in your portal" in MAILS[-1][2]
+check("co.upgrade.mail", "This month's studio time is already in your portal" in MAILS[-1][2]   # #289
       and "$1,697/month" in MAILS[-1][2])
 WP["existing"] = False
 

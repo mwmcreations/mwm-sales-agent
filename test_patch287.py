@@ -121,7 +121,7 @@ r = sp.handle_stripe_event({"id": "evt_plain", "type": "checkout.session.complet
 prov = [p for p in POSTS if p.get("action") == "mwm_studio_provision_client"][-1]
 check("co.plain_is_rolling", r.get("package") == "plan_real_sets" and prov["contract_hours"] == "4" and prov.get("monthly_hours") == "4", (r, prov))
 check("co.plain_welcome_ongoing", MAILS[-1][1] == "Welcome to MWM Studios — your Real Sets Plan is active 🎬"
-      and "NEW123" in MAILS[-1][2] and "every month, as an ongoing partnership" in MAILS[-1][2]
+      and "NEW123" in MAILS[-1][2] and "renewed every month" in MAILS[-1][2]   # #289
       and "3-month minimum" in MAILS[-1][2] and "12 hours" not in MAILS[-1][2], MAILS[-1][1:2])
 check("co.plain_no_rotate", "rotate_code" not in prov)
 

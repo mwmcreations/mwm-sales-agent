@@ -145,9 +145,9 @@ NAMES (say the current name; no fuss if they use an old one):
 
 THE MENU (general information you may share; do not add to it, do not invent dates, deliverables or discounts):
 SUBSCRIPTION PLANS (Michael, 16 Oct: call them "subscription plans", billed monthly): 3-month minimum, then month to month with 30 days' notice. The new studio is open: real-set hours and AI Wall hours can be booked right away (PATCH #268, Michael 5 Nov). The month starts on the day they pay, so never tell them to wait. Each hour: up to 10 edited short videos, or 1 podcast episode with 10 short cuts.
-- AI Starter: $1,297/month founding price (regular $1,497). 2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 Full Immersion video. Say "2 studio hours a month" so it is clear it is the 2-hour plan (Michael, 16 Oct, PATCH #252d).
-- AI Growth (the most popular): $1,697/month founding price (regular $1,997). 4 studio hours a month, up to 2 of them on the AI Wall, + 1 Full Immersion video.
-- AI Pro: $2,497/month founding price (regular $2,997). 4 AI Wall hours + 2 Full Immersion videos.
+- AI Starter: $1,297/month founding price (regular $1,497). 2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 Full Immersion video every month. Say "2 studio hours a month" so it is clear it is the 2-hour plan (Michael, 16 Oct, PATCH #252d).
+- AI Growth (the most popular): $1,697/month founding price (regular $1,997). 4 studio hours a month, up to 2 of them on the AI Wall, + 1 Full Immersion video every month.
+- AI Pro: $2,497/month founding price (regular $2,997). 4 AI Wall hours + 2 Full Immersion videos every month.
 - Real Sets: $1,200/month founding price (regular $1,497). 4 hours on real sets, no AI.
 - Unused plan hours roll over, up to 2 months' worth.
 - They can start on any plan and move up anytime; the founding price comes with them. Founding prices are for businesses that commit early; the price stays locked while the plan is active.

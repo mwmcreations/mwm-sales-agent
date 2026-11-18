@@ -60,7 +60,7 @@ check("you.they", pd.second_person("they confirm after the board meets") == "you
 check("you.untouched", pd.second_person("Batch in December for January launch") == "Batch in December for January launch")
 check("you.contraction", pd.second_person("he doesn't want ads") == "you don't want ads")
 check("draft.recap_notes_kept", any("Batch in December for January launch." in l for l in r["lines"]))
-check("draft.recap_plan_line", any(l.startswith("The plan we discussed, AI Pro: 4 AI Wall hours a month plus two Full Immersion videos. $2,497/month (regular $2,997).") for l in r["lines"]), r["lines"])
+check("draft.recap_plan_line", any(l.startswith("The plan we discussed, AI Pro: 4 AI Wall hours a month plus two Full Immersion videos every month. $2,497/month (regular $2,997).") for l in r["lines"]), r["lines"])
 check("draft.recap_includes", sum(1 for l in r["lines"] if l.startswith("- ")) == 3)
 check("draft.recap_terms", any("3-month minimum" in l and "November 30" in l for l in r["lines"]))
 check("draft.recap_next_steps", any(l.startswith("Next steps as we agreed: You confirm after your deal signs") for l in r["lines"]), r["lines"])
