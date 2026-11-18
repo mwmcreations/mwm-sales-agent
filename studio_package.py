@@ -466,6 +466,12 @@ def _add_calendar_month(d, n):
     return d.replace(year=y, month=m, day=1)
 
 
+def next_refresh_date(start):
+    """PATCH #290 — the next monthly charge after `start` (same calendar day, clamped)."""
+    d = start.date() if hasattr(start, "date") else start
+    return _add_calendar_month(d, 1)
+
+
 def billing_dates(spec, start):
     """Every date this package is charged on. Pure. [] for one-offs."""
     if not (spec or {}).get("recurring"):
@@ -775,7 +781,8 @@ def package_for_checkout(session: dict):
 
 
 def topup_portal_client(email: str, add_hours, cap_hours=0, end=None, ref: str = "",
-                        package: str = "", monthly_hours=0, dry_run: bool = False) -> dict:
+                        package: str = "", monthly_hours=0, dry_run: bool = False,
+                        next_refresh=None) -> dict:
     """PATCH #278 — add hours to an EXISTING portal client (WP snippet 15,
     action mwm_studio_topup_client). `cap_hours` > 0 caps what they can hold
     AVAILABLE afterwards (monthly roll-over: 2 months' worth); `end` only ever
@@ -790,6 +797,8 @@ def topup_portal_client(email: str, add_hours, cap_hours=0, end=None, ref: str =
         payload["package"] = package
     if monthly_hours:
         payload["monthly_hours"] = str(monthly_hours)
+    if next_refresh:   # PATCH #290 — the portal's 'Refreshes on …' (snippet 15 v3)
+        payload["next_refresh"] = next_refresh.strftime("%Y-%m-%d") if hasattr(next_refresh, "strftime") else str(next_refresh)
     if dry_run:
         payload["dry_run"] = "1"
     import time as _t
@@ -868,7 +877,8 @@ def _hours_added_email_html(first_name: str, spec: dict, term: dict, topup: dict
 
 
 def provision_portal_client(name: str, email: str, spec: dict = None,
-                            dry_run: bool = False, start=None, rotate_code: bool = False) -> dict:
+                            dry_run: bool = False, start=None, rotate_code: bool = False,
+                            next_refresh=None) -> dict:
     """Create (or fetch) the portal account on WP page 1102's login store.
 
     Returns {'ok', 'access_code', 'existing', 'raw', 'status', 'term'} where
@@ -898,6 +908,11 @@ def provision_portal_client(name: str, email: str, spec: dict = None,
     }
     if spec.get("plan") and spec.get("monthly_hours"):
         payload["monthly_hours"] = str(spec["monthly_hours"])   # PATCH #278
+    # PATCH #290 — a monthly plan's next charge is the portal's 'Refreshes on …'.
+    if next_refresh is None and spec.get("plan") == "monthly":
+        next_refresh = next_refresh_date(term["start"])
+    if next_refresh:
+        payload["next_refresh"] = next_refresh.strftime("%Y-%m-%d") if hasattr(next_refresh, "strftime") else str(next_refresh)
     if dry_run:
         payload["dry_run"] = "1"
     if rotate_code:
@@ -1289,6 +1304,13 @@ def _on_invoice_paid(inv: dict, event_id: str) -> dict:
         # the rolling plan (WP starts fresh once the old window has closed).
         _cov = _prepaid_bucket_covers(email, pstart)
         if _cov.get("covered"):
+            # PATCH #290 — no hours, but the portal's 'Refreshes on …' moves to the next charge.
+            if pend:
+                try:
+                    topup_portal_client(email, 0, ref=f"refresh:{inv_id}",
+                                        next_refresh=datetime.fromtimestamp(int(pend), pytz.timezone(TIMEZONE)).date())
+                except Exception as _tx:
+                    _report("studio.refresh_touch", _tx, f"invoice={inv_id}")
             line = (f"💳 *{spec['name']}* charge paid by *{name}* ({email}) — covered by their prepaid "
                     f"{_cov.get('hours')}-hour package until {_cov.get('until')}; no hours added. Rolling "
                     f"monthly hours start with the first charge after that date. (#287)")
@@ -1303,9 +1325,10 @@ def _on_invoice_paid(inv: dict, event_id: str) -> dict:
                 + timedelta(days=PLAN_TOPUP_WINDOW_DAYS)
         else:
             end = datetime.now(pytz.timezone(TIMEZONE)).date() + timedelta(days=PLAN_FIRST_WINDOW_DAYS)
+        _next = datetime.fromtimestamp(int(pend), pytz.timezone(TIMEZONE)).date() if pend else None   # PATCH #290
         res = topup_portal_client(email, spec["monthly_hours"] * qty,
                                   cap_hours=spec["cap_hours"] * qty, end=end,
-                                  ref=f"invoice:{inv_id}")
+                                  ref=f"invoice:{inv_id}", next_refresh=_next)
         if res.get("ok") and res.get("found"):
             line = (f"🔁 *{spec['name']}* renewed: *{name}* ({email}) · "
                     f"+{res.get('added')}h → {res.get('available')}h available "
@@ -1372,7 +1395,8 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
             cap_hours=spec.get("cap_hours") or 0,
             end=term.get("booking_deadline"), ref=f"buy:{event_id}",
             package=spec["name"] if spec["plan"] in ("monthly", "annual") else "",
-            monthly_hours=spec.get("monthly_hours") or 0)
+            monthly_hours=spec.get("monthly_hours") or 0,
+            next_refresh=(next_refresh_date(term["start"]) if spec["plan"] == "monthly" and term.get("start") else None))   # PATCH #290
 
     # PATCH #287 — a plan bought on an account whose booking window had closed
     # (WP: fresh_start) belongs to someone who has not logged in for a while:

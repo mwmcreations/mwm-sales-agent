@@ -171,11 +171,13 @@ LEADS["whatsapp:+1407"] = {"name": "Camila Silveira", "email": "camila@x.com", "
                                               "booking_deadline": "2027-02-15"}}
 n0, s0 = len(POSTS), len(SLACK)
 r = sp.handle_stripe_event(inv("in_dec", sp.STUDIO_PRICE_ID, epoch(2026, 12, 17), "camila@x.com"))
-check("bucket.dec_covered", r.get("handled") and r.get("covered_until") == "2027-02-15" and len(POSTS) == n0, r)
+check("bucket.dec_covered", r.get("handled") and r.get("covered_until") == "2027-02-15"
+      and [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client" and p.get("add_hours") != "0"] == [], r)   # #290: a 0-hour touch is allowed
 check("bucket.dec_told_matt", any("covered by their prepaid 12-hour package until Feb 15, 2027" in t for _, t in SLACK[s0:]), SLACK[s0:])
 check("bucket.record_untouched", LEADS["whatsapp:+1407"]["studio_package"]["variant"] == "studio_3mo")
 r = sp.handle_stripe_event(inv("in_jan", sp.STUDIO_PRICE_ID, epoch(2027, 1, 17), "camila@x.com"))
-check("bucket.jan_covered", r.get("handled") and r.get("covered_until") == "2027-02-15" and len(POSTS) == n0, r)
+check("bucket.jan_covered", r.get("handled") and r.get("covered_until") == "2027-02-15"
+      and [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client" and p.get("add_hours") != "0"] == [], r)   # #290
 n0, s0 = len(POSTS), len(SLACK)
 r = sp.handle_stripe_event(inv("in_feb", sp.STUDIO_PRICE_ID, epoch(2027, 2, 17), "camila@x.com"))
 tops = [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client"]
@@ -204,7 +206,7 @@ check("app.register_uses_spec_by_kind", "_spec = _studio.spec_by_kind(_variant) 
 check("app.register_mrr_override", '"mrr": (float(_p.get("mrr")) if str(_p.get("mrr") or "").strip() else _spec["mrr"]),' in SRC)
 check("app.compiles", subprocess.run([sys.executable, "-m", "py_compile", os.path.join(HERE, "app.py")], capture_output=True).returncode == 0)
 SP = open(os.path.join(HERE, "studio_package.py"), encoding="utf-8").read()
-check("sp.rotate_param", "rotate_code: bool = False) -> dict:" in SP and 'payload["rotate_code"] = "1"' in SP)
+check("sp.rotate_param", "rotate_code: bool = False,\n                            next_refresh=None) -> dict:" in SP and 'payload["rotate_code"] = "1"' in SP)   # #290
 check("sp.fresh_welcome", 'if topup is not None and not topup.get("welcome"):' in SP and "_rot = provision_portal_client(name, email, spec, start=start, rotate_code=True)" in SP)
 check("sp.helpers", "def _prepaid_bucket_covers(email, period_start_epoch):" in SP and "def _convert_bucket_record(key, rec, spec):" in SP)
 check("sp.covered_before_topup", SP.index("_cov = _prepaid_bucket_covers(email, pstart)") < SP.index('res = topup_portal_client(email, spec["monthly_hours"] * qty'))

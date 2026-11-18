@@ -1,5 +1,5 @@
 <?php
-// Code Snippets plugin — Snippet ID 15 (ACTIVE) — reconstructed snapshot Jul 6 2026
+// Code Snippets plugin — Snippet ID 15 (ACTIVE) — reconstructed snapshot Jul 6 2026; v3 18 Nov 2026 (next_refresh, 0-hour touch) — live edited via the Code Snippets REST route
 // NOTE: live copy bootstraps option mwm_portal_provision_secret with the shared
 // secret (REDACTED here — value lives in WP options + Railway env WP_PORTAL_SECRET).
 
@@ -40,9 +40,16 @@ function mwm_s7_provision_client() {
 	}
 
 	$dry      = isset( $_POST['dry_run'] ) && '1' === $_POST['dry_run'];
+	// v3 (DEV, 18 Nov 2026) — the next refresh date (the next monthly charge) travels with every
+	// purchase; the portal shows 'Refreshes on …' from it (plugin v2.8.4, clients.next_refresh_date).
+	$next_refresh = isset( $_POST['next_refresh'] ) ? sanitize_text_field( wp_unslash( $_POST['next_refresh'] ) ) : '';
+	$next_refresh = preg_match( '/^\d{4}-\d{2}-\d{2}$/', $next_refresh ) ? $next_refresh : '';
 	$existing = $wpdb->get_row( $wpdb->prepare( "SELECT id, active FROM $table WHERE LOWER(email) = %s", $email ) );
 
 	if ( $existing ) {
+		if ( ! $dry && $next_refresh ) {
+			$wpdb->update( $table, array( 'next_refresh_date' => $next_refresh ), array( 'id' => $existing->id ) );
+		}
 		if ( ! $dry && isset( $_POST['rotate_code'] ) && '1' === $_POST['rotate_code'] ) {
 			$code = mwm_s7_gen_access_code();
 			$wpdb->update( $table,
@@ -74,6 +81,7 @@ function mwm_s7_provision_client() {
 		'contract_start_date' => $start,
 		'contract_end_date'   => $end,
 		'package_name'        => isset( $_POST['package'] ) ? sanitize_text_field( wp_unslash( $_POST['package'] ) ) : 'Studio Package',
+		'next_refresh_date'   => $next_refresh ? $next_refresh : null,
 		'active'              => 1,
 		'notes'               => 'Auto-provisioned by Sales Machine (Stripe webhook)',
 		'created_at'          => current_time( 'mysql' ),
@@ -137,7 +145,10 @@ function mwm_s7_topup_client() {
 	}
 	$add = isset( $_POST['add_hours'] ) ? (float) $_POST['add_hours'] : 0;
 	$cap = isset( $_POST['cap_hours'] ) ? max( 0, (float) $_POST['cap_hours'] ) : 0;
-	if ( $add <= 0 || $add > 200 ) {
+	$next_refresh = isset( $_POST['next_refresh'] ) ? sanitize_text_field( wp_unslash( $_POST['next_refresh'] ) ) : ''; // v3
+	$next_refresh = preg_match( '/^\d{4}-\d{2}-\d{2}$/', $next_refresh ) ? $next_refresh : '';
+	// v3 — add_hours=0 with a next_refresh is a 'touch': only the refresh date moves (a prepaid bucket's covered charge).
+	if ( $add < 0 || $add > 200 || ( 0 == $add && ! $next_refresh ) ) {
 		wp_send_json_error( array( 'error' => 'add_hours must be between 0 and 200' ), 400 );
 	}
 	$ref = isset( $_POST['ref'] ) ? substr( sanitize_text_field( wp_unslash( $_POST['ref'] ) ), 0, 120 ) : '';
@@ -186,6 +197,9 @@ function mwm_s7_topup_client() {
 	}
 	if ( isset( $_POST['monthly_hours'] ) && (float) $_POST['monthly_hours'] > 0 ) {
 		$row['monthly_hours'] = (float) $_POST['monthly_hours'];
+	}
+	if ( $next_refresh ) {
+		$row['next_refresh_date'] = $next_refresh; // v3 — the portal's 'Refreshes on …'
 	}
 	$out = array(
 		'found' => true, 'duplicate' => false, 'dry_run' => $dry, 'client_id' => (int) $c->id,

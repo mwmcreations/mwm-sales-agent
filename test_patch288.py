@@ -111,9 +111,11 @@ check("rp.unknown_courtesy_ignored", sp._record_plan("bad2@x.com", REAL) is REAL
 # ── 2. Camila: covered, then rolls into AI GROWTH at the Real Sets price ────
 n0, s0 = len(POSTS), len(SLACK)
 r = sp.handle_stripe_event(inv("in_dec", sp.STUDIO_PRICE_ID, epoch(2026, 12, 17), "camila@x.com"))
-check("cam.dec_covered", r.get("handled") and r.get("covered_until") == "2027-02-15" and len(POSTS) == n0, r)
+check("cam.dec_covered", r.get("handled") and r.get("covered_until") == "2027-02-15"
+      and [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client" and p.get("add_hours") != "0"] == [], r)   # #290
 r = sp.handle_stripe_event(inv("in_jan", sp.STUDIO_PRICE_ID, epoch(2027, 1, 17), "camila@x.com"))
-check("cam.jan_covered", r.get("handled") and r.get("covered_until") == "2027-02-15" and len(POSTS) == n0, r)
+check("cam.jan_covered", r.get("handled") and r.get("covered_until") == "2027-02-15"
+      and [p for p in POSTS[n0:] if p.get("action") == "mwm_studio_topup_client" and p.get("add_hours") != "0"] == [], r)   # #290
 spr = LEADS["whatsapp:+1407"]["studio_package"]
 check("cam.record_kept", spr["variant"] == "studio_3mo" and spr["courtesy_plan"] == "plan_ai_growth"
       and LEADS["whatsapp:+1407"]["product"] == "AI Growth Plan", spr)
