@@ -249,58 +249,91 @@ def stop(state, now, reason):
     return state
 
 
-# ── copy — Michael's voice, first person. Texts ask one thing: still interested?
-# (Michael, 17 Nov: "personal and professional at the same time"; a comma after
-# the name, no dash symbols.) The brand prefix and the STOP line are added by
-# sms_copy.compose, never here.
+# ── copy — Michael's voice, first person. A creative studio does not ask
+# "still interested?"; it brings the story back (Michael, 17 Nov 19:59: "that
+# doesn't bring any emotion, doesn't bring any value… we do storytelling…
+# short, but much more creative, just like MWM would do"). A comma after the
+# name, no dash symbols. The brand prefix and the STOP line are added by
+# sms_copy.compose, never here; the app tries the variants in order and sends
+# the first that fits two segments.
 def _fn(name):
     s = str(name or "").strip().split()
     return s[0].strip(",.").title() if s else "there"
 
 
-def touch_sms(n, name):
-    fn = _fn(name)
-    if n == 1:
-        return f"Hi {fn}, Michael here from MWM. Still interested in what we talked about? If yes, I'll send you two options."
-    if n == 2:
-        return f"Hi {fn}, Michael again. Still interested? A yes or a not now is all I need."
-    if n == 3:
-        return f"Hi {fn}, Michael, MWM Creations. Still interested? If the timing is off, tell me when to come back."
-    return f"Hi {fn}, Michael here. Last note from me on this. Still interested? The door stays open either way."
+def _biz(business):
+    b = str(business or "").strip()
+    return b if 0 < len(b) <= 40 else ""
 
 
-def touch_email(n, name, business=""):
-    """(subject, lines) — the app wraps lines with studio_visit._as_html."""
-    fn = _fn(name)
-    biz = str(business or "").strip()
-    about = f" for {biz}" if biz and len(biz) < 40 else ""
+def _mu(must_understand):
+    m = str(must_understand or "").strip().rstrip(".")
+    return m if 0 < len(m) <= 70 else ""
+
+
+def touch_sms_variants(n, name, business="", must_understand=""):
+    """Most specific first: with what they said their customers must understand,
+    with the business name, plain, and finally without the name."""
+    fn, biz, mu = _fn(name), _biz(business), _mu(must_understand)
+    out = []
     if n == 1:
-        subject = f"Still interested, {fn}?"
-        lines = [f"Hi {fn},", "",
-                 f"Michael here. We spoke about the videos{about} a few days ago and I have not heard back, "
-                 "so one question: still interested?",
-                 "If yes, reply with a yes and I'll send you two options to pick from. If the timing is off, "
-                 "tell me when to come back and I will.",
-                 "", "Michael Moraes", "MWM Creations & Studios, Orlando"]
+        if mu:
+            out.append(f"Hi {fn}, Michael here. You said people need to understand {mu}. Nobody learns that from a flyer; they learn it from a face and a story. Two dates to film yours?")
+        if biz:
+            out.append(f"Hi {fn}, Michael here. I kept thinking about {biz} after we talked. Every business has a story; most never film it. Yours deserves to be seen. Two dates to start?")
+        out.append(f"Hi {fn}, Michael here. I kept thinking about our conversation. Every business has a story; most never film it. Yours deserves to be seen. Two dates to start?")
+        out.append("Hi there, Michael here from MWM. Every business has a story; most never film it. Yours deserves to be seen. Two dates to start?")
     elif n == 2:
-        subject = f"Still interested, {fn}? (second note)"
-        lines = [f"Hi {fn},", "",
-                 "Michael again. I don't want to chase you if the moment has passed, so a yes or a not now is all I need.",
-                 "If it's a yes, I'll send two dates.",
-                 "", "Michael Moraes", "MWM Creations & Studios, Orlando"]
+        if biz:
+            out.append(f"Hi {fn}, Michael. A free idea for {biz}: film one customer the moment they realize they chose right. 30 seconds, no script, one studio hour. It beats any ad. Want to shoot it?")
+        out.append(f"Hi {fn}, Michael. A free idea: film one customer the moment they realize they chose right. 30 seconds, no script, one studio hour. It beats any ad. Want to shoot it?")
+        out.append("Hi there, Michael from MWM. A free idea: film one customer the moment they realize they chose right. 30 seconds, one studio hour. Want to shoot it?")
     elif n == 3:
-        subject = f"{fn}, still interested?"
-        lines = [f"Hi {fn},", "",
-                 f"Checking in one more time about the videos{about}. Still interested?",
-                 "If the answer is later, tell me the month and I'll come back then.",
-                 "", "Michael Moraes", "MWM Creations & Studios, Orlando"]
+        out.append(f"Hi {fn}, Michael. I don't chase people, I chase stories, and yours is a good one. If this month is wrong, tell me which one is right. If it's now, two dates are yours.")
+        out.append("Hi there, Michael from MWM. I don't chase people, I chase stories, and yours is a good one. If this month is wrong, say which one is right. If it's now, two dates are yours.")
     else:
-        subject = "Last note from me, the door stays open"
+        out.append(f"Hi {fn}, Michael. Last note from me. Someone in your market will tell their story on camera this year. I'd rather it were yours. The door stays open; reply when it's time.")
+        out.append("Hi there, Michael from MWM. Last note from me. Someone in your market will tell their story on camera this year. I'd rather it were yours. The door stays open.")
+    return out
+
+
+def touch_sms(n, name, business="", must_understand=""):
+    """The most specific variant (the app's fitter walks the rest)."""
+    return touch_sms_variants(n, name, business, must_understand)[0]
+
+
+def touch_email(n, name, business="", must_understand=""):
+    """(subject, lines) — the app wraps lines with studio_visit._as_html. Short,
+    one idea each, the way MWM talks: the story, not the sale."""
+    fn, biz, mu = _fn(name), _biz(business), _mu(must_understand)
+    about = biz or "your business"
+    sig = ["", "Michael Moraes", "MWM Creations & Studios, Orlando"]
+    if n == 1:
+        subject = f"The story I keep thinking about, {fn}"
         lines = [f"Hi {fn},", "",
-                 "This is my last note on this. I'd rather not keep writing if the timing is wrong.",
-                 "The door stays open. When it makes sense to tell your story on video, write back and we pick it up "
-                 "from where we left it.",
-                 "", "Michael Moraes", "MWM Creations & Studios, Orlando"]
+                 f"Michael here. Since we talked about {about} I keep coming back to one thing: "
+                 + (f"you said people need to understand {mu}, and nobody learns that from a flyer. They learn it from a face and a story."
+                    if mu else "your customers don't need another ad, they need to understand who they are dealing with before they call. That is a story, and stories get filmed."),
+                 "If you want, I'll put the first one on paper for you: one scene, one message, one minute. No cost, no commitment. "
+                 "Reply with a yes and I'll send it with two dates to film."] + sig
+    elif n == 2:
+        subject = f"One idea for {about}, free"
+        lines = [f"Hi {fn},", "",
+                 "A gift, no strings: film the moment a customer realizes they chose right. Not a testimonial read off a card, the real thing, "
+                 "thirty seconds, one studio hour, and it does more for trust than any paid ad. We built the studio for moments like that.",
+                 f"If that is the kind of video you want people to see about {about}, reply and I'll send two dates."] + sig
+    elif n == 3:
+        subject = f"{fn}, who tells your story if you don't?"
+        lines = [f"Hi {fn},", "",
+                 f"I don't chase people, I chase stories, and yours stayed with me. Right now the only version of {about} people can find online "
+                 "is the one your competitors leave room for. The version where they see your face, hear your reason and understand what you do differently: "
+                 "that one still needs to be filmed.",
+                 "If this month is wrong, tell me which one is right and I'll come back then. If it's now, two dates are yours."] + sig
+    else:
+        subject = f"The door stays open, {fn}"
+        lines = [f"Hi {fn},", "",
+                 "Last note from me on this. Someone in your market will tell their story on camera this year, and I would rather it were yours.",
+                 "When the moment comes, write back. We pick up exactly where we left off, and the first scene is already in my head."] + sig
     return subject, lines
 
 

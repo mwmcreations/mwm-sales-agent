@@ -22898,20 +22898,22 @@ def _quiet_pass(now=None):
                 item = {"key": _chase_mask_key(key), "name": v.get("name"), "business": v.get("business"),
                         "stage": stage, "why": why, "quiet_days": round(_ql.days_quiet(st, now) or 0, 1),
                         "touch": n, "channel": ch or "none", "sms": sms_why,
-                        "copy": (_ql.touch_sms(n, v.get("name")) if ch == _ql.SMS
-                                 else (_ql.touch_email(n, v.get("name"), v.get("business"))[0] if ch == _ql.EMAIL else ""))}
+                        "copy": (_ql.touch_sms(n, v.get("name"), v.get("business"), rec.get("must_understand")) if ch == _ql.SMS
+                                 else (_ql.touch_email(n, v.get("name"), v.get("business"), rec.get("must_understand"))[0] if ch == _ql.EMAIL else ""))}
                 if not ch:
                     if not live:                              # #285b: a dry pass changes nothing
                         item["held"] = "no channel"
                         out["would"].append(item)
                         continue
-                    # no road to the lead: Michael hears once, then the rail lets go (#285b)
+                    # no road to the lead: Michael hears once (inside the window), then the rail lets go (#285b/c)
                     if not st.get("escalated_at"):
                         escal.append((v, st, "no channel", key))
-                    _ql.stop(st, now, "no channel (Michael told)")
+                        item["held"] = "no channel — telling Michael"
+                    else:
+                        _ql.stop(st, now, "no channel (Michael told)")
+                        item["held"] = "no channel — Michael told, rail let go"
                     rec["quiet_rail"] = st
                     lead_data[key] = rec
-                    item["held"] = "no channel — Michael told, rail let go"
                     out["would"].append(item)
                     continue
                 ch_used = ch
@@ -22934,12 +22936,12 @@ def _quiet_pass(now=None):
                 res = {}
                 try:
                     if ch == _ql.EMAIL:
-                        subj, lines = _ql.touch_email(n, v.get("name"), v.get("business"))
+                        subj, lines = _ql.touch_email(n, v.get("name"), v.get("business"), rec.get("must_understand"))
                         res = _email_send(email, subj, _sv._as_html(lines), via=f"quiet_rail_t{n}", lead_key=key)
                         sent_ok = email_ok(res)
                     else:
-                        body = _sms_body_that_fits((lambda: _ql.touch_sms(n, v.get("name")),
-                                                    lambda: _ql.touch_sms(n, "")))
+                        _variants = _ql.touch_sms_variants(n, v.get("name"), v.get("business"), rec.get("must_understand"))
+                        body = _sms_body_that_fits(tuple((lambda _c=_c: _c) for _c in _variants))
                         res = _send_sms(e164, body, kind=SMS_KIND_MARKETING)
                         sent_ok = bool(res.get("ok"))
                 except Exception as _sx:
@@ -22966,19 +22968,23 @@ def _quiet_pass(now=None):
             elif a[0] == "escalate":
                 escal.append((v, st, ch_used or ("sms" if sms_ok else "email" if has_email else ""), key))
 
-    # Michael hears once per lead, all in one text (the first live pass may find several)
+    # Michael hears once per lead, all in one text (the first live pass may find several),
+    # and only inside the sending window: the rail runs all night, his phone should not (#285c)
     if escal:
         names = []
+        tell_now = live and _ql.within_hours(now)
         for v, st, road, key in escal:
             d = int(_ql.days_quiet(st, now) or 0)
             names.append(f"{v.get('name')} ({d}d{', no channel' if road == 'no channel' else ''})")
-            if live:
+            if tell_now:
                 st["escalated_at"] = now.isoformat()
+                if road == "no channel":
+                    _ql.stop(st, now, "no channel (Michael told)")
                 rec = lead_data.get(key)
                 if isinstance(rec, dict):
                     rec["quiet_rail"] = st
                     lead_data[key] = rec
-        if live:
+        if tell_now:
             text = ("MWM quiet leads, 10+ days since you last spoke: " + "; ".join(names[:6])
                     + (f"; +{len(names) - 6} more" if len(names) > 6 else "")
                     + ". The rail keeps touching every 5 days. Call them, or tell DEV 'stop <name>'.")
@@ -22991,7 +22997,7 @@ def _quiet_pass(now=None):
                                  ". Michael texted once; the rail keeps going.")
             out["escalated"] = len(escal)
         else:
-            out["would"].append({"escalate": names, "held": "switch off"})
+            out["would"].append({"escalate": names, "held": "switch off" if not live else "outside 8–18 ET"})
     return out
 
 
@@ -23066,9 +23072,9 @@ def admin_quiet_rail():
                                     "off_rail": out.get("off_rail", {})})
         return jsonify({"ok": True, "status": _quiet_status(), "would": _QUIET_LAST["would"],
                         "skipped": _QUIET_LAST["skipped"], "off_rail": _QUIET_LAST["off_rail"], "ran": bool(out),
-                        "copy": {"sms": [_ql.touch_sms(n, "Ana") for n in (1, 2, 3, 4)],
-                                 "email": [{"subject": _ql.touch_email(n, "Ana", "Ana's Bakery")[0],
-                                            "lines": _ql.touch_email(n, "Ana", "Ana's Bakery")[1]} for n in (1, 2, 3, 4)]}}), 200
+                        "copy": {"sms": [_ql.touch_sms_variants(n, "Ana", "Ana's Bakery", "why a wedding cake costs what it costs") for n in (1, 2, 3, 4)],
+                                 "email": [{"subject": _ql.touch_email(n, "Ana", "Ana's Bakery", "why a wedding cake costs what it costs")[0],
+                                            "lines": _ql.touch_email(n, "Ana", "Ana's Bakery", "why a wedding cake costs what it costs")[1]} for n in (1, 2, 3, 4)]}}), 200
     if not q:
         return jsonify({"ok": False, "error": "q is required (name, email or lead key)"}), 400
     if action not in ("status", "stop", "resume", "touched"):

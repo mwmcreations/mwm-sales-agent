@@ -103,7 +103,7 @@ G = {
     "SLACK_SUSAN_CHANNEL": "susan", "SLACK_MATT_CHANNEL": "matt", "SLACK_DEV_CHANNEL": "dev",
     "_email_send": lambda to, subj, html, **kw: (SENT["email"].append((to, subj)) or {"ok": True, "message_id": "m1"}),
     "email_ok": lambda r: bool(r.get("ok")), "_sv": _sv,
-    "_sms_body_that_fits": lambda builders: builders[0](),
+    "_sms_body_that_fits": lambda builders: next(b() for b in builders if len(b()) <= 240),
     "_send_sms": lambda e164, body, kind=None: (SENT["sms"].append((e164, body)) or {"ok": True, "sid": "s1"}),
     "_operator_alert": OA, "_report_error": lambda *a, **k: SENT["errors"].append(a),
     "print": lambda *a, **k: None, "_ql": _ql,
@@ -135,7 +135,7 @@ byname = {w["name"]: w for w in would}
 check("dark.vicente_sms_t1", byname.get("Vicente Orellana", {}).get("channel") == "sms" and byname["Vicente Orellana"]["touch"] == 1
       and byname["Vicente Orellana"]["held"] == "switch off", byname)
 check("dark.renay_email_t1_no_consent", byname.get("Renay PeGee", {}).get("channel") == "email" and byname["Renay PeGee"]["sms"] == "no_consent", byname)
-check("dark.copy_shown", byname["Vicente Orellana"]["copy"].startswith("Hi Vicente, "), byname["Vicente Orellana"]["copy"])
+check("dark.copy_shown", byname["Vicente Orellana"]["copy"].startswith("Hi Vicente, Michael here. I kept thinking about Owning Your House"), byname["Vicente Orellana"]["copy"])
 esc = [w for w in out["would"] if "escalate" in w]
 check("dark.escalation_listed_not_sent", len(esc) == 1 and any("Renay" in n for n in esc[0]["escalate"]), esc)
 check("dark.close_counted", out["closed"] == 1 and lead_data["whatsapp:+10000000004"]["quiet_rail"]["stopped"] == "quiet 20d", out)
@@ -156,8 +156,8 @@ SWITCH["quiet_rail_live"] = True
 G["_QUIET_LAST"]["sent_today"] = 0
 out2 = G["_quiet_pass"](NOW)
 check("live.sent_two", out2["sent"] == 2 and len(SENT["sms"]) == 1 and len(SENT["email"]) == 1, (out2, SENT))
-check("live.sms_to_vicente", SENT["sms"][0][0] == "+14073614743" and SENT["sms"][0][1].startswith("Hi Vicente, Michael here"), SENT["sms"])
-check("live.email_to_renay", SENT["email"][0][0] == "renay@example.com" and SENT["email"][0][1] == "Still interested, Renay?", SENT["email"])
+check("live.sms_to_vicente", SENT["sms"][0][0] == "+14073614743" and SENT["sms"][0][1].startswith("Hi Vicente, Michael here. I kept thinking about Owning Your House"), SENT["sms"])
+check("live.email_to_renay", SENT["email"][0][0] == "renay@example.com" and SENT["email"][0][1] == "The story I keep thinking about, Renay", SENT["email"])
 check("live.touch_recorded", lead_data["whatsapp:+14073614743"]["quiet_rail"]["touches"][0]["channel"] == "sms")
 check("live.escalated_once", out2["escalated"] == 2 and len(SENT["alert"]) == 1 and SENT["alert"][0][0] == "quiet"
       and "Renay PeGee (11d)" in SENT["alert"][0][1] and "No Road (7d, no channel)" in SENT["alert"][0][1], SENT["alert"])
@@ -176,6 +176,22 @@ lead_data["whatsapp:+14073614743"]["last_message_time"] = (NOW + timedelta(hours
 out4 = G["_quiet_pass"](NOW + timedelta(hours=2))
 st = lead_data["whatsapp:+14073614743"]["quiet_rail"]
 check("reset.after_reply", st["touches"] == [] and st["since"] == (NOW + timedelta(hours=1)).isoformat(), st)
+
+# ── an escalation outside the window waits for the morning (#285c) ──
+lead_data["whatsapp:+10000000008"] = {"name": "Late Night", "business": "", "email": "", "phone": "+10000000008",
+                                      "last_message_time": d(12), "last_inbound_at": d(12),
+                                      "chase": {"armed_at": d(14), "stopped": "replied", "stopped_at": d(13)}}
+SENT["alert"].clear()
+out_n = G["_quiet_pass"](ET.localize(datetime(2026, 11, 17, 22, 0)))
+st_n = lead_data["whatsapp:+10000000008"]["quiet_rail"]
+check("night.no_alert", not SENT["alert"] and out_n["escalated"] == 0, (SENT["alert"], out_n))
+check("night.not_let_go_yet", not st_n["stopped"] and not st_n["escalated_at"], st_n)
+check("night.listed_as_held", any("escalate" in w and w.get("held") == "outside 8–18 ET" for w in out_n["would"]), out_n["would"])
+out_m = G["_quiet_pass"](ET.localize(datetime(2026, 11, 18, 9, 0)))
+st_n = lead_data["whatsapp:+10000000008"]["quiet_rail"]
+check("morning.alert_then_let_go", len(SENT["alert"]) == 1 and "Late Night (12d, no channel)" in SENT["alert"][0][1]
+      and st_n["stopped"] == "no channel (Michael told)" and st_n["escalated_at"], (SENT["alert"], st_n))
+del lead_data["whatsapp:+10000000008"]
 
 # ── window + cap ──
 G["_QUIET_LAST"]["sent_today"] = 0
