@@ -79,6 +79,10 @@ lead_data = {
                               "last_message_time": d(8), "event_id": "ev2", "booked": True, "booked_at": d(9),
                               "last_outcome": "studio_package_pitched", "last_outcome_at": d(7),
                               "studio_pitch": {"done": False}},
+    # Replied 7 days ago, no email, no consent → no road: dry lists it, live tells Michael once and lets go
+    "whatsapp:+10000000007": {"name": "No Road", "business": "", "email": "", "phone": "+10000000007",
+                              "last_message_time": d(7), "last_inbound_at": d(7),
+                              "chase": {"armed_at": d(9), "stopped": "replied", "stopped_at": d(8)}},
     # test record → skipped
     "whatsapp:+10000000006": {"name": "Test Lead", "email": "t@example.com", "phone": "+10000000006",
                               "last_message_time": d(6), "test_lead": True, "last_inbound_at": d(6),
@@ -121,9 +125,12 @@ def check(name, cond, detail=""):
 # ── dark pass ──
 out = G["_quiet_pass"](NOW)
 check("dark.no_sends", not SENT["email"] and not SENT["sms"] and not SENT["alert"], SENT)
-check("dark.on_rail_four", out["on_rail"] == 4, out)             # Vicente, Renay, McBride, Four Touches (closed this pass)
+check("dark.on_rail_five", out["on_rail"] == 5, out)             # Vicente, Renay, McBride, Four Touches (closed this pass), No Road
 would = [w for w in out["would"] if "touch" in w]
-check("dark.two_due", out["due"] == 2 and len(would) == 2, out)
+check("dark.three_due", out["due"] == 3 and len(would) == 3, out)
+check("dark.no_road_listed_untouched", byname_pre := {w["name"]: w for w in would}, "")
+check("dark.no_road_held", byname_pre["No Road"]["held"] == "no channel" and byname_pre["No Road"]["channel"] == "none", byname_pre["No Road"])
+check("dark.no_road_state_unmutated", lead_data["whatsapp:+10000000007"]["quiet_rail"]["touches"] == [] and not lead_data["whatsapp:+10000000007"]["quiet_rail"]["stopped"])
 byname = {w["name"]: w for w in would}
 check("dark.vicente_sms_t1", byname.get("Vicente Orellana", {}).get("channel") == "sms" and byname["Vicente Orellana"]["touch"] == 1
       and byname["Vicente Orellana"]["held"] == "switch off", byname)
@@ -152,8 +159,9 @@ check("live.sent_two", out2["sent"] == 2 and len(SENT["sms"]) == 1 and len(SENT[
 check("live.sms_to_vicente", SENT["sms"][0][0] == "+14073614743" and SENT["sms"][0][1].startswith("Hi Vicente, Michael here"), SENT["sms"])
 check("live.email_to_renay", SENT["email"][0][0] == "renay@example.com" and SENT["email"][0][1] == "Still interested, Renay?", SENT["email"])
 check("live.touch_recorded", lead_data["whatsapp:+14073614743"]["quiet_rail"]["touches"][0]["channel"] == "sms")
-check("live.escalated_once", out2["escalated"] == 1 and len(SENT["alert"]) == 1 and SENT["alert"][0][0] == "quiet"
-      and "Renay PeGee (11d)" in SENT["alert"][0][1], SENT["alert"])
+check("live.escalated_once", out2["escalated"] == 2 and len(SENT["alert"]) == 1 and SENT["alert"][0][0] == "quiet"
+      and "Renay PeGee (11d)" in SENT["alert"][0][1] and "No Road (7d, no channel)" in SENT["alert"][0][1], SENT["alert"])
+check("live.no_road_let_go", lead_data["whatsapp:+10000000007"]["quiet_rail"]["stopped"] == "no channel (Michael told)")
 check("live.escalation_recorded", lead_data["whatsapp:+13127237582"]["quiet_rail"]["escalated_at"] == NOW.isoformat())
 check("live.susan_told", sum(1 for ch, t in SENT["slack"] if ch == "susan" and "quiet rail touch" in t) == 2, SENT["slack"])
 check("live.matt_told", any(ch == "matt" for ch, t in SENT["slack"]), SENT["slack"])

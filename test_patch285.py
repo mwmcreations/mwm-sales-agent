@@ -75,6 +75,7 @@ check("act.collects", d(6) in stamps and d(7) in stamps and d(8) in stamps and d
 check("act.latest", ql.latest(stamps, like=NOW).isoformat() == d(6))
 check("act.latest_none", ql.latest([], like=NOW) is None and ql.latest([None, "", "garbage"]) is None)
 check("act.quiet_touch_not_activity", "quiet_rail" not in " ".join(str(s) for s in stamps))
+check("act.hand_touch_counts", d(3) in ql.activity_stamps(dict(replied, hand_touches=[{"at": d(3), "by": "michael"}])))   # #285b
 st = ql.arm(NOW, ql.latest([d(6)], like=NOW))
 check("arm.shape", st["since"] == d(6) and st["touches"] == [] and st["stopped"] == "" and st["armed_at"] == NOW.isoformat())
 check("days.quiet", abs(ql.days_quiet(st, NOW) - 6.0) < 1e-6)
@@ -178,8 +179,14 @@ check("app.escalate_once_batched", '_operator_alert.alert("quiet", text)' in blk
 check("app.escalate_only_live", blk.index("if live:\n            text = (") > 0 and "_post_to_slack_async(SLACK_MATT_CHANNEL" in blk)
 check("app.close_tells_susan", "quiet rail closed for" in blk and "SLACK_SUSAN_CHANNEL" in blk)
 check("app.no_sms_road_remembered", 'st["no_sms"] = res.get("reason")' in blk and 'if st.get("no_sms"):' in blk)
+check("app.dark_never_mutates", 'if not live:                              # #285b: a dry pass changes nothing' in blk
+      and '_ql.note_touch(st, now, n, "none")' not in blk)
+check("app.no_channel_lets_go", '_ql.stop(st, now, "no channel (Michael told)")' in blk)
+check("app.touched_action", 'if action not in ("status", "stop", "resume", "touched"):' in blk
+      and 'r.setdefault("hand_touches", []).append({"at": touched_at.isoformat(), "by": "michael",' in blk
+      and "_ql.refresh(st, touched_at)" in blk)
 check("app.route", '@app.route("/admin/quiet-rail", methods=["GET", "POST"])' in blk and 'def admin_quiet_rail():' in blk
-      and 'if action not in ("status", "stop", "resume"):' in blk and "stopped via /admin/quiet-rail (Patch #285)" in blk)
+      and 'if action not in ("status", "stop", "resume", "touched"):' in blk and "stopped via /admin/quiet-rail (Patch #285)" in blk)
 check("app.route_masks", "_chase_mask_key(k)" in blk and "_chase_mask(str(r.get(\"email\") or \"\"))" in blk)
 check("app.route_shows_copy", '"copy": {"sms": [_ql.touch_sms(n, "Ana") for n in (1, 2, 3, 4)]' in blk)
 loop = SRC[SRC.index("def _lead_chase_loop():"):SRC.index('threading.Thread(target=_lead_chase_loop, daemon=True, name="lead_chase").start()')]

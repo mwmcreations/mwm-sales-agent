@@ -106,6 +106,9 @@ def activity_stamps(rec, chase=None):
            rec.get("first_touch_wa_at"), rec.get("manual_since"), rec.get("reoffer_at")]
     los = rec.get("last_outbound_sms")
     out.append(los.get("at") if isinstance(los, dict) else los)
+    # PATCH #285b — a text Michael sent from his own phone, recorded through
+    # /admin/quiet-rail action=touched (the Mac Messages app leaves no trace here)
+    out.extend(t.get("at") for t in (rec.get("hand_touches") or []) if isinstance(t, dict))
     ch = chase if isinstance(chase, dict) else (rec.get("chase") if isinstance(rec.get("chase"), dict) else {})
     out.extend((ch.get("sent") or {}).values())
     out.extend(t.get("at") for t in (ch.get("touches") or []) if isinstance(t, dict))

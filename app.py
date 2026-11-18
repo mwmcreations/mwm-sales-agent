@@ -22900,13 +22900,17 @@ def _quiet_pass(now=None):
                         "copy": (_ql.touch_sms(n, v.get("name")) if ch == _ql.SMS
                                  else (_ql.touch_email(n, v.get("name"), v.get("business"))[0] if ch == _ql.EMAIL else ""))}
                 if not ch:
-                    # no road to the lead: Michael hears once, the count still moves
+                    if not live:                              # #285b: a dry pass changes nothing
+                        item["held"] = "no channel"
+                        out["would"].append(item)
+                        continue
+                    # no road to the lead: Michael hears once, then the rail lets go (#285b)
                     if not st.get("escalated_at"):
                         escal.append((v, st, "no channel", key))
-                    _ql.note_touch(st, now, n, "none")
+                    _ql.stop(st, now, "no channel (Michael told)")
                     rec["quiet_rail"] = st
                     lead_data[key] = rec
-                    item["held"] = "no channel — Michael told"
+                    item["held"] = "no channel — Michael told, rail let go"
                     out["would"].append(item)
                     continue
                 ch_used = ch
@@ -23038,6 +23042,8 @@ def admin_quiet_rail():
     GET  /admin/quiet-rail?secret=…&run=1      run a pass now (dry while the switch is off)
     GET  /admin/quiet-rail?secret=…&q=<name>   one lead's rail state
     POST /admin/quiet-rail?secret=…&q=<name>&action=stop|resume   (≤3 matches, posts #dev)
+    POST /admin/quiet-rail?secret=…&q=<name>&action=touched[&at=<iso>][&note=…]   (#285b: Michael reached out by hand —
+         the Mac Messages app leaves no trace here; the touch resets the lead's quiet clock)
     """
     if not _admin_secret_ok(request.values.get("secret", "")):
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -23064,8 +23070,16 @@ def admin_quiet_rail():
                                             "lines": _ql.touch_email(n, "Ana", "Ana's Bakery")[1]} for n in (1, 2, 3, 4)]}}), 200
     if not q:
         return jsonify({"ok": False, "error": "q is required (name, email or lead key)"}), 400
-    if action not in ("status", "stop", "resume"):
-        return jsonify({"ok": False, "error": "action must be status|stop|resume"}), 400
+    if action not in ("status", "stop", "resume", "touched"):
+        return jsonify({"ok": False, "error": "action must be status|stop|resume|touched"}), 400
+    touched_at = now
+    if action == "touched" and request.values.get("at"):
+        try:
+            touched_at = datetime.fromisoformat(str(request.values.get("at")))
+            if touched_at.tzinfo is None:
+                touched_at = pytz.timezone(TIMEZONE).localize(touched_at)
+        except Exception:
+            return jsonify({"ok": False, "error": "at must be ISO 8601"}), 400
     hits = []
     for k, r in list(lead_data.items()):
         if not isinstance(r, dict):
@@ -23083,6 +23097,15 @@ def admin_quiet_rail():
             r["quiet_rail"] = st
             lead_data[k] = r
             _post_to_slack_async(SLACK_DEV_CHANNEL, f":no_entry: quiet rail stopped for *{r.get('name') or _chase_mask_key(k)}* via /admin/quiet-rail (Patch #285)")
+        elif action == "touched":                       # PATCH #285b
+            r.setdefault("hand_touches", []).append({"at": touched_at.isoformat(), "by": "michael",
+                                                     "note": str(request.values.get("note") or "")[:120]})
+            r["hand_touches"] = r["hand_touches"][-20:]
+            if st:
+                _ql.refresh(st, touched_at)
+                r["quiet_rail"] = st
+            lead_data[k] = r
+            _post_to_slack_async(SLACK_DEV_CHANNEL, f":pencil2: hand touch recorded for *{r.get('name') or _chase_mask_key(k)}* at {touched_at.strftime('%b %d %H:%M')} (quiet rail clock reset, Patch #285b)")
         elif action == "resume" and st and st.get("stopped"):
             st["stopped"] = ""
             st["stopped_at"] = ""
