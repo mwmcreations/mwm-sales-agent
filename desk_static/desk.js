@@ -295,6 +295,11 @@
     </div>`;
     const flags = (L.flags || []).map(f => { const m = FLAG[f]; return m ? `<span class="tag ${m[0]}">${esc(m[1])}</span>` : ""; }).join(" ");
     const notes = (L.notes || []).length ? `<div class="section"><h3>Notes</h3></div>` + L.notes.map(n => `<div class="note">${esc(typeof n === "object" ? (n.text || JSON.stringify(n)) : n)}</div>`).join("") : "";
+    // PATCH #282 — the drafted pitch emails: read, then Send
+    const pd = L.pitch_drafts;
+    const drafts = pd && pd.stages && pd.stages.length ? `<div class="section"><h3>Follow-up emails</h3><span class="n">${esc(pd.package || pd.kind)}</span></div>` +
+      pd.stages.map(s => `<div class="note draft"><b>${esc(s.stage)}</b> · ${esc(s.subject)}<div class="muted">${s.status === "sent" ? "sent " + when(s.sent_at) : "draft, not sent"}</div>
+        <div class="send-row"><button class="btn ghost small" data-act="pitch-view" data-stage="${esc(s.stage)}">Read</button>${s.status === "sent" ? "" : `<button class="btn small" data-act="pitch-view" data-stage="${esc(s.stage)}" data-send="1">Read &amp; send</button>`}</div></div>`).join("") : "";
     const tl = L.timeline || { events: [], turns: [] };
     const events = tl.events.length ? `<div class="tl">${tl.events.map(e => `<div class="ev ${esc(e.kind)}"><div class="t">${e.at ? when(e.at) : "—"}${e.by ? ` · ${esc(e.by)}` : ""}</div><div class="x">${esc(e.text)}</div></div>`).join("")}</div>` : `<div class="muted">No dated events on this record yet.</div>`;
     const turns = tl.turns.length ? `<div class="conv">${tl.turns.map(t => `<div class="bub ${t.role}"><span class="who">${t.role === "lead" ? L.name : (t.role === "michael" ? "Michael" : "Maya")}</span>${esc(t.text)}${t.at ? `<span class="at">${when(t.at)}</span>` : ""}</div>`).join("")}</div>`
@@ -304,7 +309,7 @@
       `<div class="sendbox"><textarea id="send-text" rows="2" placeholder="Write to ${esc(L.name)} on ${chan}…"></textarea>
        <div class="send-row"><span class="muted">${chan}</span><span class="grow"></span>
        <button class="btn ghost" data-act="send-maya">Send as Maya</button><button class="btn" data-act="send-michael">Send as Michael</button></div></div>`;
-    $("#panel-body").innerHTML = acts + (flags ? `<div class="meta" style="margin:-4px 0 12px;display:flex;gap:6px;flex-wrap:wrap">${flags}</div>` : "") + facts + notes +
+    $("#panel-body").innerHTML = acts + (flags ? `<div class="meta" style="margin:-4px 0 12px;display:flex;gap:6px;flex-wrap:wrap">${flags}</div>` : "") + facts + notes + drafts +
       `<div class="section"><h3>Timeline</h3><span class="n">${tl.events.length} ${tl.events.length === 1 ? "event" : "events"}</span></div>${events}` +
       `<div class="section"><h3>Conversation</h3><span class="n">${tl.turns.length} ${tl.turns.length === 1 ? "message" : "messages"}</span></div>${turns}` + sendBox;
   }
@@ -328,6 +333,13 @@
         <button class="opt danger" data-dnc="${(L.consent || {}).do_not_contact ? "0" : "1"}"><b>${(L.consent || {}).do_not_contact ? "Lift do-not-contact" : "Do not contact"}</b><span>${(L.consent || {}).do_not_contact ? "Allow messages again" : "Blocks every automated message and SMS to this person"}</span></button>
       </div><input id="move-reason" placeholder="Reason (optional)">`);
   }
+  function pitchSheet(L, stage, withSend) {   // PATCH #282
+    const s = ((L.pitch_drafts || {}).stages || []).find(x => x.stage === stage); if (!s) { toast("No such draft"); return; }
+    sheet(`<h3>${esc(s.stage)} · ${esc(L.name)}</h3><p class="muted">To ${esc(L.email || "(no email on record)")} from info@ · <b>${esc(s.subject)}</b></p>
+      <textarea id="pitch-text" class="draft-text" rows="14" ${s.status === "sent" ? "readonly" : ""}>${esc(s.text)}</textarea>
+      <div class="send-row"><span class="muted">${s.status === "sent" ? "Sent " + when(s.sent_at) : "Not sent yet"}</span><span class="grow"></span>
+      ${withSend && s.status !== "sent" && L.email ? `<button class="btn" data-act="pitch-send" data-stage="${esc(s.stage)}">Send this email</button>` : ""}</div>`);
+  }
   function noteSheet(L) { sheet(`<h3>Note on ${esc(L.name)}</h3><textarea id="note-text" rows="4" placeholder="What you want the record to remember…"></textarea><div class="send-row"><span class="grow"></span><button class="btn" data-act="note-save">Save note</button></div>`); setTimeout(() => $("#note-text").focus(), 50); }
   function takeoverSheet(L) { sheet(`<h3>Take over ${esc(L.name)}</h3><p class="muted">Maya holds her replies on this phone while you talk. She picks the thread back up when the time runs out, or when you hand it back.</p>
     <div class="opts"><button class="opt" data-hours="1"><b>1 hour</b></button><button class="opt" data-hours="2"><b>2 hours</b></button><button class="opt" data-hours="8"><b>Rest of the day</b><span>8 hours</span></button><button class="opt" data-hours="24"><b>Until tomorrow</b><span>24 hours</span></button></div>`); }
@@ -336,14 +348,15 @@
     state.report = pre;
     sheet(`<h3>Daily Event Report</h3><p class="muted">${esc(pre.name)}${pre.business ? " · " + esc(pre.business) : ""}${pre.event_id ? "" : " · no calendar event linked"}</p>
       <div class="opts outcomes">${OUTCOMES.map(([v, l]) => `<button class="opt" data-outcome="${v}"><b>${l}</b></button>`).join("")}</div>
-      <input id="rep-service" placeholder="Service discussed (optional)">
-      <textarea id="rep-notes" rows="3" placeholder="Notes"></textarea>
+      <select id="rep-service-pick"><option value="">Package pitched (if any)</option><option>Studio Package 3-month ($1,200)</option><option>Real Sets</option><option>AI Starter</option><option>AI Growth</option><option>AI Pro</option><option>ROADMAP Silver</option><option>ROADMAP Gold</option><option>ROADMAP Platinum</option><option value="__other">Other (type below)</option></select>
+      <input id="rep-service" placeholder="Package / service in your words (optional)">
+      <textarea id="rep-notes" rows="4" placeholder="Meeting notes: what they want, what you offered, objections. These words go into the recap draft."></textarea>
       <textarea id="rep-next" rows="2" placeholder="Next steps (optional)"></textarea>
       <div class="send-row"><span class="muted" id="rep-chosen">Pick the outcome</span><span class="grow"></span><button class="btn" data-act="report-submit" disabled>File report</button></div>`);
   }
   async function submitReport() {
     const pre = state.report || {}; const outcome = pre.outcome; if (!outcome) { toast("Pick the outcome first"); return; }
-    const body = { name: pre.name, business: pre.business || "", outcome, notes: $("#rep-notes").value.trim(), service: $("#rep-service").value.trim(), next_steps: $("#rep-next").value.trim(), event_id: pre.event_id || "" };
+    const body = { name: pre.name, business: pre.business || "", outcome, notes: $("#rep-notes").value.trim(), service: (($("#rep-service-pick") || {}).value && $("#rep-service-pick").value !== "__other") ? $("#rep-service-pick").value : $("#rep-service").value.trim(), next_steps: $("#rep-next").value.trim(), event_id: pre.event_id || "" };
     try {
       state.busy = true;
       const r = await fetch(withAuth("/desk/api/report/submit"), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(body) });
@@ -391,6 +404,8 @@
       else if (act_ === "send-maya" || act_ === "send-michael") { const t = $("#send-text").value.trim(); if (!t) { toast("Write something first"); return; }
         act(leadPath("send"), { text: t, as: act_ === "send-maya" ? "maya" : "michael" }, "Sent").then(j => { if (j && j.ok) { const tb = $("#send-text"); if (tb) tb.value = ""; } }); }
       else if (act_ === "report-submit") submitReport();
+      else if (act_ === "pitch-view") pitchSheet(L, a.dataset.stage, a.dataset.send === "1");   // PATCH #282
+      else if (act_ === "pitch-send") { const tx = ($("#pitch-text") || {}).value || ""; if (!tx.trim()) { toast("The email is empty"); return; } closeSheet(); act(leadPath("pitch-send"), { stage: a.dataset.stage, text: tx }, "Sent from info@"); }
       return;
     }
     const oc0 = e.target.closest(".opt[data-outcome]"); if (oc0) {

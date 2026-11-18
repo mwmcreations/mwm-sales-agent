@@ -248,3 +248,8 @@ details.ended summary { color: var(--fg3); font-size: 13px; padding: 8px 2px; cu
 .today-ev.personal, .cal-ev.personal { opacity: .55; border-style: dashed; }
 .today-ev.personal .btn, .cal-ev.personal .btn { display: none; }
 .cal-toggle { font-size: inherit; font-weight: 400; text-decoration-style: dotted; }
+
+/* PATCH #282 — drafted pitch emails */
+.note.draft{border-left:3px solid #c9a227;padding-left:10px}
+.draft-text{white-space:pre-wrap;font:14px/1.5 -apple-system,Segoe UI,Arial,sans-serif;width:100%;box-sizing:border-box;background:var(--card,#f6f6f6);padding:12px;border-radius:8px;max-height:52vh;overflow:auto}
+.btn.small{padding:4px 10px;font-size:13px}

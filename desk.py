@@ -439,6 +439,21 @@ def booking_of(rec, now=None):
             "link": str(rec.get("event_link") or rec.get("calendar_link") or "")}
 
 
+def pitch_drafts_view(rec):
+    """PATCH #282 — the drafted follow-up emails on the record, as the card shows them."""
+    pdd = rec.get("pitch_drafts") if isinstance(rec.get("pitch_drafts"), dict) else None
+    if not pdd or not isinstance(pdd.get("stages"), dict):
+        return None
+    stages = []
+    for name in ("recap", "value", "nudge"):
+        st = pdd["stages"].get(name)
+        if isinstance(st, dict):
+            stages.append({"stage": name, "subject": str(st.get("subject") or ""), "text": str(st.get("text") or ""),
+                           "status": str(st.get("status") or "draft"), "sent_at": iso(st.get("sent_at"))})
+    return {"kind": str(pdd.get("kind") or ""), "package": str(pdd.get("package") or ""),
+            "created_at": iso(pdd.get("created_at")), "stages": stages}
+
+
 def chase_of(rec):
     chase = rec.get("chase") if isinstance(rec.get("chase"), dict) else None
     if not chase:
@@ -684,6 +699,7 @@ def one(lead_data, conversation_history, ig_history, key, manual_keys=None, dnc_
     v = lead_view(key, rec, turns, manual=(key in mk or (pk and pk in mk)),
                   dnc=(key in dk or (pk and pk in dk)), now=now)
     v["timeline"] = timeline(v, rec, turns)
+    v["pitch_drafts"] = pitch_drafts_view(rec)   # PATCH #282
     return v
 
 
@@ -1709,6 +1725,32 @@ def register(app, admin_ok, lead_data, conversation_history, ig_history, pg=None
                 rec["manual_until"] = _until_iso(until)
         _log(rec, "send", f"{plan['as'].title()} sent on {plan['channel']}: {plan['text'][:120]}", _by(), now)
         return _done(k, rec, {"sent": {"channel": plan["channel"], "as": plan["as"]}})
+
+    # PATCH #282 — Michael's tap on a drafted pitch email
+    @app.route("/desk/api/lead/<path:key>/pitch-send", methods=["POST"])
+    def desk_api_pitch_send(key):
+        bad = _need_auth()
+        if bad:
+            return bad
+        k, rec = _rec_for(key)
+        if rec is None:
+            return jsonify({"ok": False, "error": "no such lead"}), 404
+        body = _json_body()
+        stage = str(body.get("stage") or "").strip().lower()
+        if stage not in ("recap", "value", "nudge"):
+            return jsonify({"ok": False, "error": "stage must be recap|value|nudge"}), 400
+        fn = acts.get("pitch_send")
+        if not fn:
+            return jsonify({"ok": False, "error": "pitch send not wired"}), 500
+        try:
+            ok, msg = fn(k, rec, stage, body.get("text"))
+        except Exception as e:
+            _err("pitch_send", e, k)
+            return jsonify({"ok": False, "error": repr(e)}), 502
+        if not ok:
+            return jsonify({"ok": False, "error": msg}), 400
+        _log(rec, "send", f"Michael sent the {stage} email: {msg}", _by(), datetime.now())
+        return _done(k, rec, {"pitch": {"stage": stage, "message": msg}})
 
     # ── the Daily Event Report, under the Desk's own path ──
     # The desk_session cookie is scoped to /desk, so a call to /meeting-report/*

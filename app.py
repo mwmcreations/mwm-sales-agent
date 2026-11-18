@@ -52,6 +52,7 @@ import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
 import quiet_lead as _ql      # Patch #285 — the quiet-lead rail, decided purely
+import pitch_drafts as _pd    # Patch #282 — the emails a pitch earns, drafted for Michael's Send
 import lead_reply as _lrp     # Patch #262 — a lead's answer by email is an answer
 import first_touch as _ft1    # Patch #267 — WhatsApp first, SMS as the backstop
 import meta_audience as _ma   # Patch #267 — who belongs in the cold-lead audience
@@ -28758,10 +28759,29 @@ def meeting_report_submit():
             _sp_found = _p39_key
             if not test_mode:
                 _studio.start_pitch_sequence(_p39_key, _p39_rec, service=service)   # PATCH #280
-                post_to_slack(SLACK_MATT_CHANNEL,
-                    f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
-                    f"(lead record: {_p39_key} · {_p39_email or 'no email'}) — "
-                    f"T+1h recap · T+2d value · T+6d nudge, closes day 10.")
+                # PATCH #282 — a plan with no written sequence gets its emails DRAFTED
+                # from the report (package + notes + next steps), in Michael's voice,
+                # stored on the record and shown on the Desk; his tap sends each one.
+                _pd_kind = _pd.kind_for(service)
+                if _pd_kind:
+                    _pd_now = datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+                    _p39_rec["pitch_drafts"] = {
+                        "kind": _pd_kind, "package": str(service)[:120], "notes": notes[:2000],
+                        "next_steps": next_steps[:600], "created_at": _pd_now,
+                        "stages": _pd.draft(_pd_kind, name, business, notes, next_steps),
+                    }
+                    lead_data[_p39_key] = _p39_rec
+                    _pd_recap = (_p39_rec["pitch_drafts"]["stages"].get("recap") or {})
+                    post_to_slack(SLACK_MATT_CHANNEL,
+                        f"✍️ *{_pd.PLANS[_pd_kind]['label']}* pitched to *{name}* — recap · value · nudge DRAFTED "
+                        f"from the report; nothing sent. Michael: open {name} on the Desk and tap Send on each. "
+                        f"(lead record: {_p39_key} · {_p39_email or 'no email'})\n"
+                        f"> *{_pd_recap.get('subject', '')}*\n> " + "\n> ".join(l for l in _pd_recap.get('lines', [])[:14] if l))
+                else:
+                    post_to_slack(SLACK_MATT_CHANNEL,
+                        f"\U0001F4E6 ✅ Follow-up sequence ARMED for *{name}* "
+                        f"(lead record: {_p39_key} · {_p39_email or 'no email'}) — "
+                        f"T+1h recap · T+2d value · T+6d nudge, closes day 10.")
             else:
                 test_log.append({"action": "Arm studio pitch sequence", "lead": _p39_key})
         if not _sp_found and not test_mode:
@@ -31904,6 +31924,44 @@ def _desk_manual_keys():
         return set()
 
 
+def _desk_pitch_send(key, rec, stage, text=None):
+    """PATCH #282 — Michael's tap on the Desk: send ONE drafted pitch email from
+    info@. -> (ok, message). `text` is the draft as he left it in the box (his
+    edits win; the subject stays); nothing else is rewritten here."""
+    pdd = rec.get("pitch_drafts") if isinstance(rec.get("pitch_drafts"), dict) else None
+    st = ((pdd or {}).get("stages") or {}).get(str(stage or ""))
+    if not isinstance(st, dict):
+        return False, "no such draft"
+    if st.get("status") == "sent":
+        return False, f"{stage} was already sent ({str(st.get('sent_at', ''))[:16]})"
+    email = ""
+    for _e in emails_in_field(rec.get("email")):
+        email = _e
+        break
+    if not email:
+        return False, "the lead has no email on record"
+    if email_is_suppressed(email)[0]:
+        return False, "that address is suppressed"
+    if isinstance(text, str) and text.strip() and text.strip() != str(st.get("text") or "").strip():
+        st["lines"] = [l.rstrip() for l in text.strip().splitlines()]
+        st["text"] = "\n".join(st["lines"])
+        st["html"] = _pd.as_html(st["lines"])
+        st["edited"] = True
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    res = _email_send(email, st.get("subject", ""), st.get("html", ""), via=f"pitch_draft_{stage}", lead_key=key)
+    if not email_ok(res):
+        return False, "send failed: " + str((res or {}).get("error") or (res or {}).get("reason") or "?")[:120]
+    st["status"] = "sent"
+    st["sent_at"] = now.isoformat()
+    st["message_id"] = str((res or {}).get("message_id") or "")
+    rec["pitch_drafts"] = pdd
+    lead_data[key] = rec
+    _post_to_slack_async(SLACK_MATT_CHANNEL,
+                         f"✉️ Michael sent the *{stage}* email to *{rec.get('name') or key}* ({_chase_mask(email)}) "
+                         f"from the Desk — \"{st.get('subject', '')}\" (Patch #282)")
+    return True, f"{stage} sent to {email}"
+
+
 def _desk_actions():
     """PATCH #271 — the app's own senders and switches, handed to the Desk. Every
     send goes through the same gates as Maya's (SMS consent + window, WhatsApp
@@ -31944,6 +32002,7 @@ def _desk_actions():
         # package table, for the Clients tab and the MRR tile
         "portal_clients": lambda: _studio.wp_list_clients(),
         "package_by_name": lambda n: _studio.package_by_name(n),
+        "pitch_send": _desk_pitch_send,   # PATCH #282 — one drafted pitch email, on Michael's tap
         "save": lambda: None,   # lead_data is write-through (leads_db); histories are snapshotted by the saver
     }
 
