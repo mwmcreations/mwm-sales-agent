@@ -43,7 +43,7 @@ check("no LED / no green screen line", "No LED wall. No green screen." in off)
 
 print("== plans (founding / regular)")
 for name, f, r in (("AI Starter", "$1,297", "$1,497"), ("AI Growth", "$1,697", "$1,997"),
-                   ("AI Pro", "$2,497", "$2,997"), ("Studio Only", "$1,200", "$1,497")):
+                   ("AI Pro", "$2,497", "$2,997"), ("Real Sets", "$1,200", "$1,497")):  # #278: Studio Only -> Real Sets
     line = next((l for l in off.splitlines() if l.startswith("- " + name)), "")
     check("plan %s %s founding, %s regular" % (name, f, r), (f + "/month founding price") in line and ("regular " + r) in line)
 check("AI Growth is the most popular", "AI Growth (the most popular)" in off)

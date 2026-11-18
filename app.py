@@ -2620,7 +2620,7 @@ MAYA_SHARED_KNOWLEDGE = """
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026; for EXISTING package
 clients and portal questions — the sales script above decides what is sold
 to a new lead):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — the Studio Strategy Visit script above decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
+- The Real Sets plan (PATCH #278; called the Studio Package or Studio Only before) is $1,200/month at the founding price (regular $1,497): 4 hours of professional studio time every month on our real sets, as an ongoing subscription plan (3-month minimum, then month to month with 30 days' notice; unused hours roll over, up to 8 hours at a time). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396), and the plan includes editing: each hour gives up to 10 edited short videos or 1 podcast episode with 10 short cuts. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the plan or pitch it unprompted — the Studio Strategy Visit script above decides what a new lead hears. All plans: mwmcreations.com/book-studio/#st-plans
 - Package clients can add a Full Immersion video to any session: $397 per video (up to 30 s, up to 3 AI scenes; earlier names: AI Wall Spot, Hybrid AI video). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
@@ -2811,10 +2811,10 @@ If they say "How long does it take?" → 3–5 business days from when you send 
 
 STUDIO PRICING (internal reference — do NOT share full pricing details proactively):
 
-Monthly Content Creation Package — $1,200/month
+Real Sets plan (PATCH #278; was "Monthly Content Creation Package" / "Studio Only") — $1,200/month founding price (regular $1,497), ongoing, 3-month minimum
 Hourly comparison: 4h at $349/hr = $1,396 — the package SAVES $196 EVERY MONTH and adds short-form cuts, captions, and a custom logo animation that hourly bookings do not include. ALWAYS state the $196/month savings when offering the package.
 Best for professionals and companies producing content consistently.
-Includes: 4 hours of studio time per month, full studio use, professional cameras, lighting and audio, production crew assistance, and post-production editing.
+Includes: 4 hours of studio time every month (unused hours roll over, up to 8 at a time), full studio use, professional cameras, lighting and audio, production crew assistance, and post-production editing.
 
 Studio Rental (Production Only) — $249/hour
 Studio space, cameras, lighting, and audio equipment.
@@ -2827,7 +2827,7 @@ Includes: studio space, equipment, on-site technician, and editing.
 
 Full Immersion (add-on) — $397 per video  (PATCH #255 name, 19 Oct 2026; was "AI Wall Spot" #252 and "Hybrid AI video" #141)
 Subscription-plan clients can turn a video from any of their sessions into a Full Immersion video (the $397 add-on is for plan clients only; everyone else gets Full Immersion at $997 with filming included): the client is filmed for real in our studio and AI builds the world around them. Up to 30 seconds, up to 3 AI scenes (new location, wardrobe or objects), finished edit, 1 revision round. On its own, filming included: $997 (on a monthly plan, Full Immersion videos are included or added for $397).
-Full Immersion Pack — $1,497: 1 studio hour + 4 Full Immersion videos (about $374 per video). AI monthly plans (AI Starter, AI Growth, AI Pro), from $1,297/month at the founding price, can start right away in our new studio (real sets and the AI Wall are open); the full list is on mwmcreations.com/ai-studio. Anything longer or custom is quoted at the Strategy Visit.
+Full Immersion Pack — $1,497: 1 studio hour + 4 Full Immersion videos (about $374 per video). AI monthly plans (AI Starter, AI Growth, AI Pro), from $1,297/month at the founding price, can start right away in our new studio (real sets and the AI Wall are open); the full list is on mwmcreations.com/book-studio/#hybrid-ai (the studio page; the old /ai-studio address redirects there). Anything longer or custom is quoted at the Strategy Visit.
 General information only: if the lead is curious about AI, share it plainly and invite them to the visit. You are not selling it; Michael closes in the studio.
 
 HOW TO HANDLE PRICING QUESTIONS:
@@ -3236,7 +3236,7 @@ If someone directly asks about pricing, share the plans honestly and briefly.
 If they want HOURLY studio time (with or without editing), route them directly to the booking site — but also keep the door open for a visit:
 "You can book hourly studio time and pay directly online: mwmcreations.com/book-studio/ — and if you'd like to stop by and see the studio before booking, Michael's happy to show you around too!"
 
-If they want the Monthly 4h package ($1,200/month) or are interested in a broader content strategy, ALWAYS mention it saves them $196 every month vs booking hourly ($1,396 -> $1,200, plus package-only short-form cuts, captions, and logo animation), then bring it back to the visit:
+If they want the Real Sets plan ($1,200/month, 4 hours every month) or are interested in a broader content strategy, ALWAYS mention it saves them $196 every month vs booking hourly ($1,396 -> $1,200, plus package-only short-form cuts, captions, and logo animation), then bring it back to the visit:
 "The best way to kick that off is a quick visit to the studio — Michael will walk you through the space and make sure it's the perfect fit for what you're building. Want to schedule that?"
 
 Step 7 — CAPTURE LEAD
@@ -16961,7 +16961,7 @@ Therefore:
 You are LARA — Client & Production Manager for MWM Creations. You are bilingual (Portuguese + English) and adapt your language to match the client or the conversation. You keep productions on track and clients happy.
 
 STUDIO PACKAGE — CLIENT FACTS (S7, updated Jul 6 2026):
-- The Studio Package is $1,200/month: 12 hours of professional studio time over 3 months (about 4h/month). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396) — and the package includes short-form cuts, professional captions, and a custom logo animation that hourly bookings do NOT include. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the package or pitch it unprompted — Maya's Studio Strategy Visit script decides what a new lead hears. Purchase page: mwmcreations.com/studio-package/
+- The Real Sets plan (PATCH #278; called the Studio Package or Studio Only before) is $1,200/month at the founding price (regular $1,497): 4 hours of professional studio time every month on our real sets, as an ongoing subscription plan (3-month minimum, then month to month with 30 days' notice; unused hours roll over, up to 8 hours at a time). That is $196 OFF every month vs booking hourly (4h x $349/hr = $1,396), and the plan includes editing: each hour gives up to 10 edited short videos or 1 podcast episode with 10 short cuts. If a lead asks how the subscription compares with hourly, you may say it saves $196 a month. Do NOT open with the plan or pitch it unprompted — Maya's Studio Strategy Visit script decides what a new lead hears. All plans: mwmcreations.com/book-studio/#st-plans
 - Package clients can add a Full Immersion video to any session: $397 per video (up to 30 s, up to 3 AI scenes; earlier names: AI Wall Spot, Hybrid AI video). Michael sets it up; tell them you'll let him know.
 - Every package client gets a personal CLIENT PORTAL at mwmcreations.com/studio-portal/ — they log in with their EMAIL + a 6-character ACCESS CODE (sent in their welcome email right after purchase).
 - ALL booking, rescheduling, and cancelling of studio sessions happens INSIDE THE PORTAL ONLY. Never send Calendly links for studio package sessions.
@@ -22481,6 +22481,39 @@ def admin_studio_provision_custom():
         _report_error("admin_studio_provision_custom", "custom provision failed", repr(e))
         return jsonify({"ok": False, "error": repr(e)}), 500
     return jsonify(res), (200 if res.get("ok") else 400)
+
+
+@app.route('/admin/studio-topup', methods=['GET', 'POST'])
+def admin_studio_topup():
+    """PATCH #278 — GET/POST /admin/studio-topup?secret=&email=&hours=&cap=&end=YYYY-MM-DD
+    &ref=&package=&monthly_hours=&apply=1
+    Add hours to an existing portal client by hand (a pause made up, a plan
+    renewal that failed, a goodwill hour). Same WP action the monthly renewal
+    uses: `cap` limits what they can hold available afterwards, `end` only
+    moves the last bookable day later, `ref` applies once. Dry by default."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    v = request.values
+    email = str(v.get("email") or "").strip().lower()
+    try:
+        hours = float(v.get("hours") or 0)
+        cap = float(v.get("cap") or 0)
+    except ValueError:
+        return jsonify({"ok": False, "error": "hours and cap must be numbers"}), 400
+    if not email or "@" not in email or hours <= 0:
+        return jsonify({"ok": False, "error": "email and hours > 0 required"}), 400
+    apply = str(v.get("apply") or "") in ("1", "true", "yes")
+    ref = str(v.get("ref") or "").strip() or f"admin:{email}:{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    try:
+        res = _studio.topup_portal_client(email, hours, cap_hours=cap, end=(v.get("end") or "").strip() or None,
+                                          ref=ref, package=v.get("package") or "",
+                                          monthly_hours=v.get("monthly_hours") or 0, dry_run=not apply)
+    except Exception as e:
+        _report_error("admin_studio_topup", "top-up failed", repr(e))
+        return jsonify({"ok": False, "error": repr(e)}), 500
+    res["dry"] = not apply
+    res["ref"] = ref
+    return jsonify(res), (200 if res.get("ok") else 502)
 
 
 def _chase_pass(now=None):
@@ -29597,15 +29630,12 @@ def admin_register_client():
     if not _email or "@" not in _email:
         return jsonify({"ok": False, "error": "a real email is required"}), 400
 
-    _spec = None
-    for _sp in _studio.PACKAGES.values():
-        if _sp["kind"] == _variant:
-            _spec = _sp
-            break
+    _spec = _studio.spec_by_kind(_variant)   # PATCH #287 — packages AND plans
     if _spec is None:
         return jsonify({
             "ok": False, "error": "unknown variant",
-            "allowed": [s["kind"] for s in _studio.PACKAGES.values()],
+            "allowed": sorted({s["kind"] for s in list(_studio.PACKAGES.values()) + list(_studio.PLANS.values())}
+                              | {_studio.REAL_SETS_FOUNDING["kind"]}),
             "why": "the package must be named explicitly — this route will not "
                    "guess which product someone bought",
         }), 400
@@ -29644,7 +29674,7 @@ def admin_register_client():
         "hours": _spec["hours"],
         "term_days": _spec["term_days"],
         "recurring": bool(_spec["recurring"]),
-        "mrr": _spec["mrr"],
+        "mrr": (float(_p.get("mrr")) if str(_p.get("mrr") or "").strip() else _spec["mrr"]),   # PATCH #287: a courtesy price
         "one_off": _spec.get("one_off", 0),
         "booking_deadline": _term["booking_deadline"].isoformat(),
         "registered_by": "admin/register-client (Patch #55A)",

@@ -199,6 +199,200 @@ def package_for_price(price_id):
     return PACKAGES.get(str(price_id or "").strip())
 
 
+# ══════════════════════════════════════════════════════════════════════
+# PATCH #278 · THE PLANS ON /book-studio
+# ══════════════════════════════════════════════════════════════════════
+# Michael, Mon 9 Nov 2026: "if you go to our website right now, we have 4
+# different studio packages, and those packages need to be aligned with our
+# sales system… make sure everything is aligned with what we have now."
+#
+# Before this patch only the three PACKAGES above provisioned anything. A
+# client paying for AI Starter, AI Growth, AI Pro, an AI Wall Hour or a Full
+# Immersion on the live page got NO portal account and NO welcome email (David
+# was set up by hand). His rulings, same day:
+#   · monthly plans: hours roll over, capped at 2 months' worth — each monthly
+#     payment adds that month's hours up to the cap (AI Starter holds at most
+#     4 h; Real Sets, AI Growth and AI Pro at most 8 h);
+#   · one-time services: 1 studio hour per item, bookable for 60 days;
+#   · Founding 10 annual prepay: the whole year (12 × monthly hours) loads at
+#     once, bookable over 12 months (extended by hand if they pause).
+# PLANS is its own table, not rows in PACKAGES: PACKAGES keeps its three
+# entries and every email they send stays byte-for-byte the same.
+PLAN_CAP_MONTHS = 2
+PLAN_FIRST_WINDOW_DAYS = 60     # first month's hours: bookable this month and next
+PLAN_TOPUP_WINDOW_DAYS = 30     # each renewal: bookable until 30 days past the next charge
+ONEOFF_SERVICE_DAYS = 60
+ANNUAL_TERM_DAYS = 365
+PLAN_EDIT_NOTE = ("Editing is included: each hour gives you up to 10 edited short videos "
+                  "or 1 podcast episode with 10 short cuts")
+PLAN_FOOTER_NOTE = ("Plans have a 3-month minimum; after that your plan continues month "
+                    "to month, with 30 days' notice to cancel.")
+# Real Sets' Founding price IS STUDIO_PRICE_ID (ROB reused the $1,200 price for
+# the website link). The old 3-month package keeps that price in PACKAGES; a
+# checkout is Real Sets when it came through a Real Sets link or the
+# subscription carries the link's sku.
+REAL_SETS_SKUS = ("plan_studio_only_4h", "plan_real_sets")
+REAL_SETS_LINKS = ("plink_1UR148DAWlnEb9RfffEDwxut",   # Founding $1,200
+                   "plink_1UXJxUDAWlnEb9RfbgDk8pyU")   # regular $1,497
+
+
+def _monthly_plan(kind, name, m, mrr, pace, includes, founding):
+    cap = m * PLAN_CAP_MONTHS
+    return {
+        "kind": kind, "name": name, "hours": m, "monthly_hours": m, "cap_hours": cap,
+        "term_days": PLAN_FIRST_WINDOW_DAYS, "grace_days": 0,
+        "cycles": 12, "interval": "month", "recurring": True, "mrr": mrr, "one_off": 0,
+        "price_label": f"${mrr:,}/month" + (" · Founding price" if founding else ""),
+        "sheet_status": f"Client — {name}",
+        "pace_note": pace, "includes_note": includes,
+        "extra_notes": [PLAN_EDIT_NOTE,
+                        f"Unused hours roll over to the next month: you can hold up to "
+                        f"{cap} hours at a time"],
+        "credits_toward_contract": False,
+        "ongoing": True,
+        "footer_note": PLAN_FOOTER_NOTE + (" Your Founding price stays locked while your "
+                                           "plan is active." if founding else ""),
+        "plan": "monthly", "founding": bool(founding),
+    }
+
+
+def _oneoff_service(kind, name, amount, includes):
+    return {
+        "kind": kind, "name": name, "hours": 1, "term_days": ONEOFF_SERVICE_DAYS,
+        "grace_days": 0, "recurring": False, "mrr": 0, "one_off": amount,
+        "price_label": f"${amount:,} one-time",
+        "sheet_status": f"Client — {name}", "pace_note": "", "includes_note": includes,
+        "credits_toward_contract": False, "plan": "oneoff", "per_unit": True,
+    }
+
+
+def _annual_plan(kind, name, m, amount, pace, includes):
+    return {
+        "kind": kind, "name": name, "hours": 12 * m, "monthly_hours": m,
+        "term_days": ANNUAL_TERM_DAYS, "grace_days": 0,
+        "recurring": False, "mrr": 0, "one_off": amount,
+        "price_label": f"${amount:,} for 12 months (Founding 10)",
+        "sheet_status": f"Client — {name}", "pace_note": pace, "includes_note": includes,
+        "extra_notes": [PLAN_EDIT_NOTE],
+        "credits_toward_contract": False, "plan": "annual", "founding": True,
+    }
+
+
+_P_REAL = "on our real sets"
+_P_START = "1 on our real sets, 1 on the AI Wall"
+_P_GROW = "up to 2 of them on the AI Wall"
+_P_PRO = "all on the AI Wall"
+_FI1 = "Your plan includes 1 Full Immersion video"
+_FI2 = "Your plan includes 2 Full Immersion videos"
+
+_PLAN_ROWS = (
+    # kind, name, monthly hours, pace, includes, founding price, $, regular price, $
+    ("plan_real_sets", "Real Sets Plan", 4, _P_REAL, "",
+     None, 1200, "price_1UXJwUDAWlnEb9RfLIi8E2ea", 1497),
+    ("plan_ai_starter", "AI Starter Plan", 2, _P_START, _FI1,
+     "price_1UR0ipDAWlnEb9RfSTYiE4VE", 1297, "price_1UXJwTDAWlnEb9RfgKs5wyxQ", 1497),
+    ("plan_ai_growth", "AI Growth Plan", 4, _P_GROW, _FI1,
+     "price_1UR13hDAWlnEb9Rfv3SarAEu", 1697, "price_1UXJwSDAWlnEb9Rfs9ZM5Xah", 1997),
+    ("plan_ai_pro", "AI Pro Plan", 4, _P_PRO, _FI2,
+     "price_1UR13kDAWlnEb9RfxUYIOCE0", 2497, "price_1UXJwTDAWlnEb9Rf3b0RwJQf", 2997),
+)
+PLANS = {}
+for _k, _n, _m, _pace, _inc, _fp, _fa, _rp, _ra in _PLAN_ROWS:
+    if _fp:
+        PLANS[_fp] = _monthly_plan(_k, _n, _m, _fa, _pace, _inc, True)
+    PLANS[_rp] = _monthly_plan(_k, _n, _m, _ra, _pace, _inc, False)
+# Real Sets' Founding price is STUDIO_PRICE_ID (see above): reached via sku/link only.
+REAL_SETS_FOUNDING = _monthly_plan("plan_real_sets", "Real Sets Plan", 4, 1200, _P_REAL, "", True)
+
+PLANS.update({
+    "price_1UR0ixDAWlnEb9Rfw5I1cFJX": _oneoff_service(
+        "ai_wall_hour", "AI Wall Hour", 599,
+        "Up to 3 AI worlds, editing included: up to 10 edited short videos or 1 podcast "
+        "episode with 10 short cuts"),
+    "price_1UR9slDAWlnEb9RfwuwNC0ac": _oneoff_service(
+        "full_immersion", "Full Immersion", 997,
+        "Each Full Immersion video: up to 30 seconds, up to 3 AI scenes, finished edit, "
+        "1 revision round"),
+    "price_1ULR8vDAWlnEb9RfJrE5OJcI": _oneoff_service(
+        "full_immersion_pack", "Full Immersion Pack", 1497,
+        "Four Full Immersion videos, planned together with Michael"),
+    # Founding 10 annual prepay (ROB, Nov 8: "pay 9, get 12"). The agreement
+    # calls the first one "Studio Only"; on the website it is Real Sets.
+    "price_1UZaCHDAWlnEb9RfBQNh2P83": _annual_plan(
+        "f10_real_sets", "Real Sets Plan · Founding Year", 4, 13473, _P_REAL, ""),
+    "price_1UZaCEDAWlnEb9RfuTxbrbfW": _annual_plan(
+        "f10_ai_starter", "AI Starter Plan · Founding Year", 2, 13473, _P_START, _FI1),
+    "price_1UZaCCDAWlnEb9RfKpoeJTAI": _annual_plan(
+        "f10_ai_growth", "AI Growth Plan · Founding Year", 4, 17973, _P_GROW, _FI1),
+    "price_1UZaCGDAWlnEb9RfRvBAb8Vn": _annual_plan(
+        "f10_ai_pro", "AI Pro Plan · Founding Year", 4, 26973, _P_PRO, _FI2),
+})
+PLAN_NAMES = tuple(sorted({sp_["name"] for sp_ in PLANS.values()}))
+
+
+def resolve_spec(price_id, sku="", payment_link=""):
+    """PATCH #278 — the spec for what was bought: a PACKAGE, a PLAN, or None.
+
+    The one overlap is STUDIO_PRICE_ID, shared by the old 3-month package and
+    the website's Real Sets Founding link: a Real Sets sku or link makes it the
+    Real Sets plan; anything else keeps the package exactly as before."""
+    pid = str(price_id or "").strip()
+    if pid == STUDIO_PRICE_ID:
+        # PATCH #287 — Michael, 18 Nov 09:47: the 3-month package is retired for
+        # new purchases; every $1,200 checkout is the Real Sets plan, ongoing,
+        # 3-month minimum, whatever link or sku it came through. PACKAGES keeps
+        # the old spec for custom provisioning and the legacy emails.
+        return REAL_SETS_FOUNDING
+    return PACKAGES.get(pid) or PLANS.get(pid)
+
+
+def _per_unit(spec, qty):
+    """One studio hour per item for the one-time services (Full Immersion × 3 = 3 h)."""
+    try:
+        qty = int(qty or 1)
+    except (TypeError, ValueError):
+        qty = 1
+    if not spec or not spec.get("per_unit") or qty <= 1:
+        return spec
+    out = dict(spec)
+    out["quantity"] = qty
+    out["hours"] = int(spec["hours"]) * qty
+    out["one_off"] = int(spec.get("one_off") or 0) * qty
+    out["price_label"] = f"{qty} × ${int(spec.get('one_off') or 0):,} one-time"
+    return out
+
+
+def spec_by_kind(kind):
+    """PATCH #287 — a PACKAGE or PLAN spec by its kind ('studio_3mo', 'plan_ai_growth', …);
+    founding prices first; Real Sets' founding spec is not in PLANS."""
+    k = str(kind or "").strip()
+    if not k:
+        return None
+    for s_ in PACKAGES.values():
+        if s_["kind"] == k:
+            return s_
+    if REAL_SETS_FOUNDING["kind"] == k:
+        return REAL_SETS_FOUNDING
+    for s_ in sorted(PLANS.values(), key=lambda x: not x.get("founding")):
+        if s_["kind"] == k:
+            return s_
+    return None
+
+
+def plan_terms(spec):
+    """How the team reads a plan's hours in Slack / the pipeline."""
+    kind = (spec or {}).get("plan")
+    if kind == "monthly":
+        return (f"{spec['monthly_hours']}h/month, ongoing (rolls over, holds up to "
+                f"{spec['cap_hours']}h)")
+    if kind == "annual":
+        return (f"{spec['hours']}h for the Founding year ({spec['monthly_hours']}h/month "
+                f"× 12, all loaded now)")
+    if kind == "oneoff":
+        return f"{spec['hours']}h, bookable for {spec['term_days']} days"
+    return f"{(spec or {}).get('hours')}h over {term_phrase(spec)}"
+
+
 def package_term(spec, start):
     """Work out the dates ONCE, so the portal and the email cannot disagree.
 
@@ -335,7 +529,8 @@ def billing_footer_html(spec, term):
         # deal's own words.
         o_amount = int(spec.get("mrr") or 0)
         o_today = datetime.now(pytz.timezone("America/New_York")).date()
-        o_next = next((d for d in dates if d >= o_today), None)
+        # PATCH #278 — dates[0] is the day they paid; "next" is never that one.
+        o_next = next((d for d in dates[1:] if d >= o_today), None)
         o_day = dates[0].day
         o_suffix = "th" if 11 <= o_day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(o_day % 10, "th")
         o_next_txt = (f" (next charge: <strong style=\"color:#666;\">"
@@ -379,6 +574,14 @@ def package_by_name(name):
     for spec in PACKAGES.values():
         if spec["name"].strip().lower() == want:
             return spec
+    # PATCH #278 — the plans. Founding prices first, so a row reads at the
+    # price most current clients pay; "AI Starter" matches "AI Starter Plan".
+    for spec in sorted(PLANS.values(), key=lambda s_: not s_.get("founding")):
+        n = spec["name"].strip().lower()
+        if want in (n, n.replace(" plan", "", 1)):
+            return spec
+    if want in ("real sets", "real sets plan"):
+        return REAL_SETS_FOUNDING
     return None
 
 
@@ -544,8 +747,124 @@ def _session_bought_studio_package(session_id: str) -> bool:
     return package_for_session(session_id) is not None
 
 
+def package_for_checkout(session: dict):
+    """PATCH #278 — package_for_session, plus the plans and quantities.
+
+    Reads the session's payment link and sku (Stripe copies a payment link's
+    metadata onto its checkout sessions) so a Real Sets checkout on the shared
+    $1,200 price is the Real Sets plan, and multiplies a one-time service by
+    the quantity bought."""
+    session = session or {}
+    sid = str(session.get("id") or "")
+    sku = str((session.get("metadata") or {}).get("sku") or "")
+    link = session.get("payment_link") or ""
+    if isinstance(link, dict):
+        link = link.get("id") or ""
+    try:
+        items = _deps["stripe_get"](f"checkout/sessions/{sid}/line_items", {"limit": 20})
+        for it in (items or {}).get("data", []):
+            spec = resolve_spec((it.get("price") or {}).get("id"), sku, link)
+            if spec:
+                return _per_unit(spec, it.get("quantity"))
+    except Exception as e:
+        _report("studio.line_items", e, f"session={sid}")
+    return None
+
+
+def topup_portal_client(email: str, add_hours, cap_hours=0, end=None, ref: str = "",
+                        package: str = "", monthly_hours=0, dry_run: bool = False) -> dict:
+    """PATCH #278 — add hours to an EXISTING portal client (WP snippet 15,
+    action mwm_studio_topup_client). `cap_hours` > 0 caps what they can hold
+    AVAILABLE afterwards (monthly roll-over: 2 months' worth); `end` only ever
+    moves the last bookable day later; `ref` makes it apply once.
+    Returns {'ok', 'found', 'duplicate', 'added', 'available', 'end_after', ...}."""
+    payload = {"action": "mwm_studio_topup_client", "email": str(email or "").strip().lower(),
+               "add_hours": str(add_hours), "cap_hours": str(cap_hours or 0),
+               "ref": str(ref or "")[:120]}
+    if end:
+        payload["contract_end"] = end.strftime("%Y-%m-%d") if hasattr(end, "strftime") else str(end)
+    if package:
+        payload["package"] = package
+    if monthly_hours:
+        payload["monthly_hours"] = str(monthly_hours)
+    if dry_run:
+        payload["dry_run"] = "1"
+    import time as _t
+    last = ""
+    for _attempt in range(3):   # safe to retry: WP applies a ref once
+        try:
+            r = http_requests.post(
+                WP_PORTAL_PROVISION_URL, data=payload,
+                headers={"X-MWM-Portal-Secret": WP_PORTAL_SECRET, "User-Agent": WP_UA}, timeout=20)
+            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            data = body.get("data") or {}
+            if body.get("success"):
+                out = {"ok": True, "status": r.status_code}
+                out.update({k: data.get(k) for k in (
+                    "found", "duplicate", "added", "hours_before", "hours_after", "hours_used",
+                    "available", "end_before", "end_after", "fresh_start", "client_id")})
+                return out
+            last = f"HTTP {r.status_code}"
+        except Exception as e:
+            last = repr(e)
+        if _attempt < 2:
+            _t.sleep(2 ** _attempt)
+    _report("studio.topup_portal_client", last, f"email={email} ref={ref}")
+    return {"ok": False, "found": None, "raw": last}
+
+
+def _hours_added_email_html(first_name: str, spec: dict, term: dict, topup: dict) -> str:
+    """PATCH #278 — an existing portal client bought again: no new code (they
+    have one), just what was added and how to book it."""
+    spec = spec or {}
+    e = lambda v: _html.escape(str(v or ""))
+    plan = spec.get("plan")
+    avail = (topup or {}).get("available")
+    try:
+        avail_txt = f"{float(avail):g}"
+    except (TypeError, ValueError):
+        avail_txt = ""
+    deadline = (term or {}).get("booking_deadline")
+    if plan == "monthly":
+        lead = (f"Your <strong>{e(spec['name'])}</strong> is active: "
+                f"{spec['monthly_hours']} hours of professional studio time every month, as "
+                f"an ongoing partnership. This month's hours are already in your portal.")
+    elif plan == "annual":
+        lead = (f"Your <strong>{e(spec['name'])}</strong> is active: "
+                f"{spec['monthly_hours']} hours every month for the next 12 months. All "
+                f"{spec['hours']} hours of your year are already in your portal.")
+    else:
+        _h = int(spec.get("hours") or 1)
+        lead = (f"Your <strong>{e(spec['name'])}</strong> is confirmed: we've added "
+                f"{'1 studio hour' if _h == 1 else f'{_h} studio hours'} to your portal"
+                + (f", bookable until <strong>{deadline.strftime('%A, %B %d, %Y')}</strong>"
+                   if deadline else "") + ".")
+    notes = [str(spec.get("includes_note") or "").strip()] + list(spec.get("extra_notes") or [])
+    notes = [n for n in notes if n]
+    return f"""
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#222;">
+  <div style="background:#111;padding:28px 32px;border-radius:12px 12px 0 0;">
+    <h1 style="color:#fff;margin:0;font-size:22px;">Your hours are ready 🎬</h1>
+  </div>
+  <div style="padding:28px 32px;background:#fafafa;border:1px solid #eee;border-top:none;
+              border-radius:0 0 12px 12px;">
+    <p style="font-size:16px;">Hi {e(first_name)},</p>
+    <p style="font-size:15px;line-height:1.6;">{lead}</p>""" + (f"""
+    <p style="font-size:15px;line-height:1.6;">You have <strong>{avail_txt} hours</strong> available to book right now.</p>""" if avail_txt else "") + f"""
+    <p style="font-size:15px;line-height:1.6;">Log in at <a href="{PORTAL_URL}">{PORTAL_URL}</a>
+    with this email address and the access code you already have, then pick a time on the
+    booking calendar. Lost your code? Just reply to this email.</p>""" + ("""
+    <ul style="font-size:15px;line-height:1.7;">""" + "".join(f"\n      <li>{n}</li>" for n in notes) + """
+    </ul>""" if notes else "") + f"""
+    <p style="font-size:15px;">— Michael &amp; the MWM Creations team<br>
+    <span style="color:#888;font-size:13px;">Orlando, FL · mwmcreations.com</span></p>
+    {billing_footer_html(spec, term)}
+  </div>
+</div>"""
+
+
 def provision_portal_client(name: str, email: str, spec: dict = None,
-                            dry_run: bool = False, start=None) -> dict:
+                            dry_run: bool = False, start=None, rotate_code: bool = False) -> dict:
     """Create (or fetch) the portal account on WP page 1102's login store.
 
     Returns {'ok', 'access_code', 'existing', 'raw', 'status', 'term'} where
@@ -573,8 +892,12 @@ def provision_portal_client(name: str, email: str, spec: dict = None,
         # the ones that do not.
         "contract_end": term["booking_deadline"].strftime("%Y-%m-%d"),
     }
+    if spec.get("plan") and spec.get("monthly_hours"):
+        payload["monthly_hours"] = str(spec["monthly_hours"])   # PATCH #278
     if dry_run:
         payload["dry_run"] = "1"
+    if rotate_code:
+        payload["rotate_code"] = "1"   # PATCH #287 — WP hands back a NEW code for an existing account
     # S22 gap #4: retry 3x with backoff — provisioning is idempotent by email
     # on the WP side, so a transient hiccup should not cost a manual account.
     import time as _t
@@ -658,6 +981,31 @@ def _welcome_email_html(first_name: str, access_code: str,
                     + (f" ({_pace})" if _pace else ""))
         expiry_li = ("Your plan continues month after month, and your portal always "
                      "shows the hours you have available to book")
+        if _includes:
+            expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
+    if spec.get("plan") == "oneoff":
+        # PATCH #278 — a one-time service: what they bought, and when to book it.
+        _h = int(hours)
+        _hw = "1 studio hour" if _h == 1 else f"{_h} studio hours"
+        headline = (f"Your <strong>{spec['name']}</strong> is confirmed: {_hw} ready to "
+                    f"book in your portal.")
+        total_li = _hw + (f" ({_pace})" if _pace else "")
+        expiry_li = (f"Book any time in the next {spec['term_days']} days"
+                     + (f": the last day you can book is <strong>{deadline_str}</strong>"
+                        if deadline_str else ""))
+        if _includes:
+            expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
+    elif spec.get("plan") == "annual":
+        # PATCH #278 — Founding 10 annual prepay: the whole year is loaded now.
+        _m = int(spec.get("monthly_hours") or 0)
+        headline = (f"Your <strong>{spec['name']}</strong> is active: {_m} hours of "
+                    f"professional studio time every month for the next 12 months, at "
+                    f"your Founding 10 rate.")
+        total_li = (f"{_m} studio hours every month" + (f" ({_pace})" if _pace else ""))
+        expiry_li = (f"All {hours} hours of your year are already in your portal, so you "
+                     f"can book ahead"
+                     + (f": the last day you can book is <strong>{deadline_str}</strong>"
+                        if deadline_str else ""))
         if _includes:
             expiry_li = f"{expiry_li}</li>\n      <li>{_includes}"
     for _note in (spec.get("extra_notes") or []):
@@ -751,7 +1099,7 @@ def handle_stripe_event(event: dict) -> dict:
     if etype == "checkout.session.completed":
         if _already_processed(event_id):
             return {"handled": False, "reason": "duplicate", "event": event_id}
-        _spec = package_for_session(obj.get("id", ""))
+        _spec = package_for_checkout(obj)          # PATCH #278 — plans too
         if _spec is None:
             return {"handled": False, "reason": "other-product", "event": event_id}
         details = obj.get("customer_details") or {}
@@ -760,9 +1108,14 @@ def handle_stripe_event(event: dict) -> dict:
         if not email:
             _report("studio.purchase", "no email on checkout session", f"event={event_id}")
             return {"handled": False, "reason": "no-email", "event": event_id}
+        if _spec.get("plan"):
+            _mark_checkout(email, _spec["kind"])  # PATCH #278 — the invoice path defers to this
         _on_package_purchased(name, email, event_id, _spec)
         return {"handled": True, "event": event_id, "email": email,
                 "package": _spec["kind"]}
+
+    if etype == "invoice.paid":
+        return _on_invoice_paid(obj, event_id)    # PATCH #278
 
     if etype in ("invoice.payment_failed", "customer.subscription.deleted"):
         details = ((obj.get("customer_details") or {}).get("email")
@@ -773,6 +1126,199 @@ def handle_stripe_event(event: dict) -> dict:
         return {"handled": True, "event": event_id, "alerted": etype}
 
     return {"handled": False, "reason": "ignored-type", "type": etype}
+
+
+_CHECKOUT_KEY = "studio_plan_checkouts"
+
+
+def _mark_checkout(email, kind):
+    """PATCH #278 — remember that a checkout provisioned this plan, so an
+    invoice for the same purchase (a subscription's first invoice, or a
+    one-time invoice Stripe raises for a checkout) never provisions it twice."""
+    try:
+        with _processed_lock:
+            seen = _deps["pg_load"](_CHECKOUT_KEY, {}) or {}
+            seen[f"{email}|{kind}"] = datetime.utcnow().isoformat()
+            if len(seen) > 300:
+                for k in sorted(seen, key=seen.get)[:len(seen) - 300]:
+                    seen.pop(k, None)
+            _deps["pg_save"](_CHECKOUT_KEY, seen)
+    except Exception as e:
+        _report("studio.mark_checkout", e, f"email={email}")
+
+
+def _checkout_recent(email, kind, minutes=60):
+    try:
+        seen = _deps["pg_load"](_CHECKOUT_KEY, {}) or {}
+        at = seen.get(f"{email}|{kind}")
+        return bool(at) and datetime.utcnow() - datetime.fromisoformat(at) < timedelta(minutes=minutes)
+    except Exception:
+        return False
+
+
+def _invoice_lines(inv):
+    """(price_id, quantity, period_end_epoch, period_start_epoch) per line, old and new API shapes."""
+    out = []
+    for ln in (((inv or {}).get("lines") or {}).get("data") or []):
+        pr = ln.get("price")
+        pid = pr.get("id") if isinstance(pr, dict) else pr
+        if not pid:
+            pid = ((ln.get("pricing") or {}).get("price_details") or {}).get("price")
+        out.append((str(pid or ""), int(ln.get("quantity") or 1),
+                    (ln.get("period") or {}).get("end"),
+                    (ln.get("period") or {}).get("start")))   # PATCH #287
+    return out
+
+
+def _invoice_subscription(inv):
+    """(subscription id, subscription metadata) — old and new API shapes."""
+    inv = inv or {}
+    sd = ((inv.get("parent") or {}).get("subscription_details") or {})
+    sub = inv.get("subscription") or sd.get("subscription") or ""
+    if isinstance(sub, dict):
+        sub = sub.get("id") or ""
+    meta = ((inv.get("subscription_details") or {}).get("metadata")
+            or sd.get("metadata") or {})
+    return str(sub), meta
+
+
+def _prepaid_bucket_covers(email, period_start_epoch):
+    """PATCH #287 — does a prepaid 3-month bucket on the lead record still cover
+    this charge? -> {covered, until, until_iso, hours} · {convert, key, rec} · {}."""
+    try:
+        key, rec = _deps["lead_lookup_by_email"](email)
+    except Exception:
+        key, rec = None, None
+    spr = rec.get("studio_package") if isinstance(rec, dict) else None
+    if not isinstance(spr, dict) or spr.get("variant") != "studio_3mo" or not spr.get("booking_deadline"):
+        return {}
+    try:
+        until = datetime.fromisoformat(str(spr["booking_deadline"])[:10]).date()
+        tz = pytz.timezone(TIMEZONE)
+        ps = (datetime.fromtimestamp(int(period_start_epoch), tz).date() if period_start_epoch
+              else datetime.now(tz).date())
+    except Exception:
+        return {}
+    if ps <= until:
+        return {"covered": True, "until": until.strftime("%b %d, %Y"), "until_iso": until.isoformat(),
+                "hours": spr.get("hours") or 12, "key": key, "rec": rec}
+    return {"convert": True, "key": key, "rec": rec}
+
+
+def _convert_bucket_record(key, rec, spec):
+    """PATCH #287 — the bucket is spent: from here on the record is the rolling plan."""
+    try:
+        old = dict(rec.get("studio_package") or {})
+        rec["studio_package"] = dict(old, variant=spec["kind"], package_name=spec["name"],
+                                     hours=spec["hours"], term_days=spec["term_days"], mrr=old.get("mrr", spec["mrr"]),
+                                     model="rolling", converted_at=datetime.utcnow().isoformat(),
+                                     bucket_deadline=old.get("booking_deadline", ""), booking_deadline="")
+        rec["product"] = spec["name"]
+        ld = _deps.get("lead_data")
+        if isinstance(ld, dict) and key:
+            ld[key] = rec
+        _deps["post_slack"](_deps["matt_channel"],
+                            f"🔁 *{rec.get('name') or key}*: prepaid 12-hour package finished — from this charge on "
+                            f"the account is the rolling *{spec['name']}* ({spec['monthly_hours']}h a month, holds up to "
+                            f"{spec['cap_hours']}h). (#287)")
+    except Exception as e:
+        _report("studio.convert_bucket", e, f"key={key}")
+
+
+def _on_invoice_paid(inv: dict, event_id: str) -> dict:
+    """PATCH #278 — invoice.paid for a plan.
+
+    subscription_cycle → the monthly top-up (that month's hours, capped at
+    2 months' worth available; last bookable day = 30 days past the next
+    charge). subscription_create / manual → a purchase that did NOT come
+    through a checkout (a subscription or invoice made by hand in Stripe):
+    run the same purchase pipeline a checkout would. Anything bought through
+    a payment link is the checkout handler's, never provisioned twice."""
+    inv = inv or {}
+    reason = str(inv.get("billing_reason") or "")
+    inv_id = str(inv.get("id") or "")
+    sub_id, meta = _invoice_subscription(inv)
+    sku = str((meta or {}).get("sku") or "")
+    spec, qty, pend, pstart = None, 1, None, None
+    for pid, q, pe, ps in _invoice_lines(inv):
+        s_ = resolve_spec(pid, sku, "")
+        if s_ and s_.get("plan"):
+            spec, qty, pend, pstart = s_, q, pe, ps
+            break
+    if not spec:
+        return {"handled": False, "reason": "not-a-plan", "event": event_id}
+    email = str(inv.get("customer_email") or "").strip().lower()
+    name = str(inv.get("customer_name") or "").strip() or email.split("@")[0].title()
+    if not email:
+        _report("studio.invoice_paid", "no email on invoice", f"invoice={inv_id}")
+        return {"handled": False, "reason": "no-email", "event": event_id}
+
+    if reason == "subscription_cycle":
+        if spec["plan"] != "monthly":
+            return {"handled": False, "reason": "not-monthly", "event": event_id}
+        if _already_processed(f"topup:{inv_id}"):
+            return {"handled": False, "reason": "duplicate", "event": event_id}
+        # PATCH #287 — a client who prepaid the old 3-month bucket (12 h loaded on day
+        # one: Camila Silveira and Maria Josefa, 17 Nov) is covered until that bucket's
+        # deadline — the Dec and Jan charges are the bucket's own, nothing is added — and
+        # the first charge whose period starts after the deadline turns the account into
+        # the rolling plan (WP starts fresh once the old window has closed).
+        _cov = _prepaid_bucket_covers(email, pstart)
+        if _cov.get("covered"):
+            line = (f"💳 *{spec['name']}* charge paid by *{name}* ({email}) — covered by their prepaid "
+                    f"{_cov.get('hours')}-hour package until {_cov.get('until')}; no hours added. Rolling "
+                    f"monthly hours start with the first charge after that date. (#287)")
+            _deps["post_slack"](_deps["matt_channel"], line)
+            return {"handled": True, "event": event_id, "covered_until": _cov.get("until_iso"),
+                    "package": spec["kind"]}
+        if _cov.get("convert"):
+            _convert_bucket_record(_cov["key"], _cov["rec"], spec)
+        if pend:
+            end = datetime.fromtimestamp(int(pend), pytz.timezone(TIMEZONE)).date() \
+                + timedelta(days=PLAN_TOPUP_WINDOW_DAYS)
+        else:
+            end = datetime.now(pytz.timezone(TIMEZONE)).date() + timedelta(days=PLAN_FIRST_WINDOW_DAYS)
+        res = topup_portal_client(email, spec["monthly_hours"] * qty,
+                                  cap_hours=spec["cap_hours"] * qty, end=end,
+                                  ref=f"invoice:{inv_id}")
+        if res.get("ok") and res.get("found"):
+            line = (f"🔁 *{spec['name']}* renewed: *{name}* ({email}) · "
+                    f"+{res.get('added')}h → {res.get('available')}h available "
+                    f"(holds up to {spec['cap_hours'] * qty}h) · books until {res.get('end_after')}")
+        elif res.get("ok"):
+            line = (f"🚨 *{spec['name']}* renewal paid by *{name}* ({email}) but they have NO "
+                    f"portal account. Create it in WP (or /admin/studio-provision-custom).")
+        else:
+            line = (f"🚨 *{spec['name']}* renewal paid by *{name}* ({email}): the portal top-up "
+                    f"FAILED ({res.get('raw')}). Add {spec['monthly_hours'] * qty}h by hand.")
+        _deps["post_slack"](_deps["lara_channel"], line)
+        _deps["post_slack"](_deps["matt_channel"], line)
+        return {"handled": True, "event": event_id, "topup": res, "package": spec["kind"]}
+
+    if reason in ("subscription_create", "manual"):
+        try:
+            import time as _t
+            _t.sleep(int(_deps.get("invoice_defer_seconds", 20)))  # let the checkout land first
+        except Exception:
+            pass
+        if _checkout_recent(email, spec["kind"]):
+            return {"handled": False, "reason": "checkout-handled", "event": event_id}
+        if reason == "subscription_create" and sub_id:
+            try:
+                ss = _deps["stripe_get"]("checkout/sessions", {"subscription": sub_id, "limit": 1})
+                if (ss or {}).get("data"):
+                    return {"handled": False, "reason": "checkout-handled", "event": event_id}
+            except Exception as e:
+                _report("studio.invoice_paid", e, f"invoice={inv_id} (checkout lookup)")
+                return {"handled": False, "reason": "lookup-failed", "event": event_id}
+        if _already_processed(f"invoice:{inv_id}"):
+            return {"handled": False, "reason": "duplicate", "event": event_id}
+        spec = _per_unit(spec, qty)
+        _on_package_purchased(name, email, f"invoice:{inv_id}", spec)
+        return {"handled": True, "event": event_id, "email": email, "package": spec["kind"],
+                "via": "invoice"}
+
+    return {"handled": False, "reason": f"billing_reason={reason or '?'}", "event": event_id}
 
 
 def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = None,
@@ -790,12 +1336,42 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
     code = prov.get("access_code")
     term = prov.get("term") or {}
 
+    # PATCH #278 — an existing portal client buying a plan or a service: WP
+    # hands back no code for an account that exists, so the welcome email
+    # would say "your code is being generated". Add the hours instead and tell
+    # them so; the code they already have still works.
+    topup = None
+    if spec.get("plan") and prov.get("ok") and prov.get("existing"):
+        topup = topup_portal_client(
+            email, spec["hours"],
+            cap_hours=spec.get("cap_hours") or 0,
+            end=term.get("booking_deadline"), ref=f"buy:{event_id}",
+            package=spec["name"] if spec["plan"] in ("monthly", "annual") else "",
+            monthly_hours=spec.get("monthly_hours") or 0)
+
+    # PATCH #287 — a plan bought on an account whose booking window had closed
+    # (WP: fresh_start) belongs to someone who has not logged in for a while:
+    # rotate the code and send the full welcome with it, not "use the code you
+    # already have" (Camila Silveira, 17 Nov: her July code, no email, no login).
+    if (topup is not None and topup.get("ok") and topup.get("found") and topup.get("fresh_start")
+            and spec.get("plan") in ("monthly", "annual")):
+        _rot = provision_portal_client(name, email, spec, start=start, rotate_code=True)
+        if _rot.get("access_code"):
+            code = _rot["access_code"]
+            topup["code_rotated"] = True
+            topup["welcome"] = True
+
     # 2 · Welcome email (send even if provisioning degraded — portal team can resend code)
     email_ok = False
     try:
-        email_ok = bool(_deps["send_email"](
-            email, f"Welcome to MWM Studios — your {spec['name']} is active 🎬",
-            _welcome_email_html(first, code, spec, term)))
+        if topup is not None and not topup.get("welcome"):
+            email_ok = bool(_deps["send_email"](
+                email, f"MWM Studios — your {spec['name']} hours are in your portal 🎬",
+                _hours_added_email_html(first, spec, term, topup)))
+        else:
+            email_ok = bool(_deps["send_email"](
+                email, f"Welcome to MWM Studios — your {spec['name']} is active 🎬",
+                _welcome_email_html(first, code, spec, term)))
     except Exception as e:
         _report("studio.welcome_email", e, f"email={email}")
 
@@ -884,36 +1460,43 @@ def _on_package_purchased(name: str, email: str, event_id: str, spec: dict = Non
     _deps["pipeline_event"]("PACKAGE_PURCHASED", lead_name=lead_name, source="Stripe",
                             new_stage=spec["sheet_status"],
                             assigned_agents=["LARA", "ROB"],
-                            context=f"{spec['price_label']} · {spec['hours']}h/"
-                                    f"{term_phrase(spec)} · "
+                            context=f"{spec['price_label']} · "
+                                    + (plan_terms(spec) if spec.get("plan") else
+                                       f"{spec['hours']}h/{term_phrase(spec)}") + " · "
                                     f"portal={'ok' if prov.get('ok') else 'FAILED'} · "
                                     f"welcome_email={'sent' if email_ok else 'FAILED'}")
     prov_note = ("✅ portal account ready" if prov.get("ok")
                  else "🚨 PORTAL PROVISIONING FAILED — create the account manually in WP")
+    if topup is not None:
+        prov_note = (f"✅ existing portal client: +{topup.get('added')}h added, "
+                     f"{topup.get('available')}h available" if topup.get("ok") and topup.get("found")
+                     else "🚨 existing portal client but the HOURS TOP-UP FAILED — add them in WP")
     mail_note = "✅ welcome email sent" if email_ok else "🚨 welcome email FAILED — send manually"
     # PATCH #53 — a one-month trial is a DIFFERENT event to the team than a
     # three-month contract: it is not recurring revenue, and it has a date on
     # which the upsell either happens or the client walks. Say so.
     _trial_note = ""
-    if not spec["recurring"]:
+    if not spec["recurring"] and not spec.get("plan"):
         _trial_note = (f"\n⚠️ *This is the 1-month trial, not the 3-month package.* "
                        f"One-time {spec['price_label']} — *not MRR*. "
                        + (f"Their {spec['hours']}h run out *{_deadline_str}*, which is the "
                           f"window to convert them to the package." if _deadline_str else ""))
     _deps["post_slack"](_deps["matt_channel"],
         f"💳 *{spec['name'].upper()} PURCHASED* — {lead_name} ({email})\n"
-        f"{spec['price_label']} · {spec['hours']}h over {term_phrase(spec)}"
+        f"{spec['price_label']} · "
+        + (plan_terms(spec) if spec.get("plan") else f"{spec['hours']}h over {term_phrase(spec)}")
         + (f" · books until {_deadline_str}" if _deadline_str else "") + "\n"
         f"{prov_note} · {mail_note}{_trial_note}\n"
         f"_LARA — please set up production tracking; client books sessions in the portal ({PORTAL_URL})_")
     _deps["post_slack"](_deps["lara_channel"],
-        f"💳 New *{spec['name']}* client: *{lead_name}* ({email}) — {spec['hours']}h over "
-        f"{term_phrase(spec)}"
+        f"💳 New *{spec['name']}* client: *{lead_name}* ({email}) — "
+        + (plan_terms(spec) if spec.get("plan") else f"{spec['hours']}h over {term_phrase(spec)}")
         + (f", last bookable day {_deadline_str}" if _deadline_str else "")
         + f". Portal: {PORTAL_URL} · {prov_note}")
     # PATCH #269 — callers that run this by hand want to know what happened.
     return {"portal_ok": bool(prov.get("ok")), "existing": bool(prov.get("existing")),
-            "code_issued": bool(code), "welcome_email": bool(email_ok)}
+            "code_issued": bool(code), "welcome_email": bool(email_ok),
+            "topup": topup}
 
 
 def custom_spec(label, hours, start, end, price_label="", term_label="",

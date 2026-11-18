@@ -36,7 +36,7 @@ ok("ALREADY A CLIENT" in off, "clients are not pitched the visit")
 os.environ.pop("AI_STUDIO_PAGE_LIVE", None)
 ok("mwmcreations.com/ai-studio" not in ai.maya_ai_context("", "asked"), "draft page: no link to a 404")
 os.environ["AI_STUDIO_PAGE_LIVE"] = "1"
-ok("mwmcreations.com/ai-studio/" in ai.maya_ai_context("", "asked"), "live page: the link is offered")
+ok("mwmcreations.com/book-studio/#hybrid-ai" in ai.maya_ai_context("", "asked"), "live page: the link is offered (#278: /book-studio, where /ai-studio redirects)")
 os.environ.pop("AI_STUDIO_PAGE_LIVE", None)
 
 print("\n== app.py wiring")
@@ -59,6 +59,6 @@ ok("October" not in _c and "November 30" not in off, "252: no founding deadline 
 ok("paid before we generate" in _c.lower() and "MAX 30 seconds" in _c, "141: paid first, max 30 s per Full Immersion video")
 ok("30-minute Studio Strategy Visit" in _c, "140b: main CTA is the 30-minute Strategy Visit")
 ok("video like the demo" in _c, "140b: demo explanation (252: AI Sets early-access line retired)")
-ok("roll over" not in _c, "140b: no rollover line until the subscription launches")
+ok("roll over" not in _c or "roll over, up to 2 months' worth" in _c, "140b -> #278: roll-over only with the 2-month cap (Michael, 9 Nov 2026)")
 print("\n%d passed, %d failed" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

@@ -45,6 +45,10 @@ import os
 import re
 
 AI_PAGE_PATH = "/ai-studio"
+# PATCH #278 — /ai-studio now redirects (301, snippet #69) into /book-studio,
+# where the Hybrid AI section and the plans live (merged 8 Nov 2026).
+AI_PAGE_PATHS = (AI_PAGE_PATH, "/book-studio")
+AI_PAGE_URL = "https://mwmcreations.com/book-studio/#hybrid-ai"
 
 # The public page is an unpublished draft until Michael says go. Maya must not
 # send people to a 404, so the link is only offered once this is switched on.
@@ -85,7 +89,8 @@ _HEADLINE_HINT = re.compile(r"film once|go anywhere|any scene|any world|\bai\b|g
 
 
 def on_ai_page(page_url):
-    return bool(page_url) and AI_PAGE_PATH in str(page_url).lower()
+    u = str(page_url or "").lower()
+    return bool(u) and any(p_ in u for p_ in AI_PAGE_PATHS)
 
 
 def ai_lead(ad_id=None, messages=None, headline="", ad_ids=None):
@@ -114,7 +119,7 @@ WHO YOU ARE IN THIS CONVERSATION (Michael's rule, read first):
   · AI Starter plan: https://buy.stripe.com/cNiaEXg4F1uOdGL3069EI1e
   · AI Growth plan: https://buy.stripe.com/aFa4gzcStehAfOT1W29EI1i
   · AI Pro plan: https://buy.stripe.com/cNi14ng4F3CWgSX7gm9EI1j
-  · Studio Only plan: https://buy.stripe.com/eVq14n19LgpI9qveIO9EI1k
+  · Real Sets plan (no AI; called "Studio Only" on older links): https://buy.stripe.com/eVq14n19LgpI9qveIO9EI1k
   · Full Immersion, one video with filming included ($997): https://buy.stripe.com/00weVdaKlgpI7incAG9EI1m
   · Add a Full Immersion video, SUBSCRIPTION-PLAN CLIENTS ONLY ($397 per video, quantity 1 to 8 at checkout): https://buy.stripe.com/9B65kDf0BehAfOT44a9EI1b
   · Full Immersion Pack ($1,497): https://buy.stripe.com/aFa5kD6u54H07in0RY9EI1c
@@ -135,14 +140,16 @@ AI WALL vs FULL IMMERSION (Michael, 16 Oct, PATCH #252g; renamed 19 Oct, #255; l
 
 NAMES (say the current name; no fuss if they use an old one):
 - "AI Wall Spot" (our name until 19 Oct) or "Hybrid AI video" = Full Immersion. "AI Wall Spots Pack" or "Hybrid AI Pack" = Full Immersion Pack. "AI Studio Hour", "AI Sets" or "AI Wall Session" = the AI Wall Hour or one of the AI plans below.
-- Product names stay in English in every language (Full Immersion, AI Wall, AI Starter, AI Growth, AI Pro, Studio Only).
+- Product names stay in English in every language (Full Immersion, AI Wall, AI Starter, AI Growth, AI Pro, Real Sets).
+- "Studio Only" (the name until 8 Nov 2026) = Real Sets.
 
 THE MENU (general information you may share; do not add to it, do not invent dates, deliverables or discounts):
 SUBSCRIPTION PLANS (Michael, 16 Oct: call them "subscription plans", billed monthly): 3-month minimum, then month to month with 30 days' notice. The new studio is open: real-set hours and AI Wall hours can be booked right away (PATCH #268, Michael 5 Nov). The month starts on the day they pay, so never tell them to wait. Each hour: up to 10 edited short videos, or 1 podcast episode with 10 short cuts.
 - AI Starter: $1,297/month founding price (regular $1,497). 2 studio hours a month (1 on real sets + 1 on the AI Wall) + 1 Full Immersion video. Say "2 studio hours a month" so it is clear it is the 2-hour plan (Michael, 16 Oct, PATCH #252d).
 - AI Growth (the most popular): $1,697/month founding price (regular $1,997). 4 studio hours a month, up to 2 of them on the AI Wall, + 1 Full Immersion video.
 - AI Pro: $2,497/month founding price (regular $2,997). 4 AI Wall hours + 2 Full Immersion videos.
-- Studio Only: $1,200/month founding price (regular $1,497). 4 hours on real sets, no AI.
+- Real Sets: $1,200/month founding price (regular $1,497). 4 hours on real sets, no AI.
+- Unused plan hours roll over, up to 2 months' worth.
 - They can start on any plan and move up anytime; the founding price comes with them. Founding prices are for businesses that commit early; the price stays locked while the plan is active.
 JUST NEED ONE THING:
 - Full Immersion: $997 for one video, filming included (PATCH #252c price, #255 name). Up to 30 seconds, up to 3 AI scenes (a new location, wardrobe or objects), finished edit, 1 revision round. On a monthly plan, Full Immersion videos are included or added for $397.
@@ -156,7 +163,7 @@ JUST NEED ONE THING:
 - NEVER mention or quote anything that is not on this menu: no 2-hour plans (Studio Duo, AI Wall Duo), no AI Wall Sessions monthly plan, no AI Studio Subscription, no hour upgrade. Those are private offers or retired, and Michael handles them.
 
 WHAT TO MENTION (general guidance only; always finish with the visit, never push):
-- Wants content every month / consistency: a plan. AI Growth is the most popular; AI Starter is the smallest way in; Studio Only if they don't want AI.
+- Wants content every month / consistency: a plan. AI Growth is the most popular; AI Starter is the smallest way in; Real Sets if they don't want AI.
 - Wants one or two "wow" videos: Full Immersion ($997, filming included). If they will come back, a plan is better value: Full Immersion videos are included or added for $397.
 - Mainly wants AI, several short videos: the Full Immersion Pack ($1,497, about $374 per video).
 - A podcast or long format on the AI Wall: the AI Wall Hour ($599), or AI Pro if it's every month.
@@ -197,7 +204,7 @@ def maya_ai_context(page_url="", why=""):
     founding = _FOUNDING_ON_PAGE if here else ""
     link = ""
     if page_live():
-        link = "\n- You may share the page: https://mwmcreations.com/ai-studio/ (once, when it helps)."
+        link = "\n- You may share the page: " + AI_PAGE_URL + " (once, when it helps)."
     return head + _FACTS + founding + link
 
 
