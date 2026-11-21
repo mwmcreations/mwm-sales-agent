@@ -86,7 +86,7 @@ check("js.toggle", JS.count("cal-toggle") >= 4 and 'state.calAll = !state.calAll
 check("js.personal_class", 'm.personal ? "personal" : ""' in JS)
 check("css.personal", ".today-ev.personal, .cal-ev.personal" in CSS)
 check("desk.no_calendar_branch", 'personal = _lower(m.get("calendar")) == "personal"' not in DS)
-check("desk.flag", 'm["personal"] = bool(not lk and (is_personal_event(title) or not is_studio_event(title)))' in DS)
+check("desk.flag", 'm["personal"] = bool((is_personal_event(title) and not (lk and _studio)) or (not lk and not _studio))' in DS)   # #291
 
 print(f"static+behaviour: {passed} passed, {failed} failed")
 _prev = max(n for n in range(270, 279) if os.path.exists(os.path.join(HERE, f"test_patch{n}.py")))

@@ -50,6 +50,7 @@ PAUSED_STOPS = ("not_now", "paused", "cold", "farewell")
 QUIET_DAYS = 30          # nothing heard or sent for this long → Paused
 VISIT_PASSED_GRACE_H = 12  # a booked slot this far in the past with no outcome → "outcome?"
 BOOKING_STALE_DAYS = 14    # a booking with no slot time on record, older than this → treated as passed
+BOOKED_KEEP_DAYS = 30      # PATCH #291 — a visit this far behind us with no outcome is history, not "Booked"
 ATTENTION_DAYS = 45        # a passed visit this recent with no outcome is on the "Needs me" list
 
 COOKIE = "desk_session"
@@ -268,6 +269,19 @@ def stage_of(rec, turns=None, dnc=False, now=None):
     return fact
 
 
+def booking_is_history(rec, turns=None, now=None):
+    """PATCH #291 — True when the record's booking no longer makes it 'Booked':
+    the visit is more than BOOKED_KEEP_DAYS behind us and nobody reported an
+    outcome. A booking with no date at all follows the record's own silence."""
+    slot = parse_dt(_first(rec.get("booked_slot_id"), rec.get("booked_slot"), rec.get("slot_id")))
+    ref = slot.isoformat() if slot else rec.get("booked_at")
+    if ref:
+        age = quiet_days({"booked_at": ref}, None, now)
+        return bool(age is not None and age > BOOKED_KEEP_DAYS + (0 if slot else BOOKING_STALE_DAYS))
+    q = quiet_days(rec, turns, now)
+    return bool(q is not None and q >= QUIET_DAYS)
+
+
 def _fact_stage(rec, turns=None, dnc=False, now=None):
     """The stage the facts alone say. Facts first (paid, blocked, visit
     outcome, a booking), then the chase's own verdicts, then time: a lead
@@ -286,7 +300,7 @@ def _fact_stage(rec, turns=None, dnc=False, now=None):
         return "Lost"
     if _lower(rec.get("last_outcome")) in VISIT_OUTCOMES:
         return "Visited"
-    if rec.get("event_id"):
+    if rec.get("event_id") and not booking_is_history(rec, turns, now):   # PATCH #291
         return "Booked"
     if stopped in LOST_STOPS or _lower(rec.get("outcome")) in ("lost", "no", "declined"):
         return "Lost"
@@ -1026,8 +1040,11 @@ def calendar_filter(meetings, lead_data, show_all=False):
         title = str(m.get("summary") or "") or " ".join(filter(None, [m.get("name"), m.get("business")]))
         lk = event_matches_lead(title, names)
         m = dict(m)
-        m["lead_key"] = lk
-        m["personal"] = bool(not lk and (is_personal_event(title) or not is_studio_event(title)))   # #279
+        # PATCH #291 — a family title hides the event even when two words of it match a
+        # lead (the soccer school did). A lead's name wins only with a studio word beside it.
+        _studio = is_studio_event(title)
+        m["personal"] = bool((is_personal_event(title) and not (lk and _studio)) or (not lk and not _studio))
+        m["lead_key"] = "" if m["personal"] else lk
         if show_all or not m["personal"]:
             kept.append(m)
         else:

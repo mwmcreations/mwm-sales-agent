@@ -133,7 +133,7 @@ check("stage.quiet_threshold", desk.stage_of({"last_inbound_at": D(29)}, now=NOW
 check("stage.active_chase_never_paused", desk.stage_of({"first_touch_sms_at": D(45), "chase": {"armed_at": D(45), "sent": {"a": D(45)}, "stopped": ""}}, now=NOW) == "Contacted")
 check("stage.undated_turns_paused", desk.stage_of({}, [{"role": "lead", "text": "hi", "at": ""}], now=NOW) == "Paused")
 check("stage.dated_no_turns_old", st("whatsapp:+14075550115") == "Paused" and desk.stage_of({"last_message_time": D(3)}, now=NOW) == "New")
-check("stage.old_slotless_booking", st("whatsapp:+14075550114") == "Booked")
+check("stage.old_slotless_booking", st("whatsapp:+14075550114") == "Paused")   # #291: 60 days behind, no outcome = history
 check("test.meta_dummy", desk.is_test(LEADS["instagram:4593113990973865"]) and desk.is_test(LEADS["whatsapp:+10000000000"]) and not desk.is_test(LEADS["whatsapp:+14075550101"]))
 check("stage.not_interested_lost", desk.stage_of({"event_id": "e", "last_outcome": "not_interested"}, now=NOW) == "Lost")
 check("quiet.days", round(desk.quiet_days({"last_inbound_at": D(3)}, now=NOW)) == 3 and desk.quiet_days({}, now=NOW) is None)
@@ -182,7 +182,7 @@ v13 = desk.lead_view("whatsapp:+14075550113", LEADS["whatsapp:+14075550113"], []
 check("view.passed_booking", v13["booking"]["passed"] is True and "visit_passed" in v13["flags"] and v13["booking"]["when"].startswith("Sat Oct 24"), json.dumps(v13["booking"]))
 v14 = desk.lead_view("whatsapp:+14075550114", LEADS["whatsapp:+14075550114"], [], now=NOW)
 check("view.slotless_old_booking", v14["booking"]["passed"] is True and v14["booking"]["when"] == "" and v14["booking"]["slot_at"] == ""
-      and "outcome_missing" in v14["flags"] and "visit_passed" not in v14["flags"], json.dumps(v14["booking"]) + str(v14["flags"]))
+      and v14["stage"] == "Paused" and "outcome_missing" not in v14["flags"] and "visit_passed" not in v14["flags"], json.dumps(v14["booking"]) + str(v14["flags"]))   # #291
 check("view.slotless_recent_booking", "visit_passed" not in desk.lead_view("k", {"event_id": "e", "booked_at": D(3)}, [], now=NOW)["flags"]
       and desk.lead_view("k", {"event_id": "e", "booked_at": D(3)}, [], now=NOW)["booking"]["passed"] is False
       and "visit_passed" in desk.lead_view("k", {"event_id": "e", "booked_at": D(20)}, [], now=NOW)["flags"])
@@ -210,8 +210,8 @@ check("tl.paid", tl6["events"][-1]["kind"] == "paid" and "$350" in tl6["events"]
 # ── board / inbox / search / one ────────────────────────────────────────────
 b = desk.board(LEADS, CONV, IG, manual_keys=set(), now=NOW)
 check("board.total_skips_test_and_junk", b["total"] == 16 and all(c["key"] not in ("whatsapp:+10000000000", "instagram:4593113990973865") for col in b["columns"].values() for c in col))
-check("board.counts", b["counts"] == {"New": 2, "Contacted": 2, "Replied": 2, "Booked": 3, "Visited": 1, "Client": 2, "Paused": 2, "Lost": 2}, str(b["counts"]))
-check("board.booked_upcoming_first", [c["key"] for c in b["columns"]["Booked"]] == ["whatsapp:+14075550104", "whatsapp:+14075550113", "whatsapp:+14075550114"],
+check("board.counts", b["counts"] == {"New": 2, "Contacted": 2, "Replied": 2, "Booked": 2, "Visited": 1, "Client": 2, "Paused": 3, "Lost": 2}, str(b["counts"]))
+check("board.booked_upcoming_first", [c["key"] for c in b["columns"]["Booked"]] == ["whatsapp:+14075550104", "whatsapp:+14075550113"],   # #291
       str([c["key"] for c in b["columns"]["Booked"]]))
 check("board.sorted", [c["key"] for c in b["columns"]["New"]] == ["whatsapp:+14075550101", "whatsapp:+14075550111"])
 check("board.awaiting", b["awaiting_reply"] == 1 and b["as_of"] == NOW.isoformat())

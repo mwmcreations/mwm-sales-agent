@@ -110,12 +110,12 @@ check("visits.by_day", v["upcoming_by_day"] and v["upcoming_by_day"][0]["day"].s
 check("visits.needs_outcome", [c["name"] for c in v["needs_outcome"]] == ["Carla Mendes"], v["needs_outcome"])
 check("visits.recent", [c["name"] for c in v["recent"]] == ["Ana Souza"] and v["recent"][0]["outcome"]["last"] == "follow_up")
 check("visits.counts", v["counts"] == {"upcoming": 1, "needs_outcome": 1, "recent": 1, "undated": 0}, v["counts"])
-LEADS["whatsapp:+14075550120"] = {"name": "Lechon Kirb", "phone": "+14075550120", "source": "Instagram", "first_contact_time": D(-120), "event_id": "evt_old", "last_message_time": D(-118)}
+LEADS["whatsapp:+14075550120"] = {"name": "Lechon Kirb", "phone": "+14075550120", "source": "Instagram", "first_contact_time": D(-120), "event_id": "evt_old", "last_message_time": D(-5)}   # #291: an undated booking counts only while the lead is still talking
 v3 = desk.visits(LEADS, CONV, {}, now=NOW)
 check("visits.undated_bucket", v3["counts"]["undated"] == 1 and v3["undated"][0]["name"] == "Lechon Kirb" and v3["counts"]["upcoming"] == 1, v3["counts"])
 del LEADS["whatsapp:+14075550120"]
 check("visits.no_test", all("test" not in c["name"] for c in v["upcoming"] + v["needs_outcome"] + v["recent"]))
-v2 = desk.visits(LEADS, CONV, {}, now=NOW + timedelta(days=40))
+v2 = desk.visits(LEADS, CONV, {}, now=NOW + timedelta(days=20))   # #291: past 30 days they are history
 check("visits.window_moves", v2["counts"]["upcoming"] == 0 and v2["counts"]["recent"] == 0 and v2["counts"]["needs_outcome"] == 2 and v2["counts"]["undated"] == 0, v2["counts"])
 
 # ── 3. clients ──────────────────────────────────────────────────────────────
