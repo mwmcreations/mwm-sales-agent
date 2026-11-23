@@ -25801,6 +25801,11 @@ def admin_reoffer():
     qs = [x.strip().lower() for x in str(request.values.get("q") or "").split(";") if x.strip()]
     if not qs:
         return jsonify({"error": "q is required (name, email or lead key; ';' between several)"}), 400
+    # PATCH #294 — only=sms (or whatsapp / email, comma list): the other channels stay silent
+    _only = {x.strip().lower() for x in str(request.values.get("only") or "").split(",") if x.strip()}
+    _bad_only = _only - {"whatsapp", "sms", "email"}
+    if _bad_only:
+        return jsonify({"error": "only takes whatsapp, sms, email (comma list)", "unknown": sorted(_bad_only)}), 400
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz)
     offers = _maya_offers()
@@ -25852,7 +25857,7 @@ def admin_reoffer():
             continue
         sent = {}
         wa_ok = False
-        if conversation_history.get(key) or key.startswith("whatsapp:"):
+        if (not _only or "whatsapp" in _only) and (conversation_history.get(key) or key.startswith("whatsapp:")):
             try:
                 _ok, _why = wa_send_eligibility(key, is_template=False)
                 if _ok:
@@ -25865,13 +25870,15 @@ def admin_reoffer():
                     sent["whatsapp"] = f"skipped ({_why})"
             except Exception as _wx:
                 sent["whatsapp"] = f"error ({type(_wx).__name__})"
-        if phone and not wa_ok:
+        if _only and "sms" not in _only:   # PATCH #294
+            pass
+        elif phone and not wa_ok:
             try:
                 r = _send_sms(phone, _sms_copy.compose_reply(_sms_copy.ascii_fold(text)), kind=SMS_KIND_MARKETING) or {}
                 sent["sms"] = "sent" if r.get("ok") else f"refused ({r.get('reason')})"
             except Exception as _sx:
                 sent["sms"] = f"error ({type(_sx).__name__})"
-        if email:
+        if email and (not _only or "email" in _only):
             try:
                 r = _email_send(email, subj, html, via="reoffer", lead_key=key)
                 sent["email"] = "sent" if email_ok(r) else f"refused ({str(r.get('error', ''))[:60]})"
