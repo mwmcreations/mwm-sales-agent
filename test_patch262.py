@@ -228,8 +228,8 @@ tool = SRC[SRC.index('    elif tool_name == "book_appointment":'):SRC.index('   
 check("tool.records_slot_and_resolves_move", 'lead_data[sender]["booked_slot_id"] = str(tool_input.get("slot_id") or "")' in tool
       and '_reschedule_resolve(sender, event_id, tool_input.get("slot_id"))' in tool)
 form = SRC[SRC.index("slots = (get_available_slots() or [])[:2]"):SRC.index("slots = (get_available_slots() or [])[:2]") + 600]
-check("form.remembers_offered_slots", 'lr["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}' in form)
-check("chase.remembers_offered_slots", 'rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}' in SRC)
+check("form.remembers_offered_slots", 'lr["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")' in form)   # #292: the row also carries its kind
+check("chase.remembers_offered_slots", 'rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")' in SRC)   # #292
 check("rail.insertions_are_self_contained", "_offered_slots_record" not in SRC)
 check("roles.form_owner_maps_to_gate", '"owner_founder"' in SRC[SRC.index("def _gate_role_for(rec):"):SRC.index("def _gate_role_for(rec):") + 1200])
 

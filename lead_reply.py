@@ -542,10 +542,10 @@ def reschedule_email(name, old_display, slots, address="", who="Michael"):
     old = f" on {old_display}" if old_display else ""
     lines_txt = [f"Hi {fn},", "",
                  f"{who} has to move your Studio Visit{old} — sorry for the change.", ""]
-    li = "".join(f"<li>{_html.escape(_when(s))}</li>" for s in opts)
+    li = "".join(f"<li>{_html.escape(_kind_label(s) + _when(s))}</li>" for s in opts)
     if opts:
         lines_txt.append("Would one of these work for you?")
-        lines_txt += [f"  {i + 1}. {_when(s)}" for i, s in enumerate(opts)]
+        lines_txt += [f"  {i + 1}. {_kind_label(s)}{_when(s)}" for i, s in enumerate(opts)]
         lines_txt += ["", "Just reply with the one that suits you (or another time that works) and the updated invite goes out right away."]
         ask_html = (f"<p>Would one of these work for you?</p><ol>{li}</ol>"
                     f"<p>Just reply with the one that suits you (or another time that works) and the updated invite goes out right away.</p>")
@@ -566,19 +566,21 @@ def reschedule_email(name, old_display, slots, address="", who="Michael"):
     return subject, html_body, "\n".join(lines_txt)
 
 
-def confirmation_email(name, when_display, address="", invite_sent=True, who="Michael"):
+def confirmation_email(name, when_display, address="", invite_sent=True, who="Michael", video=False):
     """(subject, html, text) — 'booked, here is when', sent as a reply in the thread."""
     fn = _fn(name)
-    subject = f"Confirmed: your Studio Visit — {when_display}"
+    subject = f"Confirmed: your {'Video Call' if video else 'Studio Visit'} — {when_display}"
+    _where = ("on a 15-minute Google Meet video call (the link is in your invite)" if video
+              else "at MWM Studios")   # PATCH #292
     inv = ("The calendar invite is on its way to this address." if invite_sent
            else "A calendar invite follows shortly.")
-    text = (f"Hi {fn},\n\nPerfect — you're booked for {when_display} with {who} at MWM Studios. {inv}\n"
+    text = (f"Hi {fn},\n\nPerfect — you're booked for {when_display} with {who} {_where}. {inv}\n"
             + (f"\nStudio: {address}\n" if address else "")
             + "\nIf anything changes, just reply here or text us.\n\nBest,\nMaya\nMWM Creations & Studios\ninfo@mwmcreations.com")
     html_body = (
         '<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:23px;color:#222222;max-width:560px">'
         f"<p>Hi {_html.escape(fn)},</p>"
-        f"<p>Perfect — you're booked for <strong>{_html.escape(when_display)}</strong> with {_html.escape(who)} at MWM Studios. {inv}</p>"
+        f"<p>Perfect — you're booked for <strong>{_html.escape(when_display)}</strong> with {_html.escape(who)} {_where}. {inv}</p>"
         + (f'<p style="color:#555">Studio: {_html.escape(address)}</p>' if address else "")
         + "<p>If anything changes, just reply here or text us.</p>"
           '<p>Best,<br><strong>Maya</strong><br>MWM Creations &amp; Studios<br>'
@@ -615,11 +617,28 @@ def _when_short(slot):
     return d.strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
 
 
+def _kind_label(slot):
+    """PATCH #292 - which of the two ways a numbered time is."""
+    k = slot.get("kind") if isinstance(slot, dict) else ""
+    return ("15-minute video call: " if k == "video_call"
+            else "Studio visit: " if k == "studio_visit" else "")
+
+
 def reoffer_text(name, slots, video=False, who="Michael"):
     """SMS / WhatsApp: two numbered times, the video call as a third way out.
     Plain ASCII, inside two segments (<= 306 chars with two slots)."""
     fn = _fn(name)
     opts = [s for s in (slots or []) if isinstance(s, dict)][:2]
+    _call = next((s for s in opts if s.get("kind") == "video_call"), None)   # PATCH #292
+    _visit = next((s for s in opts if s.get("kind") != "video_call"), None)
+    if _call is not None and _visit is not None:
+        return (f"Hi {fn}, it's Maya from {who} Moraes' team at MWM Creations. {who} opened new "
+                f"times for you: 1) 15-min video call {_when_short(_call)} 2) studio visit "
+                f"{_when_short(_visit)}. Reply 1 or 2, or send a time that suits you.")
+    if _call is not None:
+        return (f"Hi {fn}, it's Maya from {who} Moraes' team at MWM Creations. {who} opened a new "
+                f"time for you: a 15-min video call {_when_short(_call)}. Reply YES, or send a "
+                f"time that suits you.")
     if len(opts) == 2:
         times = f"1) {_when_short(opts[0])} 2) {_when_short(opts[1])}."
         reply = "Reply 1 or 2"
@@ -643,9 +662,9 @@ def reoffer_email(name, slots, address="", video=False, who="Michael"):
     opts = [s for s in (slots or []) if isinstance(s, dict)][:3]
     subject = ("New times for your studio visit" + (" (or a 15-minute video call)" if video else ""))
     lines_txt = [f"Hi {fn},", "", f"{who} opened more times for your studio visit at MWM Creations & Studios.", ""]
-    li = "".join(f"<li>{_html.escape(_when(s))}</li>" for s in opts)
+    li = "".join(f"<li>{_html.escape(_kind_label(s) + _when(s))}</li>" for s in opts)
     if opts:
-        lines_txt += ["Would one of these work for you?"] + [f"  {i + 1}. {_when(s)}" for i, s in enumerate(opts)]
+        lines_txt += ["Would one of these work for you?"] + [f"  {i + 1}. {_kind_label(s)}{_when(s)}" for i, s in enumerate(opts)]
         ask_html = f"<p>Would one of these work for you?</p><ol>{li}</ol>"
     else:
         lines_txt += ["Which day this week or next would work for you?"]

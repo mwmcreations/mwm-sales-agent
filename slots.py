@@ -61,7 +61,9 @@ DEFAULT_HORIZON_DAYS = 21
 # of the open hours come after, in this order. Off by default in the pure
 # functions (extended=False) so nothing that reads these changes until the
 # app turns it on; the app passes extended=True once Michael has said yes.
-EXTRA_SLOT_TIMES = [(9, 0), (12, 0), (13, 0), (16, 0)]
+# PATCH #292 (Michael, 22 Nov 23:19): "3 PM the last time a visit can start" - the
+# 4 PM start left the extended set.
+EXTRA_SLOT_TIMES = [(9, 0), (12, 0), (13, 0)]
 
 
 def slot_times_for(period, extended=False):
@@ -145,14 +147,14 @@ def row_window(row, tz):
         return None
 
 
-def is_busy(candidate, busy_times, tz):
+def is_busy(candidate, busy_times, tz, minutes=None):
     """
     True when `candidate` overlaps anything in `busy_times`, counting the
     15-minute buffer either side so visits are not booked back to back.
 
     `busy_times` — [{"start": iso8601, "end": iso8601}]
     """
-    slot_end = candidate + timedelta(minutes=SLOT_MINUTES)
+    slot_end = candidate + timedelta(minutes=(minutes or SLOT_MINUTES))   # PATCH #292: a call is 15 minutes
     buffer_start = candidate - timedelta(minutes=BUFFER_MINUTES)
     buffer_end = slot_end + timedelta(minutes=BUFFER_MINUTES)
     for b in busy_times or ():
@@ -270,3 +272,62 @@ def offer_slots(now, busy_times, tz, count_fn=None, max_per_day=4,
     nearest = compute_slots(now, busy_times, tz, count_fn=count_fn, max_per_day=max_per_day,
                             max_slots=FALLBACK_SLOTS, log=log, extended=extended)
     return nearest, True
+
+
+# ── PATCH #292 — the 15-minute video call has its own hours ────────────────
+# Michael, 22 Nov 2026: "Video call hours weekdays 9-5". A call is short, so
+# it is offered on the half hour all day; the last one starts 4:30 and ends
+# before 5. Two hours' notice, because nobody joins a call offered for "in ten
+# minutes". One per day, soonest first.
+VIDEO_CALL_MINUTES = 15
+VIDEO_CALL_FIRST = (9, 0)
+VIDEO_CALL_LAST = (16, 30)
+VIDEO_CALL_STEP_MIN = 30
+VIDEO_CALL_NOTICE_MIN = 120
+CLOSURE_WORDS = ("studio closed",)
+
+
+def is_closure_event(event):
+    """True for the calendar block that closes the STUDIO (not Michael): a
+    visit cannot happen then, a video call can."""
+    return any(w in str((event or {}).get("summary") or "").lower() for w in CLOSURE_WORDS)
+
+
+def video_call_times():
+    """Every candidate start time for a call, chronological."""
+    out = []
+    h, m = VIDEO_CALL_FIRST
+    while (h, m) <= VIDEO_CALL_LAST:
+        out.append((h, m))
+        m += VIDEO_CALL_STEP_MIN
+        if m >= 60:
+            h, m = h + 1, m - 60
+    return out
+
+
+def video_call_slots(now, busy_times, tz, within_hours=WINDOW_HOURS_DEFAULT, max_slots=1,
+                     horizon_days=DEFAULT_HORIZON_DAYS, notice_minutes=VIDEO_CALL_NOTICE_MIN):
+    """Up to `max_slots` call times, one per business day, soonest first.
+    Pure. -> (slots, fallback) where fallback is True when even the soonest
+    starts after the `within_hours` window. Each slot carries kind=video_call."""
+    earliest = now + timedelta(minutes=notice_minutes)
+    limit = now + timedelta(hours=within_hours)
+    out = []
+    day = now.date()
+    for _ in range(max(1, int(horizon_days))):
+        if len(out) >= max_slots:
+            break
+        if day.weekday() < 5:
+            for (hour, minute) in video_call_times():
+                candidate = tz.localize(datetime(day.year, day.month, day.day, hour, minute, 0))
+                if candidate < earliest:
+                    continue
+                if is_busy(candidate, busy_times, tz, minutes=VIDEO_CALL_MINUTES):
+                    continue
+                out.append({"id": candidate.isoformat(),
+                            "display": candidate.strftime("%A, %B %d at %I:%M %p EST"),
+                            "kind": "video_call"})
+                break
+        day += timedelta(days=1)
+    fallback = bool(out) and datetime.fromisoformat(out[0]["id"]) > limit
+    return out, fallback

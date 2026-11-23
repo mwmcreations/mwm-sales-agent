@@ -70,7 +70,10 @@ def times_text(slots):
         else:
             when = _when_short(s)
         if when:
-            out.append(f"{i + 1}) {when}")
+            _kind = s.get("kind") if isinstance(s, dict) else ""   # PATCH #292: say which is the call
+            _label = ("15-min video call " if _kind == "video_call"
+                      else "studio visit " if _kind == "studio_visit" else "")
+            out.append(f"{i + 1}) {_label}{when}")
     if not out:
         return "1) this week 2) next week - just tell me the day that suits you"
     return " ".join(out)

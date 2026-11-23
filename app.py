@@ -839,6 +839,7 @@ VIDEO_CALL_LOCATION_FALLBACK = os.getenv(
 MAYA_OFFERS_DEFAULT = {
     "video_call": os.getenv("MAYA_VIDEO_CALL", "off").strip().lower() == "on",
     "extended_hours": os.getenv("MAYA_EXTENDED_HOURS", "off").strip().lower() == "on",
+    "both_ways": os.getenv("MAYA_BOTH_WAYS", "off").strip().lower() == "on",   # PATCH #292
 }
 _VIDEO_CALL_LINKS = {}      # event id -> Meet link, for the booking reply
 
@@ -4162,7 +4163,7 @@ def get_gmail_service(impersonate=None):
 _SLOTS_FALLBACK_LAST = [0.0]   # PATCH #157 — last #eric 'nothing inside 48 h' line
 
 
-def _calendar_busy_times(now, days=21, who="slots"):
+def _calendar_busy_times(now, days=21, who="slots", skip_closure=False):
     """PATCH #158c — the calendar read behind every slot pick, factored out of
     get_available_slots so the re-engagement letter can pick ACROSS the week
     from the same busy list. -> list of slots.busy_row rows (all-day events
@@ -4185,6 +4186,8 @@ def _calendar_busy_times(now, days=21, who="slots"):
     # form honoured them. See slots.busy_row for the whole story.
     busy_times = []
     for event in events_result.get("items", []):
+        if skip_closure and _slots.is_closure_event(event):
+            continue   # PATCH #292 — the studio is closed, Michael can still take a video call
         _row = _slots.busy_row(event, tz)
         if _row:
             busy_times.append(_row)
@@ -4258,6 +4261,45 @@ def get_available_slots():
     except Exception as e:
         print(f"[get_available_slots] ERROR: {e}")
         return []
+
+
+# ─── PATCH #292 — both ways to meet Michael ─────────────────────────────────
+def get_video_call_slots(max_slots=1):
+    """Up to `max_slots` 15-minute video-call times (weekdays 9-5, one per day,
+    soonest first). The STUDIO CLOSED block does not stop a call. [] on any
+    failure: a message with no call time reads as it always did."""
+    try:
+        tz = pytz.timezone(TIMEZONE)
+        now = datetime.now(tz)
+        busy = _calendar_busy_times(now, days=21, who="get_video_call_slots", skip_closure=True)
+        slots, fallback = _slots.video_call_slots(now, busy, tz, max_slots=max_slots)
+        _TALLY.bump("slots.video_call", ("fallback " if fallback else "") + str(len(slots)))
+        return slots
+    except Exception as e:
+        print(f"[get_video_call_slots] ERROR: {e}")
+        return []
+
+
+def _pair_from(visits):
+    """What a message offers, from the visit times it was about to offer.
+    Switch `both_ways` ON: one video-call time first and one visit time beside
+    it, each tagged with its kind (Michael, 22 Nov: "always offer both"). OFF,
+    or no call time to be had: the visit times exactly as they came."""
+    try:
+        if not _maya_offers().get("both_ways"):
+            return visits
+        calls = get_video_call_slots(1)
+        if not calls:
+            return visits
+        out = [dict(calls[0], kind="video_call")]
+        for s in (visits or []):
+            if isinstance(s, dict) and s.get("id"):
+                out.append(dict(s, kind="studio_visit"))
+                break
+        return out
+    except Exception as _px:
+        print(f"[_pair_from] {type(_px).__name__}: {_px} - offering the visit times")
+        return visits
 
 
 # ─── PATCH #104 — auto-cleanup identity matching ────────────────────────────
@@ -4604,6 +4646,8 @@ def book_appointment(slot_id, lead_name, lead_email, lead_business, lead_phone=N
                 # survives until the new event exists, a lead rebooking into a
                 # nearby slot would otherwise be blocked by themselves.
                 and not (_stale and ev.get("id") == _stale["id"])
+                # PATCH #292 — the studio being closed does not stop a video call
+                and not (_video and _slots.is_closure_event(ev))
             ]
             if timed_conflicts:
                 conflict_names = [ev.get("summary", "Unknown") for ev in timed_conflicts]
@@ -13154,9 +13198,27 @@ VIDEO_CALL_PROMPT_BLOCK = """VIDEO CALL OPTION (ON — Michael's rule, Nov 2026)
 Beside the studio visit you may offer a 15-MINUTE VIDEO CALL with Michael (Google Meet) — offer it when the lead hesitates about coming in, is far from Orlando (Tampa, Miami, out of state), or when no in-person time is near. Say it simply: "If coming in is a stretch, Michael also does a quick 15-minute video call — I can send you a Google Meet link." Use the same time options (the call takes the first 15 minutes of the slot). Book it with appointment_type="video_call" — no phone number is needed; the Meet link goes out with the confirmation. The studio visit stays the first offer for anyone in the Orlando area."""
 
 
+BOTH_WAYS_PROMPT_BLOCK = """MEETING MICHAEL - ALWAYS OFFER BOTH (ON - Michael's rule, 22 Nov 2026):
+Whenever you offer times, offer BOTH ways in the same message, in this order: 1) a 15-MINUTE VIDEO CALL with Michael (Google Meet), then 2) the STUDIO VISIT. One time for each, numbered 1 and 2, then ask which they prefer. The visit is where clients decide, so never drop it; the call is the easy yes for someone busy or far away. Book the call with appointment_type="video_call" (no phone number needed; the Meet link goes out with the confirmation) and the visit with appointment_type="studio_visit". Take the call time from VIDEO CALL TIMES below and the visit time from MICHAEL'S NEXT AVAILABLE TIMES. If only one kind has an open time, offer that one. Video calls run weekdays 9 AM to 5 PM; visits start weekdays 9 AM to 3 PM."""
+
+
+def _video_call_times_line():
+    """PATCH #292 - the pre-loaded call times that go under BOTH_WAYS_PROMPT_BLOCK."""
+    try:
+        calls = get_video_call_slots(2)
+    except Exception:
+        calls = []
+    if not calls:
+        return "\nVIDEO CALL TIMES: none loaded - ask for a weekday time between 9 AM and 5 PM and check it with check_specific_slot."
+    return ("\nVIDEO CALL TIMES (15 minutes, pre-loaded; book with appointment_type=\"video_call\"):\n"
+            + "\n".join(f"  {i + 1}. {s['display']}  (slot_id {s['id']})" for i, s in enumerate(calls)))
+
+
 def _video_call_prompt_block():
     """PATCH #265 — the block Maya sees only while Michael's switch is on."""
     try:
+        if _maya_offers().get("both_ways"):   # PATCH #292
+            return BOTH_WAYS_PROMPT_BLOCK + _video_call_times_line()
         return VIDEO_CALL_PROMPT_BLOCK if _maya_offers().get("video_call") else ""
     except Exception:
         return ""
@@ -13172,6 +13234,11 @@ def _reoffer_prompt_block(sender):
         rec = lead_data.get(sender) or {}
         at = rec.get("reoffer_at")
         opts = [o for o in (rec.get("offered_slots") or []) if isinstance(o, dict) and o.get("id")]
+        if not at and any(o.get("kind") for o in opts):
+            # PATCH #292 — a first touch or a chase text numbered a call and a visit:
+            # Maya has to know which is which when the lead answers "1".
+            _ch = rec.get("chase") if isinstance(rec.get("chase"), dict) else {}
+            at = _ch.get("last_sent_at") or rec.get("lead_form_at") or rec.get("first_contact_time")
         if not at or not opts:
             return ""
         when = datetime.fromisoformat(str(at))
@@ -13180,7 +13247,11 @@ def _reoffer_prompt_block(sender):
         lines = ["--- TIMES YOU ALREADY OFFERED (HARD RULE) ---",
                  f"On {when.strftime('%A %B %d')} you sent this lead these studio-visit times, numbered:"]
         for i, o in enumerate(opts, 1):
-            lines.append(f"  {i}. {o.get('display') or o.get('id')}  (slot_id {o.get('id')})")
+            lines.append(f"  {i}. {o.get('display') or o.get('id')}  (slot_id {o.get('id')})"
+                         + ("  [15-MINUTE VIDEO CALL: book it with appointment_type=\"video_call\"]"
+                            if o.get("kind") == "video_call" else
+                            "  [STUDIO VISIT: appointment_type=\"studio_visit\"]"
+                            if o.get("kind") == "studio_visit" else ""))   # PATCH #292
         lines += ["A reply of 1 / 2 (or that day or time) means THAT slot: call book_appointment with its slot_id "
                   "and the name, email and business from the LEAD CONTEXT, then confirm in one line. "
                   "A reply of VIDEO means the 15-minute video call: offer the same times and book with "
@@ -13309,6 +13380,12 @@ def _lead_reply_handle(svc, row, now=None):
     if quoted_offers:
         _have = {str(o.get("id")) for o in quoted_offers}
         offers = quoted_offers + [o for o in offers if str(o.get("id")) not in _have]
+    # PATCH #292 — a time read back out of the quoted email has no kind; the record knows it
+    _kinds = {str(o.get("id"))[:16]: o.get("kind") for o in (rec.get("offered_slots") or [])
+              if isinstance(o, dict) and o.get("kind")}
+    for _o in offers:
+        if isinstance(_o, dict) and not _o.get("kind") and str(_o.get("id"))[:16] in _kinds:
+            _o["kind"] = _kinds[str(_o.get("id"))[:16]]
 
     m = _lrp.match_offer(own, offers, now, tz)
     it = _lrp.intent(own, m)
@@ -13347,6 +13424,8 @@ def _lead_reply_handle(svc, row, now=None):
         tool_input = {"slot_id": slot_iso, "lead_name": name or addr, "lead_email": addr,
                       "lead_business": biz or "on file", "appointment_type": "studio_visit",
                       "lead_role": _gate_role_for(rec)}
+        if str((m.get("slot") or {}).get("kind") or "") == "video_call":   # PATCH #292
+            tool_input["appointment_type"] = "video_call"
         try:
             res = handle_tool_call("book_appointment", tool_input, sender=key) or {}
         except Exception as _bk:
@@ -13354,6 +13433,8 @@ def _lead_reply_handle(svc, row, now=None):
         if res.get("success"):
             try:
                 subj, html, _txt = _lrp.confirmation_email(name, when_disp, STUDIO_ADDRESS, invite_sent=True)
+                if tool_input.get("appointment_type") == "video_call":   # PATCH #292
+                    subj, html, _txt = _lrp.confirmation_email(name, when_disp, "", invite_sent=True, video=True)
                 er = _email_send(addr, subj, html, via="lead_reply_booked", lead_key=key,
                                  transactional=True, thread=thread)
                 _conf = "confirmed in the thread" if email_ok(er) else f"confirmation email refused ({str(er.get('error', ''))[:60]})"
@@ -21899,10 +21980,11 @@ def _meta_lead_intake(value, lead_meta=None):
                 slots = (get_available_slots() or [])[:2]
             except Exception as _slx:
                 print(f"[Lead Form] slots unavailable (non-fatal): {_slx}")
+            slots = (globals().get("_pair_from") or (lambda v: v))(slots)   # PATCH #292
             # PATCH #262 — the record remembers what we offered, so an answer
             # by email ("Thursday works") can be matched to a real time.
             if slots:   # inline on purpose: this rail is lifted alone into test harnesses
-                lr["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+                lr["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or ""), **({"kind": str(s["kind"])} if s.get("kind") else {})}
                                        for s in slots if isinstance(s, dict) and s.get("id")]
             plan = _lf.first_touch_plan(verdict, consent, dialable, bool(email))
             # PATCH #267 — WhatsApp first when Meta lists the template
@@ -22572,8 +22654,9 @@ def _chase_pass(now=None):
                     _eslots = (get_available_slots() or [])[:2]
                 except Exception:
                     _eslots = []
+                _eslots = (globals().get("_pair_from") or (lambda v: v))(_eslots)   # PATCH #292
                 if _eslots:   # the record remembers the offer (#262)
-                    rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+                    rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or ""), **({"kind": str(s["kind"])} if s.get("kind") else {})}
                                             for s in _eslots if isinstance(s, dict) and s.get("id")]
                 _esh = bool(pend_e.get("sh"))
                 _eft = _sv.sh_first_touch_email if _esh else _sv.form_first_touch_email
@@ -22728,8 +22811,9 @@ def _chase_pass(now=None):
                         slots = (get_available_slots() or [])[:2]
                     except Exception:
                         slots = []
+                    slots = (globals().get("_pair_from") or (lambda v: v))(slots)   # PATCH #292
                     if slots:   # PATCH #262 — the record remembers the offer (inline: lifted alone in tests)
-                        rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+                        rec["offered_slots"] = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or ""), **({"kind": str(s["kind"])} if s.get("kind") else {})}
                                                 for s in slots if isinstance(s, dict) and s.get("id")]
                 try:
                     if state.get("kind") == _chase.KIND_POST_VISIT:
@@ -25721,8 +25805,9 @@ def admin_reoffer():
     now = datetime.now(tz)
     offers = _maya_offers()
     video = bool(offers.get("video_call"))
-    slots = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or "")}
+    slots = [{"id": str(s.get("id") or ""), "display": str(s.get("display") or ""), **({"kind": str(s["kind"])} if s.get("kind") else {})}
              for s in (get_available_slots() or []) if isinstance(s, dict) and s.get("id")][:2]
+    slots = _pair_from(slots)   # PATCH #292
     results = []
     for q in qs:
         hits = []
@@ -25844,7 +25929,7 @@ def admin_maya_offers():
     payload = request.get_json(silent=True) or {}
     cur = _maya_offers()
     changed = {}
-    for k in ("video_call", "extended_hours"):
+    for k in ("video_call", "extended_hours", "both_ways"):   # PATCH #292
         v = payload.get(k, request.form.get(k))
         if v is None:
             continue

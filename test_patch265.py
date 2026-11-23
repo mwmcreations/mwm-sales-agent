@@ -66,11 +66,11 @@ def hours(slots):
 
 
 # ── 1 · slots ───────────────────────────────────────────────────────────────
-check("slots.extra_times", sl.EXTRA_SLOT_TIMES == [(9, 0), (12, 0), (13, 0), (16, 0)])
-check("slots.house_first", sl.slot_times_for("morning", extended=True) == [(10, 0), (11, 0), (15, 0), (14, 0), (9, 0), (12, 0), (13, 0), (16, 0)]
+check("slots.extra_times", sl.EXTRA_SLOT_TIMES == [(9, 0), (12, 0), (13, 0)])   # #292: last visit start is 3 PM
+check("slots.house_first", sl.slot_times_for("morning", extended=True) == [(10, 0), (11, 0), (15, 0), (14, 0), (9, 0), (12, 0), (13, 0)]
       and sl.slot_times_for("morning") == [(10, 0), (11, 0), (15, 0), (14, 0)])
 check("slots.all_times", sl.all_slot_times() == [(10, 0), (11, 0), (14, 0), (15, 0)]
-      and sl.all_slot_times(True) == [(9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0), (16, 0)])
+      and sl.all_slot_times(True) == [(9, 0), (10, 0), (11, 0), (12, 0), (13, 0), (14, 0), (15, 0)])   # #292
 # Tuesday 3 Nov 2026 11:30. Today the house times are gone (2–4 PM busy kills
 # 1 PM and 4 PM through the buffer), tomorrow and Thursday are solid.
 now = _loc(datetime(2026, 11, 3, 11, 30))

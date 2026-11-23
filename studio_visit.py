@@ -240,6 +240,62 @@ def _slot_phrase(slots, joiner="or"):
     return f"{disp[0]} {joiner} {disp[1]}"
 
 
+# ── PATCH #292 — both ways to meet Michael (his wording, 22 Nov 23:25) ─────
+def two_ways(slots):
+    """(call_slot, visit_slot) when the offer carries a video-call time, else
+    (None, None): an offer with no call in it reads exactly as before."""
+    call = visit = None
+    for s in (slots or []):
+        if not isinstance(s, dict):
+            continue
+        if s.get("kind") == "video_call":
+            call = call or s
+        else:
+            visit = visit or s
+    if call is None:
+        return None, None
+    return call, visit
+
+
+def two_ways_phrase(slots, visit_label="free 30-min Studio Visit", reply="Reply 1 or 2."):
+    """'1) 15-min video call Tue Nov 24, 10am or 2) free 30-min Studio Visit
+    Mon Nov 30, 2pm. Reply 1 or 2.' - or the call alone when no visit is open."""
+    call, visit = two_ways(slots)
+    if call is None:
+        return ""
+    if visit is not None:
+        return (f"1) 15-min video call {short_slot(call)} or 2) {visit_label} "
+                f"{short_slot(visit)}. {reply}")
+    return f"a 15-min video call {short_slot(call)}. Reply YES to book it."
+
+
+def _two_ways_chase(step, fn, slots):
+    call, visit = two_ways(slots)
+    if call is None:
+        return ""
+    if step == 1:
+        return (f"Hi {fn}, Maya from Michael Moraes' team. Still holding time for you "
+                f"with Michael: {two_ways_phrase(slots)}")
+    if visit is None:
+        return (f"Hi {fn}, Michael has an opening for you: a 15-min video call "
+                f"{short_slot(call)}. Reply YES, or 'later'.")
+    return (f"Hi {fn}, Michael has two openings for you: "
+            + two_ways_phrase(slots, visit_label="30-min Studio Visit", reply="Reply 1, 2 or 'later'."))
+
+
+def _email_offer_line(slots, when):
+    call, visit = two_ways(slots)
+    if call is not None and visit is not None:
+        return (f"Michael can meet you two ways. A 15-minute video call on {short_slot(call)}, "
+                f"or a visit to the studio on {short_slot(visit)}, where you walk the sets and "
+                f"leave with a 90-day plan. Reply with 1 or 2, or a better time, and I will book it.")
+    if call is not None:
+        return (f"Michael can meet you on a 15-minute video call on {short_slot(call)}. "
+                f"Reply YES, or a better time, and I will book it.")
+    return (f"Michael has {when}. Which works? Reply to this email with the "
+            f"one you want, or a better time, and I will book it.")
+
+
 # ── chat opener (IG / WhatsApp / web, no form answers yet) ──────────────────
 
 def opener(name, ai=False):
@@ -269,6 +325,13 @@ def form_first_touch_sms(name, business="", ai=False, slots=None):
     fn = first_name(name)
     when = _slot_phrase(slots)
     who = "Michael (20+ yrs in projects with Disney, Universal)"
+    _tw = two_ways_phrase(slots)
+    if _tw:   # PATCH #292
+        if ai:
+            return (f"Hi {fn}, Maya from Michael Moraes' team. One studio shoot and "
+                    f"we put your business in any scene. Meet Michael: {_tw}")
+        _lead = "Two ways to meet" if two_ways(slots)[1] is not None else "Meet"
+        return f"Hi {fn}, Maya from Michael Moraes' team. {_lead} {who}: {_tw}"
     if ai:
         if when:
             core = (f"Hi {fn}, Maya from Michael Moraes' team. One studio shoot and "
@@ -324,8 +387,7 @@ def form_first_touch_email(name, business="", must_understand="", ai=False,
                  "; " + WE_DO + ".")
     body = lines[2:]   # #253: the branded HTML renders greeting, slots and signature itself
     if when:
-        lines.append(f"Michael has {when}. Which works? Reply to this email with the "
-                     f"one you want, or a better time, and I will book it.")
+        lines.append(_email_offer_line(slots, when))   # PATCH #292
     else:
         lines.append("Reply to this email with a day that works this week and I will "
                      "book it.")
@@ -590,6 +652,9 @@ def chase_sms(step, name, slots=None):
     """Core of the day-2 / day-9 texts (wrapped by sms_copy.compose)."""
     fn = first_name(name)
     when = _slot_phrase(slots)
+    _tw = _two_ways_chase(step, fn, slots)   # PATCH #292
+    if _tw:
+        return _tw
     if step == 1:
         if when:
             return (f"Hi {fn}, Maya from Michael Moraes' team. Still happy to book "
@@ -704,6 +769,9 @@ def sh_first_touch_sms(name, business="", ai=False, slots=None):
     who = "Michael (20+ yrs in projects with Disney, Universal)"
     lead_in = ("One studio shoot and we put your business in any scene." if ai
                else "One session can do a lot for a business your size.")
+    _tw = two_ways_phrase(slots)
+    if _tw:   # PATCH #292
+        return f"Hi {fn}, Maya from Michael Moraes' team. {lead_in} Meet Michael: {_tw}"
     if when:
         return (f"Hi {fn}, Maya from Michael Moraes' team. {lead_in} {who} has "
                 f"{when} for your free 30-minute Studio Visit. Which works?")
@@ -743,8 +811,7 @@ def sh_first_touch_email(name, business="", must_understand="", ai=False,
                  "whatever fits. Michael has been " + CREDITS + "; " + WE_DO + ".")
     body = lines[2:]   # #253: the branded HTML renders greeting, slots and signature itself
     if when:
-        lines.append(f"Michael has {when}. Which works? Reply to this email with the "
-                     f"one you want, or a better time, and I will book it.")
+        lines.append(_email_offer_line(slots, when))   # PATCH #292
     else:
         lines.append("Reply to this email with a day that works this week and I will "
                      "book it.")
@@ -869,6 +936,9 @@ def sh_chase_sms(step, name, slots=None):
     """Core of the studio-hour day-2 / day-9 texts (wrapped by sms_copy.compose)."""
     fn = first_name(name)
     when = _slot_phrase(slots)
+    _tw = _two_ways_chase(step, fn, slots)   # PATCH #292
+    if _tw:
+        return _tw
     if step == 1:
         if when:
             return (f"Hi {fn}, Maya from Michael Moraes' team. Still happy to book "
@@ -914,8 +984,17 @@ def branded_email_html(name, paragraphs, slots=None, sms_sent=False,
     box; the footer is the house footer. Every string is escaped. Pure."""
     fn = first_name(name)
     body = "".join(_p(t) for t in paragraphs if str(t).strip())
-    disp = [short_slot(s) for s in (slots or []) if s]
-    disp = [d for d in disp if d][:2]
+    _call, _visit = two_ways(slots)   # PATCH #292
+    if _call is not None:
+        disp = (["15-minute video call: " + short_slot(_call)]
+                + (["Studio visit: " + short_slot(_visit)] if _visit is not None else []))
+        box_title = "Two ways to meet Michael" if _visit is not None else "A video call with Michael"
+        box_note = box_note or ("Reply with 1 or 2, or a better time, and I will book it."
+                                if _visit is not None else
+                                "Reply YES, or a better time, and I will book it.")
+    else:
+        disp = [short_slot(s) for s in (slots or []) if s]
+        disp = [d for d in disp if d][:2]
     if disp:
         rows = "".join(
             f"<tr><td style=\"padding:8px 0;font-size:15px;color:{BRAND_DARK};font-weight:600;\">"
