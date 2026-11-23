@@ -31509,6 +31509,8 @@ def _igp_worker(job_id, tok, ig_user_id):
     label = f"{job['kind'].capitalize()} `{job.get('file_name') or job['file_id']}`"
     if job.get("status") == "published":
         _who = ""
+        if job.get("kind") == "reel" and str(job.get("share_to_feed", "1")) == "0":   # Patch #293
+            _who += " Reels tab only (not on the profile grid, not in the home feed)."
         if job.get("collaborators"):
             _who += " Collab invite sent to @" + ", @".join(job["collaborators"]) + " (shows on their profile once accepted)."
         if job.get("user_tags"):
@@ -31538,6 +31540,7 @@ def admin_ig_publish():
     thumb_offset = (request.values.get("thumb_offset") or "").strip()   # Patch #244b
     collaborators_raw = request.values.get("collaborators") or ""        # Patch #246
     user_tags_raw = request.values.get("user_tags") or ""
+    share_to_feed = _igp.share_flag(request.values.get("share_to_feed"), kind)   # Patch #293: "0" = Reels tab only
     if approved_by != "michael":
         return jsonify({"ok": False, "error": "approved_by must be michael - nothing publishes without his OK"}), 400
     if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id):
@@ -31555,6 +31558,7 @@ def admin_ig_publish():
     checks = {"file": meta.get("name"), "mime": meta.get("mimeType"), "size": meta.get("size"),
               "video": meta.get("videoMediaMetadata"), "kind": kind, "thumb_offset_ms": thumb_offset or None,
               "collaborators": collaborators, "user_tags": user_tags}
+    checks["share_to_feed"] = share_to_feed   # Patch #293: ERIC's jobs read this to know the patch is live
     if problems:
         return jsonify({"ok": False, "error": "pre-publish checks failed", "problems": problems, "checks": checks}), 400
     if dry_run:
@@ -31573,6 +31577,7 @@ def admin_ig_publish():
                              "caption": caption, "status": "queued", "account": me.get("username"),
                              "thumb_offset": thumb_offset or None,
                              "collaborators": collaborators, "user_tags": user_tags,
+                             "share_to_feed": share_to_feed,
                              "video_url": _igc.REDIRECT_BASE_DEFAULT + _igp.MEDIA_PATH + tok,
                              "started_at": datetime.now(pytz.UTC).isoformat()}
     threading.Thread(target=_igp_worker, args=(job_id, tok, me["user_id"]), daemon=True, name="ig-publish").start()

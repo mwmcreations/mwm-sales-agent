@@ -172,10 +172,19 @@ def people_problems(kind, collaborators, user_tags):
     return c, t, problems
 
 
-def container_params(kind, video_url, caption, thumb_offset=None, collaborators=None, user_tags=None):
+def share_flag(raw, kind):
+    """PATCH #293 - "0" only for a reel asked to stay out of the feed; "1" otherwise
+    (the default, an unknown value, and every story)."""
+    v = str(raw if raw is not None else "").strip().lower()
+    return "0" if (kind == "reel" and v in ("0", "false", "no", "off")) else "1"
+
+
+def container_params(kind, video_url, caption, thumb_offset=None, collaborators=None, user_tags=None,
+                     share_to_feed=True):
     if kind == "story":
         return {"media_type": "STORIES", "video_url": video_url}
-    p = {"media_type": "REELS", "video_url": video_url, "caption": caption or "", "share_to_feed": "true"}
+    p = {"media_type": "REELS", "video_url": video_url, "caption": caption or "",
+         "share_to_feed": "true" if share_to_feed else "false"}   # PATCH #293: false = Reels tab only
     if thumb_offset not in (None, ""):
         p["thumb_offset"] = str(int(str(thumb_offset).strip()))
     if collaborators:
@@ -203,7 +212,9 @@ def run_publish(job, http, token, ig_user_id, sleep=time.sleep, now=time.time, l
     job.update(status="creating")
     r = http.post("%s/%s/media" % (GRAPH, ig_user_id),
                   data=dict(container_params(job["kind"], job["video_url"], job.get("caption"), job.get("thumb_offset"),
-                                             job.get("collaborators"), job.get("user_tags")), access_token=token), timeout=60)
+                                             job.get("collaborators"), job.get("user_tags"),
+                                             share_to_feed=(str(job.get("share_to_feed", "1")) != "0")),
+                            access_token=token), timeout=60)
     cid = (r.json() or {}).get("id") if r.status_code == 200 else None
     if not cid:
         return _err("create", r)
