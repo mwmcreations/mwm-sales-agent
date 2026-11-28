@@ -52,6 +52,7 @@ import studio_visit as _sv    # Patch #143 — one script, every door
 import lead_form as _lf       # Patch #143 — what a Meta form submission means
 import lead_chase as _chase   # Patch #143 — the chase chain, decided purely
 import quiet_lead as _ql      # Patch #285 — the quiet-lead rail, decided purely
+import morning_brief as _mb   # Patch #295 — the 7:00 brief and the Desk page, decided purely
 import pitch_drafts as _pd    # Patch #282 — the emails a pitch earns, drafted for Michael's Send
 import lead_reply as _lrp     # Patch #262 — a lead's answer by email is an answer
 import first_touch as _ft1    # Patch #267 — WhatsApp first, SMS as the backstop
@@ -8520,7 +8521,13 @@ def _daily_briefing_thread():
                 time.sleep(chunk)
                 remaining -= chunk
                 _heartbeat("daily_briefing")
-            _build_and_send()
+            # PATCH #295 — Michael, Sat 28 Nov 01:02: "2 retire". The old 7:00 calendar email
+            # stops the day the morning text is switched on, and not a day before.
+            _sw = globals().get("_switch_on")
+            if _sw and _sw("morning_brief_live"):
+                print("[BRIEFING] skipped: the morning brief text is on (#295)")
+            else:
+                _build_and_send()
         except Exception as exc:
             print(f"[BRIEFING] Error: {exc}")
             traceback.print_exc()
@@ -12507,23 +12514,12 @@ def _pre_meeting_briefer():
 
                     # Build the briefing message
                     time_str = event_start.strftime("%I:%M %p")
-                    briefing = (
-                        f"📋 MEETING BRIEFING — {int(minutes_until)} min\n\n"
-                        f"👤 {_lead_name or 'Unknown'}\n"
-                        f"🏢 {_lead_biz or 'Not specified'}\n"
-                    )
-                    if _lead_email and _lead_email.lower() not in ("not provided", "n/a"):
-                        briefing += f"📧 {_lead_email}\n"
-                    if _lead_phone_display:
-                        briefing += f"📱 {_lead_phone_display}\n"
-                    briefing += (
-                        f"🕐 {time_str} ET\n"
-                        f"📍 Source: {_booked_via or 'WhatsApp'}\n"
-                    )
-                    if _conv_summary:
-                        briefing += f"\n💬 Recent conversation:\n{_conv_summary}\n"
-
-                    briefing += "\nGood luck! 🎬"
+                    # PATCH #295 — a hand-made event (LARA's "Studio Visit: Ruben…") has no lead
+                    # facts: the name comes from the title, its notes ride along, nothing is guessed
+                    briefing = _mb.meeting_briefing(
+                        minutes_until, time_str, lead_name=_lead_name, lead_biz=_lead_biz,
+                        lead_email=_lead_email, lead_phone=_lead_phone_display, booked_via=_booked_via,
+                        conv_summary=_conv_summary, summary=summary, description=description)
 
                     # PATCH #149: by SMS, never WhatsApp (the 24-h window ate these)
                     _operator_alert.alert("briefing", briefing)
@@ -22162,6 +22158,7 @@ SWITCHES = {
     "wa_reengage_v3": "WA_REENGAGE_V3",     # #275 — the seven new WhatsApp templates
 }
 SWITCHES["quiet_rail_live"] = "QUIET_RAIL_LIVE"   # PATCH #285 — the quiet-lead rail may send (dark until Michael OKs the copy)
+SWITCHES["morning_brief_live"] = "MORNING_BRIEF_LIVE"   # PATCH #295 — the 7:00 text may send (dark until Michael's word)
 
 
 def _switch_on(name):
@@ -23102,7 +23099,7 @@ def _quiet_pass(now=None):
                     rec["quiet_rail"] = st
                     lead_data[key] = rec
         if tell_now:
-            text = ("MWM quiet leads, 10+ days since you last spoke: " + "; ".join(names[:6])
+            text = ("MWM quiet leads (days since you last spoke): " + "; ".join(names[:6])
                     + (f"; +{len(names) - 6} more" if len(names) > 6 else "")
                     + ". The rail keeps touching every 5 days. Call them, or tell DEV 'stop <name>'.")
             try:
@@ -23253,6 +23250,7 @@ def _lead_chase_loop():
             _reengage_tick()              # PATCH #158 — the armed one-off send, when its time comes
             counts = _chase_pass()
             _quiet_tick()               # PATCH #285 — the quiet-lead rail, once an hour
+            _morning_brief_tick()       # PATCH #295 — the 7:00 text, once a day, when its switch is on
             _LEAD_CHASE_LAST.update({
                 "at": datetime.now(pytz.timezone(TIMEZONE)).isoformat(),
                 "armed": counts["armed"], "active": counts["active"],
@@ -25540,6 +25538,10 @@ def _at_cap_alert_once():
 
 
 # ── decisions ─────────────────────────────────────────────────────────
+# PATCH #295 — "D7 yes", "decision 7 no", "yes 7", "7 later": the text names a decision
+_MB_NUMBERED = re.compile(r"\b[dD]\s?\d{1,4}\b|\bdecision\s+\d{1,4}\b|^\s*\d{1,4}\b|\b(?:yes|no|later)\s+\d{1,4}\b", re.I)
+
+
 def _agent_talk_decision(conv, agreed_text, kind="agreed"):
     dec = _at_load(_AT_DECISIONS, {}) or {}
     n = int(dec.get("next", 1))
@@ -25571,6 +25573,10 @@ def _agent_talk_owner_text(frm, text):
     to an open decision (receipt sent, thread + owners told)."""
     try:
         open_dec = _agent_talk_open_decisions()
+        # PATCH #295 — a decision filed for the brief stays open for days: a bare "yes" sent
+        # for something else must never answer it. It is reachable only by its number.
+        if not _MB_NUMBERED.search(str(text or "")):
+            open_dec = [d for d in open_dec if not d.get("brief")]
         if not open_dec:
             return False
         decision, answer = _at.owner_reply(text, open_dec)
@@ -25633,6 +25639,8 @@ def _agent_talk_pass(now=None):
             if now - float(conv.get("last_activity", now)) > 60:
                 threading.Thread(target=_agent_talk_advance, args=(cid,), daemon=True).start()
     for d in _agent_talk_open_decisions():
+        if d.get("brief"):
+            continue    # PATCH #295 — filed for the morning brief: it is asked there every day, never re-texted or expired
         txt = _at.retext_due(d, now)
         if txt:
             res = _operator_alert.alert("decision", txt)
@@ -25784,6 +25792,222 @@ def admin_agent_talk_stop():
         return jsonify({"ok": True, "conv": conv, "note": "already closed"}), 200
     _agent_talk_close(conv, "stopped", "⏹ stopped by Michael/DEV through the admin route.")
     return jsonify({"ok": True, "conv": conv}), 200
+
+
+# ── PATCH #295 — THE MORNING BRIEF ────────────────────────────────────────
+# Michael, Sat 28 Nov 2026: one text at 7:00 ET and one page on the Desk, with
+# the decisions that wait on him in one place. Step 1 = facts the machine
+# already holds (leads, the MWM calendar, the open decisions); no model call.
+# DARK BY DEFAULT: switch `morning_brief_live`. The page and the admin preview
+# work either way, so he can read tomorrow's text before it is ever sent.
+_MB_SENT_KEY = "morning_brief:sent_day"
+_MB_LAST = {"sent_day": "", "at": "", "result": "", "chars": 0, "errors": [], "last_error": ""}
+
+
+def _morning_brief_link():
+    host = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("PUBLIC_HOST")
+            or "mwm-sales-agent-production.up.railway.app").strip().strip("/")
+    return f"https://{host}/desk/brief"
+
+
+def _mb_aware(d, tz):
+    if d is None:
+        return None
+    try:
+        return tz.localize(d) if d.tzinfo is None else d.astimezone(tz)
+    except Exception:
+        return None
+
+
+def _morning_brief_leads(now):
+    desk = globals().get("_desk")
+    if desk is None:
+        raise RuntimeError("desk not wired")
+    tz = now.tzinfo
+    out = []
+    for key, rec in list(lead_data.items()):
+        if not isinstance(rec, dict):
+            continue
+        try:
+            turns = desk.turns_for(key, rec, conversation_history, ig_conversation_history)
+            b = desk.booking_of(rec, now) or {}
+            out.append({
+                "name": desk.display_name(rec, key),
+                "source": desk.source_of(rec, key),
+                "first_seen": _mb_aware(desk.parse_dt(desk.first_seen(rec)), tz),
+                "answered": bool(desk.has_outbound(rec, turns)),
+                "booked_at": _mb_aware(desk.parse_dt(b.get("at")), tz) if b else None,
+                "booked_when": str(b.get("when") or "") if b else "",
+                "test": bool(desk.is_test(rec)),
+            })
+        except Exception:
+            continue      # one unreadable record never blanks the brief
+    return out
+
+
+def _morning_brief_events(now):
+    desk = globals().get("_desk")
+    tz = now.tzinfo
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    items = get_calendar_service().events().list(
+        calendarId=CALENDAR_ID, timeMin=start.isoformat(), timeMax=(start + timedelta(days=1)).isoformat(),
+        singleEvents=True, orderBy="startTime").execute(num_retries=3).get("items", [])
+    meetings = []
+    for it in items:
+        if it.get("status") == "cancelled":
+            continue
+        st = (it.get("start") or {}).get("dateTime")
+        try:
+            at = datetime.fromisoformat(st).astimezone(tz) if st else None
+        except Exception:
+            at = None
+        meetings.append({"summary": it.get("summary", ""), "start": at})
+    if desk is not None:
+        try:
+            meetings, _hidden = desk.calendar_filter(meetings, lead_data, show_all=True)   # marks family events
+        except Exception as _e:
+            _report_error("morning_brief.calendar_filter", _e)
+    return meetings
+
+
+def _morning_brief_build(now=None):
+    tz = pytz.timezone(TIMEZONE)
+    now = now or datetime.now(tz)
+    errors, leads, events, decisions = [], [], [], []
+    try:
+        leads = _morning_brief_leads(now)
+    except Exception as _e:
+        errors.append("leads")
+        _report_error("morning_brief.leads", _e)
+    try:
+        events = _morning_brief_events(now)
+    except Exception as _e:
+        errors.append("calendar")
+        _report_error("morning_brief.calendar", _e)
+    try:
+        decisions = _agent_talk_open_decisions()
+    except Exception as _e:
+        errors.append("decisions")
+        _report_error("morning_brief.decisions", _e)
+    stats = _mb.lead_stats(leads, now)
+    today = _mb.today_events(events, now)
+    return {"now": now, "stats": stats, "events": today, "decisions": decisions, "errors": errors,
+            "sms": _mb.sms(now, stats, today, decisions, _morning_brief_link(), errors=errors)}
+
+
+def _morning_brief_sent_day():
+    if _MB_LAST["sent_day"]:
+        return _MB_LAST["sent_day"]
+    try:
+        return str(_pgs.load_state(_MB_SENT_KEY, "") or "")
+    except Exception:
+        return ""
+
+
+def _morning_brief_tick(now=None):
+    """Called from the chase loop every pass. Sends once a day, 7:00-9:59 ET, when the switch is on.
+    The day is marked BEFORE the send: a crash can cost one brief, never send two."""
+    try:
+        now = now or datetime.now(pytz.timezone(TIMEZONE))
+        if not _mb.due(now, _morning_brief_sent_day(), _switch_on("morning_brief_live")):
+            return None
+        day = now.strftime("%Y-%m-%d")
+        _MB_LAST["sent_day"] = day
+        try:
+            _pgs.save_state(_MB_SENT_KEY, day)
+        except Exception as _e:
+            _report_error("morning_brief.mark", _e)
+        b = _morning_brief_build(now)
+        res = _operator_alert.alert(_mb.KIND, b["sms"])
+        _MB_LAST.update({"at": now.isoformat(), "result": str(res.get("sms")), "chars": len(b["sms"]),
+                         "errors": b["errors"]})
+        _TALLY.bump("morning_brief.sent", str(res.get("sms")))
+        return res
+    except Exception as _e:
+        _MB_LAST["last_error"] = repr(_e)[:160]
+        try:
+            _report_error("morning_brief", _e)
+        except Exception:
+            pass
+        return None
+
+
+def _morning_brief_file_decision(owner, text, urgent=False):
+    """An agent's question for Michael, filed into the numbered list. It shows in
+    the brief every morning until he answers ("D7 yes"); urgent=True also texts it now."""
+    owner = str(owner or "").strip().upper()
+    if owner not in _at.AGENTS:
+        return None, f"unknown owner; known: {sorted(_at.AGENTS)}"
+    body = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(body) < 8:
+        return None, "text is required (one plain question, 8+ characters)"
+    dec = _at_load(_AT_DECISIONS, {}) or {}
+    n = int(dec.get("next", 1))
+    conv = {"id": f"brief:{n}", "channel": _at.AGENTS[owner].get("channel") or SLACK_DEV_CHANNEL,
+            "ts": "", "owners": [owner]}
+    row = _at.new_decision(n, conv, body, kind="agreed")   # YES/NO/LATER or words, all by number
+    row["brief"] = True
+    row["next_text"] = None
+    if not _at_save(f"agent_decision:{n}", row):
+        return None, "state store unavailable"
+    dec["next"] = n + 1
+    dec["ids"] = ((dec.get("ids") or []) + [n])[-200:]
+    _at_save(_AT_DECISIONS, dec)
+    if urgent:
+        res = _operator_alert.alert("decision", row["sms"])
+        row["texted"] = [{"at": time.time(), "result": res.get("sms")}]
+        _at_save(f"agent_decision:{n}", row)
+    _at_post(conv["channel"], f"🗂 decision {n} filed for Michael by {owner}"
+                              f"{' (texted now)' if urgent else ' (in tomorrow 7:00 brief)'}: {body[:300]}")
+    _TALLY.bump("morning_brief.decision_filed", owner)
+    return row, ""
+
+
+@app.route('/admin/decision-file', methods=['POST'])
+def admin_decision_file():
+    """PATCH #295 — POST {owner, text, urgent?}: file one question for Michael into the brief."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    payload = request.get_json(silent=True) or {}
+    owner = payload.get("owner") or request.values.get("owner") or ""
+    text = payload.get("text") or request.values.get("text") or ""
+    urgent = str(payload.get("urgent", request.values.get("urgent", ""))).strip().lower() in ("1", "true", "yes", "on")
+    row, why = _morning_brief_file_decision(owner, text, urgent=urgent)
+    if row is None:
+        return jsonify({"ok": False, "error": why}), 400
+    return jsonify({"ok": True, "decision": {"id": row["id"], "owners": row["owners"], "text": row["text"],
+                                             "urgent": urgent}}), 200
+
+
+@app.route('/admin/morning-brief', methods=['GET', 'POST'])
+def admin_morning_brief():
+    """PATCH #295 — GET: today's brief as it would be texted (nothing is sent).
+    POST send=1: text it to Michael now as a test (does not mark the day)."""
+    if not _admin_secret_ok(request.values.get("secret", "")):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    b = _morning_brief_build()
+    out = {"ok": True, "live": _switch_on("morning_brief_live"), "sent_day": _morning_brief_sent_day(),
+           "sms": b["sms"], "chars": len(b["sms"]), "errors": b["errors"],
+           "counts": {"new_leads": len(b["stats"]["new"]), "unanswered": len(b["stats"]["unanswered"]),
+                      "booked": len(b["stats"]["booked"]), "events": len(b["events"]),
+                      "decisions": len(_mb.open_decisions(b["decisions"]))},
+           "last": dict(_MB_LAST), "page": _morning_brief_link()}
+    payload = request.get_json(silent=True) or {}
+    if request.method == "POST" and str(payload.get("send", request.values.get("send", ""))).strip().lower() in ("1", "true", "yes", "on"):
+        res = _operator_alert.alert(_mb.KIND, b["sms"])
+        out["sent"] = str(res.get("sms"))
+    return jsonify(out), 200
+
+
+@app.route('/desk/brief', methods=['GET'])
+def desk_brief_page():
+    """PATCH #295 — the morning brief as a page. A signed-in Desk session (or the admin secret) reads it."""
+    if not _desk_auth_ok():
+        return "", 302, {"Location": "/desk/"}
+    b = _morning_brief_build()
+    html = _mb.page(b["now"], b["stats"], b["events"], b["decisions"], sent_day=_morning_brief_sent_day(),
+                    live=_switch_on("morning_brief_live"), errors=b["errors"])
+    return html, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
 
 
 @app.route('/admin/reoffer', methods=['POST'])
