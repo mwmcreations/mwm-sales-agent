@@ -156,6 +156,7 @@ check("src.tick_gated", '_mb.due(now, _morning_brief_sent_day(), _switch_on("mor
 check("src.marks_before_send", tick.index("_pgs.save_state(_MB_SENT_KEY, day)") < tick.index("_operator_alert.alert(_mb.KIND"))
 check("src.tick_never_raises", tick.count("except Exception") >= 2)
 blk = APP[APP.index("# ── PATCH #295 — THE MORNING BRIEF"):APP.index("@app.route('/admin/reoffer', methods=['POST'])")]
+check("src.link_is_the_desk_host", 'os.getenv("RAILWAY_PUBLIC_DOMAIN")' not in blk and 'os.getenv("MORNING_BRIEF_HOST") or "mwm-sales-agent-production.up.railway.app"' in blk)
 check("src.routes", all(r in blk for r in ("'/admin/decision-file'", "'/admin/morning-brief'", "'/desk/brief'")))
 check("src.admin_auth", blk.count('_admin_secret_ok(request.values.get("secret", ""))') == 2)
 check("src.desk_auth", "if not _desk_auth_ok():\n        return \"\", 302, {\"Location\": \"/desk/\"}" in blk)

@@ -25805,8 +25805,9 @@ _MB_LAST = {"sent_day": "", "at": "", "result": "", "chars": 0, "errors": [], "l
 
 
 def _morning_brief_link():
-    host = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("PUBLIC_HOST")
-            or "mwm-sales-agent-production.up.railway.app").strip().strip("/")
+    # PATCH #295b — the Desk's own host. RAILWAY_PUBLIC_DOMAIN here is the Victory
+    # Intelligence domain (same service), where Michael's Desk session does not exist.
+    host = (os.getenv("MORNING_BRIEF_HOST") or "mwm-sales-agent-production.up.railway.app").strip().strip("/")
     return f"https://{host}/desk/brief"
 
 
